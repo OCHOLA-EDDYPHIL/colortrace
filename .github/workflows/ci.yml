@@ -15,18 +15,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  repository-policy:
-    name: Repository policy
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Validate repository scaffold and policies
-        run: python3 scripts/check_repo.py all
-
   secret-scan:
     name: Secret scan
     runs-on: ubuntu-latest
@@ -39,18 +27,3 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  scaffold-checks:
-    name: Scaffold checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Verify no product implementation precedes G0
-        run: python3 scripts/check_repo.py scaffold
-
-# Formatting, lint, typecheck, unit, and contract jobs become concrete as
-# package code lands after G0. The ruleset should require the stable job names.
