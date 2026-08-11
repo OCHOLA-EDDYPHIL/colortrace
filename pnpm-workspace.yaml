@@ -1,0 +1,5 @@
+packages:
+  - apps/web
+  - packages/contracts
+
+# Runtime package dependencies are intentionally absent until Gate G0 approves implementation.

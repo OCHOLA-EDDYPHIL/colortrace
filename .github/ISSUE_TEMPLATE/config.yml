@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/OCHOLA-EDDYPHIL/colortrace/security
+    about: Use private vulnerability reporting when available; do not disclose sensitive details publicly.

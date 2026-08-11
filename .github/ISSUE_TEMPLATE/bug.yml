@@ -1,0 +1,53 @@
+name: Bug report
+description: Report a reproducible ColorTrace defect
+labels:
+  - type:test
+body:
+  - type:textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: What happened? Do not include secrets or proprietary data.
+    validations:
+      required: true
+  - type:textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Cite the contract, policy, or acceptance criterion.
+    validations:
+      required: true
+  - type:textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Seed, fixture/run/incident ID, commit/image version, and minimal steps.
+    validations:
+      required: true
+  - type:textarea
+    id: evidence
+    attributes:
+      label: Evidence IDs and safe diagnostics
+      description: Evidence, trace, and artifact IDs; redact sensitive values.
+    validations:
+      required: true
+  - type:dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Critical - unauthorized action, secret exposure, or integrity compromise
+        - High - wrong confirmed cause/scope or critical path unusable
+        - Medium - material degradation with workaround
+        - Low - limited polish or documentation defect
+    validations:
+      required: true
+  - type:checkboxes
+    id: implications
+    attributes:
+      label: Implications
+      options:
+        - label: This can affect evidence integrity or causal claims.
+        - label: This can affect authorization, approval, or simulator actions.
+        - label: This may be a regression.
+        - label: This may contain security-sensitive details and needs private reporting.
