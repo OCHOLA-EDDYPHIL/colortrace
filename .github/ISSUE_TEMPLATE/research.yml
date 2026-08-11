@@ -1,9 +1,13 @@
 name: Research or spike
 description: Time-box an uncertain decision with falsification criteria
-title: "[Spike]: "
 labels:
   - type:spike
 body:
+  - type: markdown
+    attributes:
+      value: >-
+        Use an imperative, sentence-case title that states the evidence outcome. Labels describe
+        the work type; do not add a generic category prefix.
   - type:textarea
     id: question
     attributes:
