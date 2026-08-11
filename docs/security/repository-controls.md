@@ -1,23 +1,39 @@
 # Repository controls
 
-Status: to be completed after GitHub repository creation.
+Status: active controls verified through the GitHub API on 2026-08-11.
 
-## Intended controls
+## Active repository settings
 
-- Private until public-readiness audit
-- `main` protected by repository ruleset
-- Pull request required where plan capabilities permit
-- Required checks: formatting, lint, typecheck, unit, contract, secret, license/provenance, and Google-only AI policy
-- Conversations resolved and linear history required
-- Force pushes and branch deletion blocked
-- Squash merge only; head branches deleted after merge
-- Administrator bypass limited to documented emergencies
-- Issues enabled; Projects, wiki, and discussions disabled initially
+- Private until the public-readiness audit
+- Default branch: `main`
+- Issues enabled; Projects, wiki, and discussions disabled
+- Squash merge only; merge commits and rebase merge disabled
+- Head branches automatically deleted after merge
+- Initial CI completed successfully, including repository policy, scaffold, and secret scans
 
-## Solo-account constraint
+## Active `main` ruleset
 
-GitHub may not support self-approval or some rules on the current private plan. Unavailable controls must be recorded here after API verification, represented by the pull-request checklist and CI where possible, and enabled when the repository becomes public or the plan supports them.
+Ruleset **Protect main**, ID `20709186`, is active on the default branch:
 
-## Audit log
+- pull request required;
+- stale reviews dismissed on push;
+- review conversations resolved;
+- linear history required;
+- branch deletion and non-fast-forward updates blocked;
+- strict required status checks:
+  - `Repository policy`
+  - `Scaffold checks`
+  - `Secret scan`
+- repository administrators may bypass. Bypass is reserved for documented emergencies.
 
-Populate after configuration with the exact ruleset ID, active settings, unavailable settings and API errors, required check names, and verification date. Do not claim a control is active until API verification succeeds.
+Although the ruleset API reports merge, squash, and rebase as allowed methods within the pull-request rule, repository-level settings disable merge commits and rebase merge, leaving squash as the effective method.
+
+## Current limitations and staged controls
+
+- Required approving review count is zero. A solo repository owner cannot provide an independent approval; the pull-request checklist and required CI provide the current compensating controls. Require at least one independent approval when a collaborator is available or repository policy makes it practical.
+- The scaffold has no product packages, so formatting, language lint/typecheck, unit, generated-contract, license/provenance, and runtime AI-policy jobs are not yet separately meaningful. `Repository policy` currently validates the contract scaffold, sensitive/private path policy, workspace license, and pre-G0 implementation prohibition. Add stable required jobs when M1 bootstraps each toolchain.
+- `Dependency review` runs only on pull requests and is not required yet because the initial push could not establish a successful check context. Require it after the first successful pull-request run.
+- GitHub Actions are version-tag pinned (`@v4`, `@v5`, `@v2`) rather than immutable commit-SHA pinned. Resolve this in the M1 public-ready CI bootstrap before public release.
+- Branch rules cannot prevent opening M1 issues, so the roadmap uses explicit dependency links and issue text: M1 work is blocked until Gate G0 records `proceed`.
+
+Do not claim an unavailable or staged control is active. Re-audit this file at G0, the first pull request, feature freeze, and public-readiness review.
