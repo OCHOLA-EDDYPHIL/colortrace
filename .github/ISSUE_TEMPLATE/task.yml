@@ -1,11 +1,12 @@
 name: Delivery task
 description: Implement a scoped, testable roadmap item
-title: "[Task]: "
 labels: []
 body:
   - type: markdown
     attributes:
-      value: Do not begin until dependencies and the current release gate permit this work.
+      value: >-
+        Use an imperative, sentence-case title that describes the outcome. Do not begin until
+        dependencies and the current release gate permit this work; labels describe the work type.
   - type: textarea
     id: context
     attributes:
