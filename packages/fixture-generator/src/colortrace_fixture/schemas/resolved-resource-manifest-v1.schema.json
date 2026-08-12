@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/resolved-resource-manifest-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "job_id", "run_id", "worker_id", "nominal_config_sha256", "config_root_relative_path", "transform_id", "ordered_resources", "captured_before_and_after_processing", "inputs_unchanged"],
+  "properties": {
+    "schema": {"const": "resolved-resource-manifest/v1"}, "job_id": {"type": "string"}, "run_id": {"type": "string"}, "worker_id": {"type": "string"}, "nominal_config_sha256": {"$ref": "#/$defs/digest"}, "config_root_relative_path": {"type": "string"}, "transform_id": {"enum": ["look/main/v1", "identity/v1"]},
+    "ordered_resources": {"type": "array", "maxItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["logical_path", "resolved_root_relative_path", "sha256", "size", "read_only"], "properties": {"logical_path": {"const": "luts/show_look.cube"}, "resolved_root_relative_path": {"type": "string"}, "sha256": {"$ref": "#/$defs/digest"}, "size": {"type": "integer", "minimum": 1}, "read_only": {"const": true}}}},
+    "captured_before_and_after_processing": {"const": true}, "inputs_unchanged": {"const": true}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

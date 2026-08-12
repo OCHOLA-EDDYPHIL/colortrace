@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/fixture-provenance-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "generated_assets_license", "assets", "proprietary_assets", "third_party"],
+  "properties": {
+    "schema": {"const": "fixture-provenance/v1"},
+    "generated_assets_license": {"const": "Apache-2.0"},
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["asset_id", "asset_kind", "sha256", "generator", "license"],
+        "properties": {
+          "asset_id": {"type": "string", "minLength": 1},
+          "asset_kind": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "generator": {"type": "string", "minLength": 1},
+          "license": {"const": "Apache-2.0"}
+        }
+      }
+    },
+    "proprietary_assets": {"type": "array", "maxItems": 0},
+    "third_party": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "version", "license", "source", "accessed", "wheel_sha256"],
+        "properties": {
+          "name": {"const": "OpenColorIO"},
+          "version": {"const": "2.5.2"},
+          "license": {"const": "BSD-3-Clause"},
+          "source": {"const": "https://pypi.org/project/OpenColorIO/2.5.2/"},
+          "accessed": {"type": "string", "format": "date"},
+          "wheel_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}

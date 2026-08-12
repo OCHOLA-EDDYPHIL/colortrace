@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/fixture-job-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "fixture_id", "fixture_version", "variant_id", "seed_sha256", "job_id", "run_id", "worker_id", "source_id", "shot_id", "frame_id", "correlation_id", "trace_id", "transform_id", "start_offset_seconds", "duration_seconds", "process_outcome", "exit_code", "ocio_version", "processor_identity_sha256", "nominal_config_sha256", "resource_manifest", "resource_manifest_sha256", "source_manifest", "output_id", "output_buffer", "output_buffer_sha256", "display_png", "display_png_sha256", "display_authoritative", "declared_reference_id", "declared_reference_manifest", "declared_reference_manifest_sha256"],
+  "properties": {
+    "schema": {"const": "fixture-job/v1"}, "fixture_id": {"type": "string"}, "fixture_version": {"const": "colortrace-fixture/v1"}, "variant_id": {"type": "string"}, "seed_sha256": {"$ref": "#/$defs/digest"},
+    "job_id": {"type": "string"}, "run_id": {"type": "string"}, "worker_id": {"type": "string"}, "source_id": {"type": "string"}, "shot_id": {"type": "string"}, "frame_id": {"type": "string"}, "correlation_id": {"type": "string"}, "trace_id": {"type": "string"},
+    "transform_id": {"enum": ["look/main/v1", "identity/v1"]}, "start_offset_seconds": {"type": "integer", "minimum": 0}, "duration_seconds": {"type": "integer", "minimum": 1}, "process_outcome": {"const": "success"}, "exit_code": {"const": 0}, "ocio_version": {"const": "2.5.2"},
+    "processor_identity_sha256": {"$ref": "#/$defs/digest"}, "nominal_config_sha256": {"$ref": "#/$defs/digest"}, "resource_manifest": {"type": "string"}, "resource_manifest_sha256": {"$ref": "#/$defs/digest"}, "source_manifest": {"type": "string"}, "output_id": {"type": "string"}, "output_buffer": {"type": "string"}, "output_buffer_sha256": {"$ref": "#/$defs/digest"}, "display_png": {"type": "string"}, "display_png_sha256": {"$ref": "#/$defs/digest"}, "display_authoritative": {"const": false}, "declared_reference_id": {"type": "string"}, "declared_reference_manifest": {"type": "string"}, "declared_reference_manifest_sha256": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

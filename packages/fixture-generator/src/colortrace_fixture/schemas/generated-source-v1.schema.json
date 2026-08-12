@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/generated-source-v1.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "source_id", "artifact_id", "generator", "width", "height", "channels", "canonical_pixel_sha256", "stored_png_sha256", "stored_png", "provenance"],
+  "properties": {"schema": {"const": "generated-source/v1"}, "source_id": {"type": "string"}, "artifact_id": {"type": "string"}, "generator": {"const": "generated-chart/v1"}, "width": {"const": 512}, "height": {"const": 288}, "channels": {"const": "RGB16"}, "canonical_pixel_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "stored_png_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "stored_png": {"type": "string"}, "provenance": {"const": "generated-for-colortrace-apache-2.0"}}
+}

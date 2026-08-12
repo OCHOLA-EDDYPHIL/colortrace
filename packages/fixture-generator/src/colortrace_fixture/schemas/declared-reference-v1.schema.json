@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/declared-reference-v1.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "reference_id", "source_id", "transform_id", "authority", "buffer_format", "buffer", "buffer_sha256", "display", "display_sha256", "display_authoritative", "ocio_version", "processor_identity_sha256", "resolved_resource_sha256"],
+  "properties": {"schema": {"const": "declared-reference/v1"}, "reference_id": {"type": "string"}, "source_id": {"type": "string"}, "transform_id": {"enum": ["look/main/v1", "identity/v1"]}, "authority": {"const": "fixture-color-qc-declaration"}, "buffer_format": {"const": "rgb-float32-buffer/v1"}, "buffer": {"type": "string"}, "buffer_sha256": {"$ref": "#/$defs/digest"}, "display": {"type": "string"}, "display_sha256": {"$ref": "#/$defs/digest"}, "display_authoritative": {"const": false}, "ocio_version": {"const": "2.5.2"}, "processor_identity_sha256": {"$ref": "#/$defs/digest"}, "resolved_resource_sha256": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]}},
+  "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}
