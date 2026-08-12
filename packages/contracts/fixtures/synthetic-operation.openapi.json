@@ -1,0 +1,71 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Synthetic Operation Fixture",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/synthetic/{fixtureId}": {
+      "get": {
+        "operationId": "getSyntheticOperation",
+        "summary": "Get a synthetic fixture response",
+        "parameters": [
+          {
+            "name": "fixtureId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "includeMetadata",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Synthetic response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyntheticResponse"
+                },
+                "example": {
+                  "fixtureId": "fixture-1",
+                  "status": "ok"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Synthetic fixture not found"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "SyntheticResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fixtureId", "status"],
+        "properties": {
+          "fixtureId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["ok"]
+          }
+        }
+      }
+    }
+  }
+}

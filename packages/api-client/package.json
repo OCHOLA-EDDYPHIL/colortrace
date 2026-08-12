@@ -1,0 +1,24 @@
+{
+  "name": "@colortrace/api-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "generate": "openapi-ts --file openapi-ts.config.ts",
+    "generate:check": "node scripts/check-generated.mjs",
+    "lint": "biome lint .",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.8",
+    "@hey-api/openapi-ts": "0.99.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  }
+}

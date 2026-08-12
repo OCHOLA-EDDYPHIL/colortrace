@@ -1,0 +1,992 @@
+{
+  "packages": [
+    {
+      "ecosystem": "npm",
+      "license": "MIT OR Apache-2.0",
+      "name": "@biomejs/biome",
+      "source": "https://registry.npmjs.org",
+      "version": "2.5.8"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT OR Apache-2.0",
+      "name": "@biomejs/cli-darwin-arm64",
+      "source": "https://registry.npmjs.org",
+      "version": "2.5.8"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT OR Apache-2.0",
+      "name": "@biomejs/cli-darwin-x64",
+      "source": "https://registry.npmjs.org",
+      "version": "2.5.8"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT OR Apache-2.0",
+      "name": "@biomejs/cli-linux-arm64",
+      "source": "https://registry.npmjs.org",
+      "version": "2.5.8"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT OR Apache-2.0",
+      "name": "@biomejs/cli-linux-arm64-musl",
+      "source": "https://registry.npmjs.org",
+      "version": "2.5.8"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT OR Apache-2.0",
+      "name": "@biomejs/cli-linux-x64",
+      "source": "https://registry.npmjs.org",
+      "version": "2.5.8"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT OR Apache-2.0",
+      "name": "@biomejs/cli-linux-x64-musl",
+      "source": "https://registry.npmjs.org",
+      "version": "2.5.8"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT OR Apache-2.0",
+      "name": "@biomejs/cli-win32-arm64",
+      "source": "https://registry.npmjs.org",
+      "version": "2.5.8"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT OR Apache-2.0",
+      "name": "@biomejs/cli-win32-x64",
+      "source": "https://registry.npmjs.org",
+      "version": "2.5.8"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@hey-api/codegen-core",
+      "source": "https://registry.npmjs.org",
+      "version": "0.9.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@hey-api/json-schema-ref-parser",
+      "source": "https://registry.npmjs.org",
+      "version": "1.4.4"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@hey-api/openapi-ts",
+      "source": "https://registry.npmjs.org",
+      "version": "0.99.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@hey-api/shared",
+      "source": "https://registry.npmjs.org",
+      "version": "0.5.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@hey-api/spec-types",
+      "source": "https://registry.npmjs.org",
+      "version": "0.2.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@hey-api/types",
+      "source": "https://registry.npmjs.org",
+      "version": "0.1.4"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@jridgewell/sourcemap-codec",
+      "source": "https://registry.npmjs.org",
+      "version": "1.5.5"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@jsdevtools/ono",
+      "source": "https://registry.npmjs.org",
+      "version": "7.1.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@lukeed/ms",
+      "source": "https://registry.npmjs.org",
+      "version": "2.0.2"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@oxc-project/types",
+      "source": "https://registry.npmjs.org",
+      "version": "0.143.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/binding-android-arm64",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/binding-darwin-arm64",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/binding-darwin-x64",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/binding-freebsd-x64",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/binding-linux-arm-gnueabihf",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/binding-linux-arm64-gnu",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/binding-linux-arm64-musl",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/binding-linux-ppc64-gnu",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/binding-linux-s390x-gnu",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/binding-linux-x64-gnu",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/binding-linux-x64-musl",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/binding-openharmony-arm64",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/binding-win32-arm64-msvc",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/binding-win32-x64-msvc",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@rolldown/pluginutils",
+      "source": "https://registry.npmjs.org",
+      "version": "1.0.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@standard-schema/spec",
+      "source": "https://registry.npmjs.org",
+      "version": "1.1.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@types/chai",
+      "source": "https://registry.npmjs.org",
+      "version": "5.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@types/deep-eql",
+      "source": "https://registry.npmjs.org",
+      "version": "4.0.2"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@types/estree",
+      "source": "https://registry.npmjs.org",
+      "version": "1.0.9"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@types/json-schema",
+      "source": "https://registry.npmjs.org",
+      "version": "7.0.15"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@vitest/expect",
+      "source": "https://registry.npmjs.org",
+      "version": "4.1.10"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@vitest/mocker",
+      "source": "https://registry.npmjs.org",
+      "version": "4.1.10"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@vitest/pretty-format",
+      "source": "https://registry.npmjs.org",
+      "version": "4.1.10"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@vitest/runner",
+      "source": "https://registry.npmjs.org",
+      "version": "4.1.10"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@vitest/snapshot",
+      "source": "https://registry.npmjs.org",
+      "version": "4.1.10"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@vitest/spy",
+      "source": "https://registry.npmjs.org",
+      "version": "4.1.10"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "@vitest/utils",
+      "source": "https://registry.npmjs.org",
+      "version": "4.1.10"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "ansi-colors",
+      "source": "https://registry.npmjs.org",
+      "version": "4.1.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "Python-2.0",
+      "name": "argparse",
+      "source": "https://registry.npmjs.org",
+      "version": "2.0.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "assertion-error",
+      "source": "https://registry.npmjs.org",
+      "version": "2.0.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "bundle-name",
+      "source": "https://registry.npmjs.org",
+      "version": "4.1.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "c12",
+      "source": "https://registry.npmjs.org",
+      "version": "3.3.4"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "chai",
+      "source": "https://registry.npmjs.org",
+      "version": "6.2.2"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "chokidar",
+      "source": "https://registry.npmjs.org",
+      "version": "5.0.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "ISC",
+      "name": "color-support",
+      "source": "https://registry.npmjs.org",
+      "version": "1.1.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "commander",
+      "source": "https://registry.npmjs.org",
+      "version": "15.0.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "confbox",
+      "source": "https://registry.npmjs.org",
+      "version": "0.2.4"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "convert-source-map",
+      "source": "https://registry.npmjs.org",
+      "version": "2.0.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "cross-spawn",
+      "source": "https://registry.npmjs.org",
+      "version": "7.0.6"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "default-browser",
+      "source": "https://registry.npmjs.org",
+      "version": "5.5.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "default-browser-id",
+      "source": "https://registry.npmjs.org",
+      "version": "5.0.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "define-lazy-prop",
+      "source": "https://registry.npmjs.org",
+      "version": "3.0.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "defu",
+      "source": "https://registry.npmjs.org",
+      "version": "6.1.7"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "destr",
+      "source": "https://registry.npmjs.org",
+      "version": "2.0.5"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "Apache-2.0",
+      "name": "detect-libc",
+      "source": "https://registry.npmjs.org",
+      "version": "2.1.2"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "BSD-2-Clause",
+      "name": "dotenv",
+      "source": "https://registry.npmjs.org",
+      "version": "17.4.2"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "es-module-lexer",
+      "source": "https://registry.npmjs.org",
+      "version": "2.3.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "estree-walker",
+      "source": "https://registry.npmjs.org",
+      "version": "3.0.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "Apache-2.0",
+      "name": "expect-type",
+      "source": "https://registry.npmjs.org",
+      "version": "1.4.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "exsolve",
+      "source": "https://registry.npmjs.org",
+      "version": "1.1.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "fdir",
+      "source": "https://registry.npmjs.org",
+      "version": "6.5.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "fsevents",
+      "source": "https://registry.npmjs.org",
+      "version": "2.3.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "get-tsconfig",
+      "source": "https://registry.npmjs.org",
+      "version": "4.14.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "giget",
+      "source": "https://registry.npmjs.org",
+      "version": "3.3.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "is-docker",
+      "source": "https://registry.npmjs.org",
+      "version": "3.0.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "is-in-ssh",
+      "source": "https://registry.npmjs.org",
+      "version": "1.0.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "is-inside-container",
+      "source": "https://registry.npmjs.org",
+      "version": "1.0.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "is-wsl",
+      "source": "https://registry.npmjs.org",
+      "version": "3.1.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "ISC",
+      "name": "isexe",
+      "source": "https://registry.npmjs.org",
+      "version": "2.0.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "jiti",
+      "source": "https://registry.npmjs.org",
+      "version": "2.7.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "js-yaml",
+      "source": "https://registry.npmjs.org",
+      "version": "4.2.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MPL-2.0",
+      "name": "lightningcss",
+      "source": "https://registry.npmjs.org",
+      "version": "1.33.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MPL-2.0",
+      "name": "lightningcss-android-arm64",
+      "source": "https://registry.npmjs.org",
+      "version": "1.33.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MPL-2.0",
+      "name": "lightningcss-darwin-arm64",
+      "source": "https://registry.npmjs.org",
+      "version": "1.33.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MPL-2.0",
+      "name": "lightningcss-darwin-x64",
+      "source": "https://registry.npmjs.org",
+      "version": "1.33.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MPL-2.0",
+      "name": "lightningcss-freebsd-x64",
+      "source": "https://registry.npmjs.org",
+      "version": "1.33.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MPL-2.0",
+      "name": "lightningcss-linux-arm-gnueabihf",
+      "source": "https://registry.npmjs.org",
+      "version": "1.33.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MPL-2.0",
+      "name": "lightningcss-linux-arm64-gnu",
+      "source": "https://registry.npmjs.org",
+      "version": "1.33.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MPL-2.0",
+      "name": "lightningcss-linux-arm64-musl",
+      "source": "https://registry.npmjs.org",
+      "version": "1.33.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MPL-2.0",
+      "name": "lightningcss-linux-x64-gnu",
+      "source": "https://registry.npmjs.org",
+      "version": "1.33.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MPL-2.0",
+      "name": "lightningcss-linux-x64-musl",
+      "source": "https://registry.npmjs.org",
+      "version": "1.33.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MPL-2.0",
+      "name": "lightningcss-win32-arm64-msvc",
+      "source": "https://registry.npmjs.org",
+      "version": "1.33.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MPL-2.0",
+      "name": "lightningcss-win32-x64-msvc",
+      "source": "https://registry.npmjs.org",
+      "version": "1.33.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "magic-string",
+      "source": "https://registry.npmjs.org",
+      "version": "0.30.21"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "nanoid",
+      "source": "https://registry.npmjs.org",
+      "version": "3.3.18"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "obug",
+      "source": "https://registry.npmjs.org",
+      "version": "2.1.4"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "ohash",
+      "source": "https://registry.npmjs.org",
+      "version": "2.0.11"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "open",
+      "source": "https://registry.npmjs.org",
+      "version": "11.0.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "path-key",
+      "source": "https://registry.npmjs.org",
+      "version": "3.1.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "pathe",
+      "source": "https://registry.npmjs.org",
+      "version": "2.0.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "perfect-debounce",
+      "source": "https://registry.npmjs.org",
+      "version": "2.1.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "ISC",
+      "name": "picocolors",
+      "source": "https://registry.npmjs.org",
+      "version": "1.1.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "picomatch",
+      "source": "https://registry.npmjs.org",
+      "version": "4.0.5"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "pkg-types",
+      "source": "https://registry.npmjs.org",
+      "version": "2.3.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "postcss",
+      "source": "https://registry.npmjs.org",
+      "version": "8.5.26"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "powershell-utils",
+      "source": "https://registry.npmjs.org",
+      "version": "0.1.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "rc9",
+      "source": "https://registry.npmjs.org",
+      "version": "3.0.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "readdirp",
+      "source": "https://registry.npmjs.org",
+      "version": "5.1.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "resolve-pkg-maps",
+      "source": "https://registry.npmjs.org",
+      "version": "1.0.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "rolldown",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "run-applescript",
+      "source": "https://registry.npmjs.org",
+      "version": "7.1.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "ISC",
+      "name": "semver",
+      "source": "https://registry.npmjs.org",
+      "version": "7.8.4"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "shebang-command",
+      "source": "https://registry.npmjs.org",
+      "version": "2.0.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "shebang-regex",
+      "source": "https://registry.npmjs.org",
+      "version": "3.0.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "ISC",
+      "name": "siginfo",
+      "source": "https://registry.npmjs.org",
+      "version": "2.0.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "BSD-3-Clause",
+      "name": "source-map-js",
+      "source": "https://registry.npmjs.org",
+      "version": "1.2.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "stackback",
+      "source": "https://registry.npmjs.org",
+      "version": "0.0.2"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "std-env",
+      "source": "https://registry.npmjs.org",
+      "version": "4.2.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "tinybench",
+      "source": "https://registry.npmjs.org",
+      "version": "2.9.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "tinyexec",
+      "source": "https://registry.npmjs.org",
+      "version": "1.3.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "tinyglobby",
+      "source": "https://registry.npmjs.org",
+      "version": "0.2.17"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "tinyrainbow",
+      "source": "https://registry.npmjs.org",
+      "version": "3.1.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "Apache-2.0",
+      "name": "typescript",
+      "source": "https://registry.npmjs.org",
+      "version": "6.0.3"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "vite",
+      "source": "https://registry.npmjs.org",
+      "version": "8.2.1"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "vitest",
+      "source": "https://registry.npmjs.org",
+      "version": "4.1.10"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "ISC",
+      "name": "which",
+      "source": "https://registry.npmjs.org",
+      "version": "2.0.2"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "why-is-node-running",
+      "source": "https://registry.npmjs.org",
+      "version": "2.3.0"
+    },
+    {
+      "ecosystem": "npm",
+      "license": "MIT",
+      "name": "wsl-utils",
+      "source": "https://registry.npmjs.org",
+      "version": "0.3.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "ast-serialize",
+      "source": "https://pypi.org/simple",
+      "version": "0.8.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "colorama",
+      "source": "https://pypi.org/simple",
+      "version": "0.4.6"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "iniconfig",
+      "source": "https://pypi.org/simple",
+      "version": "2.3.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "librt",
+      "source": "https://pypi.org/simple",
+      "version": "0.15.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "mypy",
+      "source": "https://pypi.org/simple",
+      "version": "2.3.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "mypy-extensions",
+      "source": "https://pypi.org/simple",
+      "version": "1.1.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0 OR BSD-2-Clause",
+      "name": "packaging",
+      "source": "https://pypi.org/simple",
+      "version": "26.3"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MPL-2.0",
+      "name": "pathspec",
+      "source": "https://pypi.org/simple",
+      "version": "1.1.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "pluggy",
+      "source": "https://pypi.org/simple",
+      "version": "1.6.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "BSD-2-Clause",
+      "name": "pygments",
+      "source": "https://pypi.org/simple",
+      "version": "2.20.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "pytest",
+      "source": "https://pypi.org/simple",
+      "version": "9.1.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "pyyaml",
+      "source": "https://pypi.org/simple",
+      "version": "6.0.3"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "ruff",
+      "source": "https://pypi.org/simple",
+      "version": "0.16.2"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "PSF-2.0",
+      "name": "typing-extensions",
+      "source": "https://pypi.org/simple",
+      "version": "4.16.0"
+    }
+  ],
+  "schema_version": 1
+}
