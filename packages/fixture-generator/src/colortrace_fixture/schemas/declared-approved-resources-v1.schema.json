@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/declared-approved-resources-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "logical_path", "approved_lut_sha256", "nominal_config_sha256", "ocio_version"],
+  "properties": {
+    "schema": {"const": "declared-approved-resources/v1"},
+    "logical_path": {"const": "luts/show_look.cube"},
+    "approved_lut_sha256": {"$ref": "#/$defs/digest"},
+    "nominal_config_sha256": {"$ref": "#/$defs/digest"},
+    "ocio_version": {"const": "2.5.2"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -6,6 +6,7 @@ requires-python = "==3.12.*"
 members = [
     "colortrace-fixture",
     "colortrace-repo",
+    "colortrace-validator",
     "colortrace-workspace",
 ]
 
@@ -96,6 +97,23 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pyyaml", specifier = "==6.0.3" }]
+
+[[package]]
+name = "colortrace-validator"
+version = "1.0.0"
+source = { editable = "packages/validators" }
+dependencies = [
+    { name = "colortrace-fixture" },
+    { name = "jsonschema" },
+    { name = "opencolorio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "colortrace-fixture", editable = "packages/fixture-generator" },
+    { name = "jsonschema", specifier = "==4.25.1" },
+    { name = "opencolorio", specifier = "==2.5.2" },
+]
 
 [[package]]
 name = "colortrace-workspace"

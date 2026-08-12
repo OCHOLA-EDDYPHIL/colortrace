@@ -51,11 +51,13 @@ LUT_LOGICAL_PATH = "luts/show_look.cube"
 SCHEMA_ROOT = Path(__file__).parent / "schemas"
 SCHEMA_FILES = {
     "artifact-lineage/v1": "artifact-lineage-v1.schema.json",
+    "declared-approved-resources/v1": "declared-approved-resources-v1.schema.json",
     "declared-reference/v1": "declared-reference-v1.schema.json",
     "fixture-job/v1": "fixture-job-v1.schema.json",
     "fixture-oracle/v1": "fixture-oracle-v1.schema.json",
     "fixture-provenance/v1": "fixture-provenance-v1.schema.json",
     "fixture-runtime-manifest/v1": "fixture-runtime-manifest-v1.schema.json",
+    "fixture-telemetry/v1": "fixture-telemetry-v1.schema.json",
     "generated-source/v1": "generated-source-v1.schema.json",
     "resolved-resource-manifest/v1": "resolved-resource-manifest-v1.schema.json",
 }

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/fixture-telemetry-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "events"],
+  "properties": {
+    "schema": {"const": "fixture-telemetry/v1"},
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["event_id", "worker_id", "start_offset_seconds", "duration_seconds", "overlapping_job_ids", "measurements", "resource_edges", "lineage_edges", "output_mutation"],
+        "properties": {
+          "event_id": {"type": "string", "minLength": 1},
+          "worker_id": {"type": "string", "minLength": 1},
+          "start_offset_seconds": {"type": "integer", "minimum": 0},
+          "duration_seconds": {"type": "integer", "minimum": 1},
+          "overlapping_job_ids": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+          "measurements": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["worker.cpu.utilization", "render.queue_wait_ms"],
+            "properties": {
+              "worker.cpu.utilization": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)?$"},
+              "render.queue_wait_ms": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)?$"}
+            }
+          },
+          "resource_edges": {"type": "array", "maxItems": 0},
+          "lineage_edges": {"type": "array", "maxItems": 0},
+          "output_mutation": {"const": false}
+        }
+      }
+    }
+  }
+}
