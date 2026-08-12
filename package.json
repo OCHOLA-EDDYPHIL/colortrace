@@ -1,0 +1,25 @@
+{
+  "name": "colortrace-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": "24.19.0",
+    "pnpm": "11.21.0"
+  },
+  "scripts": {
+    "format": "biome format --write biome.json package.json pnpm-workspace.yaml && pnpm --recursive --if-present format",
+    "format:check": "biome format biome.json package.json pnpm-workspace.yaml && pnpm --recursive --if-present format:check",
+    "generate": "pnpm --filter @colortrace/api-client generate",
+    "generate:check": "pnpm --filter @colortrace/api-client generate:check",
+    "lint": "pnpm --recursive --if-present lint",
+    "test": "pnpm --recursive --if-present test",
+    "typecheck": "pnpm --recursive --if-present typecheck"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.8",
+    "@hey-api/openapi-ts": "0.99.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  }
+}

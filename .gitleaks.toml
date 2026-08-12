@@ -1,0 +1,10 @@
+title = "ColorTrace secret scanning policy"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "colortrace-synthetic-test-token"
+description = "Synthetic token used to verify the repository secret gate"
+regex = '''\bct_test_[A-Za-z0-9]{24,}\b'''
+keywords = ["ct_test_"]

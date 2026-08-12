@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "python": {
+    "allowed_ai_packages": [
+      "google-adk",
+      "google-cloud-aiplatform",
+      "google-genai",
+      "mcp"
+    ],
+    "allowed_non_ai_runtime_packages": [
+      "pyyaml"
+    ],
+    "disallowed_ai_packages": [
+      "agency-swarm",
+      "agno",
+      "anthropic",
+      "autogen-agentchat",
+      "autogen-core",
+      "azure-ai-inference",
+      "azure-ai-openai",
+      "cerebras-cloud-sdk",
+      "cohere",
+      "crewai",
+      "dspy",
+      "groq",
+      "haystack-ai",
+      "huggingface-hub",
+      "langchain",
+      "langchain-anthropic",
+      "langchain-openai",
+      "langgraph",
+      "litellm",
+      "llama-index",
+      "mistralai",
+      "ollama",
+      "openai",
+      "openai-agents",
+      "pydantic-ai",
+      "semantic-kernel",
+      "smolagents",
+      "together",
+      "together-ai",
+      "transformers"
+    ],
+    "disallowed_ai_prefixes": [
+      "agency-swarm-",
+      "agno-",
+      "anthropic-",
+      "autogen-",
+      "cerebras-",
+      "cohere-",
+      "crewai-",
+      "dspy-",
+      "groq-",
+      "haystack-",
+      "huggingface-",
+      "langchain-",
+      "langgraph-",
+      "litellm-",
+      "llama-index-",
+      "mistral-",
+      "ollama-",
+      "openai-",
+      "pydantic-ai-",
+      "semantic-kernel-",
+      "smolagents-",
+      "together-",
+      "transformers-"
+    ]
+  },
+  "node": {
+    "allowed_ai_packages": [
+      "@google/adk",
+      "@google-cloud/vertexai",
+      "@google/genai",
+      "@modelcontextprotocol/sdk"
+    ],
+    "allowed_non_ai_runtime_packages": [],
+    "disallowed_ai_packages": [
+      "@ai-sdk/anthropic",
+      "@ai-sdk/cohere",
+      "@ai-sdk/groq",
+      "@ai-sdk/mistral",
+      "@ai-sdk/openai",
+      "@anthropic-ai/sdk",
+      "@azure/openai",
+      "@huggingface/inference",
+      "@langchain/anthropic",
+      "@langchain/core",
+      "@langchain/langgraph",
+      "@langchain/openai",
+      "@mistralai/mistralai",
+      "@openai/agents",
+      "@together-ai/sdk",
+      "ai",
+      "anthropic",
+      "autogen",
+      "cohere-ai",
+      "crewai",
+      "groq-sdk",
+      "langchain",
+      "litellm",
+      "llamaindex",
+      "ollama",
+      "openai",
+      "semantic-kernel",
+      "smolagents",
+      "together-ai"
+    ],
+    "disallowed_ai_prefixes": [
+      "@ai-sdk/",
+      "@anthropic-ai/",
+      "@huggingface/",
+      "@langchain/",
+      "@mistralai/",
+      "@openai/",
+      "@together-ai/",
+      "anthropic-",
+      "autogen-",
+      "cohere-",
+      "crewai-",
+      "groq-",
+      "langchain-",
+      "litellm-",
+      "llamaindex-",
+      "mistral-",
+      "ollama-",
+      "openai-",
+      "semantic-kernel-",
+      "smolagents-",
+      "together-"
+    ]
+  },
+  "structured_config_globs": [
+    "config/**/*.json",
+    "config/**/*.toml",
+    "configs/**/*.json",
+    "configs/**/*.toml"
+  ],
+  "configuration": {
+    "provider_keys": [
+      "model_provider",
+      "provider"
+    ],
+    "allowed_providers": [
+      "gemini",
+      "google",
+      "google-cloud",
+      "vertex",
+      "vertex-ai"
+    ],
+    "framework_keys": [
+      "agent_framework",
+      "framework"
+    ],
+    "allowed_frameworks": [
+      "adk",
+      "google-adk"
+    ],
+    "model_keys": [
+      "model",
+      "model_id",
+      "model_name"
+    ],
+    "allowed_model_prefixes": [
+      "gemini-"
+    ],
+    "transport_keys": [
+      "mcp_transport",
+      "transport"
+    ],
+    "allowed_mcp_transports": [
+      "stdio"
+    ],
+    "mcp_server_keys": [
+      "mcp_servers",
+      "mcpServers"
+    ]
+  }
+}

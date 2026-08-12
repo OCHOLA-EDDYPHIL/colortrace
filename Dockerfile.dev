@@ -1,0 +1,26 @@
+FROM ghcr.io/astral-sh/uv@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc AS uv
+
+FROM zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f AS gitleaks
+
+FROM node@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS node
+RUN corepack disable \
+    && npm install --global pnpm@11.21.0 \
+    && pnpm --version | grep -Fx 11.21.0
+
+FROM python@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2
+
+COPY --from=uv /uv /uvx /usr/local/bin/
+COPY --from=gitleaks /usr/bin/gitleaks /usr/local/bin/gitleaks
+COPY --from=node /usr/local/ /usr/local/
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy
+
+WORKDIR /workspace
+
+RUN python --version | grep -F 'Python 3.12.13' \
+    && node --version | grep -Fx v24.19.0 \
+    && pnpm --version | grep -Fx 11.21.0 \
+    && uv --version | grep -F 'uv 0.12.3 ' \
+    && gitleaks version | grep -Fx v8.30.1

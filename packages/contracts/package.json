@@ -1,0 +1,22 @@
+{
+  "name": "@colortrace/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./openapi.json": "./openapi.json",
+    "./fixtures/synthetic-operation.openapi.json": "./fixtures/synthetic-operation.openapi.json"
+  },
+  "scripts": {
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.8",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  }
+}
