@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/color-state-scope-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "state", "policy", "causal_resource_sha256", "frames", "derivatives", "reason_codes"],
+  "properties": {
+    "schema": {"const": "color-state-scope/v1"},
+    "state": {"enum": ["resolved", "unresolved"]},
+    "policy": {"const": "single-causal-resource-scope/v1"},
+    "causal_resource_sha256": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "frames": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/frame"}},
+    "derivatives": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/derivative"}},
+    "reason_codes": {"$ref": "#/$defs/reasons"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "nullableId": {"anyOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]},
+    "reasons": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"$ref": "https://colortrace.dev/schemas/validation-reason-code-v1.schema.json"}},
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "frame_id", "output_id", "worker_id", "state", "reason_codes", "evidence_ids"],
+      "properties": {
+        "job_id": {"$ref": "#/$defs/id"},
+        "frame_id": {"$ref": "#/$defs/nullableId"},
+        "output_id": {"$ref": "#/$defs/nullableId"},
+        "worker_id": {"$ref": "#/$defs/nullableId"},
+        "state": {"enum": ["affected", "safe", "unknown"]},
+        "reason_codes": {"$ref": "#/$defs/reasons"},
+        "evidence_ids": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+      }
+    },
+    "derivative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "parent_artifact_id", "state", "lineage_policy", "reason_codes", "evidence_ids"],
+      "properties": {
+        "artifact_id": {"$ref": "#/$defs/id"},
+        "parent_artifact_id": {"$ref": "#/$defs/nullableId"},
+        "state": {"enum": ["affected", "safe", "unknown"]},
+        "lineage_policy": {"const": "exact-typed-lineage/v1"},
+        "reason_codes": {"$ref": "#/$defs/reasons"},
+        "evidence_ids": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+      }
+    }
+  }
+}

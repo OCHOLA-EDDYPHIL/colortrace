@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "colortrace-validator"
+version = "1.0.0"
+description = "Pure deterministic ColorTrace color-state validation"
+requires-python = ">=3.12"
+dependencies = ["colortrace-fixture", "jsonschema==4.25.1", "OpenColorIO==2.5.2"]
+
+[tool.uv.sources]
+colortrace-fixture = {workspace = true}
+
+[project.scripts]
+colortrace-validator = "colortrace_validator.validator:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/colortrace_validator"]
