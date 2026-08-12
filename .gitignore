@@ -8,6 +8,18 @@
 *.crt
 secrets/
 
+# Reproducible local tool state
+.cache/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+*.py[cod]
+node_modules/
+coverage/
+dist/
+
 # Editors and operating systems
 .vscode/
 .idea/

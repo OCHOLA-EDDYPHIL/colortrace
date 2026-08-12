@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "required_lockfiles": {
+    "npm": "pnpm-lock.yaml",
+    "pypi": "uv.lock"
+  },
+  "registries": {
+    "npm": [
+      "https://registry.npmjs.org"
+    ],
+    "pypi": [
+      "https://pypi.org/simple"
+    ]
+  },
+  "artifact_hosts": {
+    "npm": [
+      "registry.npmjs.org"
+    ],
+    "pypi": [
+      "files.pythonhosted.org"
+    ]
+  },
+  "allowed_license_ids": [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "PSF-2.0",
+    "Python-2.0",
+    "Unlicense"
+  ],
+  "allowed_license_exceptions": []
+}
