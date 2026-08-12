@@ -157,6 +157,38 @@ class RepositoryChecksTest(unittest.TestCase):
                 {finding.code for finding in check_actions(root)}, {"action.ref.mutable"}
             )
 
+    def test_self_repository_action_is_scanned_before_remote_ref_parsing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            workflows = root / ".github" / "workflows"
+            action_name = "wrapper@" + "a" * 40
+            local_action = root / "dist" / action_name
+            workflows.mkdir(parents=True)
+            local_action.mkdir(parents=True)
+            workflow = workflows / "check.yml"
+            metadata = local_action / "action.yml"
+            metadata.write_text(
+                "name: wrapper\nruns:\n  using: composite\n  steps:\n"
+                "    - uses: actions/checkout@v4\n",
+                encoding="utf-8",
+            )
+
+            workflow.write_text(
+                "jobs:\n  check:\n    steps:\n      - uses: $/dist/" + action_name + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                {finding.code for finding in check_actions(root)}, {"action.ref.mutable"}
+            )
+
+            workflow.write_text(
+                "jobs:\n  check:\n    steps:\n      - uses: $/dist/missing\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                {finding.code for finding in check_actions(root)}, {"action.local.missing"}
+            )
+
     def test_windows_style_local_action_path_is_rejected_as_nonportable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

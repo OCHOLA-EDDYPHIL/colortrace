@@ -42,8 +42,13 @@ def _validate_target(
         )
         return
     normalized_target = target
-    if normalized_target.startswith("./"):
-        candidate = (root / normalized_target).resolve()
+    if normalized_target.startswith("./") or normalized_target.startswith("$/"):
+        local_target = (
+            normalized_target
+            if normalized_target.startswith("./")
+            else normalized_target.removeprefix("$/")
+        )
+        candidate = (root / local_target).resolve()
         try:
             candidate.relative_to(root)
         except ValueError:
