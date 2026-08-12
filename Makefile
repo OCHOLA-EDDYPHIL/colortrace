@@ -27,7 +27,7 @@ TOOL_RUN_OFFLINE := docker run --rm \
 	--env UV_CACHE_DIR=/workspace/.cache/uv \
 	$(TOOL_IMAGE)
 
-.PHONY: bootstrap build-tools prepare-cache format generate check check-fast \
+.PHONY: bootstrap build-tools prepare-cache format generate generate-fixture check check-fast \
 	check-format check-lint check-typecheck check-unit check-contract \
 	check-generated check-license check-policy check-secret check-secret-fixture check-bootstrap
 
@@ -49,6 +49,15 @@ format: prepare-cache
 
 generate: prepare-cache
 	$(TOOL_RUN) pnpm run generate
+
+FIXTURE_BUNDLE ?= /workspace/.cache/fixtures/ct-shadowed-lut-v1/runtime-bundle
+FIXTURE_ORACLE ?= /workspace/.cache/fixtures/ct-shadowed-lut-v1/offline-oracle
+
+generate-fixture: prepare-cache
+	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-fixture generate \
+		--bundle $(FIXTURE_BUNDLE) --oracle $(FIXTURE_ORACLE)
+	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-fixture validate \
+		--scenario $(FIXTURE_BUNDLE)
 
 check-format: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline ruff format --check .

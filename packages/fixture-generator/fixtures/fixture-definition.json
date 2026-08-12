@@ -1,0 +1,19 @@
+{
+  "fixture_id": "ct-shadowed-lut-v1",
+  "fixture_version": "colortrace-fixture/v1",
+  "generator": "generated-chart/v1",
+  "height": 288,
+  "jobs": [
+    {"role": "a1", "source": "chart-01", "transform": "look/main/v1", "worker": "A"},
+    {"role": "a2", "source": "chart-02", "transform": "look/main/v1", "worker": "A"},
+    {"role": "b1", "source": "chart-01", "transform": "look/main/v1", "worker": "B"},
+    {"role": "b2", "source": "chart-02", "transform": "look/main/v1", "worker": "B"},
+    {"role": "b3", "source": "chart-03", "transform": "look/main/v1", "worker": "B"},
+    {"role": "b4", "source": "chart-04", "transform": "identity/v1", "worker": "B"}
+  ],
+  "ocio_version": "2.5.2",
+  "seed": "ct-shadowed-lut-v1:canonical",
+  "source_encoding": "RGB16",
+  "sources": ["chart-01", "chart-02", "chart-03", "chart-04"],
+  "width": 512
+}

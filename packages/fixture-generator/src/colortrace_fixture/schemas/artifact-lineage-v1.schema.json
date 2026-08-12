@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/artifact-lineage-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "edges", "artifacts"],
+  "properties": {
+    "schema": {"const": "artifact-lineage/v1"},
+    "edges": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["edge_type", "parent_artifact_id", "child_artifact_id", "job_id", "correlation_id"],
+            "properties": {
+              "edge_type": {"const": "source-to-render/v1"},
+              "parent_artifact_id": {"type": "string"},
+              "child_artifact_id": {"type": "string"},
+              "job_id": {"type": "string"},
+              "correlation_id": {"type": "string"}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["edge_type", "parent_artifact_id", "child_artifact_id"],
+            "properties": {
+              "edge_type": {"const": "lossless-derivative/v1"},
+              "parent_artifact_id": {"type": "string"},
+              "child_artifact_id": {"type": "string"}
+            }
+          }
+        ]
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["artifact_id", "artifact_type", "job_id"],
+            "properties": {
+              "artifact_id": {"type": "string"},
+              "artifact_type": {"const": "authoritative-render-output"},
+              "job_id": {"type": "string"}
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["artifact_id", "artifact_type", "buffer", "sha256", "display", "display_sha256", "generator"],
+            "properties": {
+              "artifact_id": {"type": "string"},
+              "artifact_type": {"const": "lossless-derivative"},
+              "buffer": {"type": "string"},
+              "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "display": {"type": "string"},
+              "display_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "generator": {"const": "lossless-float-copy/v1"}
+            }
+          }
+        ]
+      }
+    }
+  }
+}

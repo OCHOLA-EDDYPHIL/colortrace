@@ -8,6 +8,8 @@
       "mcp"
     ],
     "allowed_non_ai_runtime_packages": [
+      "jsonschema",
+      "opencolorio",
       "pyyaml"
     ],
     "disallowed_ai_packages": [
