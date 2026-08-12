@@ -52,12 +52,19 @@ generate: prepare-cache
 
 FIXTURE_BUNDLE ?= /workspace/.cache/fixtures/ct-shadowed-lut-v1/runtime-bundle
 FIXTURE_ORACLE ?= /workspace/.cache/fixtures/ct-shadowed-lut-v1/offline-oracle
+FIXTURE_VALIDATION ?= /workspace/.cache/fixtures/ct-shadowed-lut-v1/validation
 
 generate-fixture: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-fixture generate \
 		--bundle $(FIXTURE_BUNDLE) --oracle $(FIXTURE_ORACLE)
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-fixture validate \
 		--scenario $(FIXTURE_BUNDLE)
+	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-validator request \
+		--bundle $(FIXTURE_BUNDLE) --request-id fixture-validation \
+		--incident-id fixture-incident --output $(FIXTURE_VALIDATION)/request.json
+	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-validator validate \
+		--bundle $(FIXTURE_BUNDLE) --request $(FIXTURE_VALIDATION)/request.json \
+		--output $(FIXTURE_VALIDATION)/result.json
 
 check-format: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline ruff format --check .

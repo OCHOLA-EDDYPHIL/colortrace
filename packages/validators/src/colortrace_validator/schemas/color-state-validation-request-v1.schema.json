@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/color-state-validation-request-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "request_id", "incident_id", "runtime_manifest", "policies", "limits"],
+  "properties": {
+    "schema": {"const": "color-state-validation-request/v1"},
+    "request_id": {"$ref": "#/$defs/id"},
+    "incident_id": {"$ref": "#/$defs/id"},
+    "runtime_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)(?!.*\\$).+$"},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["comparison", "scope", "lineage", "claim"],
+      "properties": {
+        "comparison": {"const": "declared-reference-comparison/v1"},
+        "scope": {"const": "single-causal-resource-scope/v1"},
+        "lineage": {"const": "exact-typed-lineage/v1"},
+        "claim": {"const": "deterministic-claim/v1"}
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_result_bytes"],
+      "properties": {"max_result_bytes": {"const": 262144}}
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

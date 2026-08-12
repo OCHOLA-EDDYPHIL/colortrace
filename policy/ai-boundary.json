@@ -8,6 +8,7 @@
       "mcp"
     ],
     "allowed_non_ai_runtime_packages": [
+      "colortrace-fixture",
       "jsonschema",
       "opencolorio",
       "pyyaml"
