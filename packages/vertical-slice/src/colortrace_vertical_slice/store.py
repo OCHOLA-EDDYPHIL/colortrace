@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import os
 import sqlite3
 import stat
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
 from colortrace_investigation import AlertIntake, validate_response_packet
+from colortrace_investigation.contracts import ContractError as InvestigationContractError
 from colortrace_investigation.contracts import parse_timestamp
 from colortrace_validator import validate_result_contract
 
@@ -19,20 +23,25 @@ from .contracts import (
     SliceContractError,
     alert_digest,
     build_claim_event,
+    build_human_audit_event,
     build_task_envelope,
     build_trace_event,
     canonical_json_bytes,
     claim_expiry,
     finalize_replay,
+    human_audit_actor,
     normalize_timestamp,
     plain_json,
     prefixed_sha256,
     readonly_mapping,
     require_identifier,
+    require_prefixed_digest,
     require_trace_id,
     strict_json_bytes,
     validate_claim_events,
+    validate_human_audit_events,
     validate_replay,
+    validate_schema,
 )
 
 _SCHEMA_V1 = """
@@ -129,7 +138,201 @@ CREATE TABLE claim_events (
 ) STRICT
 """
 
+_HUMAN_AUDIT_EVENTS_TABLE_V3 = """
+CREATE TABLE human_audit_events (
+    event_id TEXT PRIMARY KEY,
+    incident_id TEXT NOT NULL REFERENCES incidents(incident_id),
+    sequence INTEGER NOT NULL CHECK (sequence >= 1),
+    event_sha256 TEXT NOT NULL UNIQUE,
+    document_json BLOB NOT NULL,
+    UNIQUE (incident_id, sequence)
+) STRICT
+"""
+
+_HUMAN_AUDIT_HEADS_TABLE_V4 = """
+CREATE TABLE human_audit_heads (
+    incident_id TEXT PRIMARY KEY REFERENCES incidents(incident_id),
+    event_count INTEGER NOT NULL CHECK (event_count >= 0 AND event_count <= 4096),
+    head_event_sha256 TEXT,
+    CHECK (
+        (event_count = 0 AND head_event_sha256 IS NULL) OR
+        (
+            event_count > 0 AND
+            length(head_event_sha256) = 71 AND
+            substr(head_event_sha256, 1, 7) = 'sha256:' AND
+            substr(head_event_sha256, 8) NOT GLOB '*[^0-9a-f]*'
+        )
+    )
+) STRICT
+"""
+
+_INCIDENT_ADMISSIONS_TABLE_V4 = """
+CREATE TABLE incident_admissions (
+    incident_id TEXT PRIMARY KEY REFERENCES incidents(incident_id),
+    intake_trace_event_id TEXT NOT NULL UNIQUE REFERENCES trace_events(event_id),
+    principal_kind TEXT NOT NULL CHECK (principal_kind IN ('human', 'service')),
+    actor_sha256 TEXT,
+    admitted_at TEXT NOT NULL,
+    record_sha256 TEXT NOT NULL UNIQUE CHECK (
+        length(record_sha256) = 71 AND
+        substr(record_sha256, 1, 7) = 'sha256:' AND
+        substr(record_sha256, 8) NOT GLOB '*[^0-9a-f]*'
+    ),
+    document_json BLOB NOT NULL,
+    CHECK (
+        (principal_kind = 'service' AND actor_sha256 IS NULL) OR
+        (
+            principal_kind = 'human' AND
+            length(actor_sha256) = 71 AND
+            substr(actor_sha256, 1, 7) = 'sha256:' AND
+            substr(actor_sha256, 8) NOT GLOB '*[^0-9a-f]*'
+        )
+    )
+) STRICT
+"""
+
+_HUMAN_AUDIT_TRIGGERS_V4 = {
+    "incidents_human_audit_head_insert": """
+CREATE TRIGGER incidents_human_audit_head_insert
+AFTER INSERT ON incidents
+BEGIN
+    INSERT INTO human_audit_heads(incident_id, event_count, head_event_sha256)
+    VALUES(NEW.incident_id, 0, NULL);
+END
+""",
+    "human_audit_events_valid_append": """
+CREATE TRIGGER human_audit_events_valid_append
+BEFORE INSERT ON human_audit_events
+WHEN EXISTS (
+    SELECT 1 FROM incident_admissions AS admission
+    WHERE admission.incident_id = NEW.incident_id
+) OR NOT EXISTS (
+    SELECT 1
+    FROM human_audit_heads AS head
+    WHERE head.incident_id = NEW.incident_id
+      AND NEW.sequence = head.event_count + 1
+)
+BEGIN
+    SELECT RAISE(ABORT, 'human-audit-append-invalid');
+END
+""",
+    "human_audit_events_no_update": """
+CREATE TRIGGER human_audit_events_no_update
+BEFORE UPDATE ON human_audit_events
+BEGIN
+    SELECT RAISE(ABORT, 'human-audit-events-append-only');
+END
+""",
+    "human_audit_events_no_delete": """
+CREATE TRIGGER human_audit_events_no_delete
+BEFORE DELETE ON human_audit_events
+BEGIN
+    SELECT RAISE(ABORT, 'human-audit-events-append-only');
+END
+""",
+    "human_audit_heads_valid_advance": """
+CREATE TRIGGER human_audit_heads_valid_advance
+BEFORE UPDATE ON human_audit_heads
+WHEN NOT (
+    NEW.incident_id = OLD.incident_id
+    AND NEW.event_count = OLD.event_count + 1
+    AND NEW.head_event_sha256 IS NOT NULL
+    AND NOT EXISTS (
+        SELECT 1 FROM incident_admissions AS admission
+        WHERE admission.incident_id = OLD.incident_id
+    )
+    AND EXISTS (
+        SELECT 1
+        FROM human_audit_events AS event
+        WHERE event.incident_id = OLD.incident_id
+          AND event.sequence = NEW.event_count
+          AND event.event_sha256 = NEW.head_event_sha256
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'human-audit-head-advance-invalid');
+END
+""",
+    "human_audit_heads_no_delete": """
+CREATE TRIGGER human_audit_heads_no_delete
+BEFORE DELETE ON human_audit_heads
+BEGIN
+    SELECT RAISE(ABORT, 'human-audit-head-delete-invalid');
+END
+""",
+    "incident_admissions_valid_insert": """
+CREATE TRIGGER incident_admissions_valid_insert
+BEFORE INSERT ON incident_admissions
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM trace_events AS event
+    JOIN human_audit_heads AS head ON head.incident_id = event.incident_id
+    WHERE event.event_id = NEW.intake_trace_event_id
+      AND event.incident_id = NEW.incident_id
+      AND event.sequence = 1
+      AND (
+          (NEW.principal_kind = 'human' AND head.event_count = 1) OR
+          (NEW.principal_kind = 'service' AND head.event_count = 0)
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'incident-admission-binding-invalid');
+END
+""",
+    "incident_admissions_no_update": """
+CREATE TRIGGER incident_admissions_no_update
+BEFORE UPDATE ON incident_admissions
+BEGIN
+    SELECT RAISE(ABORT, 'incident-admissions-append-only');
+END
+""",
+    "incident_admissions_no_delete": """
+CREATE TRIGGER incident_admissions_no_delete
+BEFORE DELETE ON incident_admissions
+BEGIN
+    SELECT RAISE(ABORT, 'incident-admissions-append-only');
+END
+""",
+}
+
 _MIGRATED_CLAIM_OWNER = "migration:v1"
+_INCIDENT_DELAY_SECONDS = 30
+_CURSOR_PREFIX = "cursor:v1:"
+_INCIDENT_ADMISSION_SCHEMA = "incident-admission/v1"
+
+
+def _normalized_schema_sql(value: str) -> str:
+    return " ".join(value.strip().removesuffix(";").split())
+
+
+def _human_actor_sha256(actor: Mapping[str, Any]) -> str:
+    return prefixed_sha256(canonical_json_bytes(human_audit_actor(actor)))
+
+
+def _build_incident_admission(
+    *,
+    incident_id: str,
+    intake_trace_event_id: str,
+    actor: Mapping[str, Any] | None,
+    admitted_at: str,
+) -> dict[str, Any]:
+    principal_kind = "service" if actor is None else "human"
+    actor_sha256 = None if actor is None else _human_actor_sha256(actor)
+    body = {
+        "schema": _INCIDENT_ADMISSION_SCHEMA,
+        "incident_id": require_identifier(incident_id),
+        "intake_trace_event_id": require_identifier(
+            intake_trace_event_id,
+            code="incident-admission-trace-invalid",
+        ),
+        "principal_kind": principal_kind,
+        "actor_sha256": actor_sha256,
+        "admitted_at": normalize_timestamp(
+            admitted_at,
+            code="incident-admission-time-invalid",
+        ),
+    }
+    return {**body, "record_sha256": prefixed_sha256(canonical_json_bytes(body))}
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,11 +472,62 @@ class SqliteIncidentStore:
                     )
                 connection.execute(
                     "UPDATE store_metadata SET schema_version = ? WHERE singleton = 1",
-                    (STORE_SCHEMA_VERSION,),
+                    (2,),
                 )
-            elif version != STORE_SCHEMA_VERSION:
+                version = 2
+            if version == 2:
+                connection.execute(_HUMAN_AUDIT_EVENTS_TABLE_V3)
+                connection.execute(
+                    "UPDATE store_metadata SET schema_version = ? WHERE singleton = 1",
+                    (3,),
+                )
+                version = 3
+            if version == 3:
+                self._validate_schema_v3(connection)
+                connection.execute(_HUMAN_AUDIT_HEADS_TABLE_V4)
+                connection.execute(_INCIDENT_ADMISSIONS_TABLE_V4)
+                incidents = connection.execute(
+                    "SELECT * FROM incidents ORDER BY incident_id"
+                ).fetchall()
+                for incident in incidents:
+                    incident_id = cast(str, incident["incident_id"])
+                    events = self._human_audit_events_for_incident(
+                        connection,
+                        incident_id,
+                        verify_head=False,
+                    )
+                    connection.execute(
+                        "INSERT INTO human_audit_heads("
+                        "incident_id, event_count, head_event_sha256"
+                        ") VALUES(?, ?, ?)",
+                        (
+                            incident_id,
+                            len(events),
+                            None if not events else events[-1]["event_sha256"],
+                        ),
+                    )
+                    if len(events) > 1:
+                        raise SliceContractError("stored-incident-admission-binding")
+                    intake_event = self._intake_trace_event_for_incident(
+                        connection,
+                        incident,
+                    )
+                    self._insert_incident_admission(
+                        connection,
+                        incident_id=incident_id,
+                        intake_trace_event_id=cast(str, intake_event["event_id"]),
+                        actor=None if not events else cast(Mapping[str, Any], events[0]["actor"]),
+                        admitted_at=cast(str, intake_event["occurred_at"]),
+                    )
+                self._create_human_audit_triggers(connection)
+                connection.execute(
+                    "UPDATE store_metadata SET schema_version = ? WHERE singleton = 1",
+                    (4,),
+                )
+                version = 4
+            if version != STORE_SCHEMA_VERSION:
                 raise SliceContractError("store-schema-drift")
-            self._validate_schema_v2(connection)
+            self._validate_schema_v4(connection)
             connection.execute("COMMIT")
         except BaseException:
             try:
@@ -306,6 +560,144 @@ class SqliteIncidentStore:
         tasks = connection.execute("SELECT * FROM tasks ORDER BY task_id").fetchall()
         for task in tasks:
             cls._claim_events_for_task(connection, task)
+
+    @classmethod
+    def _validate_schema_v3(cls, connection: sqlite3.Connection) -> None:
+        cls._validate_schema_v2(connection)
+        human_table = connection.execute(
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'human_audit_events'"
+        ).fetchone()
+        if (
+            human_table is None
+            or not isinstance(human_table["sql"], str)
+            or _normalized_schema_sql(human_table["sql"])
+            != _normalized_schema_sql(_HUMAN_AUDIT_EVENTS_TABLE_V3)
+        ):
+            raise SliceContractError("store-schema-drift")
+        incidents = connection.execute(
+            "SELECT incident_id FROM incidents ORDER BY incident_id"
+        ).fetchall()
+        for incident in incidents:
+            cls._human_audit_events_for_incident(
+                connection,
+                cast(str, incident["incident_id"]),
+                verify_head=False,
+            )
+
+    @staticmethod
+    def _create_human_audit_triggers(connection: sqlite3.Connection) -> None:
+        for statement in _HUMAN_AUDIT_TRIGGERS_V4.values():
+            connection.execute(statement)
+
+    @staticmethod
+    def _drop_human_audit_triggers(connection: sqlite3.Connection) -> None:
+        for name in _HUMAN_AUDIT_TRIGGERS_V4:
+            connection.execute(f"DROP TRIGGER {name}")
+
+    @classmethod
+    def _validate_human_audit_schema_v4(cls, connection: sqlite3.Connection) -> None:
+        trigger_tables = {
+            "incidents_human_audit_head_insert": "incidents",
+            "human_audit_events_valid_append": "human_audit_events",
+            "human_audit_events_no_update": "human_audit_events",
+            "human_audit_events_no_delete": "human_audit_events",
+            "human_audit_heads_valid_advance": "human_audit_heads",
+            "human_audit_heads_no_delete": "human_audit_heads",
+            "incident_admissions_valid_insert": "incident_admissions",
+            "incident_admissions_no_update": "incident_admissions",
+            "incident_admissions_no_delete": "incident_admissions",
+        }
+        expected: dict[str, tuple[str, str, str]] = {
+            "human_audit_events": (
+                "table",
+                "human_audit_events",
+                _HUMAN_AUDIT_EVENTS_TABLE_V3,
+            ),
+            "human_audit_heads": (
+                "table",
+                "human_audit_heads",
+                _HUMAN_AUDIT_HEADS_TABLE_V4,
+            ),
+            "incident_admissions": (
+                "table",
+                "incident_admissions",
+                _INCIDENT_ADMISSIONS_TABLE_V4,
+            ),
+            **{
+                name: ("trigger", trigger_tables[name], sql)
+                for name, sql in _HUMAN_AUDIT_TRIGGERS_V4.items()
+            },
+        }
+        rows = connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE "
+            "(type = 'table' AND name IN "
+            "('human_audit_events', 'human_audit_heads', 'incident_admissions')) OR "
+            "(type = 'trigger' AND tbl_name IN "
+            "('incidents', 'human_audit_events', 'human_audit_heads', "
+            "'incident_admissions'))"
+        ).fetchall()
+        actual = {cast(str, row["name"]): row for row in rows}
+        if set(actual) != set(expected):
+            raise SliceContractError("store-schema-drift")
+        for name, (object_type, table_name, statement) in expected.items():
+            row = actual[name]
+            if (
+                row["type"] != object_type
+                or row["tbl_name"] != table_name
+                or not isinstance(row["sql"], str)
+                or _normalized_schema_sql(row["sql"]) != _normalized_schema_sql(statement)
+            ):
+                raise SliceContractError("store-schema-drift")
+
+    @classmethod
+    def _validate_schema_v4(cls, connection: sqlite3.Connection) -> None:
+        cls._validate_schema_v3(connection)
+        cls._validate_human_audit_schema_v4(connection)
+        missing_head = connection.execute(
+            "SELECT 1 FROM incidents AS incident "
+            "LEFT JOIN human_audit_heads AS head "
+            "ON head.incident_id = incident.incident_id "
+            "WHERE head.incident_id IS NULL LIMIT 1"
+        ).fetchone()
+        orphan_head = connection.execute(
+            "SELECT 1 FROM human_audit_heads AS head "
+            "LEFT JOIN incidents AS incident "
+            "ON incident.incident_id = head.incident_id "
+            "WHERE incident.incident_id IS NULL LIMIT 1"
+        ).fetchone()
+        orphan_event = connection.execute(
+            "SELECT 1 FROM human_audit_events AS event "
+            "LEFT JOIN incidents AS incident "
+            "ON incident.incident_id = event.incident_id "
+            "LEFT JOIN human_audit_heads AS head "
+            "ON head.incident_id = event.incident_id "
+            "WHERE incident.incident_id IS NULL OR head.incident_id IS NULL LIMIT 1"
+        ).fetchone()
+        if missing_head is not None or orphan_head is not None or orphan_event is not None:
+            raise SliceContractError("stored-human-audit-head-binding")
+        missing_admission = connection.execute(
+            "SELECT 1 FROM incidents AS incident "
+            "LEFT JOIN incident_admissions AS admission "
+            "ON admission.incident_id = incident.incident_id "
+            "WHERE admission.incident_id IS NULL LIMIT 1"
+        ).fetchone()
+        orphan_admission = connection.execute(
+            "SELECT 1 FROM incident_admissions AS admission "
+            "LEFT JOIN incidents AS incident "
+            "ON incident.incident_id = admission.incident_id "
+            "LEFT JOIN trace_events AS event "
+            "ON event.event_id = admission.intake_trace_event_id "
+            "WHERE incident.incident_id IS NULL OR event.event_id IS NULL LIMIT 1"
+        ).fetchone()
+        if missing_admission is not None or orphan_admission is not None:
+            raise SliceContractError("stored-incident-admission-binding")
+        incidents = connection.execute("SELECT * FROM incidents ORDER BY incident_id").fetchall()
+        for incident in incidents:
+            human_events = cls._human_audit_events_for_incident(
+                connection,
+                cast(str, incident["incident_id"]),
+            )
+            cls._incident_admission_for_incident(connection, incident, human_events)
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -409,6 +801,231 @@ class SqliteIncidentStore:
         else:
             raise SliceContractError("stored-claim-state-binding")
         return events
+
+    @classmethod
+    def _human_audit_events_for_incident(
+        cls,
+        connection: sqlite3.Connection,
+        incident_id: str,
+        *,
+        verify_head: bool = True,
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT event_id, incident_id, sequence, event_sha256, document_json "
+            "FROM human_audit_events WHERE incident_id = ? ORDER BY sequence",
+            (incident_id,),
+        ).fetchall()
+        events: list[dict[str, Any]] = []
+        for sequence, row in enumerate(rows, start=1):
+            event = cls._decode(row["document_json"])
+            if (
+                row["event_id"] != event.get("event_id")
+                or row["incident_id"] != incident_id
+                or row["incident_id"] != event.get("incident_id")
+                or row["sequence"] != sequence
+                or row["sequence"] != event.get("sequence")
+                or row["event_sha256"] != event.get("event_sha256")
+            ):
+                raise SliceContractError("stored-human-audit-event-binding")
+            events.append(event)
+        try:
+            validate_human_audit_events(events, incident_id=incident_id)
+        except SliceContractError as error:
+            raise SliceContractError("stored-human-audit-event-binding") from error
+        if verify_head:
+            head = connection.execute(
+                "SELECT event_count, head_event_sha256 FROM human_audit_heads "
+                "WHERE incident_id = ?",
+                (incident_id,),
+            ).fetchone()
+            expected_digest = None if not events else events[-1]["event_sha256"]
+            if (
+                head is None
+                or head["event_count"] != len(events)
+                or head["head_event_sha256"] != expected_digest
+            ):
+                raise SliceContractError("stored-human-audit-head-binding")
+        return events
+
+    @classmethod
+    def _intake_trace_event_for_incident(
+        cls,
+        connection: sqlite3.Connection,
+        incident: sqlite3.Row,
+    ) -> dict[str, Any]:
+        row = connection.execute(
+            "SELECT event_id, incident_id, sequence, event_sha256, document_json "
+            "FROM trace_events WHERE incident_id = ? AND sequence = 1",
+            (incident["incident_id"],),
+        ).fetchone()
+        if row is None:
+            raise SliceContractError("stored-incident-admission-binding")
+        try:
+            event = cls._decode(row["document_json"])
+            validate_schema("incident-trace-event-v1.schema.json", event)
+            body = {
+                key: child
+                for key, child in event.items()
+                if key not in {"event_id", "event_sha256"}
+            }
+            expected_digest = prefixed_sha256(canonical_json_bytes(body))
+            payload = cast(Mapping[str, Any], event["payload"])
+            occurred_at = normalize_timestamp(
+                event["occurred_at"],
+                code="stored-incident-admission-binding",
+            )
+            if (
+                row["event_id"] != event["event_id"]
+                or row["incident_id"] != incident["incident_id"]
+                or row["incident_id"] != event["incident_id"]
+                or row["sequence"] != 1
+                or event["sequence"] != 1
+                or event["event_type"] != "api.intake.accepted"
+                or event["trace_id"] != incident["trace_id"]
+                or event["predecessor_event_sha256"] is not None
+                or event["parent_span_id"] is not None
+                or event["payload_sha256"] != prefixed_sha256(canonical_json_bytes(payload))
+                or event["event_sha256"] != expected_digest
+                or row["event_sha256"] != expected_digest
+                or event["event_id"] != f"event:{expected_digest.removeprefix('sha256:')}"
+                or payload.get("alert_id") != incident["alert_id"]
+                or payload.get("alert_sha256") != incident["alert_sha256"]
+                or occurred_at != incident["created_at"]
+            ):
+                raise SliceContractError("stored-incident-admission-binding")
+        except (KeyError, TypeError, ValueError, SliceContractError) as error:
+            if (
+                isinstance(error, SliceContractError)
+                and error.code == "stored-incident-admission-binding"
+            ):
+                raise
+            raise SliceContractError("stored-incident-admission-binding") from error
+        return event
+
+    @staticmethod
+    def _insert_incident_admission(
+        connection: sqlite3.Connection,
+        *,
+        incident_id: str,
+        intake_trace_event_id: str,
+        actor: Mapping[str, Any] | None,
+        admitted_at: str,
+    ) -> dict[str, Any]:
+        record = _build_incident_admission(
+            incident_id=incident_id,
+            intake_trace_event_id=intake_trace_event_id,
+            actor=actor,
+            admitted_at=admitted_at,
+        )
+        connection.execute(
+            "INSERT INTO incident_admissions("
+            "incident_id, intake_trace_event_id, principal_kind, actor_sha256, admitted_at, "
+            "record_sha256, document_json) VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (
+                incident_id,
+                intake_trace_event_id,
+                record["principal_kind"],
+                record["actor_sha256"],
+                record["admitted_at"],
+                record["record_sha256"],
+                canonical_json_bytes(record),
+            ),
+        )
+        return record
+
+    @classmethod
+    def _incident_admission_for_incident(
+        cls,
+        connection: sqlite3.Connection,
+        incident: sqlite3.Row,
+        human_events: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        row = connection.execute(
+            "SELECT incident_id, intake_trace_event_id, principal_kind, actor_sha256, "
+            "admitted_at, record_sha256, document_json FROM incident_admissions "
+            "WHERE incident_id = ?",
+            (incident["incident_id"],),
+        ).fetchone()
+        if row is None:
+            raise SliceContractError("stored-incident-admission-binding")
+        try:
+            record = cls._decode(row["document_json"])
+            if bytes(row["document_json"]) != canonical_json_bytes(record):
+                raise SliceContractError("stored-incident-admission-binding")
+            if set(record) != {
+                "schema",
+                "incident_id",
+                "intake_trace_event_id",
+                "principal_kind",
+                "actor_sha256",
+                "admitted_at",
+                "record_sha256",
+            }:
+                raise SliceContractError("stored-incident-admission-binding")
+            principal_kind = record["principal_kind"]
+            actor_sha256 = record["actor_sha256"]
+            if principal_kind not in {"human", "service"}:
+                raise SliceContractError("stored-incident-admission-binding")
+            if principal_kind == "human":
+                require_prefixed_digest(
+                    actor_sha256,
+                    code="stored-incident-admission-binding",
+                )
+            elif actor_sha256 is not None:
+                raise SliceContractError("stored-incident-admission-binding")
+            admitted_at = normalize_timestamp(
+                record["admitted_at"],
+                code="stored-incident-admission-binding",
+            )
+            intake_trace_event_id = require_identifier(
+                record["intake_trace_event_id"],
+                code="stored-incident-admission-binding",
+            )
+            body = {key: child for key, child in record.items() if key != "record_sha256"}
+            expected_digest = prefixed_sha256(canonical_json_bytes(body))
+            if (
+                record["schema"] != _INCIDENT_ADMISSION_SCHEMA
+                or record["incident_id"] != incident["incident_id"]
+                or row["incident_id"] != record["incident_id"]
+                or row["intake_trace_event_id"] != intake_trace_event_id
+                or row["principal_kind"] != principal_kind
+                or row["actor_sha256"] != actor_sha256
+                or row["admitted_at"] != admitted_at
+                or row["record_sha256"] != expected_digest
+                or record["record_sha256"] != expected_digest
+            ):
+                raise SliceContractError("stored-incident-admission-binding")
+            intake_event = cls._intake_trace_event_for_incident(connection, incident)
+            if (
+                intake_event["event_id"] != intake_trace_event_id
+                or intake_event["occurred_at"] != admitted_at
+                or incident["created_at"] != admitted_at
+            ):
+                raise SliceContractError("stored-incident-admission-binding")
+            # This digest anchor makes partial audit rewinds detectable. An attacker rewriting
+            # every same-database root remains outside what an unkeyed local digest can prove.
+            if principal_kind == "human":
+                if len(human_events) != 1:
+                    raise SliceContractError("stored-incident-admission-binding")
+                human_event = human_events[0]
+                if (
+                    _human_actor_sha256(cast(Mapping[str, Any], human_event["actor"]))
+                    != actor_sha256
+                    or human_event["occurred_at"] != admitted_at
+                    or human_event["citations"]
+                    != [{"namespace": "trace-event", "id": intake_trace_event_id}]
+                ):
+                    raise SliceContractError("stored-incident-admission-binding")
+            elif human_events:
+                raise SliceContractError("stored-incident-admission-binding")
+        except (KeyError, TypeError, ValueError, SliceContractError) as error:
+            if (
+                isinstance(error, SliceContractError)
+                and error.code == "stored-incident-admission-binding"
+            ):
+                raise
+            raise SliceContractError("stored-incident-admission-binding") from error
+        return record
 
     @staticmethod
     def _incident_record(row: sqlite3.Row) -> dict[str, Any]:
@@ -530,6 +1147,60 @@ class SqliteIncidentStore:
         )
         return event
 
+    def _append_human_audit_event(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        incident_id: str,
+        actor: Mapping[str, Any],
+        occurred_at: str,
+        citations: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        head = connection.execute(
+            "SELECT event_count, head_event_sha256 FROM human_audit_heads WHERE incident_id = ?",
+            (incident_id,),
+        ).fetchone()
+        if head is None:
+            raise SliceContractError("stored-human-audit-head-binding")
+        current_count = cast(int, head["event_count"])
+        predecessor = cast(str | None, head["head_event_sha256"])
+        sequence = current_count + 1
+        event = build_human_audit_event(
+            incident_id=incident_id,
+            sequence=sequence,
+            event_type="incident.admitted",
+            actor=actor,
+            predecessor_event_sha256=predecessor,
+            occurred_at=occurred_at,
+            citations=citations,
+        )
+        connection.execute(
+            "INSERT INTO human_audit_events(event_id, incident_id, sequence, event_sha256, "
+            "document_json) VALUES(?, ?, ?, ?, ?)",
+            (
+                event["event_id"],
+                incident_id,
+                sequence,
+                event["event_sha256"],
+                canonical_json_bytes(event),
+            ),
+        )
+        changed = connection.execute(
+            "UPDATE human_audit_heads SET event_count = ?, head_event_sha256 = ? "
+            "WHERE incident_id = ? AND event_count = ? "
+            "AND head_event_sha256 IS ?",
+            (
+                sequence,
+                event["event_sha256"],
+                incident_id,
+                current_count,
+                predecessor,
+            ),
+        )
+        if changed.rowcount != 1:
+            raise SliceContractError("human-audit-head-conflict")
+        return event
+
     @staticmethod
     def _work_item(row: sqlite3.Row, alert: Mapping[str, Any]) -> WorkItem:
         owner = row["claim_owner"]
@@ -549,7 +1220,13 @@ class SqliteIncidentStore:
             readonly_mapping(alert),
         )
 
-    def accept_alert(self, alert: Mapping[str, Any], *, now: str) -> AcceptedIncident:
+    def accept_alert(
+        self,
+        alert: Mapping[str, Any],
+        *,
+        now: str,
+        human_actor: Mapping[str, Any] | None = None,
+    ) -> AcceptedIncident:
         now_value = normalize_timestamp(now)
         try:
             intake = AlertIntake.from_mapping(alert)
@@ -573,6 +1250,12 @@ class SqliteIncidentStore:
                 ).fetchone()
                 if existing_task is None:
                     raise SliceContractError("store-integrity")
+                human_events = self._human_audit_events_for_incident(connection, incident_id)
+                self._incident_admission_for_incident(
+                    connection,
+                    existing,
+                    human_events,
+                )
                 return AcceptedIncident(
                     incident_id,
                     cast(str, existing_task["task_id"]),
@@ -609,7 +1292,7 @@ class SqliteIncidentStore:
                     now_value,
                 ),
             )
-            self._append_event(
+            accepted_event = self._append_event(
                 connection,
                 incident_id=incident_id,
                 event_type="api.intake.accepted",
@@ -620,6 +1303,21 @@ class SqliteIncidentStore:
                     "source_predecessor_event_sha256": intake.predecessor_event_sha256,
                 },
                 occurred_at=now_value,
+            )
+            if human_actor is not None:
+                self._append_human_audit_event(
+                    connection,
+                    incident_id=incident_id,
+                    actor=human_actor,
+                    occurred_at=now_value,
+                    citations=[{"namespace": "trace-event", "id": accepted_event["event_id"]}],
+                )
+            self._insert_incident_admission(
+                connection,
+                incident_id=incident_id,
+                intake_trace_event_id=cast(str, accepted_event["event_id"]),
+                actor=human_actor,
+                admitted_at=now_value,
             )
             self._append_event(
                 connection,
@@ -1145,20 +1843,177 @@ class SqliteIncidentStore:
             raise SliceContractError("packet-replay-mismatch")
         return packet_value
 
-    def incident_view(self, incident_id: str) -> dict[str, Any]:
-        require_identifier(incident_id)
-        with self._connection() as connection:
-            incident = connection.execute(
-                "SELECT * FROM incidents WHERE incident_id = ?", (incident_id,)
-            ).fetchone()
-            task = connection.execute(
-                "SELECT * FROM tasks WHERE incident_id = ?", (incident_id,)
-            ).fetchone()
+    @staticmethod
+    def _encode_incident_cursor(*, updated_at: str, incident_id: str) -> str:
+        document = {
+            "schema": "incident-list-cursor/v1",
+            "updated_at": normalize_timestamp(updated_at, code="incident-cursor-invalid"),
+            "incident_id": require_identifier(incident_id, code="incident-cursor-invalid"),
+        }
+        encoded = base64.urlsafe_b64encode(canonical_json_bytes(document)).decode("ascii")
+        return f"{_CURSOR_PREFIX}{encoded.rstrip('=')}"
+
+    @classmethod
+    def _decode_incident_cursor(cls, cursor: str) -> tuple[str, str]:
+        if (
+            not isinstance(cursor, str)
+            or not cursor.startswith(_CURSOR_PREFIX)
+            or len(cursor) > 512
+        ):
+            raise SliceContractError("incident-cursor-invalid")
+        encoded = cursor.removeprefix(_CURSOR_PREFIX)
+        if not encoded or any(
+            character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+            for character in encoded
+        ):
+            raise SliceContractError("incident-cursor-invalid")
+        try:
+            padding = "=" * ((4 - len(encoded) % 4) % 4)
+            raw = base64.b64decode(encoded + padding, altchars=b"-_", validate=True)
+            document = strict_json_bytes(raw)
+        except (InvestigationContractError, ValueError, binascii.Error) as error:
+            raise SliceContractError("incident-cursor-invalid") from error
+        if not isinstance(document, dict) or set(document) != {
+            "schema",
+            "updated_at",
+            "incident_id",
+        }:
+            raise SliceContractError("incident-cursor-invalid")
+        if document.get("schema") != "incident-list-cursor/v1":
+            raise SliceContractError("incident-cursor-invalid")
+        updated_at = normalize_timestamp(document.get("updated_at"), code="incident-cursor-invalid")
+        incident_id = require_identifier(
+            document.get("incident_id"), code="incident-cursor-invalid"
+        )
+        if cls._encode_incident_cursor(updated_at=updated_at, incident_id=incident_id) != cursor:
+            raise SliceContractError("incident-cursor-invalid")
+        return updated_at, incident_id
+
+    @classmethod
+    def _incident_summary(
+        cls,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        *,
+        now: str,
+    ) -> dict[str, Any]:
+        status = cast(str, row["status"])
+        updated_at = normalize_timestamp(row["updated_at"], code="stored-incident-time-invalid")
+        now_value = normalize_timestamp(now, code="timestamp-invalid")
+        current_time = parse_timestamp(now_value)
+        updated_time = parse_timestamp(updated_at)
+        missing: list[str] = []
+        delayed = False
+        if status == "queued":
+            missing.append("response-packet")
+            delayed = current_time >= updated_time + timedelta(seconds=_INCIDENT_DELAY_SECONDS)
+        elif status == "running":
+            missing.append("response-packet")
+            expiry = normalize_timestamp(row["claim_expires_at"], code="stored-claim-time-invalid")
+            if current_time >= parse_timestamp(expiry):
+                missing.append("active-worker-claim")
+                delayed = True
+        elif status == "unresolved":
             packet_row = connection.execute(
-                "SELECT packet_id, incident_id, content_sha256, document_json "
-                "FROM packets WHERE incident_id = ?",
-                (incident_id,),
+                "SELECT packet_id, content_sha256, document_json FROM packets "
+                "WHERE incident_id = ?",
+                (row["incident_id"],),
             ).fetchone()
+            if packet_row is None:
+                raise SliceContractError("stored-packet-missing")
+            packet = cls._decode(packet_row["document_json"])
+            validate_response_packet(packet)
+            if (
+                packet.get("packet_id") != packet_row["packet_id"]
+                or packet.get("packet_id") != row["packet_id"]
+                or prefixed_sha256(canonical_json_bytes(packet)) != packet_row["content_sha256"]
+            ):
+                raise SliceContractError("stored-packet-binding")
+            unresolved = cast(Sequence[Mapping[str, Any]], packet["unresolved_items"])
+            missing.extend(
+                sorted(
+                    {
+                        require_identifier(item.get("code"), code="stored-packet-binding")
+                        for item in unresolved
+                    }
+                )
+            )
+            if not missing:
+                missing.append("decisive-evidence")
+        elif status != "resolved":
+            raise SliceContractError("stored-incident-status-invalid")
+        return {
+            "schema": "incident-summary/v1",
+            "incident_id": row["incident_id"],
+            "alert_id": row["alert_id"],
+            "status": status,
+            "version": row["version"],
+            "trace_id": row["trace_id"],
+            "packet_id": row["packet_id"],
+            "created_at": row["created_at"],
+            "updated_at": updated_at,
+            "delayed": delayed,
+            "missing": missing,
+        }
+
+    def list_incidents(
+        self,
+        *,
+        limit: int,
+        cursor: str | None,
+        now: str,
+    ) -> dict[str, Any]:
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1 or limit > 50:
+            raise SliceContractError("incident-list-limit-invalid")
+        now_value = normalize_timestamp(now)
+        boundary = None if cursor is None else self._decode_incident_cursor(cursor)
+        with self._connection() as connection:
+            if boundary is None:
+                rows = connection.execute(
+                    "SELECT i.*, t.claim_expires_at FROM incidents i "
+                    "JOIN tasks t ON t.incident_id = i.incident_id "
+                    "ORDER BY i.updated_at DESC, i.incident_id DESC LIMIT ?",
+                    (limit + 1,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT i.*, t.claim_expires_at FROM incidents i "
+                    "JOIN tasks t ON t.incident_id = i.incident_id "
+                    "WHERE i.updated_at < ? OR (i.updated_at = ? AND i.incident_id < ?) "
+                    "ORDER BY i.updated_at DESC, i.incident_id DESC LIMIT ?",
+                    (boundary[0], boundary[0], boundary[1], limit + 1),
+                ).fetchall()
+            selected = rows[:limit]
+            items = [self._incident_summary(connection, row, now=now_value) for row in selected]
+        next_cursor = None
+        if len(rows) > limit and selected:
+            last = selected[-1]
+            next_cursor = self._encode_incident_cursor(
+                updated_at=cast(str, last["updated_at"]),
+                incident_id=cast(str, last["incident_id"]),
+            )
+        return {
+            "schema": "incident-list/v1",
+            "items": items,
+            "next_cursor": next_cursor,
+        }
+
+    def _incident_view_from_connection(
+        self,
+        connection: sqlite3.Connection,
+        incident_id: str,
+    ) -> dict[str, Any]:
+        incident = connection.execute(
+            "SELECT * FROM incidents WHERE incident_id = ?", (incident_id,)
+        ).fetchone()
+        task = connection.execute(
+            "SELECT * FROM tasks WHERE incident_id = ?", (incident_id,)
+        ).fetchone()
+        packet_row = connection.execute(
+            "SELECT packet_id, incident_id, content_sha256, document_json "
+            "FROM packets WHERE incident_id = ?",
+            (incident_id,),
+        ).fetchone()
         if incident is None or task is None:
             raise SliceContractError("incident-not-found")
         if packet_row is None and (
@@ -1185,43 +2040,45 @@ class SqliteIncidentStore:
             "packet": packet,
         }
 
-    def replay(self, incident_id: str) -> dict[str, Any]:
-        require_identifier(incident_id)
-        with self._connection() as connection:
-            incident = connection.execute(
-                "SELECT * FROM incidents WHERE incident_id = ?", (incident_id,)
-            ).fetchone()
-            task = connection.execute(
-                "SELECT * FROM tasks WHERE incident_id = ?", (incident_id,)
-            ).fetchone()
-            packet = connection.execute(
-                "SELECT document_json, content_sha256 FROM packets WHERE incident_id = ?",
-                (incident_id,),
-            ).fetchone()
-            evidence = connection.execute(
-                "SELECT document_json, content_sha256 FROM evidence WHERE incident_id = ? "
-                "ORDER BY sequence",
-                (incident_id,),
-            ).fetchall()
-            evidence_batches = connection.execute(
-                "SELECT document_json, batch_sha256 FROM evidence_batches WHERE incident_id = ?",
-                (incident_id,),
-            ).fetchall()
-            validator_results = connection.execute(
-                "SELECT document_json, content_sha256 FROM validator_results "
-                "WHERE incident_id = ? ORDER BY sequence",
-                (incident_id,),
-            ).fetchall()
-            invocations = connection.execute(
-                "SELECT document_json, content_sha256 FROM invocations WHERE incident_id = ? "
-                "ORDER BY sequence",
-                (incident_id,),
-            ).fetchall()
-            trace_events = connection.execute(
-                "SELECT document_json, event_sha256 FROM trace_events WHERE incident_id = ? "
-                "ORDER BY sequence",
-                (incident_id,),
-            ).fetchall()
+    def _replay_from_connection(
+        self,
+        connection: sqlite3.Connection,
+        incident_id: str,
+    ) -> dict[str, Any]:
+        incident = connection.execute(
+            "SELECT * FROM incidents WHERE incident_id = ?", (incident_id,)
+        ).fetchone()
+        task = connection.execute(
+            "SELECT * FROM tasks WHERE incident_id = ?", (incident_id,)
+        ).fetchone()
+        packet = connection.execute(
+            "SELECT document_json, content_sha256 FROM packets WHERE incident_id = ?",
+            (incident_id,),
+        ).fetchone()
+        evidence = connection.execute(
+            "SELECT document_json, content_sha256 FROM evidence WHERE incident_id = ? "
+            "ORDER BY sequence",
+            (incident_id,),
+        ).fetchall()
+        evidence_batches = connection.execute(
+            "SELECT document_json, batch_sha256 FROM evidence_batches WHERE incident_id = ?",
+            (incident_id,),
+        ).fetchall()
+        validator_results = connection.execute(
+            "SELECT document_json, content_sha256 FROM validator_results "
+            "WHERE incident_id = ? ORDER BY sequence",
+            (incident_id,),
+        ).fetchall()
+        invocations = connection.execute(
+            "SELECT document_json, content_sha256 FROM invocations WHERE incident_id = ? "
+            "ORDER BY sequence",
+            (incident_id,),
+        ).fetchall()
+        trace_events = connection.execute(
+            "SELECT document_json, event_sha256 FROM trace_events WHERE incident_id = ? "
+            "ORDER BY sequence",
+            (incident_id,),
+        ).fetchall()
         if incident is None or task is None:
             raise SliceContractError("incident-not-found")
         if packet is None or incident["packet_id"] is None or task["status"] != "complete":
@@ -1266,6 +2123,55 @@ class SqliteIncidentStore:
         validate_replay(replay)
         return replay
 
+    def incident_workspace(self, incident_id: str) -> dict[str, Any]:
+        require_identifier(incident_id)
+        with self._connection() as connection:
+            try:
+                connection.execute("BEGIN")
+                view = self._incident_view_from_connection(connection, incident_id)
+                packet = view["packet"]
+                incident = connection.execute(
+                    "SELECT * FROM incidents WHERE incident_id = ?",
+                    (incident_id,),
+                ).fetchone()
+                if incident is None:  # pragma: no cover - view already binds this row
+                    raise SliceContractError("incident-not-found")
+                human_events = self._human_audit_events_for_incident(connection, incident_id)
+                self._incident_admission_for_incident(
+                    connection,
+                    incident,
+                    human_events,
+                )
+                workspace = {
+                    "schema": "incident-workspace-source/v1",
+                    "view": view,
+                    "replay_state": "pending" if packet is None else "ready",
+                    "human_events": human_events,
+                    "replay": (
+                        None
+                        if packet is None
+                        else self._replay_from_connection(connection, incident_id)
+                    ),
+                }
+                connection.execute("COMMIT")
+            except BaseException:
+                try:
+                    connection.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+        return workspace
+
+    def incident_view(self, incident_id: str) -> dict[str, Any]:
+        require_identifier(incident_id)
+        with self._connection() as connection:
+            return self._incident_view_from_connection(connection, incident_id)
+
+    def replay(self, incident_id: str) -> dict[str, Any]:
+        require_identifier(incident_id)
+        with self._connection() as connection:
+            return self._replay_from_connection(connection, incident_id)
+
     def reset(self) -> dict[str, int | str]:
         with self._transaction() as connection:
             counts = {
@@ -1279,10 +2185,16 @@ class SqliteIncidentStore:
                     "invocations",
                     "packets",
                     "trace_events",
+                    "human_audit_events",
+                    "incident_admissions",
                 )
             }
+            self._drop_human_audit_triggers(connection)
             for table in (
                 "claim_events",
+                "incident_admissions",
+                "human_audit_events",
+                "human_audit_heads",
                 "trace_events",
                 "invocations",
                 "validator_results",
@@ -1293,13 +2205,24 @@ class SqliteIncidentStore:
                 "incidents",
             ):
                 connection.execute(f"DELETE FROM {table}")
+            self._create_human_audit_triggers(connection)
+            self._validate_schema_v4(connection)
         return {"schema": "incident-store-reset/v1", **counts}
 
     def assert_empty(self) -> None:
         with self._connection() as connection:
             counts = [
                 connection.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
-                for name in ("incidents", "tasks", "claim_events", "packets", "trace_events")
+                for name in (
+                    "incidents",
+                    "tasks",
+                    "claim_events",
+                    "human_audit_events",
+                    "human_audit_heads",
+                    "incident_admissions",
+                    "packets",
+                    "trace_events",
+                )
             ]
         if any(counts):
             raise SliceContractError("store-not-empty")

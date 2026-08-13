@@ -4,13 +4,16 @@ import syntheticFixture from "../fixtures/synthetic-operation.openapi.json";
 import canonicalContract from "../openapi.json";
 
 describe("canonical API contract", () => {
-  it("exposes only alert intake, incident read, and provenance replay", () => {
+  it("exposes incident intake, workspace reads, and authenticated session projection", () => {
     expect(canonicalContract.openapi).toMatch(/^3\.1\./u);
     expect(Object.keys(canonicalContract.paths).sort()).toEqual([
       "/v1/incidents",
       "/v1/incidents/{incidentId}",
       "/v1/incidents/{incidentId}/replay",
+      "/v1/incidents/{incidentId}/workspace",
+      "/v1/session",
     ]);
+    expect(canonicalContract.paths["/v1/incidents"].get.operationId).toBe("listIncidents");
     expect(canonicalContract.paths["/v1/incidents"].post.operationId).toBe("createIncident");
     expect(canonicalContract.paths["/v1/incidents/{incidentId}"].get.operationId).toBe(
       "getIncident",
@@ -18,6 +21,21 @@ describe("canonical API contract", () => {
     expect(canonicalContract.paths["/v1/incidents/{incidentId}/replay"].get.operationId).toBe(
       "replayIncident",
     );
+    expect(canonicalContract.paths["/v1/incidents/{incidentId}/workspace"].get.operationId).toBe(
+      "getIncidentWorkspace",
+    );
+    expect(canonicalContract.paths["/v1/session"].get.operationId).toBe("getOperatorSession");
+    expect(canonicalContract.components.securitySchemes.operatorOidc.scheme).toBe("bearer");
+    const session = canonicalContract.components.schemas.OperatorSession;
+    expect(session.properties.subject.$ref).toBe("#/components/schemas/OidcSubject");
+    expect(session.required).toContain("principal_kind");
+    expect(session.properties.principal_kind.enum).toEqual(["human", "service"]);
+    const workspace = canonicalContract.components.schemas.IncidentWorkspaceSource;
+    expect(workspace.required).toContain("human_events");
+    expect(workspace.properties.human_events.items.$ref).toBe(
+      "#/components/schemas/HumanAuditEvent",
+    );
+    expect(canonicalContract.components.schemas.HumanAuditEvent.additionalProperties).toBe(false);
     expect(canonicalContract.components.schemas.ResponsePacket.properties.status.enum).toEqual([
       "resolved",
       "unresolved",

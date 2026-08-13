@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "colortrace-api"
+version = "0.1.0"
+description = "ColorTrace incident HTTP API boundary"
+requires-python = ">=3.12"
+dependencies = [
+    "colortrace-vertical-slice",
+    "fastapi==0.141.1",
+    "pyjwt[crypto]==2.13.0",
+    "uvicorn==0.52.1",
+]
+
+[tool.uv.sources]
+colortrace-vertical-slice = {workspace = true}
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/colortrace_api"]

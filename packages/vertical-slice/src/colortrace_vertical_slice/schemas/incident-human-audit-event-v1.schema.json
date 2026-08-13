@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/incident-human-audit-event-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "event_id",
+    "incident_id",
+    "sequence",
+    "event_type",
+    "actor",
+    "predecessor_event_sha256",
+    "occurred_at",
+    "citations",
+    "event_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "incident-human-audit-event/v1"},
+    "event_id": {"type": "string", "pattern": "^human-audit-event:[0-9a-f]{64}$"},
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "sequence": {"type": "integer", "minimum": 1, "maximum": 4096},
+    "event_type": {"enum": ["incident.admitted"]},
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "display_name", "issuer", "audience", "principal_kind"],
+      "properties": {
+        "subject": {"type": "string", "minLength": 1, "maxLength": 256},
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "issuer": {"type": "string", "format": "uri", "maxLength": 2048},
+        "audience": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "principal_kind": {"const": "human"}
+      }
+    },
+    "predecessor_event_sha256": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]
+    },
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "citations": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["namespace", "id"],
+        "properties": {
+          "namespace": {"enum": ["trace-event"]},
+          "id": {"type": "string", "pattern": "^event:[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "event_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
