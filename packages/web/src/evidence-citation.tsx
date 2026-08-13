@@ -6,6 +6,15 @@ const EVIDENCE_KIND_BY_NAMESPACE = {
   "validator-artifact": "validator-artifact",
 } as const;
 
+export type EvidenceCitationResolution =
+  | { readonly status: "ambiguous" | "missing" | "unsupported-namespace" }
+  | {
+      readonly actualKinds: readonly WorkspaceEvidence["kind"][];
+      readonly expectedKind: WorkspaceEvidence["kind"];
+      readonly status: "wrong-kind";
+    }
+  | { readonly evidence: WorkspaceEvidence; readonly status: "resolved" };
+
 export function evidenceAnchorId(workspaceId: string): string {
   const encoded = Array.from(workspaceId, (character) =>
     character.codePointAt(0)?.toString(16),
@@ -13,12 +22,12 @@ export function evidenceAnchorId(workspaceId: string): string {
   return `workspace-evidence-${encoded}`;
 }
 
-function citationTarget(
+export function resolveEvidenceCitation(
   citation: WorkspaceCitation,
   evidence: readonly WorkspaceEvidence[],
-): WorkspaceEvidence | null {
-  if (!(citation.namespace in EVIDENCE_KIND_BY_NAMESPACE)) {
-    return null;
+): EvidenceCitationResolution {
+  if (!Object.hasOwn(EVIDENCE_KIND_BY_NAMESPACE, citation.namespace)) {
+    return { status: "unsupported-namespace" };
   }
 
   const namespace = citation.namespace as keyof typeof EVIDENCE_KIND_BY_NAMESPACE;
@@ -26,7 +35,18 @@ function citationTarget(
   const matches = evidence.filter(
     (item) => item.kind === expectedKind && item.evidence_id === citation.id,
   );
-  return matches.length === 1 ? (matches[0] ?? null) : null;
+  const [target] = matches;
+  if (target === undefined) {
+    const actualKinds = [
+      ...new Set(
+        evidence.filter((item) => item.evidence_id === citation.id).map((item) => item.kind),
+      ),
+    ].sort((left, right) => left.localeCompare(right, "en"));
+    if (actualKinds.length > 0) return { actualKinds, expectedKind, status: "wrong-kind" };
+    return { status: "missing" };
+  }
+  if (matches.length !== 1) return { status: "ambiguous" };
+  return { evidence: target, status: "resolved" };
 }
 
 export type EvidenceCitationProps = {
@@ -35,7 +55,7 @@ export type EvidenceCitationProps = {
 };
 
 export function EvidenceCitation({ citation, evidence }: EvidenceCitationProps) {
-  const target = citationTarget(citation, evidence);
+  const resolution = resolveEvidenceCitation(citation, evidence);
   const content = (
     <>
       <span>{citation.namespace.replaceAll("-", " ")}</span>
@@ -43,12 +63,15 @@ export function EvidenceCitation({ citation, evidence }: EvidenceCitationProps) 
     </>
   );
 
-  if (target === null) {
+  if (resolution.status !== "resolved") {
     return <span className="evidence-citation evidence-citation--unlinked">{content}</span>;
   }
 
   return (
-    <a className="evidence-citation" href={`#${evidenceAnchorId(target.workspace_id)}`}>
+    <a
+      className="evidence-citation"
+      href={`#${evidenceAnchorId(resolution.evidence.workspace_id)}`}
+    >
       {content}
       <span className="sr-only">Open evidence detail</span>
     </a>
