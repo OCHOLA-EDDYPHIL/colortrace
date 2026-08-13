@@ -298,7 +298,7 @@ class EvidenceAssessment:
 
 @dataclass(frozen=True, slots=True)
 class _EvidenceRecord:
-    correlation_source: Any
+    correlation_sources: tuple[Mapping[str, Any], ...]
     timestamp_values: tuple[Any, ...]
 
 
@@ -360,15 +360,26 @@ def _content_records(query_key: str, content: Mapping[str, Any]) -> tuple[_Evide
     records: list[_EvidenceRecord] = []
     if query_key == "metric.correlated-observations":
         for row in _mapping_records(content.get("data")):
+            metric = row.get("metric")
             sample = row.get("value")
-            if not isinstance(sample, (list, tuple)) or len(sample) != 2:
+            if (
+                not isinstance(metric, Mapping)
+                or not isinstance(sample, (list, tuple))
+                or len(sample) != 2
+            ):
                 raise ContractError("malformed-evidence")
-            records.append(_EvidenceRecord(row, (sample[0],)))
+            records.append(_EvidenceRecord((metric,), (sample[0],)))
     elif query_key == "log.correlated-events":
         for row in _mapping_records(content.get("data")):
-            if "timestamp" not in row:
+            labels = row.get("labels")
+            structured_metadata = row.get("structuredMetadata")
+            if (
+                not isinstance(labels, Mapping)
+                or not isinstance(structured_metadata, Mapping)
+                or "timestamp" not in row
+            ):
                 raise ContractError("malformed-evidence")
-            records.append(_EvidenceRecord(row, (row["timestamp"],)))
+            records.append(_EvidenceRecord((labels, structured_metadata), (row["timestamp"],)))
     elif query_key == "trace.by-id":
         trace = content.get("trace")
         if not isinstance(trace, Mapping):
@@ -379,19 +390,25 @@ def _content_records(query_key: str, content: Mapping[str, Any]) -> tuple[_Evide
                 raise ContractError("malformed-evidence")
             for scope in _mapping_records(service.get("scopes")):
                 for span in _mapping_records(scope.get("spans")):
-                    if "startTimeUnixNano" not in span or "endTimeUnixNano" not in span:
+                    attributes = span.get("attributes")
+                    if (
+                        not isinstance(attributes, Mapping)
+                        or "startTimeUnixNano" not in span
+                        or "endTimeUnixNano" not in span
+                    ):
                         raise ContractError("malformed-evidence")
                     records.append(
                         _EvidenceRecord(
-                            {"resource": resource, "span": span},
+                            (resource, attributes),
                             (span["startTimeUnixNano"], span["endTimeUnixNano"]),
                         )
                     )
     elif query_key == "alert.rule":
         for alert in _mapping_records(content.get("alerts")):
-            if "activeAt" not in alert:
+            labels = alert.get("labels")
+            if not isinstance(labels, Mapping) or "activeAt" not in alert:
                 raise ContractError("malformed-evidence")
-            records.append(_EvidenceRecord(alert, (alert["activeAt"],)))
+            records.append(_EvidenceRecord((labels,), (alert["activeAt"],)))
     else:  # pragma: no cover - query keys are validated before assessment
         raise ContractError("malformed-evidence")
     return tuple(records)
@@ -414,34 +431,21 @@ def _record_event_times(query_key: str, record: _EvidenceRecord) -> tuple[dateti
             if not numeric.is_finite():
                 raise ContractError("invalid-time")
             values = (decoded,)
-    return tuple(_event_timestamp(value) for value in values)
+    event_times = tuple(_event_timestamp(value) for value in values)
+    if query_key == "trace.by-id" and (len(event_times) != 2 or event_times[0] > event_times[1]):
+        raise ContractError("invalid-time")
+    return event_times
 
 
-def _correlation_values(value: Any, keys: frozenset[str]) -> dict[str, set[str]]:
-    result: dict[str, set[str]] = defaultdict(set)
-
-    def visit(item: Any) -> None:
-        if isinstance(item, Mapping):
-            for raw_key, child in item.items():
-                if (
-                    raw_key in keys
-                    and isinstance(child, (str, int))
-                    and not isinstance(child, bool)
-                ):
-                    result[raw_key].add(str(child))
-                visit(child)
-        elif isinstance(item, (list, tuple)):
-            for child in item:
-                visit(child)
-        elif isinstance(item, str) and item.startswith("{") and len(item) <= 65_536:
-            try:
-                decoded = strict_json_bytes(item.encode("utf-8"))
-            except ContractError:
-                return
-            if isinstance(decoded, (dict, list)):
-                visit(decoded)
-
-    visit(value)
+def _authoritative_correlation_values(
+    sources: Sequence[Mapping[str, Any]], keys: frozenset[str]
+) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = defaultdict(list)
+    for source in sources:
+        for key in keys:
+            child = source.get(key)
+            if isinstance(child, str) and type(child) is str:
+                result[key].append(child)
     return result
 
 
@@ -468,8 +472,9 @@ def _assess_content_records(
     exact_records = 0
     exact_in_window = 0
     sibling_records = 0
+    trace_siblings_historical = True
     for record in records:
-        observed = _correlation_values(record.correlation_source, keys)
+        observed = _authoritative_correlation_values(record.correlation_sources, keys)
         missing = [key for key in expected_correlation if not observed.get(key)]
         ambiguous = [key for key in expected_correlation if len(observed.get(key, ())) > 1]
         conflicting = any(
@@ -484,7 +489,7 @@ def _assess_content_records(
         if missing or ambiguous:
             continue
 
-        exact = all(observed[key] == {expected} for key, expected in expected_correlation.items())
+        exact = all(observed[key] == [expected] for key, expected in expected_correlation.items())
         if exact:
             exact_records += 1
         else:
@@ -492,6 +497,8 @@ def _assess_content_records(
         try:
             event_times = _record_event_times(query_key, record)
         except (ContractError, TypeError, ValueError):
+            if not exact and query_key == "trace.by-id":
+                trace_siblings_historical = False
             blockers.extend(
                 (
                     Blocker("time-ambiguous", "assessment", (evidence_id,)),
@@ -500,14 +507,19 @@ def _assess_content_records(
             )
             continue
         if not event_times:
+            if not exact and query_key == "trace.by-id":
+                trace_siblings_historical = False
             blockers.append(Blocker("incomplete-evidence", "assessment", (evidence_id,)))
             continue
         inside_window = all(window.start <= event_time <= window.end for event_time in event_times)
+        historical = all(event_time < window.start for event_time in event_times)
+        if not exact and query_key == "trace.by-id" and not historical:
+            trace_siblings_historical = False
         if exact and inside_window:
             exact_in_window += 1
         elif exact:
             blockers.append(Blocker("event-outside-window", "assessment", (evidence_id,)))
-        elif not (inside_window or all(event_time < window.start for event_time in event_times)):
+        elif not (inside_window or historical):
             blockers.append(Blocker("event-outside-window", "assessment", (evidence_id,)))
 
     if exact_records == 0:
@@ -517,7 +529,10 @@ def _assess_content_records(
     elif exact_records > 1:
         blockers.append(Blocker("contradictory-evidence", "assessment", (evidence_id,)))
     elif sibling_records and not (
-        exact_in_window == 1 and query_key in {"alert.rule", "trace.by-id"}
+        exact_in_window == 1
+        and (
+            query_key == "alert.rule" or (query_key == "trace.by-id" and trace_siblings_historical)
+        )
     ):
         blockers.append(Blocker("contradictory-evidence", "assessment", (evidence_id,)))
     return _dedupe_blockers(blockers)
