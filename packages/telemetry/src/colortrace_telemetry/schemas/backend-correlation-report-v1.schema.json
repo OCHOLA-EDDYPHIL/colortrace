@@ -66,6 +66,7 @@
         "firing",
         "scheduler_interval_seconds",
         "evidence_window_seconds",
+        "execution_error_state",
         "no_data_state"
       ],
       "properties": {
@@ -74,6 +75,7 @@
         "firing": {"const": true},
         "scheduler_interval_seconds": {"const": 60},
         "evidence_window_seconds": {"const": 600},
+        "execution_error_state": {"const": "Error"},
         "no_data_state": {"const": "NoData"}
       }
     },

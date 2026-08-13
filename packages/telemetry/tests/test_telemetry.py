@@ -542,6 +542,8 @@ def test_local_stack_and_alert_contracts_are_pinned() -> None:
     expression = rule["data"][0]["model"]["expr"]
     assert group["interval"] == "60s"
     assert rule["noDataState"] == "NoData"
+    assert rule["execErrState"] == "Error"
+    assert "executionErrorState" not in rule
     assert rule["data"][0]["relativeTimeRange"] == {"from": 600, "to": 0}
     assert "colortrace_declared_reference_observations_total" in expression
     assert 'declared_reference_state="reference_mismatch"' in expression
@@ -550,6 +552,31 @@ def test_local_stack_and_alert_contracts_are_pinned() -> None:
         (REPOSITORY_ROOT / "config/telemetry/alert-contract.json").read_text(encoding="utf-8")
     )
     validate_schema("grafana-alert-contract-v1.schema.json", alert_contract)
+
+
+@pytest.mark.parametrize(
+    "state_fields",
+    (
+        {"executionErrorState": "Error"},
+        {"execErrState": "Alerting"},
+    ),
+    ids=("unsupported-field", "default-state"),
+)
+def test_grafana_alert_contract_rejects_execution_error_state_drift(
+    monkeypatch: pytest.MonkeyPatch, state_fields: dict[str, str]
+) -> None:
+    contract = json.loads(
+        (REPOSITORY_ROOT / "config/telemetry/alert-contract.json").read_text(encoding="utf-8")
+    )
+    rule = {
+        "uid": contract["uid"],
+        "noDataState": contract["no_data_state"],
+        **state_fields,
+    }
+    monkeypatch.setattr(observer, "_json_get", lambda *args, **kwargs: rule)
+    endpoints = BackendEndpoints(*(f"http://127.0.0.1:{port}" for port in range(1, 6)))
+    with pytest.raises(AssertionError, match="execution errors"):
+        observer._alert_contract(endpoints, contract)
 
 
 def test_grafana_managed_rule_firing_shape_is_recognized(

@@ -21,5 +21,6 @@
   "excluded_alert_keys": ["resource_sha256"],
   "scheduler_interval_seconds": 60,
   "evidence_window_seconds": 600,
+  "execution_error_state": "Error",
   "no_data_state": "NoData"
 }

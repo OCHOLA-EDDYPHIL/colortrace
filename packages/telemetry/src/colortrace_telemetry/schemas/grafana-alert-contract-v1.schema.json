@@ -15,6 +15,7 @@
     "excluded_alert_keys",
     "scheduler_interval_seconds",
     "evidence_window_seconds",
+    "execution_error_state",
     "no_data_state"
   ],
   "properties": {
@@ -47,6 +48,7 @@
     "excluded_alert_keys": {"const": ["resource_sha256"]},
     "scheduler_interval_seconds": {"const": 60},
     "evidence_window_seconds": {"const": 600},
+    "execution_error_state": {"const": "Error"},
     "no_data_state": {"const": "NoData"}
   }
 }

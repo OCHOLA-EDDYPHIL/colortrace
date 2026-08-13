@@ -431,6 +431,8 @@ def _alert_contract(endpoints: BackendEndpoints, contract: Mapping[str, Any]) ->
         raise AssertionError("Grafana alert was not provisioned")
     if rule.get("noDataState") != contract["no_data_state"]:
         raise AssertionError("Grafana alert does not expose missing data")
+    if rule.get("execErrState") != contract["execution_error_state"]:
+        raise AssertionError("Grafana alert does not expose execution errors")
     if (
         not isinstance(rule.get("annotations"), dict)
         or rule["annotations"].get("alert_contract") != contract["schema"]
@@ -466,6 +468,7 @@ def _alert_contract(endpoints: BackendEndpoints, contract: Mapping[str, Any]) ->
         "provisioned": True,
         "scheduler_interval_seconds": 60,
         "evidence_window_seconds": contract["evidence_window_seconds"],
+        "execution_error_state": contract["execution_error_state"],
         "no_data_state": contract["no_data_state"],
     }
 

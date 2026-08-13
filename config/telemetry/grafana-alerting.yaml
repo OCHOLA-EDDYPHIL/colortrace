@@ -65,7 +65,7 @@ groups:
               refId: C
               type: threshold
         noDataState: NoData
-        executionErrorState: Error
+        execErrState: Error
         for: 0s
         annotations:
           alert_contract: grafana-alert-contract/v1
