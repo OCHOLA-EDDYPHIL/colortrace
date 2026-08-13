@@ -6,6 +6,8 @@ export type ClientOptions = {
 
 export type Identifier = string;
 
+export type OidcSubject = string;
+
 export type AlertIdentifier = string;
 
 export type GrafanaUid = string;
@@ -57,6 +59,70 @@ export type IncidentAccepted = {
   version: number;
   trace_id: TraceId;
   duplicate: boolean;
+};
+
+export type OperatorSession = {
+  schema: "operator-session/v1";
+  subject: OidcSubject;
+  display_name: string;
+  roles: Array<string>;
+  issuer: string;
+  audience: string;
+  principal_kind: "human" | "service";
+};
+
+export type IncidentSummary = {
+  schema: "incident-summary/v1";
+  incident_id: Identifier;
+  alert_id: Identifier;
+  status: "queued" | "running" | "resolved" | "unresolved";
+  version: number;
+  trace_id: TraceId;
+  packet_id: null | string;
+  created_at: string;
+  updated_at: string;
+  delayed: boolean;
+  missing: Array<Identifier>;
+};
+
+export type IncidentList = {
+  schema: "incident-list/v1";
+  items: Array<IncidentSummary>;
+  next_cursor: null | string;
+};
+
+export type IncidentWorkspaceSource = {
+  schema: "incident-workspace-source/v1";
+  view: IncidentView;
+  replay_state: "pending" | "ready";
+  human_events: Array<HumanAuditEvent>;
+  replay: null | IncidentReplay;
+};
+
+export type HumanAuditActor = {
+  subject: OidcSubject;
+  display_name: string;
+  issuer: string;
+  audience: string;
+  principal_kind: "human";
+};
+
+export type HumanAuditCitation = {
+  namespace: "trace-event";
+  id: string;
+};
+
+export type HumanAuditEvent = {
+  schema: "incident-human-audit-event/v1";
+  event_id: string;
+  incident_id: Identifier;
+  sequence: number;
+  event_type: "incident.admitted";
+  actor: HumanAuditActor;
+  predecessor_event_sha256: null | Digest;
+  occurred_at: string;
+  citations: Array<HumanAuditCitation>;
+  event_sha256: Digest;
 };
 
 export type IncidentRecord = {
@@ -645,6 +711,34 @@ export type ValidatorEvidence = {
   sha256: ValidatorDigest;
 };
 
+export type ListIncidentsData = {
+  body?: never;
+  path?: never;
+  query?: {
+    limit?: number;
+    cursor?: string;
+  };
+  url: "/v1/incidents";
+};
+
+export type ListIncidentsErrors = {
+  /**
+   * The cursor is malformed or outside the supported page boundary.
+   */
+  400: Error;
+};
+
+export type ListIncidentsError = ListIncidentsErrors[keyof ListIncidentsErrors];
+
+export type ListIncidentsResponses = {
+  /**
+   * A stable page of incidents ordered by most recent update.
+   */
+  200: IncidentList;
+};
+
+export type ListIncidentsResponse = ListIncidentsResponses[keyof ListIncidentsResponses];
+
 export type CreateIncidentData = {
   body: AlertIntake;
   path?: never;
@@ -653,6 +747,10 @@ export type CreateIncidentData = {
 };
 
 export type CreateIncidentErrors = {
+  /**
+   * The bearer token is absent or invalid.
+   */
+  401: Error;
   /**
    * The incident identity was already used for different alert content.
    */
@@ -727,3 +825,62 @@ export type ReplayIncidentResponses = {
 };
 
 export type ReplayIncidentResponse = ReplayIncidentResponses[keyof ReplayIncidentResponses];
+
+export type GetIncidentWorkspaceData = {
+  body?: never;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/workspace";
+};
+
+export type GetIncidentWorkspaceErrors = {
+  /**
+   * No incident has this identity.
+   */
+  404: Error;
+  /**
+   * Persisted provenance failed integrity verification.
+   */
+  409: Error;
+};
+
+export type GetIncidentWorkspaceError =
+  GetIncidentWorkspaceErrors[keyof GetIncidentWorkspaceErrors];
+
+export type GetIncidentWorkspaceResponses = {
+  /**
+   * The incident view and integrity-checked replay when available.
+   */
+  200: IncidentWorkspaceSource;
+};
+
+export type GetIncidentWorkspaceResponse =
+  GetIncidentWorkspaceResponses[keyof GetIncidentWorkspaceResponses];
+
+export type GetOperatorSessionData = {
+  body?: never;
+  path?: never;
+  query?: never;
+  url: "/v1/session";
+};
+
+export type GetOperatorSessionErrors = {
+  /**
+   * The bearer token is absent or invalid.
+   */
+  401: Error;
+};
+
+export type GetOperatorSessionError = GetOperatorSessionErrors[keyof GetOperatorSessionErrors];
+
+export type GetOperatorSessionResponses = {
+  /**
+   * The verified operator identity projected from an OIDC token.
+   */
+  200: OperatorSession;
+};
+
+export type GetOperatorSessionResponse =
+  GetOperatorSessionResponses[keyof GetOperatorSessionResponses];

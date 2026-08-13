@@ -11,13 +11,17 @@
     "allowed_non_ai_runtime_packages": [
       "colortrace-fixture",
       "colortrace-grafana-mcp",
+      "colortrace-vertical-slice",
       "colortrace-validator",
+      "fastapi",
       "jsonschema",
       "opencolorio",
       "opentelemetry-api",
       "opentelemetry-exporter-otlp-proto-http",
       "opentelemetry-sdk",
-      "pyyaml"
+      "pyjwt",
+      "pyyaml",
+      "uvicorn"
     ],
     "disallowed_ai_packages": [
       "agency-swarm",
@@ -84,7 +88,12 @@
       "@google/genai",
       "@modelcontextprotocol/sdk"
     ],
-    "allowed_non_ai_runtime_packages": [],
+    "allowed_non_ai_runtime_packages": [
+      "@colortrace/api-client",
+      "@colortrace/workspace-model",
+      "react",
+      "react-dom"
+    ],
     "disallowed_ai_packages": [
       "@ai-sdk/anthropic",
       "@ai-sdk/cohere",

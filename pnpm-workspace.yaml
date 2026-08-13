@@ -3,4 +3,7 @@ packages:
 
 minimumReleaseAge: 1440
 
+overrides:
+  jsdom: "26.1.0"
+
 onlyBuiltDependencies: []

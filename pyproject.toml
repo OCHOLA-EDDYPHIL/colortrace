@@ -16,6 +16,7 @@ package = false
 
 [tool.uv.workspace]
 members = [
+    "packages/api",
     "packages/fixture-generator",
     "packages/grafana-mcp",
     "packages/investigation",
@@ -37,6 +38,7 @@ select = ["B", "E", "F", "I", "UP"]
 python_version = "3.12"
 strict = true
 files = [
+    "packages/api/src",
     "packages/fixture-generator/src",
     "packages/grafana-mcp/src",
     "packages/investigation/src",
@@ -49,6 +51,7 @@ files = [
 [tool.pytest.ini_options]
 addopts = ["--strict-config", "--strict-markers"]
 testpaths = [
+    "packages/api/tests",
     "packages/fixture-generator/tests",
     "packages/grafana-mcp/tests",
     "packages/investigation/tests",

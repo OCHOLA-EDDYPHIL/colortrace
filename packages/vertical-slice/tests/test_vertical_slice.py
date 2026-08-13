@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import hashlib
 import json
 import sqlite3
 import threading
@@ -41,6 +42,17 @@ BINDING = {
     "tempo_datasource_uid": "tempo-main",
     "alert_rule_uid": "ct-alert-main",
 }
+HUMAN_AUDIT_TRIGGER_NAMES = (
+    "incidents_human_audit_head_insert",
+    "human_audit_events_valid_append",
+    "human_audit_events_no_update",
+    "human_audit_events_no_delete",
+    "human_audit_heads_valid_advance",
+    "human_audit_heads_no_delete",
+    "incident_admissions_valid_insert",
+    "incident_admissions_no_update",
+    "incident_admissions_no_delete",
+)
 
 
 def instant(value: datetime) -> str:
@@ -364,13 +376,60 @@ def worker(
     )
 
 
+def drop_human_audit_v4(connection: sqlite3.Connection) -> None:
+    for name in HUMAN_AUDIT_TRIGGER_NAMES:
+        connection.execute(f"DROP TRIGGER {name}")
+    connection.execute("DROP TABLE incident_admissions")
+    connection.execute("DROP TABLE human_audit_heads")
+
+
+def suspended_trigger(connection: sqlite3.Connection, name: str) -> str:
+    row = connection.execute(
+        "SELECT sql FROM sqlite_schema WHERE type = 'trigger' AND name = ?",
+        (name,),
+    ).fetchone()
+    assert row is not None and isinstance(row[0], str)
+    connection.execute(f"DROP TRIGGER {name}")
+    return row[0]
+
+
 def downgrade_store_to_v1(database: Path) -> None:
     with sqlite3.connect(database) as connection:
+        drop_human_audit_v4(connection)
+        connection.execute("DROP TABLE human_audit_events")
         connection.execute("DROP TABLE claim_events")
         connection.execute("ALTER TABLE tasks DROP COLUMN claim_expires_at")
         connection.execute("ALTER TABLE tasks DROP COLUMN claim_generation")
         connection.execute("ALTER TABLE tasks DROP COLUMN claim_owner")
         connection.execute("UPDATE store_metadata SET schema_version = 1 WHERE singleton = 1")
+
+
+def downgrade_store_to_v2(database: Path) -> None:
+    with sqlite3.connect(database) as connection:
+        drop_human_audit_v4(connection)
+        connection.execute("DROP TABLE human_audit_events")
+        connection.execute("UPDATE store_metadata SET schema_version = 2 WHERE singleton = 1")
+
+
+def downgrade_store_to_v3(database: Path) -> None:
+    with sqlite3.connect(database) as connection:
+        drop_human_audit_v4(connection)
+        connection.execute("UPDATE store_metadata SET schema_version = 3 WHERE singleton = 1")
+
+
+def human_actor(*, subject: str = "operator@example.test") -> dict[str, str]:
+    return {
+        "subject": subject,
+        "display_name": "Pipeline TD",
+        "issuer": "https://identity.example.test/tenant",
+        "audience": "colortrace-api",
+        "principal_kind": "human",
+    }
+
+
+def canonical_digest(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def test_canonical_slice_persists_exact_replay_and_idempotent_duplicate(
@@ -413,6 +472,28 @@ def test_canonical_slice_persists_exact_replay_and_idempotent_duplicate(
     ]
     assert {event["trace_id"] for event in replay["trace_events"]} == {correlation["trace_id"]}
     validate_replay(replay)
+    workspace = store.incident_workspace("incident-001")
+    assert workspace == {
+        "schema": "incident-workspace-source/v1",
+        "view": api.get_incident("incident-001"),
+        "replay_state": "ready",
+        "human_events": [],
+        "replay": replay,
+    }
+    summary = store.list_incidents(limit=1, cursor=None, now=instant(NOW))["items"][0]
+    assert summary == {
+        "schema": "incident-summary/v1",
+        "incident_id": "incident-001",
+        "alert_id": "incident-001-alert",
+        "status": "resolved",
+        "version": 3,
+        "trace_id": correlation["trace_id"],
+        "packet_id": packet["packet_id"],
+        "created_at": instant(NOW),
+        "updated_at": instant(NOW),
+        "delayed": False,
+        "missing": [],
+    }
 
     duplicate = api.accept_alert(intake)
     duplicate_packet = asyncio.run(
@@ -453,6 +534,67 @@ def test_missing_trace_finishes_unresolved_and_replays_provenance(
     assert len(replay["evidence"]) == 4
     assert replay["validator_results"] == []
     validate_replay(replay)
+    summary = store.list_incidents(limit=1, cursor=None, now=instant(NOW))["items"][0]
+    assert summary["status"] == "unresolved"
+    assert summary["delayed"] is False
+    assert summary["missing"] == ["evidence-unavailable"]
+
+
+def test_incident_list_uses_stable_cursor_and_explicit_pending_states(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    store = SqliteIncidentStore(tmp_path / "incident-list.sqlite3")
+    for offset, identifier in enumerate(("incident-list-a", "incident-list-b", "incident-list-c")):
+        store.accept_alert(
+            alert(correlation, incident_id=identifier),
+            now=instant(NOW + timedelta(seconds=offset)),
+        )
+    task_id = store.incident_view("incident-list-b")["task"]["task_id"]
+    store.claim_task(
+        task_id,
+        owner="worker:incident-list",
+        now=instant(NOW + timedelta(seconds=3)),
+    )
+
+    first = store.list_incidents(
+        limit=2,
+        cursor=None,
+        now=instant(NOW + timedelta(seconds=10)),
+    )
+    assert [item["incident_id"] for item in first["items"]] == [
+        "incident-list-b",
+        "incident-list-c",
+    ]
+    assert first["items"][0]["delayed"] is False
+    assert first["items"][0]["missing"] == ["response-packet"]
+    assert isinstance(first["next_cursor"], str)
+    second = store.list_incidents(
+        limit=2,
+        cursor=first["next_cursor"],
+        now=instant(NOW + timedelta(seconds=10)),
+    )
+    assert [item["incident_id"] for item in second["items"]] == ["incident-list-a"]
+    assert second["next_cursor"] is None
+
+    expired = store.list_incidents(
+        limit=3,
+        cursor=None,
+        now=instant(NOW + timedelta(seconds=33)),
+    )["items"]
+    running = next(item for item in expired if item["incident_id"] == "incident-list-b")
+    assert running["delayed"] is True
+    assert running["missing"] == ["response-packet", "active-worker-claim"]
+    pending = store.incident_workspace("incident-list-c")
+    assert pending["replay_state"] == "pending"
+    assert pending["replay"] is None
+    assert pending["view"]["packet"] is None
+
+    with pytest.raises(SliceContractError, match="incident-cursor-invalid"):
+        store.list_incidents(limit=2, cursor=f"{first['next_cursor']}tampered", now=instant(NOW))
+    with pytest.raises(SliceContractError, match="incident-list-limit-invalid"):
+        store.list_incidents(limit=0, cursor=None, now=instant(NOW))
 
 
 def test_unresolved_validator_claims_remain_bound_in_persisted_replay(
@@ -523,6 +665,8 @@ def test_service_timeout_is_durable_and_clean_reset_is_exact(
     assert reset["tasks"] == 1
     assert reset["packets"] == 1
     assert reset["trace_events"] == 5
+    assert reset["human_audit_events"] == 0
+    assert reset["incident_admissions"] == 1
     store.assert_empty()
     with pytest.raises(SliceContractError, match="incident-not-found"):
         api.get_incident("incident-timeout")
@@ -943,8 +1087,557 @@ def test_running_v1_claim_migrates_and_reclaims_at_exact_expiry(
             "SELECT schema_version FROM store_metadata WHERE singleton = 1"
         ).fetchone()[0]
         trace_count = connection.execute("SELECT count(*) FROM trace_events").fetchone()[0]
-    assert version == 2
+        admission = connection.execute(
+            "SELECT principal_kind, actor_sha256 FROM incident_admissions "
+            "WHERE incident_id = 'incident-running-v1'"
+        ).fetchone()
+    assert version == 4
     assert trace_count == 3
+    assert admission == ("service", None)
+
+
+def test_v2_migration_adds_zero_human_head_without_changing_incident(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / "v2-to-v4.sqlite3"
+    store = SqliteIncidentStore(database)
+    store.accept_alert(
+        alert(correlation, incident_id="incident-v2-migration"),
+        now=instant(NOW),
+    )
+    before = store.incident_view("incident-v2-migration")
+    downgrade_store_to_v2(database)
+
+    migrated = SqliteIncidentStore(database)
+
+    assert migrated.incident_view("incident-v2-migration") == before
+    assert migrated.incident_workspace("incident-v2-migration")["human_events"] == []
+    with sqlite3.connect(database) as connection:
+        version = connection.execute(
+            "SELECT schema_version FROM store_metadata WHERE singleton = 1"
+        ).fetchone()[0]
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'human_audit_events'"
+        ).fetchone()
+        head = connection.execute(
+            "SELECT event_count, head_event_sha256 FROM human_audit_heads "
+            "WHERE incident_id = 'incident-v2-migration'"
+        ).fetchone()
+        admission = connection.execute(
+            "SELECT principal_kind, actor_sha256 FROM incident_admissions "
+            "WHERE incident_id = 'incident-v2-migration'"
+        ).fetchone()
+    assert version == 4
+    assert table == (1,)
+    assert head == (0, None)
+    assert admission == ("service", None)
+
+
+def test_v3_migration_derives_existing_human_chain_head(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / "v3-to-v4.sqlite3"
+    store = SqliteIncidentStore(database)
+    store.accept_alert(
+        alert(correlation, incident_id="incident-v3-migration"),
+        now=instant(NOW),
+        human_actor=human_actor(),
+    )
+    event = store.incident_workspace("incident-v3-migration")["human_events"][0]
+    downgrade_store_to_v3(database)
+
+    migrated = SqliteIncidentStore(database)
+
+    assert migrated.incident_workspace("incident-v3-migration")["human_events"] == [event]
+    with sqlite3.connect(database) as connection:
+        version = connection.execute(
+            "SELECT schema_version FROM store_metadata WHERE singleton = 1"
+        ).fetchone()[0]
+        head = connection.execute(
+            "SELECT event_count, head_event_sha256 FROM human_audit_heads "
+            "WHERE incident_id = 'incident-v3-migration'"
+        ).fetchone()
+        admission = connection.execute(
+            "SELECT principal_kind, actor_sha256 FROM incident_admissions "
+            "WHERE incident_id = 'incident-v3-migration'"
+        ).fetchone()
+    assert version == 4
+    assert head == (1, event["event_sha256"])
+    assert admission == ("human", canonical_digest(human_actor()))
+
+
+def test_human_admission_event_is_atomic_bound_and_duplicate_idempotent(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    store = SqliteIncidentStore(tmp_path / "human-audit.sqlite3")
+    intake = alert(correlation, incident_id="incident-human-audit")
+
+    accepted = store.accept_alert(intake, now=instant(NOW), human_actor=human_actor())
+    duplicate = store.accept_alert(
+        intake,
+        now=instant(NOW + timedelta(seconds=1)),
+        human_actor=human_actor(subject="second-operator@example.test"),
+    )
+    workspace = store.incident_workspace("incident-human-audit")
+
+    assert accepted.duplicate is False
+    assert duplicate.duplicate is True
+    assert len(workspace["human_events"]) == 1
+    event = workspace["human_events"][0]
+    assert event["incident_id"] == "incident-human-audit"
+    assert event["sequence"] == 1
+    assert event["event_type"] == "incident.admitted"
+    assert event["actor"] == human_actor()
+    assert event["predecessor_event_sha256"] is None
+    assert event["citations"][0]["namespace"] == "trace-event"
+    assert event["citations"][0]["id"].startswith("event:")
+    with sqlite3.connect(store.path) as connection:
+        head = connection.execute(
+            "SELECT event_count, head_event_sha256 FROM human_audit_heads "
+            "WHERE incident_id = 'incident-human-audit'"
+        ).fetchone()
+        admission_row = connection.execute(
+            "SELECT intake_trace_event_id, principal_kind, actor_sha256, admitted_at, "
+            "record_sha256, document_json FROM incident_admissions "
+            "WHERE incident_id = 'incident-human-audit'"
+        ).fetchone()
+        admission_count = connection.execute(
+            "SELECT count(*) FROM incident_admissions WHERE incident_id = 'incident-human-audit'"
+        ).fetchone()[0]
+    assert head == (1, event["event_sha256"])
+    assert admission_row is not None
+    admission = json.loads(admission_row[5])
+    assert admission_count == 1
+    assert admission_row[:4] == (
+        event["citations"][0]["id"],
+        "human",
+        canonical_digest(human_actor()),
+        instant(NOW),
+    )
+    assert admission == {
+        "schema": "incident-admission/v1",
+        "incident_id": "incident-human-audit",
+        "intake_trace_event_id": event["citations"][0]["id"],
+        "principal_kind": "human",
+        "actor_sha256": canonical_digest(human_actor()),
+        "admitted_at": instant(NOW),
+        "record_sha256": admission_row[4],
+    }
+    assert admission_row[4] == canonical_digest(
+        {key: value for key, value in admission.items() if key != "record_sha256"}
+    )
+
+
+def test_service_admission_has_no_human_event(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    store = SqliteIncidentStore(tmp_path / "service-admission.sqlite3")
+    store.accept_alert(
+        alert(correlation, incident_id="incident-service-admission"),
+        now=instant(NOW),
+        human_actor=None,
+    )
+    assert store.incident_workspace("incident-service-admission")["human_events"] == []
+    with sqlite3.connect(store.path) as connection:
+        head = connection.execute(
+            "SELECT event_count, head_event_sha256 FROM human_audit_heads "
+            "WHERE incident_id = 'incident-service-admission'"
+        ).fetchone()
+        admission = connection.execute(
+            "SELECT principal_kind, actor_sha256, admitted_at FROM incident_admissions "
+            "WHERE incident_id = 'incident-service-admission'"
+        ).fetchone()
+    assert head == (0, None)
+    assert admission == ("service", None, instant(NOW))
+    with sqlite3.connect(store.path) as connection:
+        intake_trace_event_id = connection.execute(
+            "SELECT intake_trace_event_id FROM incident_admissions "
+            "WHERE incident_id = 'incident-service-admission'"
+        ).fetchone()[0]
+    with pytest.raises(sqlite3.IntegrityError, match="human-audit-append-invalid"):
+        with store._transaction() as connection:
+            store._append_human_audit_event(
+                connection,
+                incident_id="incident-service-admission",
+                actor=human_actor(),
+                occurred_at=instant(NOW),
+                citations=[{"namespace": "trace-event", "id": intake_trace_event_id}],
+            )
+
+
+def test_invalid_human_actor_rolls_back_incident_admission(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    store = SqliteIncidentStore(tmp_path / "invalid-human-admission.sqlite3")
+    invalid_actor = {**human_actor(), "principal_kind": "service"}
+
+    with pytest.raises(SliceContractError, match="human-audit-actor-invalid"):
+        store.accept_alert(
+            alert(correlation, incident_id="incident-invalid-human-admission"),
+            now=instant(NOW),
+            human_actor=invalid_actor,
+        )
+
+    assert store.list_incidents(limit=25, cursor=None, now=instant(NOW))["items"] == []
+    store.assert_empty()
+
+
+def test_tampered_human_admission_event_is_rejected_on_reopen(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / "tampered-human-audit.sqlite3"
+    store = SqliteIncidentStore(database)
+    store.accept_alert(
+        alert(correlation, incident_id="incident-tampered-human-audit"),
+        now=instant(NOW),
+        human_actor=human_actor(),
+    )
+    with sqlite3.connect(database) as connection:
+        encoded = connection.execute("SELECT document_json FROM human_audit_events").fetchone()[0]
+        event = json.loads(encoded)
+        event["actor"]["display_name"] = "Tampered actor"
+        trigger_sql = suspended_trigger(connection, "human_audit_events_no_update")
+        connection.execute(
+            "UPDATE human_audit_events SET document_json = ?",
+            (json.dumps(event, sort_keys=True, separators=(",", ":")).encode(),),
+        )
+        connection.execute(trigger_sql)
+
+    with pytest.raises(SliceContractError, match="stored-human-audit-event-binding"):
+        SqliteIncidentStore(database)
+
+
+def test_human_audit_tables_reject_direct_rewrite_and_delete(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / "protected-human-audit.sqlite3"
+    store = SqliteIncidentStore(database)
+    store.accept_alert(
+        alert(correlation, incident_id="incident-protected-human-audit"),
+        now=instant(NOW),
+        human_actor=human_actor(),
+    )
+
+    with sqlite3.connect(database) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="human-audit-events-append-only"):
+            connection.execute("DELETE FROM human_audit_events")
+        with pytest.raises(sqlite3.IntegrityError, match="human-audit-events-append-only"):
+            connection.execute("UPDATE human_audit_events SET document_json = document_json")
+        with pytest.raises(sqlite3.IntegrityError, match="human-audit-head-delete-invalid"):
+            connection.execute("DELETE FROM human_audit_heads")
+        with pytest.raises(sqlite3.IntegrityError, match="human-audit-head-advance-invalid"):
+            connection.execute(
+                "UPDATE human_audit_heads SET event_count = 0, head_event_sha256 = NULL"
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="incident-admissions-append-only"):
+            connection.execute("DELETE FROM incident_admissions")
+        with pytest.raises(sqlite3.IntegrityError, match="incident-admissions-append-only"):
+            connection.execute("UPDATE incident_admissions SET document_json = document_json")
+        admission = connection.execute("SELECT * FROM incident_admissions").fetchone()
+        assert admission is not None
+        placeholders = ", ".join("?" for _ in admission)
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                f"INSERT INTO incident_admissions VALUES({placeholders})",
+                tuple(admission),
+            )
+
+    assert (
+        len(
+            SqliteIncidentStore(database).incident_workspace("incident-protected-human-audit")[
+                "human_events"
+            ]
+        )
+        == 1
+    )
+
+
+def test_deleted_human_audit_history_fails_reopen_even_with_trigger_restored(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / "deleted-human-audit.sqlite3"
+    store = SqliteIncidentStore(database)
+    store.accept_alert(
+        alert(correlation, incident_id="incident-deleted-human-audit"),
+        now=instant(NOW),
+        human_actor=human_actor(),
+    )
+    with sqlite3.connect(database) as connection:
+        trigger_sql = suspended_trigger(connection, "human_audit_events_no_delete")
+        connection.execute("DELETE FROM human_audit_events")
+        connection.execute(trigger_sql)
+
+    with pytest.raises(SliceContractError, match="stored-human-audit-head-binding"):
+        SqliteIncidentStore(database)
+
+
+def test_admission_anchor_rejects_coordinated_event_and_head_rewind(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / "coordinated-human-audit-rewind.sqlite3"
+    store = SqliteIncidentStore(database)
+    incident_id = "incident-coordinated-human-audit-rewind"
+    store.accept_alert(
+        alert(correlation, incident_id=incident_id),
+        now=instant(NOW),
+        human_actor=human_actor(),
+    )
+
+    with sqlite3.connect(database) as connection:
+        event_trigger_sql = suspended_trigger(connection, "human_audit_events_no_delete")
+        head_trigger_sql = suspended_trigger(connection, "human_audit_heads_valid_advance")
+        connection.execute("DELETE FROM human_audit_events WHERE incident_id = ?", (incident_id,))
+        connection.execute(
+            "UPDATE human_audit_heads SET event_count = 0, head_event_sha256 = NULL "
+            "WHERE incident_id = ?",
+            (incident_id,),
+        )
+        connection.execute(event_trigger_sql)
+        connection.execute(head_trigger_sql)
+
+    with pytest.raises(SliceContractError, match="stored-incident-admission-binding"):
+        store.incident_workspace(incident_id)
+    with pytest.raises(SliceContractError, match="stored-incident-admission-binding"):
+        SqliteIncidentStore(database)
+
+
+def test_admission_anchor_rejects_post_admission_human_event(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / "post-admission-human-audit.sqlite3"
+    store = SqliteIncidentStore(database)
+    store.accept_alert(
+        alert(correlation, incident_id="incident-post-admission-human-audit"),
+        now=instant(NOW),
+        human_actor=human_actor(),
+    )
+    first = store.incident_workspace("incident-post-admission-human-audit")["human_events"][0]
+    with pytest.raises(sqlite3.IntegrityError, match="human-audit-append-invalid"):
+        with store._transaction() as connection:
+            store._append_human_audit_event(
+                connection,
+                incident_id="incident-post-admission-human-audit",
+                actor=human_actor(subject="second-operator@example.test"),
+                occurred_at=instant(NOW + timedelta(seconds=1)),
+                citations=first["citations"],
+            )
+
+    assert store.incident_workspace("incident-post-admission-human-audit")["human_events"] == [
+        first
+    ]
+
+
+@pytest.mark.parametrize("tamper", ["missing-head", "head-mismatch", "orphan-event"])
+def test_human_audit_head_and_orphan_mismatch_fail_reopen(
+    canonical_bundle: Path,
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / f"{tamper}.sqlite3"
+    incident_id = f"incident-{tamper}"
+    store = SqliteIncidentStore(database)
+    store.accept_alert(
+        alert(correlation, incident_id=incident_id),
+        now=instant(NOW),
+        human_actor=human_actor(),
+    )
+    with sqlite3.connect(database) as connection:
+        if tamper == "missing-head":
+            trigger_sql = suspended_trigger(connection, "human_audit_heads_no_delete")
+            connection.execute(
+                "DELETE FROM human_audit_heads WHERE incident_id = ?", (incident_id,)
+            )
+        elif tamper == "head-mismatch":
+            trigger_sql = suspended_trigger(connection, "human_audit_heads_valid_advance")
+            connection.execute(
+                "UPDATE human_audit_heads SET event_count = 0, head_event_sha256 = NULL "
+                "WHERE incident_id = ?",
+                (incident_id,),
+            )
+        else:
+            trigger_sql = suspended_trigger(connection, "human_audit_events_valid_append")
+            connection.execute(
+                "INSERT INTO human_audit_events("
+                "event_id, incident_id, sequence, event_sha256, document_json"
+                ") VALUES(?, ?, 1, ?, ?)",
+                (
+                    f"human-audit-event:{'f' * 64}",
+                    "incident-orphaned-row",
+                    f"sha256:{'f' * 64}",
+                    b"{}",
+                ),
+            )
+        connection.execute(trigger_sql)
+
+    with pytest.raises(SliceContractError, match="stored-human-audit-head-binding"):
+        SqliteIncidentStore(database)
+
+
+@pytest.mark.parametrize("tamper", ["missing", "tampered", "orphan"])
+def test_missing_tampered_or_orphan_admission_fails_closed(
+    canonical_bundle: Path,
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / f"incident-admission-{tamper}.sqlite3"
+    incident_id = f"incident-admission-{tamper}"
+    store = SqliteIncidentStore(database)
+    store.accept_alert(
+        alert(correlation, incident_id=incident_id),
+        now=instant(NOW),
+        human_actor=human_actor(),
+    )
+
+    with sqlite3.connect(database) as connection:
+        if tamper == "missing":
+            trigger_sql = suspended_trigger(connection, "incident_admissions_no_delete")
+            connection.execute(
+                "DELETE FROM incident_admissions WHERE incident_id = ?",
+                (incident_id,),
+            )
+        elif tamper == "tampered":
+            trigger_sql = suspended_trigger(connection, "incident_admissions_no_update")
+            connection.execute(
+                "UPDATE incident_admissions SET document_json = ? WHERE incident_id = ?",
+                (b"{}", incident_id),
+            )
+        else:
+            trigger_sql = suspended_trigger(connection, "incident_admissions_valid_insert")
+            connection.execute(
+                "INSERT INTO incident_admissions("
+                "incident_id, intake_trace_event_id, principal_kind, actor_sha256, admitted_at, "
+                "record_sha256, document_json) VALUES(?, ?, 'service', NULL, ?, ?, ?)",
+                (
+                    "incident-orphaned-admission",
+                    f"event:{'f' * 64}",
+                    instant(NOW),
+                    f"sha256:{'f' * 64}",
+                    b"{}",
+                ),
+            )
+        connection.execute(trigger_sql)
+
+    if tamper != "orphan":
+        with pytest.raises(SliceContractError, match="stored-incident-admission-binding"):
+            store.incident_workspace(incident_id)
+    with pytest.raises(SliceContractError, match="stored-incident-admission-binding"):
+        SqliteIncidentStore(database)
+
+
+@pytest.mark.parametrize("rewrite", ["human-to-service", "service-to-human"])
+def test_human_service_admission_rewrite_fails_binding(
+    canonical_bundle: Path,
+    tmp_path: Path,
+    rewrite: str,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / f"admission-{rewrite}.sqlite3"
+    incident_id = f"incident-admission-{rewrite}"
+    store = SqliteIncidentStore(database)
+    store.accept_alert(
+        alert(correlation, incident_id=incident_id),
+        now=instant(NOW),
+        human_actor=human_actor() if rewrite == "human-to-service" else None,
+    )
+
+    with sqlite3.connect(database) as connection:
+        encoded = connection.execute(
+            "SELECT document_json FROM incident_admissions WHERE incident_id = ?",
+            (incident_id,),
+        ).fetchone()[0]
+        record = json.loads(encoded)
+        if rewrite == "human-to-service":
+            record["principal_kind"] = "service"
+            record["actor_sha256"] = None
+        else:
+            record["principal_kind"] = "human"
+            record["actor_sha256"] = canonical_digest(human_actor())
+        record["record_sha256"] = canonical_digest(
+            {key: value for key, value in record.items() if key != "record_sha256"}
+        )
+        trigger_sql = suspended_trigger(connection, "incident_admissions_no_update")
+        connection.execute(
+            "UPDATE incident_admissions SET principal_kind = ?, actor_sha256 = ?, "
+            "record_sha256 = ?, document_json = ? WHERE incident_id = ?",
+            (
+                record["principal_kind"],
+                record["actor_sha256"],
+                record["record_sha256"],
+                json.dumps(
+                    record,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode(),
+                incident_id,
+            ),
+        )
+        connection.execute(trigger_sql)
+
+    with pytest.raises(SliceContractError, match="stored-incident-admission-binding"):
+        store.incident_workspace(incident_id)
+    with pytest.raises(SliceContractError, match="stored-incident-admission-binding"):
+        SqliteIncidentStore(database)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["table", "trigger", "admission-table", "admission-trigger", "extra-trigger"],
+)
+def test_human_audit_schema_tamper_fails_reopen(
+    canonical_bundle: Path,
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / f"human-audit-schema-{tamper}.sqlite3"
+    store = SqliteIncidentStore(database)
+    store.accept_alert(
+        alert(correlation, incident_id=f"incident-schema-{tamper}"),
+        now=instant(NOW),
+        human_actor=human_actor(),
+    )
+    with sqlite3.connect(database) as connection:
+        if tamper == "table":
+            connection.execute("ALTER TABLE human_audit_events ADD COLUMN tampered TEXT")
+        elif tamper == "trigger":
+            trigger_sql = suspended_trigger(connection, "human_audit_events_no_delete")
+            connection.execute(trigger_sql.replace("BEFORE DELETE", "AFTER DELETE"))
+        elif tamper == "admission-table":
+            connection.execute("ALTER TABLE incident_admissions ADD COLUMN tampered TEXT")
+        elif tamper == "admission-trigger":
+            trigger_sql = suspended_trigger(connection, "incident_admissions_no_delete")
+            connection.execute(trigger_sql.replace("BEFORE DELETE", "AFTER DELETE"))
+        else:
+            connection.execute(
+                "CREATE TRIGGER unexpected_incident_trigger AFTER UPDATE ON incidents "
+                "BEGIN SELECT 1; END"
+            )
+
+    with pytest.raises(SliceContractError, match="store-schema-drift"):
+        SqliteIncidentStore(database)
 
 
 def test_running_claim_rejects_missing_or_truncated_claim_history(
