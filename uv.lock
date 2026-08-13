@@ -281,6 +281,7 @@ version = "0.1.0"
 source = { editable = "packages/api" }
 dependencies = [
     { name = "colortrace-response-plans" },
+    { name = "colortrace-simulator" },
     { name = "colortrace-vertical-slice" },
     { name = "fastapi" },
     { name = "pyjwt", extra = ["crypto"] },
@@ -290,6 +291,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "colortrace-response-plans", editable = "packages/response-plans" },
+    { name = "colortrace-simulator", editable = "packages/simulator" },
     { name = "colortrace-vertical-slice", editable = "packages/vertical-slice" },
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.13.0" },

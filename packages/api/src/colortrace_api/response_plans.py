@@ -14,6 +14,7 @@ from colortrace_response_plans import (
     VerifiedPrincipal,
 )
 from colortrace_response_plans.contracts import canonical_json_bytes, prefixed_sha256
+from colortrace_simulator import DispatchIdentity, StoredDispatchProof
 
 from .auth import Principal
 
@@ -212,6 +213,64 @@ class ResponsePlanCoordinator:
     def _assert_current(self, incident_id: str, expected_incident_version: int) -> None:
         if self._snapshot(incident_id).incident_version != expected_incident_version:
             raise ResponsePlanError("expected-version-conflict")
+
+    def load_current_consumed(self, identity: DispatchIdentity) -> StoredDispatchProof:
+        """Bridge #22 authority into #23 without accepting commands from the caller."""
+
+        initial = self._service.current_consumed_dispatch(
+            task_key=identity.task_key,
+            operation_id=identity.operation_id,
+            payload_sha256=identity.payload_sha256,
+        )
+        incident_id = cast(str, cast(Mapping[str, Any], initial["plan"])["incident_id"])
+        before = self._snapshot(incident_id)
+        proof = self._service.current_consumed_dispatch(
+            task_key=identity.task_key,
+            operation_id=identity.operation_id,
+            payload_sha256=identity.payload_sha256,
+        )
+        after = self._snapshot(incident_id)
+        plan = cast(Mapping[str, Any], proof["plan"])
+
+        def ordered_targets(values: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+            return sorted(
+                values,
+                key=lambda value: (
+                    str(value.get("namespace")),
+                    str(value.get("kind")),
+                    str(value.get("id")),
+                ),
+            )
+
+        expected_authority = {
+            "incident_id": before.incident_id,
+            "incident_version": before.incident_version,
+            "response_packet_id": before.response_packet_id,
+            "response_packet_sha256": before.response_packet_sha256,
+            "deterministic_scope_sha256": before.deterministic_scope_sha256,
+            "targets": ordered_targets(before.targets),
+            "exclusions": ordered_targets(before.exclusions),
+        }
+        plan_authority = {key: plan.get(key) for key in expected_authority}
+        plan_authority["targets"] = ordered_targets(
+            cast(Sequence[Mapping[str, Any]], plan.get("targets"))
+        )
+        plan_authority["exclusions"] = ordered_targets(
+            cast(Sequence[Mapping[str, Any]], plan.get("exclusions"))
+        )
+        if before != after or canonical_json_bytes(expected_authority) != canonical_json_bytes(
+            plan_authority
+        ):
+            raise ResponsePlanError("canonical-state-changed")
+        return StoredDispatchProof(
+            plan=plan,
+            approval=cast(Mapping[str, Any], proof["approval"]),
+            authorization=cast(Mapping[str, Any], proof["authorization"]),
+            consumption=cast(Mapping[str, Any], proof["consumption"]),
+            audit_events=tuple(cast(list[Mapping[str, Any]], proof["audit_events"])),
+            records=cast(Mapping[str, Mapping[str, Any]], proof["records"]),
+            trusted_audit_head_sha256=cast(str, proof["trusted_audit_head_sha256"]),
+        )
 
     def draft(self, incident_id: str) -> dict[str, Any]:
         return self._snapshot(incident_id).to_draft()
