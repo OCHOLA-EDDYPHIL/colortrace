@@ -38,6 +38,7 @@ class BoundSimulatorAction:
     action_id: str
     identity: DispatchIdentity
     incident_id: str
+    incident_version: int
     plan_id: str
     plan_version: int
     plan_sha256: str
