@@ -1,0 +1,40 @@
+{
+  "schema": "colortrace-local-telemetry-stack/v1",
+  "image": {
+    "name": "grafana/otel-lgtm",
+    "version": "0.30.1",
+    "digest": "sha256:bb182ac3174a20923fa58f00d1790fa71eb06cc0150078c0b0e8feb9e6611492",
+    "source_revision": "f5978789015c4e1e3999866d636d4a2a803dab0f"
+  },
+  "scope": "local-50-run-backend-suite-only",
+  "live_target": {
+    "grafana": "13.2.0",
+    "scheduler_source_revision": "6197d8e5f34898d2c8e4108f927b48ca8255b722",
+    "required_scheduler_interval_seconds": 60,
+    "local_live_parity_claimed": false,
+    "unsupported_drift_outcome": "unresolved"
+  },
+  "components": {
+    "grafana": "13.1.1",
+    "loki": "3.7.4",
+    "opentelemetry_collector": "0.157.0",
+    "prometheus": "3.13.2",
+    "tempo": "3.0.2"
+  },
+  "contracts": {
+    "alert": "grafana-alert-contract/v1",
+    "correlation": "correlation-contract/v1",
+    "observation": "declared-reference-observation/v1",
+    "telemetry_event": "telemetry-event/v1"
+  },
+  "verification": {
+    "runs": 50,
+    "jobs_per_run": 6,
+    "signals_per_job": 3,
+    "late_minimum_milliseconds": 61000,
+    "evidence_window_seconds": 600,
+    "alert_scheduler_interval_seconds": 60,
+    "maximum_observation_labelsets": 300,
+    "maximum_colortrace_metric_series": 600
+  }
+}

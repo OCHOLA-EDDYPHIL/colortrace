@@ -1,0 +1,25 @@
+{
+  "schema": "grafana-alert-contract/v1",
+  "uid": "ct-declared-reference-divergence-v1",
+  "observation_contract": "declared-reference-observation/v1",
+  "comparison_policy": "declared-reference-comparison/v1",
+  "metric": "colortrace_declared_reference_observations_total",
+  "selector": {
+    "fixture_id": "ct-shadowed-lut-v1",
+    "declared_reference_state": "reference_mismatch"
+  },
+  "group_by": [
+    "fixture_id",
+    "run_id",
+    "job_id",
+    "worker_id",
+    "artifact_id",
+    "trace_id",
+    "config_sha256",
+    "transform_id"
+  ],
+  "excluded_alert_keys": ["resource_sha256"],
+  "scheduler_interval_seconds": 60,
+  "evidence_window_seconds": 600,
+  "no_data_state": "NoData"
+}

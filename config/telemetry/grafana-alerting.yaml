@@ -1,0 +1,78 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: colortrace-declared-reference-v1
+    folder: ColorTrace
+    interval: 60s
+    rules:
+      - uid: ct-declared-reference-divergence-v1
+        title: ColorTrace declared-reference visual divergence
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              expr: 'max by (fixture_id, run_id, job_id, worker_id, artifact_id, trace_id, config_sha256, transform_id) (max_over_time(colortrace_declared_reference_observations_total{fixture_id="ct-shadowed-lut-v1", declared_reference_state="reference_mismatch"}[10m]))'
+              instant: true
+              intervalMs: 60000
+              legendFormat: __auto
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              refId: C
+              type: threshold
+        noDataState: NoData
+        executionErrorState: Error
+        for: 0s
+        annotations:
+          alert_contract: grafana-alert-contract/v1
+          contract: declared-reference-observation/v1
+          policy: declared-reference-comparison/v1
+          evidence_window: 10m
+        labels:
+          service: colortrace-simulator
+          severity: warning
+        isPaused: false

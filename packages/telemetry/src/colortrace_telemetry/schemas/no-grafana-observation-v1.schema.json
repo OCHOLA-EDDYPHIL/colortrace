@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/no-grafana-observation-v1.schema.json",
+  "title": "Fail-closed observation without Grafana backends",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "candidate",
+    "isolation_receipt_sha256",
+    "outcome",
+    "signals",
+    "decisive_operational_facts"
+  ],
+  "properties": {
+    "schema": {"const": "no-grafana-observation/v1"},
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixture_id",
+        "source_run_id",
+        "correlation_contract",
+        "source_fixture_manifest_sha256",
+        "source_validator_report_sha256"
+      ],
+      "properties": {
+        "fixture_id": {"const": "ct-shadowed-lut-v1"},
+        "source_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+        },
+        "correlation_contract": {"const": "correlation-contract/v1"},
+        "source_fixture_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "source_validator_report_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "isolation_receipt_sha256": {"$ref": "#/$defs/digest"},
+    "outcome": {"const": "unavailable"},
+    "signals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric", "log", "trace", "alert"],
+      "properties": {
+        "metric": {"const": "unavailable"},
+        "log": {"const": "unavailable"},
+        "trace": {"const": "unavailable"},
+        "alert": {"const": "unavailable"}
+      }
+    },
+    "decisive_operational_facts": {"type": "array", "maxItems": 0}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

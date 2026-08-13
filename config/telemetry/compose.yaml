@@ -1,0 +1,22 @@
+services:
+  telemetry-backend:
+    image: grafana/otel-lgtm@sha256:bb182ac3174a20923fa58f00d1790fa71eb06cc0150078c0b0e8feb9e6611492
+    pull_policy: never
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    ports:
+      - "127.0.0.1:14318:4318"
+      - "127.0.0.1:13000:3000"
+      - "127.0.0.1:13100:3100"
+      - "127.0.0.1:13200:3200"
+      - "127.0.0.1:19090:9090"
+    volumes:
+      - ./grafana-alerting.yaml:/otel-lgtm/grafana/conf/provisioning/alerting/colortrace.yaml:ro
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 90
+      start_period: 10s

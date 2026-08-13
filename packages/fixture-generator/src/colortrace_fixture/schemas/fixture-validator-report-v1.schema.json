@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/fixture-validator-report-v1.schema.json",
+  "title": "Fixture validator observation report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "fixture_id",
+    "variant_id",
+    "ocio_version",
+    "comparison_policy",
+    "jobs",
+    "derivatives",
+    "telemetry_events",
+    "diff_images"
+  ],
+  "properties": {
+    "schema": {"const": "fixture-validator-report/v1"},
+    "fixture_id": {"const": "ct-shadowed-lut-v1"},
+    "variant_id": {"$ref": "#/$defs/identifier"},
+    "ocio_version": {"const": "2.5.2"},
+    "comparison_policy": {"const": "declared-reference-comparison/v1"},
+    "jobs": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {"$ref": "#/$defs/job"}
+    },
+    "derivatives": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {"$ref": "#/$defs/derivative"}
+    },
+    "telemetry_events": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {"$ref": "#/$defs/telemetry_event"}
+    },
+    "diff_images": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {"$ref": "#/$defs/diff_image"}
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "state": {
+      "enum": ["reference_match", "reference_mismatch", "unresolved"]
+    },
+    "reason": {
+      "enum": [
+        "dimension-or-channel-mismatch",
+        "missing-resolved-resource-manifest",
+        "resolved-resource-manifest-digest-mismatch",
+        "nominal-config-digest-mismatch",
+        "resolved-resource-digest-mismatch",
+        "missing-or-digest-invalid-output-buffer",
+        "missing-declared-reference",
+        "declared-reference-manifest-digest-mismatch",
+        "missing-or-digest-invalid-reference-buffer",
+        "malformed-or-non-finite-float-buffer"
+      ]
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)([.][0-9]+)?$"
+    },
+    "resolved_comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "maximum_absolute_channel_error",
+        "rmse",
+        "fraction_pixels_at_or_above_0_02",
+        "nearest_rank_p95",
+        "pixels",
+        "policy"
+      ],
+      "properties": {
+        "state": {"enum": ["reference_match", "reference_mismatch"]},
+        "maximum_absolute_channel_error": {"$ref": "#/$defs/decimal"},
+        "rmse": {"$ref": "#/$defs/decimal"},
+        "fraction_pixels_at_or_above_0_02": {"$ref": "#/$defs/decimal"},
+        "nearest_rank_p95": {"$ref": "#/$defs/decimal"},
+        "pixels": {"type": "integer", "minimum": 1},
+        "policy": {"const": "declared-reference-comparison/v1"}
+      }
+    },
+    "unresolved_comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reason"],
+      "properties": {
+        "state": {"const": "unresolved"},
+        "reason": {"$ref": "#/$defs/reason"},
+        "detail": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\r\\n]*$"
+        }
+      }
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job_id",
+        "worker_id",
+        "output_id",
+        "transform_id",
+        "nominal_config_sha256",
+        "state",
+        "comparison",
+        "reasons",
+        "resource_manifest_sha256",
+        "resolved_resource_sha256",
+        "evidence"
+      ],
+      "properties": {
+        "job_id": {"$ref": "#/$defs/identifier"},
+        "worker_id": {"$ref": "#/$defs/identifier"},
+        "output_id": {"$ref": "#/$defs/identifier"},
+        "transform_id": {"enum": ["look/main/v1", "identity/v1"]},
+        "nominal_config_sha256": {"$ref": "#/$defs/digest"},
+        "state": {"$ref": "#/$defs/state"},
+        "comparison": {
+          "oneOf": [
+            {"$ref": "#/$defs/resolved_comparison"},
+            {"$ref": "#/$defs/unresolved_comparison"}
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 10,
+          "items": {"$ref": "#/$defs/reason"}
+        },
+        "resource_manifest_sha256": {
+          "oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]
+        },
+        "resolved_resource_sha256": {
+          "oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {"$ref": "#/$defs/digest"}
+        }
+      }
+    },
+    "derivative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "parent_artifact_id",
+        "state",
+        "policy",
+        "evidence"
+      ],
+      "properties": {
+        "artifact_id": {"$ref": "#/$defs/identifier"},
+        "parent_artifact_id": {"$ref": "#/$defs/identifier"},
+        "state": {"$ref": "#/$defs/state"},
+        "policy": {"const": "exact-lineage-propagation/v1"},
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {"$ref": "#/$defs/digest"}
+        }
+      }
+    },
+    "telemetry_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "overlapping_job_ids",
+        "resource_edges",
+        "lineage_edges",
+        "output_mutation",
+        "evidence"
+      ],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/identifier"},
+        "overlapping_job_ids": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "resource_edges": {"type": "array", "maxItems": 0},
+        "lineage_edges": {"type": "array", "maxItems": 0},
+        "output_mutation": {"const": false},
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {"$ref": "#/$defs/digest"}
+        }
+      }
+    },
+    "diff_image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "path", "sha256", "authoritative"],
+      "properties": {
+        "job_id": {"$ref": "#/$defs/identifier"},
+        "path": {
+          "type": "string",
+          "pattern": "^reports/diffs/[A-Za-z0-9][A-Za-z0-9._-]{0,127}[.]png$"
+        },
+        "sha256": {"$ref": "#/$defs/digest"},
+        "authoritative": {"const": false}
+      }
+    }
+  }
+}

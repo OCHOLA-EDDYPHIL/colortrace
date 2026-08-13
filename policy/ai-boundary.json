@@ -11,6 +11,9 @@
       "colortrace-fixture",
       "jsonschema",
       "opencolorio",
+      "opentelemetry-api",
+      "opentelemetry-exporter-otlp-proto-http",
+      "opentelemetry-sdk",
       "pyyaml"
     ],
     "disallowed_ai_packages": [

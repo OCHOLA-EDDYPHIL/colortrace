@@ -1,0 +1,18 @@
+{
+  "schema": "colortrace-telemetry-query-templates/v1",
+  "metrics": {
+    "observations": "colortrace_declared_reference_observations_total{fixture_id=\"ct-shadowed-lut-v1\"}",
+    "series": "count({__name__=~\"colortrace_.*\"})"
+  },
+  "logs": {
+    "observations": "{service_name=\"colortrace-simulator\"} | telemetry_contract=\"telemetry-event/v1\""
+  },
+  "traces": {
+    "observations": "{ resource.service.name = \"colortrace-simulator\" && span.telemetry.contract = \"telemetry-event/v1\" }"
+  },
+  "alert": {
+    "uid": "ct-declared-reference-divergence-v1",
+    "range_seconds": 600,
+    "scheduler_interval_seconds": 60
+  }
+}
