@@ -296,6 +296,12 @@ class EvidenceAssessment:
     blockers: tuple[Blocker, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _EvidenceRecord:
+    correlation_source: Any
+    timestamp_values: tuple[Any, ...]
+
+
 def _normalized_code(value: str) -> str:
     normalized = value.lower().replace("_", "-")
     if not normalized or not normalized[0].isalpha():
@@ -344,27 +350,71 @@ def _event_timestamp(value: Any) -> datetime:
         raise ContractError("invalid-time") from error
 
 
-def _content_event_times(query_key: str, content: Mapping[str, Any]) -> list[datetime]:
-    values: list[Any] = []
+def _mapping_records(value: Any) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(value, (list, tuple)) or any(not isinstance(item, Mapping) for item in value):
+        raise ContractError("malformed-evidence")
+    return tuple(cast(Mapping[str, Any], item) for item in value)
+
+
+def _content_records(query_key: str, content: Mapping[str, Any]) -> tuple[_EvidenceRecord, ...]:
+    records: list[_EvidenceRecord] = []
     if query_key == "metric.correlated-observations":
-        for row in cast(Sequence[Mapping[str, Any]], content.get("data", ())):
+        for row in _mapping_records(content.get("data")):
             sample = row.get("value")
-            if isinstance(sample, list) and sample:
-                values.append(sample[0])
+            if not isinstance(sample, (list, tuple)) or len(sample) != 2:
+                raise ContractError("malformed-evidence")
+            records.append(_EvidenceRecord(row, (sample[0],)))
     elif query_key == "log.correlated-events":
-        for row in cast(Sequence[Mapping[str, Any]], content.get("data", ())):
-            values.append(row.get("timestamp"))
+        for row in _mapping_records(content.get("data")):
+            if "timestamp" not in row:
+                raise ContractError("malformed-evidence")
+            records.append(_EvidenceRecord(row, (row["timestamp"],)))
     elif query_key == "trace.by-id":
         trace = content.get("trace")
-        if isinstance(trace, Mapping):
-            for service in cast(Sequence[Mapping[str, Any]], trace.get("services", ())):
-                for scope in cast(Sequence[Mapping[str, Any]], service.get("scopes", ())):
-                    for span in cast(Sequence[Mapping[str, Any]], scope.get("spans", ())):
-                        values.extend((span.get("startTimeUnixNano"), span.get("endTimeUnixNano")))
+        if not isinstance(trace, Mapping):
+            raise ContractError("malformed-evidence")
+        for service in _mapping_records(trace.get("services")):
+            resource = service.get("resource")
+            if not isinstance(resource, Mapping):
+                raise ContractError("malformed-evidence")
+            for scope in _mapping_records(service.get("scopes")):
+                for span in _mapping_records(scope.get("spans")):
+                    if "startTimeUnixNano" not in span or "endTimeUnixNano" not in span:
+                        raise ContractError("malformed-evidence")
+                    records.append(
+                        _EvidenceRecord(
+                            {"resource": resource, "span": span},
+                            (span["startTimeUnixNano"], span["endTimeUnixNano"]),
+                        )
+                    )
     elif query_key == "alert.rule":
-        for alert in cast(Sequence[Mapping[str, Any]], content.get("alerts", ())):
-            values.append(alert.get("activeAt"))
-    return [_event_timestamp(value) for value in values if value is not None]
+        for alert in _mapping_records(content.get("alerts")):
+            if "activeAt" not in alert:
+                raise ContractError("malformed-evidence")
+            records.append(_EvidenceRecord(alert, (alert["activeAt"],)))
+    else:  # pragma: no cover - query keys are validated before assessment
+        raise ContractError("malformed-evidence")
+    return tuple(records)
+
+
+def _record_event_times(query_key: str, record: _EvidenceRecord) -> tuple[datetime, ...]:
+    values = record.timestamp_values
+    if query_key == "log.correlated-events":
+        raw = values[0]
+        if isinstance(raw, str) and raw.startswith('"'):
+            if len(raw) > 128:
+                raise ContractError("invalid-time")
+            decoded = strict_json_bytes(raw.encode("utf-8"))
+            if not isinstance(decoded, str):
+                raise ContractError("invalid-time")
+            try:
+                numeric = Decimal(decoded)
+            except InvalidOperation as error:
+                raise ContractError("invalid-time") from error
+            if not numeric.is_finite():
+                raise ContractError("invalid-time")
+            values = (decoded,)
+    return tuple(_event_timestamp(value) for value in values)
 
 
 def _correlation_values(value: Any, keys: frozenset[str]) -> dict[str, set[str]]:
@@ -393,6 +443,84 @@ def _correlation_values(value: Any, keys: frozenset[str]) -> dict[str, set[str]]
 
     visit(value)
     return result
+
+
+def _assess_content_records(
+    query_key: str,
+    content: Mapping[str, Any],
+    *,
+    expected_correlation: Mapping[str, str],
+    window: FrozenWindow,
+    evidence_id: str,
+) -> list[Blocker]:
+    try:
+        records = _content_records(query_key, content)
+    except (ContractError, KeyError, TypeError, ValueError):
+        return [Blocker("malformed-evidence", "assessment", (evidence_id,))]
+    if not records:
+        return [
+            Blocker("incomplete-correlation", "assessment", (evidence_id,)),
+            Blocker("incomplete-evidence", "assessment", (evidence_id,)),
+        ]
+
+    blockers: list[Blocker] = []
+    keys = frozenset(expected_correlation)
+    exact_records = 0
+    exact_in_window = 0
+    sibling_records = 0
+    for record in records:
+        observed = _correlation_values(record.correlation_source, keys)
+        missing = [key for key in expected_correlation if not observed.get(key)]
+        ambiguous = [key for key in expected_correlation if len(observed.get(key, ())) > 1]
+        conflicting = any(
+            value != expected_correlation[key]
+            for key, values in observed.items()
+            for value in values
+        )
+        if missing:
+            blockers.append(Blocker("incomplete-correlation", "assessment", (evidence_id,)))
+        if ambiguous or (missing and conflicting):
+            blockers.append(Blocker("contradictory-evidence", "assessment", (evidence_id,)))
+        if missing or ambiguous:
+            continue
+
+        exact = all(observed[key] == {expected} for key, expected in expected_correlation.items())
+        if exact:
+            exact_records += 1
+        else:
+            sibling_records += 1
+        try:
+            event_times = _record_event_times(query_key, record)
+        except (ContractError, TypeError, ValueError):
+            blockers.extend(
+                (
+                    Blocker("time-ambiguous", "assessment", (evidence_id,)),
+                    Blocker("incomplete-evidence", "assessment", (evidence_id,)),
+                )
+            )
+            continue
+        if not event_times:
+            blockers.append(Blocker("incomplete-evidence", "assessment", (evidence_id,)))
+            continue
+        inside_window = all(window.start <= event_time <= window.end for event_time in event_times)
+        if exact and inside_window:
+            exact_in_window += 1
+        elif exact:
+            blockers.append(Blocker("event-outside-window", "assessment", (evidence_id,)))
+        elif not (inside_window or all(event_time < window.start for event_time in event_times)):
+            blockers.append(Blocker("event-outside-window", "assessment", (evidence_id,)))
+
+    if exact_records == 0:
+        blockers.append(Blocker("incomplete-correlation", "assessment", (evidence_id,)))
+        if sibling_records:
+            blockers.append(Blocker("contradictory-evidence", "assessment", (evidence_id,)))
+    elif exact_records > 1:
+        blockers.append(Blocker("contradictory-evidence", "assessment", (evidence_id,)))
+    elif sibling_records and not (
+        exact_in_window == 1 and query_key in {"alert.rule", "trace.by-id"}
+    ):
+        blockers.append(Blocker("contradictory-evidence", "assessment", (evidence_id,)))
+    return _dedupe_blockers(blockers)
 
 
 def _audit_attempts(result: EvidenceResult, ledger: BudgetLedger) -> list[Blocker]:
@@ -559,7 +687,6 @@ def assess_evidence(
         "end": timestamp(intake.window.end),
     }
     expected_correlation = dict(intake.correlation_keys)
-    correlation_keys = frozenset(expected_correlation)
     for query_key, envelope in by_query.items():
         evidence_id = cast(str, envelope["evidence_id"])
         collection = cast(Mapping[str, Any], envelope["collection"])
@@ -589,25 +716,15 @@ def assess_evidence(
         if not isinstance(content, Mapping):
             blockers.append(Blocker("incomplete-evidence", "assessment", (evidence_id,)))
             continue
-        try:
-            event_times = _content_event_times(query_key, content)
-        except ContractError:
-            blockers.append(Blocker("time-ambiguous", "assessment", (evidence_id,)))
-            event_times = []
-        if not event_times:
-            blockers.append(Blocker("incomplete-evidence", "assessment", (evidence_id,)))
-        elif any(
-            event_time < intake.window.start or event_time > intake.window.end
-            for event_time in event_times
-        ):
-            blockers.append(Blocker("event-outside-window", "assessment", (evidence_id,)))
-        observed = _correlation_values(content, correlation_keys)
-        for key, expected in expected_correlation.items():
-            values = observed.get(key, set())
-            if expected not in values:
-                blockers.append(Blocker("incomplete-correlation", "assessment", (evidence_id,)))
-            if any(value != expected for value in values):
-                blockers.append(Blocker("contradictory-evidence", "assessment", (evidence_id,)))
+        blockers.extend(
+            _assess_content_records(
+                query_key,
+                content,
+                expected_correlation=expected_correlation,
+                window=intake.window,
+                evidence_id=evidence_id,
+            )
+        )
     return EvidenceAssessment(
         tuple(sorted(set(evidence_ids))),
         tuple(sorted(model_views, key=lambda item: cast(str, item["query_key"]))),
