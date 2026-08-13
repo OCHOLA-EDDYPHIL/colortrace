@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-safe-preservation-observation-v1.schema.json",
+  "title": "One approved exclusion bound to an unchanged safe complement",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "scope",
+    "target",
+    "preservation_manifest_sha256",
+    "safe_complement_before_sha256",
+    "safe_complement_after_sha256",
+    "safe_complement_proof_sha256",
+    "unchanged"
+  ],
+  "properties": {
+    "schema": {"const": "simulator-safe-preservation-observation/v1"},
+    "scope": {"const": "safe"},
+    "target": {"$ref": "simulator-action-target-v1.schema.json"},
+    "preservation_manifest_sha256": {"$ref": "#/$defs/digest"},
+    "safe_complement_before_sha256": {"$ref": "#/$defs/digest"},
+    "safe_complement_after_sha256": {"$ref": "#/$defs/digest"},
+    "safe_complement_proof_sha256": {"$ref": "#/$defs/digest"},
+    "unchanged": {"const": true}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

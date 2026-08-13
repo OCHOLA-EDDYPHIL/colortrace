@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-action-target-v1.schema.json",
+  "title": "One typed target in the isolated simulator namespace",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "namespace", "kind", "id"],
+  "properties": {
+    "schema": {"const": "simulator-target/v1"},
+    "namespace": {"const": "colortrace-simulator"},
+    "kind": {"enum": ["color-resource", "frame", "derivative"]},
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    }
+  }
+}
