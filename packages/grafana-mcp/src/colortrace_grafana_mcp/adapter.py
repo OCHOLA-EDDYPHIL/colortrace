@@ -1263,18 +1263,19 @@ def _validate_provider_payload(bound: BoundCall, payload: Any) -> None:
 def _is_sensitive_key(value: str, catalog: QueryCatalog) -> bool:
     normalized = _normalized_key(value)
     padded = f"_{normalized}_"
-    return any(f"_{key}_" in padded for key in catalog.redacted_keys) or any(
-        normalized.startswith(prefix) for prefix in catalog.redacted_label_prefixes
-    )
-
-
-def _is_attribute_value_field(value: str) -> bool:
-    normalized = _normalized_key(value)
-    return (
-        normalized in {"value", "values"}
-        or normalized.startswith("value_")
-        or normalized.endswith("_value")
-    )
+    aliases = catalog.redacted_keys | frozenset(f"{key}s" for key in catalog.redacted_keys)
+    if any(f"_{alias}_" in padded for alias in aliases):
+        return True
+    collapsed = normalized.replace("_", "")
+    for alias in aliases:
+        collapsed_alias = alias.replace("_", "")
+        if (
+            collapsed == collapsed_alias
+            or collapsed.endswith(collapsed_alias)
+            or ("_" in alias and collapsed_alias in collapsed)
+        ):
+            return True
+    return any(normalized.startswith(prefix) for prefix in catalog.redacted_label_prefixes)
 
 
 def _sensitive_text_start(value: str, catalog: QueryCatalog) -> int | None:
@@ -1295,7 +1296,10 @@ def _redact_text(value: str, catalog: QueryCatalog, *, depth: int) -> str:
     except UnicodeError:
         return "[REDACTED]"
     stripped = value.lstrip()
-    if stripped.startswith(("{", "[", '"')) and len(encoded) <= _MAX_EMBEDDED_JSON_BYTES:
+    json_like = stripped.startswith(("{", "[", '"'))
+    if json_like and len(encoded) > _MAX_EMBEDDED_JSON_BYTES:
+        return "[REDACTED]"
+    if json_like:
         try:
             structured = strict_json_bytes(encoded)
             if isinstance(structured, (dict, list, str)):
@@ -1319,9 +1323,7 @@ def _redact(value: Any, catalog: QueryCatalog, *, _depth: int = 0) -> Any:
             attribute_key, catalog
         )
         for key, child in value.items():
-            if _is_sensitive_key(key, catalog) or (
-                redact_attribute_value and _is_attribute_value_field(key)
-            ):
+            if _is_sensitive_key(key, catalog) or (redact_attribute_value and key != "key"):
                 result[key] = "[REDACTED]"
             else:
                 result[key] = _redact(child, catalog, _depth=_depth + 1)
