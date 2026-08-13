@@ -260,14 +260,14 @@ class FakeSession:
                 **correlation,
                 "event": "declared-reference-observation",
             }
-            labels = {"service_name": "colortrace-simulator"}
-            structured_metadata = dict(correlation)
+            labels: dict[str, Any] = {"service_name": "colortrace-simulator"}
+            structured_metadata: dict[str, Any] = dict(correlation)
             if record_case == "log-text-only-correlation":
                 structured_metadata.pop("worker_id")
             elif record_case == "log-authoritative-collision":
                 labels["worker_id"] = "worker-conflict"
-            elif record_case == "log-authoritative-equal-collision":
-                labels["worker_id"] = correlation["worker_id"]
+            elif record_case in {"live-shapes", "log-authoritative-equal-collision"}:
+                labels.update(correlation)
             elif record_case == "non-authoritative-spoof":
                 line["worker_id"] = "worker-conflict"
             if self.injection:
@@ -303,14 +303,17 @@ class FakeSession:
                 start, end = end, start
             attributes: dict[str, Any] = dict(correlation)
             events: list[dict[str, str]] = []
-            resource = {"service.version": "simulator-telemetry/v1"}
+            resource: dict[str, Any] = {"service.version": "simulator-telemetry/v1"}
             if record_case == "trace-event-only-correlation":
                 attributes.pop("worker_id")
                 events.append({"worker_id": correlation["worker_id"]})
             elif record_case == "trace-authoritative-collision":
                 resource["worker_id"] = "worker-conflict"
             elif record_case == "trace-authoritative-equal-collision":
-                resource["worker_id"] = correlation["worker_id"]
+                resource.update(correlation)
+            elif record_case == "trace-authoritative-numeric-duplicate":
+                resource.update(correlation)
+                attributes["worker_id"] = 7
             elif record_case == "numeric-trace-correlation":
                 attributes["worker_id"] = 7
             elif record_case == "non-authoritative-spoof":
@@ -646,6 +649,19 @@ def test_non_authoritative_correlation_spoofs_are_ignored(
 
 
 @pytest.mark.parametrize(
+    "record_case",
+    ["log-authoritative-equal-collision", "trace-authoritative-equal-collision"],
+)
+def test_equal_authoritative_correlation_duplicates_are_accepted(
+    policy: InvestigationPolicy, bundles: dict[str, Path], record_case: str
+) -> None:
+    packet, _, _ = asyncio.run(
+        execute(policy, bundles["canonical"], evidence=FakeEvidence(record_case=record_case))
+    )
+    assert packet["status"] == "resolved"
+
+
+@pytest.mark.parametrize(
     ("record_case", "expected_codes"),
     [
         ("no-exact-alert", {"contradictory-evidence", "incomplete-correlation"}),
@@ -659,8 +675,10 @@ def test_non_authoritative_correlation_spoofs_are_ignored(
         ("alert-annotation-only-correlation", {"incomplete-correlation"}),
         ("log-authoritative-collision", {"contradictory-evidence"}),
         ("trace-authoritative-collision", {"contradictory-evidence"}),
-        ("log-authoritative-equal-collision", {"contradictory-evidence"}),
-        ("trace-authoritative-equal-collision", {"contradictory-evidence"}),
+        (
+            "trace-authoritative-numeric-duplicate",
+            {"contradictory-evidence", "incomplete-correlation"},
+        ),
         ("numeric-trace-correlation", {"incomplete-correlation"}),
         ("current-trace-sibling", {"contradictory-evidence"}),
         ("inverted-trace-span", {"incomplete-evidence", "time-ambiguous"}),

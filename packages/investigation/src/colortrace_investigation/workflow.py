@@ -439,13 +439,12 @@ def _record_event_times(query_key: str, record: _EvidenceRecord) -> tuple[dateti
 
 def _authoritative_correlation_values(
     sources: Sequence[Mapping[str, Any]], keys: frozenset[str]
-) -> dict[str, list[str]]:
-    result: dict[str, list[str]] = defaultdict(list)
+) -> dict[str, list[Any]]:
+    result: dict[str, list[Any]] = defaultdict(list)
     for source in sources:
         for key in keys:
-            child = source.get(key)
-            if isinstance(child, str) and type(child) is str:
-                result[key].append(child)
+            if key in source:
+                result[key].append(source[key])
     return result
 
 
@@ -476,20 +475,30 @@ def _assess_content_records(
     for record in records:
         observed = _authoritative_correlation_values(record.correlation_sources, keys)
         missing = [key for key in expected_correlation if not observed.get(key)]
-        ambiguous = [key for key in expected_correlation if len(observed.get(key, ())) > 1]
-        conflicting = any(
-            value != expected_correlation[key]
+        invalid = [
+            key
             for key, values in observed.items()
-            for value in values
-        )
-        if missing:
+            if any(not isinstance(value, str) or type(value) is not str for value in values)
+        ]
+        ambiguous = [
+            key
+            for key, values in observed.items()
+            if key not in invalid and len(set(cast(Sequence[str], values))) > 1
+        ]
+        normalized = {
+            key: cast(str, values[0])
+            for key, values in observed.items()
+            if key not in invalid and key not in ambiguous
+        }
+        conflicting = any(value != expected_correlation[key] for key, value in normalized.items())
+        if missing or invalid:
             blockers.append(Blocker("incomplete-correlation", "assessment", (evidence_id,)))
-        if ambiguous or (missing and conflicting):
+        if invalid or ambiguous or (missing and conflicting):
             blockers.append(Blocker("contradictory-evidence", "assessment", (evidence_id,)))
-        if missing or ambiguous:
+        if missing or invalid or ambiguous:
             continue
 
-        exact = all(observed[key] == [expected] for key, expected in expected_correlation.items())
+        exact = all(normalized[key] == expected for key, expected in expected_correlation.items())
         if exact:
             exact_records += 1
         else:
