@@ -544,6 +544,10 @@ def test_local_stack_and_alert_contracts_are_pinned() -> None:
     assert rule["noDataState"] == "NoData"
     assert rule["execErrState"] == "Error"
     assert "executionErrorState" not in rule
+    assert [query["queryType"] for query in rule["data"]] == ["", "", ""]
+    for query in rule["data"][1:]:
+        assert query["model"]["intervalMs"] == 1000
+        assert query["model"]["maxDataPoints"] == 43200
     assert rule["data"][0]["relativeTimeRange"] == {"from": 600, "to": 0}
     assert "colortrace_declared_reference_observations_total" in expression
     assert 'declared_reference_state="reference_mismatch"' in expression

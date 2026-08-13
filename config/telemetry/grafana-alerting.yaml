@@ -12,6 +12,7 @@ groups:
         data:
           - refId: A
             datasourceUid: prometheus
+            queryType: ""
             relativeTimeRange:
               from: 600
               to: 0
@@ -29,6 +30,7 @@ groups:
               refId: A
           - refId: B
             datasourceUid: __expr__
+            queryType: ""
             relativeTimeRange:
               from: 0
               to: 0
@@ -37,11 +39,14 @@ groups:
                 type: __expr__
                 uid: __expr__
               expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
               reducer: last
               refId: B
               type: reduce
           - refId: C
             datasourceUid: __expr__
+            queryType: ""
             relativeTimeRange:
               from: 0
               to: 0
@@ -62,6 +67,8 @@ groups:
                 type: __expr__
                 uid: __expr__
               expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
               refId: C
               type: threshold
         noDataState: NoData
