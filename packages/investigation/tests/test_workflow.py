@@ -27,6 +27,8 @@ from colortrace_investigation import (
     WorkflowError,
     validate_response_packet,
 )
+from colortrace_investigation import contracts as investigation_contracts
+from colortrace_investigation import workflow as investigation_subject
 from colortrace_investigation.workflow import BudgetLedger, TrackedSemaphore
 from mcp import types
 
@@ -215,6 +217,11 @@ class FakeSession:
                 )
             try:
                 payload = self.payload(name, arguments)
+                if self.tracker.record_case == "large-excerpts":
+                    payload = {
+                        **payload,
+                        "zz_untrusted_padding": ('\\"🙂\n' * 2048),
+                    }
             except Exception as error:
                 self.tracker.errors.append(repr(error))
                 raise
@@ -561,6 +568,99 @@ async def execute(
     packet = await workflow.run(alert_value or alert(correlation=correlation), bundle_root=bundle)
     validate_response_packet(packet)
     return packet, chosen_model, chosen_evidence
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["short excerpt", "\\" * 4096, ('🙂\\"\n' * 2048)],
+)
+def test_model_excerpt_bound_counts_canonical_json_bytes(value: str) -> None:
+    first = investigation_subject._bounded_model_excerpt(value)
+    second = investigation_subject._bounded_model_excerpt(value)
+
+    assert first == second
+    excerpt, truncated = first
+    assert value.startswith(excerpt)
+    assert len(investigation_contracts.canonical_json_bytes(excerpt)) <= 1024
+    if truncated:
+        assert len(excerpt) < len(value)
+        assert len(investigation_contracts.canonical_json_bytes(value[: len(excerpt) + 1])) > 1024
+    else:
+        assert excerpt == value
+
+
+def test_four_large_excerpts_are_projected_without_changing_authority_or_facts(
+    policy: InvestigationPolicy, bundles: dict[str, Path]
+) -> None:
+    baseline, _, baseline_evidence = asyncio.run(
+        execute(
+            policy,
+            bundles["canonical"],
+            model=FakeModel(input_tokens=888, output_tokens=107),
+        )
+    )
+    packet, model, evidence = asyncio.run(
+        execute(
+            policy,
+            bundles["canonical"],
+            model=FakeModel(input_tokens=888, output_tokens=107),
+            evidence=FakeEvidence(record_case="large-excerpts"),
+        )
+    )
+
+    assert packet["status"] == baseline["status"] == "resolved"
+    for key in ("claims", "scope", "deterministic_results", "candidate_plan"):
+        assert packet[key] == baseline[key]
+    assert baseline_evidence.last_result is not None
+    assert evidence.last_result is not None
+    baseline_by_query = {
+        envelope["observation"]["query_key"]: envelope
+        for envelope in baseline_evidence.last_result.envelopes
+    }
+    source_by_id = {
+        envelope["evidence_id"]: envelope for envelope in evidence.last_result.envelopes
+    }
+    assert len(source_by_id) == 4
+    for envelope in source_by_id.values():
+        mcp_subject.validate_evidence_envelope(envelope)
+        assert len(envelope["display_excerpt"]) == 4096
+        source_content = dict(envelope["content"])
+        padding = source_content.pop("zz_untrusted_padding")
+        assert padding == ('\\"🙂\n' * 2048)
+        assert source_content == baseline_by_query[envelope["observation"]["query_key"]]["content"]
+
+    assert len(model.calls) == 2
+    draft_call = model.calls[1]
+    draft_payload = draft_call.payload
+    model_views = draft_payload["quoted_evidence_excerpts"]
+    assert len(model_views) == 4
+    assert draft_payload["authority"] == "advisory-only"
+    assert draft_payload["deterministic_facts"] == {
+        "claims": packet["claims"],
+        "scope": packet["scope"],
+    }
+    assert set(draft_payload["allowed_evidence_ids"]) == set(packet["evidence_ids"])
+    for model_view in model_views:
+        source = source_by_id[model_view["evidence_id"]]
+        assert model_view["query_key"] == source["observation"]["query_key"]
+        assert model_view["retrieved_at"] == source["timing"]["retrieved_at"]
+        assert model_view["trust"] == source["trust"] == "untrusted-provider-data"
+        assert model_view["display_excerpt_truncated"] is True
+        assert source["display_excerpt"].startswith(model_view["display_excerpt"])
+        assert (
+            len(investigation_contracts.canonical_json_bytes(model_view["display_excerpt"])) <= 1024
+        )
+
+    drafting_input_upper_bound = (
+        len(investigation_contracts.canonical_json_bytes(draft_payload))
+        + len(investigation_contracts.canonical_json_bytes(draft_call.response_schema))
+        + 4096
+    )
+    assert 888 + drafting_input_upper_bound <= policy.budgets.maximum_input_tokens
+    assert 107 + draft_call.maximum_output_tokens <= policy.budgets.maximum_output_tokens
+    assert packet["budget_use"]["input_tokens"] == 1776
+    assert packet["budget_use"]["output_tokens"] == 214
+    assert packet["budget_use"]["model_visible_bytes"] <= policy.budgets.maximum_model_visible_bytes
 
 
 def test_canonical_packet_is_resolved_cited_and_bounded(

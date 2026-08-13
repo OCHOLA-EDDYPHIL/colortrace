@@ -57,6 +57,7 @@ from .model import ModelCall, ModelFailure, ModelGateway, ModelOutput
 
 _T = TypeVar("_T")
 _MODEL_OUTPUT_LIMITS = {"evidence-selection": 512, "response-drafting": 1792}
+_MODEL_EVIDENCE_EXCERPT_JSON_BYTES = 1024
 _VALIDATOR_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="colortrace-validator")
 
 
@@ -319,6 +320,39 @@ def _dedupe_blockers(blockers: Sequence[Blocker]) -> list[Blocker]:
         for item in blockers
     }
     return [unique[key] for key in sorted(unique)]
+
+
+def _bounded_model_excerpt(value: str) -> tuple[str, bool]:
+    if len(canonical_json_bytes(value)) <= _MODEL_EVIDENCE_EXCERPT_JSON_BYTES:
+        return value, False
+    lower = 0
+    upper = len(value)
+    while lower < upper:
+        candidate = (lower + upper + 1) // 2
+        if len(canonical_json_bytes(value[:candidate])) <= _MODEL_EVIDENCE_EXCERPT_JSON_BYTES:
+            lower = candidate
+        else:
+            upper = candidate - 1
+    return value[:lower], True
+
+
+def _project_advisory_evidence_views(
+    model_views: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    projected: list[dict[str, Any]] = []
+    for view in model_views:
+        excerpt = view.get("display_excerpt")
+        if not isinstance(excerpt, str):
+            raise WorkflowError("malformed-evidence")
+        bounded_excerpt, truncated = _bounded_model_excerpt(excerpt)
+        projected.append(
+            {
+                **view,
+                "display_excerpt": bounded_excerpt,
+                "display_excerpt_truncated": truncated,
+            }
+        )
+    return projected
 
 
 def _event_timestamp(value: Any) -> datetime:
@@ -1423,7 +1457,9 @@ class InvestigationWorkflow:
                     "claims": classified_claims,
                     "scope": classified_scope,
                 },
-                "quoted_evidence_excerpts": list(assessment.model_views),
+                "quoted_evidence_excerpts": _project_advisory_evidence_views(
+                    assessment.model_views
+                ),
                 "allowed_evidence_ids": sorted(evidence_ids),
                 "authority": "advisory-only",
             }
