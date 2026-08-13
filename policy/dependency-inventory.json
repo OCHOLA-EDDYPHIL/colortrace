@@ -892,6 +892,20 @@
     {
       "ecosystem": "pypi",
       "license": "MIT",
+      "name": "annotated-types",
+      "source": "https://pypi.org/simple",
+      "version": "0.8.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "anyio",
+      "source": "https://pypi.org/simple",
+      "version": "4.14.2"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
       "name": "ast-serialize",
       "source": "https://pypi.org/simple",
       "version": "0.8.0"
@@ -912,10 +926,24 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "MIT-0",
+      "name": "cffi",
+      "source": "https://pypi.org/simple",
+      "version": "2.1.1"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "MIT",
       "name": "charset-normalizer",
       "source": "https://pypi.org/simple",
       "version": "3.5.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "click",
+      "source": "https://pypi.org/simple",
+      "version": "8.4.2"
     },
     {
       "ecosystem": "pypi",
@@ -926,10 +954,45 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "Apache-2.0 OR BSD-3-Clause",
+      "name": "cryptography",
+      "source": "https://pypi.org/simple",
+      "version": "50.0.0"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "Apache-2.0",
       "name": "googleapis-common-protos",
       "source": "https://pypi.org/simple",
       "version": "1.75.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "h11",
+      "source": "https://pypi.org/simple",
+      "version": "0.16.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "httpcore",
+      "source": "https://pypi.org/simple",
+      "version": "1.0.9"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "httpx",
+      "source": "https://pypi.org/simple",
+      "version": "0.28.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "httpx-sse",
+      "source": "https://pypi.org/simple",
+      "version": "0.4.3"
     },
     {
       "ecosystem": "pypi",
@@ -965,6 +1028,13 @@
       "name": "librt",
       "source": "https://pypi.org/simple",
       "version": "0.15.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "mcp",
+      "source": "https://pypi.org/simple",
+      "version": "1.29.0"
     },
     {
       "ecosystem": "pypi",
@@ -1059,6 +1129,41 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "pycparser",
+      "source": "https://pypi.org/simple",
+      "version": "3.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "pydantic",
+      "source": "https://pypi.org/simple",
+      "version": "2.13.4"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "pydantic-core",
+      "source": "https://pypi.org/simple",
+      "version": "2.46.4"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "pydantic-settings",
+      "source": "https://pypi.org/simple",
+      "version": "2.15.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "pyjwt",
+      "source": "https://pypi.org/simple",
+      "version": "2.13.0"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "BSD-2-Clause",
       "name": "pygments",
       "source": "https://pypi.org/simple",
@@ -1070,6 +1175,27 @@
       "name": "pytest",
       "source": "https://pypi.org/simple",
       "version": "9.1.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "python-dotenv",
+      "source": "https://pypi.org/simple",
+      "version": "1.2.2"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "python-multipart",
+      "source": "https://pypi.org/simple",
+      "version": "0.0.32"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "PSF-2.0",
+      "name": "pywin32",
+      "source": "https://pypi.org/simple",
+      "version": "312"
     },
     {
       "ecosystem": "pypi",
@@ -1108,6 +1234,27 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "sse-starlette",
+      "source": "https://pypi.org/simple",
+      "version": "3.4.8"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "starlette",
+      "source": "https://pypi.org/simple",
+      "version": "1.6.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "typing-inspection",
+      "source": "https://pypi.org/simple",
+      "version": "0.4.4"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "PSF-2.0",
       "name": "typing-extensions",
       "source": "https://pypi.org/simple",
@@ -1119,6 +1266,13 @@
       "name": "urllib3",
       "source": "https://pypi.org/simple",
       "version": "2.7.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "uvicorn",
+      "source": "https://pypi.org/simple",
+      "version": "0.52.1"
     }
   ],
   "schema_version": 1

@@ -1,0 +1,9 @@
+mcp Python SDK 1.29.0
+Copyright Anthropic, PBC
+Licensed under the MIT License.
+Source: https://github.com/modelcontextprotocol/python-sdk
+
+mcp-grafana 1.1.0
+Copyright Grafana Labs
+Licensed under the Apache License, Version 2.0.
+Source: https://github.com/grafana/mcp-grafana

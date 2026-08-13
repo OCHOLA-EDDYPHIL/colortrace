@@ -1,0 +1,21 @@
+{
+  "schema": "mcp-grafana-runtime-lock/v1",
+  "source_repository": "https://github.com/grafana/mcp-grafana",
+  "source_commit": "007e8d82154899a28e19e8dfe9c2bb4452c5211a",
+  "release_version": "1.1.0",
+  "release_archive": "https://github.com/grafana/mcp-grafana/releases/download/v1.1.0/mcp-grafana_Linux_x86_64.tar.gz",
+  "archive_sha256": "8468b1e159412eb1ab738786cf0d2755a1ea0a44103ca8c0040849a227746e07",
+  "binary_sha256": "7b4f978ee4e31053cad3392626b6896d3da2315d5e6b2bcbba815c9b04872236",
+  "mcp_sdk_version": "1.29.0",
+  "mcp_sdk_wheel_sha256": "f5a075bb611f23d6f4d080c6a1699fa62772eebc562ba9e66b306ddde1c755f7",
+  "mcp_protocol_version": "2025-06-18",
+  "mcp_transport": "stdio",
+  "write_tools_enabled": false,
+  "enabled_tool_categories": [
+    "alerting",
+    "prometheus",
+    "loki",
+    "datasource",
+    "proxied"
+  ]
+}
