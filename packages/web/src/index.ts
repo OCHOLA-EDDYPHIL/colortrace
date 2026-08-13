@@ -37,6 +37,12 @@ export {
   type InvestigationTimelineProps,
 } from "./investigation-timeline.tsx";
 export {
+  type ResponsePlanCapabilities,
+  type ResponsePlanPanelState,
+  ResponsePlanReview,
+  type ResponsePlanReviewProps,
+} from "./response-plan-review.tsx";
+export {
   type IncidentLifecycleStatus,
   StatusBadge,
   type StatusBadgeProps,

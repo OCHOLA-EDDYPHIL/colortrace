@@ -7,14 +7,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol, cast
 
+from colortrace_response_plans import (
+    CanonicalAuthorityBoundary,
+    OIDCTrustBoundary,
+    SQLiteResponsePlanRepository,
+)
 from colortrace_vertical_slice import SqliteIncidentStore
 from fastapi import FastAPI
 
 from .app import create_app
 from .oidc import HttpsJwksResolver, JwksResolver, OidcTokenVerifier
+from .response_plans import ResponsePlanCoordinator
 from .stored_service import StoredIncidentService, StoredIncidentStore
 
 DATABASE_PATH_ENV = "COLORTRACE_DATABASE_PATH"
+RESPONSE_PLAN_DATABASE_PATH_ENV = "COLORTRACE_RESPONSE_PLAN_DATABASE_PATH"
 OIDC_ISSUER_ENV = "COLORTRACE_OIDC_ISSUER"
 OIDC_AUDIENCE_ENV = "COLORTRACE_OIDC_AUDIENCE"
 OIDC_JWKS_URI_ENV = "COLORTRACE_OIDC_JWKS_URI"
@@ -38,6 +45,7 @@ class ResolverFactory(Protocol):
 @dataclass(frozen=True, slots=True)
 class ApiRuntimeConfig:
     database_path: Path
+    response_plan_database_path: Path
     oidc_issuer: str
     oidc_audience: str
     oidc_jwks_uri: str
@@ -46,6 +54,11 @@ class ApiRuntimeConfig:
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> ApiRuntimeConfig:
         database_path = _database_path(_required(environment, DATABASE_PATH_ENV))
+        response_plan_database_path = _database_path(
+            _required(environment, RESPONSE_PLAN_DATABASE_PATH_ENV)
+        )
+        if response_plan_database_path == database_path:
+            raise ApiRuntimeConfigurationError("response-plan-database-path-invalid")
         issuer = _required(environment, OIDC_ISSUER_ENV)
         audience = _required(environment, OIDC_AUDIENCE_ENV)
         jwks_uri = _required(environment, OIDC_JWKS_URI_ENV)
@@ -56,6 +69,7 @@ class ApiRuntimeConfig:
             raise ApiRuntimeConfigurationError("oidc-leeway-invalid") from None
         return cls(
             database_path=database_path,
+            response_plan_database_path=response_plan_database_path,
             oidc_issuer=issuer,
             oidc_audience=audience,
             oidc_jwks_uri=jwks_uri,
@@ -140,7 +154,26 @@ def create_runtime_app(
     service = (
         StoredIncidentService(store) if clock is None else StoredIncidentService(store, clock=clock)
     )
-    return create_app(service, token_verifier=verifier)
+    authority_boundary = CanonicalAuthorityBoundary()
+    try:
+        response_plan_repository = SQLiteResponsePlanRepository(
+            _database_path(config.response_plan_database_path),
+            authority_boundary=authority_boundary,
+        )
+        identity_boundary = OIDCTrustBoundary(
+            trusted_issuers=frozenset({config.oidc_issuer}),
+            audience=config.oidc_audience,
+        )
+        response_plans = ResponsePlanCoordinator(
+            incident_reader=service,
+            repository=response_plan_repository,
+            authority_boundary=authority_boundary,
+            identity_boundary=identity_boundary,
+            **({} if clock is None else {"clock": clock}),
+        )
+    except Exception:
+        raise ApiRuntimeConfigurationError("response-plan-configuration-invalid") from None
+    return create_app(service, token_verifier=verifier, response_plans=response_plans)
 
 
 def create_application(

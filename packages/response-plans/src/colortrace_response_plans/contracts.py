@@ -234,6 +234,16 @@ def normalize_command(value: Mapping[str, Any]) -> dict[str, Any]:
     if schema == "simulator-quarantine-command/v1":
         if target["kind"] != "color-resource":
             raise ResponsePlanError("quarantine-target-invalid")
+        if target["id"] != command["expected_resource_sha256"]:
+            raise ResponsePlanError("quarantine-resource-binding")
+        envelope_resource = command["action_envelope"]["expected_resource_sha256"]
+        if command["expected_resource_sha256"] != envelope_resource:
+            raise ResponsePlanError("quarantine-resource-binding")
+        if (
+            command["expected_resource_sha256"]
+            == command["action_envelope"]["replacement_resource_sha256"]
+        ):
+            raise ResponsePlanError("replacement-resource-unchanged")
     elif schema == "simulator-targeted-rerender-command/v1":
         if target["kind"] not in {"frame", "derivative"}:
             raise ResponsePlanError("rerender-target-invalid")
@@ -264,6 +274,19 @@ def _sorted_commands(values: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]
         raise ResponsePlanError("command-id-duplicate")
     if len(command_targets) != len(set(command_targets)):
         raise ResponsePlanError("command-target-duplicate")
+    if commands:
+        envelopes = {canonical_json_bytes(command["action_envelope"]) for command in commands}
+        if len(envelopes) != 1:
+            raise ResponsePlanError("action-envelope-conflict")
+        envelope = commands[0]["action_envelope"]
+        generations = {
+            envelope["fixture_generation"],
+            envelope["runtime_generation"],
+            envelope["expected_publication_generation"],
+            envelope["lineage_generation"],
+        }
+        if len(generations) != 1:
+            raise ResponsePlanError("action-generation-conflict")
     return commands
 
 

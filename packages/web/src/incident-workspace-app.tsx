@@ -2,12 +2,18 @@ import type {
   IncidentSummary,
   IncidentWorkspaceSource,
   OperatorSession,
+  ResponsePlan,
 } from "@colortrace/api-client";
 import { projectIncidentReplay } from "@colortrace/workspace-model";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { IncidentApiError, type IncidentReadAdapter } from "./api-adapter.ts";
+import {
+  IncidentApiError,
+  type IncidentReadAdapter,
+  type ResponsePlanRevision,
+} from "./api-adapter.ts";
 import { IncidentWorkspaceShell, type WorkspaceViewer } from "./incident-workspace-shell.tsx";
+import type { ResponsePlanCapabilities, ResponsePlanPanelState } from "./response-plan-review.tsx";
 import type { IncidentInboxItem, IncidentWorkspaceViewState } from "./view-state.ts";
 
 export type IncidentWorkspaceAppProps = {
@@ -152,8 +158,23 @@ function viewerFromSession(session: OperatorSession): WorkspaceViewer {
   return {
     displayName: session.display_name,
     kind: "authenticated",
+    principalKind: session.principal_kind,
+    roles: session.roles,
   };
 }
+
+function mutationKey(operation: string): string {
+  return `${operation}-${crypto.randomUUID()}`;
+}
+
+type PlanMutationAttempt = {
+  readonly execute: (idempotencyKey: string) => Promise<unknown>;
+  readonly identity: string;
+  readonly key: string;
+  readonly plan: ResponsePlan;
+};
+
+type PlanRecoveryKind = "mutation-failed" | "reconciliation-required";
 
 export function IncidentWorkspaceApp({ adapter }: IncidentWorkspaceAppProps) {
   const [generation, setGeneration] = useState(0);
@@ -165,6 +186,12 @@ export function IncidentWorkspaceApp({ adapter }: IncidentWorkspaceAppProps) {
   });
   const [viewer, setViewer] = useState<WorkspaceViewer>({ kind: "loading" });
   const [focusRequest, setFocusRequest] = useState(0);
+  const [responsePlan, setResponsePlan] = useState<ResponsePlanPanelState>({ kind: "absent" });
+  const [planBusy, setPlanBusy] = useState(false);
+  const [planActionError, setPlanActionError] = useState<string | null>(null);
+  const [planRecoveryKind, setPlanRecoveryKind] = useState<PlanRecoveryKind | null>(null);
+  const pendingPlanAttempt = useRef<PlanMutationAttempt | null>(null);
+  const selectedIncidentRef = useRef<string | null>(null);
 
   const incidents = useMemo(() => summaries.map(incidentInboxItemFromSummary), [summaries]);
 
@@ -173,6 +200,7 @@ export function IncidentWorkspaceApp({ adapter }: IncidentWorkspaceAppProps) {
     let active = true;
 
     setSummaries([]);
+    selectedIncidentRef.current = null;
     setSelectedIncidentId(null);
     setState({
       kind: "loading",
@@ -188,10 +216,17 @@ export function IncidentWorkspaceApp({ adapter }: IncidentWorkspaceAppProps) {
       .catch((error: unknown) => {
         if (!active) return;
         if (error instanceof IncidentApiError && error.status === 401) {
-          setViewer({
-            kind: "unauthenticated",
-            message: "No verified operator session is available.",
-          });
+          setViewer(
+            adapter.credentialConfigured
+              ? {
+                  kind: "expired",
+                  message: "The configured operator credential expired or was rejected.",
+                }
+              : {
+                  kind: "unauthenticated",
+                  message: "No verified operator session is available.",
+                },
+          );
           return;
         }
         setViewer({
@@ -207,11 +242,14 @@ export function IncidentWorkspaceApp({ adapter }: IncidentWorkspaceAppProps) {
         const next = [...items];
         setSummaries(next);
         if (next.length === 0) {
+          selectedIncidentRef.current = null;
           setSelectedIncidentId(null);
           setState({ kind: "empty", message: "No incident records were returned." });
           return;
         }
-        setSelectedIncidentId(next[0]?.incident_id ?? null);
+        const nextIncidentId = next[0]?.incident_id ?? null;
+        selectedIncidentRef.current = nextIncidentId;
+        setSelectedIncidentId(nextIncidentId);
       })
       .catch((error: unknown) => {
         if (!active) return;
@@ -251,11 +289,202 @@ export function IncidentWorkspaceApp({ adapter }: IncidentWorkspaceAppProps) {
     };
   }, [adapter, selectedIncidentId, summaries]);
 
+  useEffect(() => {
+    if (selectedIncidentId === null) {
+      pendingPlanAttempt.current = null;
+      setPlanBusy(false);
+      setPlanActionError(null);
+      setPlanRecoveryKind(null);
+      setResponsePlan({ kind: "absent" });
+      return;
+    }
+    const controller = new AbortController();
+    let active = true;
+    pendingPlanAttempt.current = null;
+    setPlanBusy(false);
+    setPlanRecoveryKind(null);
+    setPlanActionError(null);
+    setResponsePlan({ kind: "loading" });
+    void adapter
+      .getResponsePlan(selectedIncidentId, controller.signal)
+      .then((review) => {
+        if (active)
+          setResponsePlan(review === null ? { kind: "absent" } : { kind: "ready", review });
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setResponsePlan({
+          kind: "error",
+          message: `The response plan could not be loaded (${apiFailureLabel(error)}).`,
+        });
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [adapter, selectedIncidentId]);
+
+  const refreshResponsePlan = useCallback(
+    async (incidentId: string) => {
+      const review = await adapter.getResponsePlan(incidentId);
+      if (selectedIncidentRef.current !== incidentId) return false;
+      setResponsePlan(review === null ? { kind: "absent" } : { kind: "ready", review });
+      return true;
+    },
+    [adapter],
+  );
+
+  const runPlanMutation = useCallback(
+    async (attempt: PlanMutationAttempt) => {
+      const incidentId = attempt.plan.incident_id;
+      if (selectedIncidentRef.current !== incidentId) return;
+      setPlanBusy(true);
+      setPlanActionError(null);
+      setPlanRecoveryKind(null);
+      try {
+        await attempt.execute(attempt.key);
+      } catch (error) {
+        if (selectedIncidentRef.current !== incidentId) return;
+        if (error instanceof IncidentApiError && error.status === 401) {
+          setViewer({
+            kind: "expired",
+            message: "The configured operator credential expired or was rejected.",
+          });
+        }
+        setPlanActionError(
+          `The plan mutation did not complete authoritatively (${apiFailureLabel(error)}). ` +
+            "Reconcile state or retry the exact action with its retained idempotency key.",
+        );
+        setPlanRecoveryKind("mutation-failed");
+        setPlanBusy(false);
+        return;
+      }
+      if (selectedIncidentRef.current !== incidentId) return;
+      try {
+        if (!(await refreshResponsePlan(incidentId))) return;
+        if (pendingPlanAttempt.current?.identity === attempt.identity) {
+          pendingPlanAttempt.current = null;
+        }
+      } catch (error) {
+        if (selectedIncidentRef.current !== incidentId) return;
+        setPlanActionError(
+          `The plan mutation was accepted, but authoritative state could not be reconciled ` +
+            `(${apiFailureLabel(error)}). Do not resubmit the mutation; reconcile plan state.`,
+        );
+        setPlanRecoveryKind("reconciliation-required");
+      } finally {
+        if (selectedIncidentRef.current === incidentId) setPlanBusy(false);
+      }
+    },
+    [refreshResponsePlan],
+  );
+
+  const submitPlanMutation = useCallback(
+    (
+      plan: ResponsePlan,
+      identity: string,
+      operation: string,
+      execute: (idempotencyKey: string) => Promise<unknown>,
+    ) => {
+      const retained = pendingPlanAttempt.current;
+      const attempt: PlanMutationAttempt =
+        retained?.identity === identity
+          ? { ...retained, execute, plan }
+          : { execute, identity, key: mutationKey(operation), plan };
+      pendingPlanAttempt.current = attempt;
+      void runPlanMutation(attempt);
+    },
+    [runPlanMutation],
+  );
+
+  const retryPlanMutation = useCallback(() => {
+    const attempt = pendingPlanAttempt.current;
+    if (attempt !== null) void runPlanMutation(attempt);
+  }, [runPlanMutation]);
+
+  const reconcilePlanMutation = useCallback(() => {
+    const incidentId = selectedIncidentRef.current;
+    if (incidentId === null) return;
+    setPlanBusy(true);
+    setPlanActionError(null);
+    void refreshResponsePlan(incidentId)
+      .then((current) => {
+        if (!current || selectedIncidentRef.current !== incidentId) return;
+        pendingPlanAttempt.current = null;
+        setPlanRecoveryKind(null);
+      })
+      .catch((error: unknown) => {
+        if (selectedIncidentRef.current !== incidentId) return;
+        setPlanActionError(
+          `Authoritative plan state is still unavailable (${apiFailureLabel(error)}).`,
+        );
+        setPlanRecoveryKind("reconciliation-required");
+      })
+      .finally(() => {
+        if (selectedIncidentRef.current === incidentId) setPlanBusy(false);
+      });
+  }, [refreshResponsePlan]);
+
+  const approvePlan = useCallback(
+    (plan: ResponsePlan) => {
+      const incidentId = selectedIncidentRef.current;
+      if (incidentId === null || plan.incident_id !== incidentId) return;
+      submitPlanMutation(plan, `approve:${plan.plan_sha256}`, "plan-approve", (key) =>
+        adapter.approveResponsePlan(incidentId, plan, key),
+      );
+    },
+    [adapter, submitPlanMutation],
+  );
+  const editPlan = useCallback(
+    (plan: ResponsePlan, revision: ResponsePlanRevision) => {
+      const incidentId = selectedIncidentRef.current;
+      if (incidentId === null || plan.incident_id !== incidentId) return;
+      const identity = `edit:${plan.plan_sha256}:${JSON.stringify(revision)}`;
+      submitPlanMutation(plan, identity, "plan-edit", (key) =>
+        adapter.editResponsePlan(incidentId, plan, revision, key),
+      );
+    },
+    [adapter, submitPlanMutation],
+  );
+  const rejectPlan = useCallback(
+    (
+      plan: ResponsePlan,
+      reason: "incorrect-command" | "insufficient-evidence" | "unresolved-risk" | "unsafe-scope",
+    ) => {
+      const incidentId = selectedIncidentRef.current;
+      if (incidentId === null || plan.incident_id !== incidentId) return;
+      submitPlanMutation(plan, `reject:${plan.plan_sha256}:${reason}`, "plan-reject", (key) =>
+        adapter.rejectResponsePlan(incidentId, plan, reason, key),
+      );
+    },
+    [adapter, submitPlanMutation],
+  );
+
+  const planCapabilities = useMemo<ResponsePlanCapabilities>(() => {
+    if (viewer.kind === "expired") {
+      return { canApprove: false, canEdit: false, session: "expired" };
+    }
+    if (viewer.kind !== "authenticated" || viewer.principalKind !== "human") {
+      return { canApprove: false, canEdit: false, session: "read-only" };
+    }
+    return {
+      canApprove: viewer.roles.includes("response-plan.approver"),
+      canEdit: viewer.roles.includes("response-plan.editor"),
+      session: "active",
+    };
+  }, [viewer]);
+
   const retry = useCallback(() => {
+    selectedIncidentRef.current = null;
     setFocusRequest((value) => value + 1);
     setGeneration((value) => value + 1);
   }, []);
   const selectIncident = useCallback((incidentId: string) => {
+    selectedIncidentRef.current = incidentId;
+    pendingPlanAttempt.current = null;
+    setPlanBusy(false);
+    setPlanActionError(null);
+    setPlanRecoveryKind(null);
     setState({ kind: "loading", message: "Loading the selected incident workspace." });
     setFocusRequest((value) => value + 1);
     setSelectedIncidentId(incidentId);
@@ -270,6 +499,23 @@ export function IncidentWorkspaceApp({ adapter }: IncidentWorkspaceAppProps) {
       selectedIncidentId={selectedIncidentId}
       state={state}
       viewer={viewer}
+      responsePlan={{
+        actionError: planActionError,
+        busy: planBusy,
+        capabilities: planCapabilities,
+        onApprove: approvePlan,
+        onEdit: editPlan,
+        onReject: rejectPlan,
+        recovery:
+          planRecoveryKind === null
+            ? null
+            : {
+                kind: planRecoveryKind,
+                onReconcile: reconcilePlanMutation,
+                ...(planRecoveryKind === "mutation-failed" ? { onRetry: retryPlanMutation } : {}),
+              },
+        state: responsePlan,
+      }}
     />
   );
 }

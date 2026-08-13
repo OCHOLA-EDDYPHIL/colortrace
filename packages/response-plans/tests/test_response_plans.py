@@ -60,9 +60,33 @@ def target(
     }
 
 
+def action_envelope() -> dict[str, Any]:
+    return {
+        "schema": "simulator-action-envelope/v1",
+        "fixture_id": "colortrace-canonical",
+        "fixture_manifest_sha256": digest("0"),
+        "fixture_generation": 7,
+        "source_batch_id": "fixture-run-canonical",
+        "source_batch_sha256": digest("1"),
+        "runtime_manifest_sha256": digest("2"),
+        "runtime_generation": 7,
+        "expected_publication_pointer_sha256": digest("3"),
+        "expected_publication_generation": 7,
+        "expected_resource_sha256": digest("a"),
+        "replacement_resource_logical_path": "luts/show_look.cube",
+        "replacement_resource_sha256": digest("4"),
+        "declared_resource_manifest_sha256": digest("5"),
+        "ocio_version": "2.5.2",
+        "preservation_manifest_sha256": digest("6"),
+        "safe_complement_sha256": digest("7"),
+        "lineage_manifest_sha256": digest("8"),
+        "lineage_generation": 7,
+    }
+
+
 def plan_inputs() -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, Any]]]:
     targets = [
-        target("color-resource", "resource-causal"),
+        target("color-resource", digest("a")),
         target("frame", "frame-affected-a"),
         target("derivative", "derivative-affected-a"),
     ]
@@ -76,24 +100,41 @@ def plan_inputs() -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict
             "command_id": "command-quarantine-resource",
             "namespace": "colortrace-simulator",
             "target": targets[0],
+            "action_envelope": action_envelope(),
             "expected_resource_sha256": digest("a"),
-            "mode": "isolate",
+            "mode": "quarantine-and-install-approved-replacement",
         },
         {
             "schema": "simulator-targeted-rerender-command/v1",
             "command_id": "command-rerender-frame",
             "namespace": "colortrace-simulator",
             "target": targets[1],
-            "expected_source_sha256": digest("b"),
+            "action_envelope": action_envelope(),
+            "job_id": "job-frame-affected-a",
+            "transform_id": "look/main/v1",
+            "source_id": "source-frame-affected-a",
+            "source_manifest_sha256": digest("9"),
+            "source_png_sha256": digest("b"),
             "expected_config_sha256": digest("c"),
+            "expected_output_sha256": digest("d"),
+            "expected_display_sha256": digest("e"),
+            "lineage_parent_artifact_id": "source-frame-affected-a",
         },
         {
             "schema": "simulator-targeted-rerender-command/v1",
             "command_id": "command-rerender-derivative",
             "namespace": "colortrace-simulator",
             "target": targets[2],
-            "expected_source_sha256": digest("d"),
+            "action_envelope": action_envelope(),
+            "job_id": "job-derivative-affected-a",
+            "transform_id": "look/main/v1",
+            "source_id": "source-derivative-affected-a",
+            "source_manifest_sha256": digest("9"),
+            "source_png_sha256": digest("d"),
             "expected_config_sha256": digest("e"),
+            "expected_derivative_sha256": digest("f"),
+            "expected_derivative_display_sha256": digest("0"),
+            "lineage_parent_artifact_id": "frame-affected-a",
         },
     ]
     return targets, exclusions, commands
@@ -563,7 +604,7 @@ def test_only_exact_typed_simulator_commands_and_targets_are_accepted(
 
     wrong_quarantine_target = copy.deepcopy(commands)
     wrong_quarantine_target[0]["target"] = targets[1]
-    with pytest.raises(ResponsePlanError, match="quarantine-target-invalid"):
+    with pytest.raises(ResponsePlanError, match="schema-validation"):
         create_with_inputs(
             service,
             editor,
@@ -571,6 +612,68 @@ def test_only_exact_typed_simulator_commands_and_targets_are_accepted(
             exclusions=exclusions,
             commands=wrong_quarantine_target,
             idempotency_key="wrong-quarantine-target",
+        )
+
+    crossed_rerender_alternative = copy.deepcopy(commands)
+    crossed_rerender_alternative[1]["target"] = targets[2]
+    with pytest.raises(ResponsePlanError, match="schema-validation"):
+        create_with_inputs(
+            service,
+            editor,
+            targets=targets,
+            exclusions=exclusions,
+            commands=crossed_rerender_alternative,
+            idempotency_key="crossed-rerender-alternative",
+        )
+
+    conflicting_envelope = copy.deepcopy(commands)
+    conflicting_envelope[1]["action_envelope"]["expected_publication_pointer_sha256"] = digest("f")
+    with pytest.raises(ResponsePlanError, match="action-envelope-conflict"):
+        create_with_inputs(
+            service,
+            editor,
+            targets=targets,
+            exclusions=exclusions,
+            commands=conflicting_envelope,
+            idempotency_key="conflicting-action-envelope",
+        )
+
+    mismatched_generations = copy.deepcopy(commands)
+    for command in mismatched_generations:
+        command["action_envelope"]["expected_publication_generation"] = 8
+    with pytest.raises(ResponsePlanError, match="action-generation-conflict"):
+        create_with_inputs(
+            service,
+            editor,
+            targets=targets,
+            exclusions=exclusions,
+            commands=mismatched_generations,
+            idempotency_key="mismatched-action-generation",
+        )
+
+    incomplete_preconditions = copy.deepcopy(commands)
+    incomplete_preconditions[1].pop("expected_output_sha256")
+    with pytest.raises(ResponsePlanError, match="schema-validation"):
+        create_with_inputs(
+            service,
+            editor,
+            targets=targets,
+            exclusions=exclusions,
+            commands=incomplete_preconditions,
+            idempotency_key="missing-old-output-digest",
+        )
+
+    wrong_replacement = copy.deepcopy(commands)
+    for command in wrong_replacement:
+        command["action_envelope"]["replacement_resource_sha256"] = digest("a")
+    with pytest.raises(ResponsePlanError, match="replacement-resource-unchanged"):
+        create_with_inputs(
+            service,
+            editor,
+            targets=targets,
+            exclusions=exclusions,
+            commands=wrong_replacement,
+            idempotency_key="unchanged-replacement-resource",
         )
 
     missing_target_command = commands[:-1]

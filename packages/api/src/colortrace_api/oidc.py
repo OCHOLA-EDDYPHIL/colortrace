@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping
+from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Protocol, cast
 from urllib.parse import urlsplit
 
@@ -25,10 +27,12 @@ _MAX_CLAIM_STRING_LENGTH = 4_096
 _MAX_SUBJECT_LENGTH = 256
 _MAX_DISPLAY_NAME_LENGTH = 256
 _MAX_ROLES = 16
+_MAX_INCIDENT_IDS = 64
 _MAX_ROLE_LENGTH = 64
 _MAX_LEEWAY_SECONDS = 120.0
 _MAX_URL_LENGTH = 2_048
 _ROLE_PATTERN = re.compile(r"[a-z][a-z0-9._:-]*\Z")
+_INCIDENT_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z")
 
 
 class OidcVerificationError(ValueError):
@@ -201,6 +205,24 @@ def _principal_kind(claims: Mapping[str, object]) -> PrincipalKind:
     return value
 
 
+def _incident_ids(claims: Mapping[str, object]) -> frozenset[str]:
+    value = claims.get("incident_ids")
+    if not isinstance(value, list) or not 1 <= len(value) <= _MAX_INCIDENT_IDS:
+        raise ValueError("invalid incident ids")
+    incidents: list[str] = []
+    for incident_id in value:
+        if (
+            not isinstance(incident_id, str)
+            or not incident_id
+            or _INCIDENT_PATTERN.fullmatch(incident_id) is None
+        ):
+            raise ValueError("invalid incident ids")
+        incidents.append(incident_id)
+    if len(set(incidents)) != len(incidents):
+        raise ValueError("invalid incident ids")
+    return frozenset(incidents)
+
+
 class OidcTokenVerifier:
     def __init__(
         self,
@@ -256,6 +278,7 @@ class OidcTokenVerifier:
                     "sub",
                     "roles",
                     "principal_kind",
+                    "incident_ids",
                 ],
                 "strict_aud": False,
                 "verify_aud": True,
@@ -292,6 +315,9 @@ class OidcTokenVerifier:
                 issuer=self._issuer,
                 audience=self._audience,
                 principal_kind=_principal_kind(claims),
+                incident_ids=_incident_ids(claims),
+                credential_sha256=f"sha256:{sha256(encoded).hexdigest()}",
+                expires_at=datetime.fromtimestamp(float(cast(int | float, claims["exp"])), tz=UTC),
             )
         except Exception:
             raise OidcVerificationError from None

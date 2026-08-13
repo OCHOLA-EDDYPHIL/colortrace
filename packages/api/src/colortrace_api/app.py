@@ -3,12 +3,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Protocol
 
+from colortrace_response_plans import ResponsePlanError
 from colortrace_vertical_slice import SliceContractError
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from .auth import Principal, TokenVerifier
+from .response_plans import ResponsePlanApi
 
 
 class IncidentService(Protocol):
@@ -45,10 +47,34 @@ def _status_for_error(code: str) -> int:
     return 409
 
 
+def _status_for_plan_error(code: str) -> int:
+    if code in {"authentication-required", "principal-credential-expired"}:
+        return 401
+    if code in {
+        "human-approval-required",
+        "incident-access-denied",
+        "model-authority-forbidden",
+        "role-required",
+        "service-identity-required",
+    }:
+        return 403
+    if code in {
+        "dispatch-authorization-not-found",
+        "incident-not-found",
+        "plan-not-found",
+        "response-packet-not-found",
+    }:
+        return 404
+    if code.endswith("-invalid") or code.startswith("schema-validation"):
+        return 400
+    return 409
+
+
 def create_app(
     service: IncidentService,
     *,
     token_verifier: TokenVerifier | None = None,
+    response_plans: ResponsePlanApi | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="ColorTrace Incident API",
@@ -62,6 +88,13 @@ def create_app(
     async def handle_contract_error(_request: Any, error: SliceContractError) -> JSONResponse:
         return JSONResponse(
             status_code=_status_for_error(error.code),
+            content={"code": error.code},
+        )
+
+    @app.exception_handler(ResponsePlanError)
+    async def handle_plan_error(_request: Any, error: ResponsePlanError) -> JSONResponse:
+        return JSONResponse(
+            status_code=_status_for_plan_error(error.code),
             content={"code": error.code},
         )
 
@@ -92,6 +125,11 @@ def create_app(
 
     principal_dependency = Depends(current_principal)
 
+    def plan_api() -> ResponsePlanApi:
+        if response_plans is None:
+            raise _problem(404, "response-plan-unavailable")
+        return response_plans
+
     @app.post("/v1/incidents", status_code=202)
     def create_incident(
         alert: dict[str, Any],
@@ -117,6 +155,62 @@ def create_app(
     @app.get("/v1/incidents/{incident_id}/workspace")
     def get_workspace(incident_id: str) -> dict[str, Any]:
         return service.workspace(incident_id)
+
+    @app.get("/v1/incidents/{incident_id}/response-plan/draft")
+    def get_response_plan_draft(incident_id: str) -> dict[str, Any]:
+        return plan_api().draft(incident_id)
+
+    @app.get("/v1/incidents/{incident_id}/response-plan")
+    def get_response_plan(incident_id: str) -> dict[str, Any]:
+        return plan_api().review(incident_id)
+
+    @app.post("/v1/incidents/{incident_id}/response-plan", status_code=201)
+    def create_response_plan(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return plan_api().create(principal, incident_id, body)
+
+    @app.put("/v1/incidents/{incident_id}/response-plan")
+    def edit_response_plan(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return plan_api().edit(principal, incident_id, body)
+
+    @app.post("/v1/incidents/{incident_id}/response-plan/approve")
+    def approve_response_plan(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return plan_api().approve(principal, incident_id, body)
+
+    @app.post("/v1/incidents/{incident_id}/response-plan/reject")
+    def reject_response_plan(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return plan_api().reject(principal, incident_id, body)
+
+    @app.post("/v1/incidents/{incident_id}/response-plan/dispatch-authorizations")
+    def authorize_response_plan_dispatch(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return plan_api().authorize_dispatch(principal, incident_id, body)
+
+    @app.post("/v1/incidents/{incident_id}/response-plan/dispatch-consumptions")
+    def consume_response_plan_dispatch(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return plan_api().consume_dispatch(principal, incident_id, body)
 
     @app.get("/v1/session")
     def get_session(principal: Principal = principal_dependency) -> dict[str, Any]:

@@ -10,6 +10,12 @@ describe("canonical API contract", () => {
       "/v1/incidents",
       "/v1/incidents/{incidentId}",
       "/v1/incidents/{incidentId}/replay",
+      "/v1/incidents/{incidentId}/response-plan",
+      "/v1/incidents/{incidentId}/response-plan/approve",
+      "/v1/incidents/{incidentId}/response-plan/dispatch-authorizations",
+      "/v1/incidents/{incidentId}/response-plan/dispatch-consumptions",
+      "/v1/incidents/{incidentId}/response-plan/draft",
+      "/v1/incidents/{incidentId}/response-plan/reject",
       "/v1/incidents/{incidentId}/workspace",
       "/v1/session",
     ]);
@@ -24,6 +30,15 @@ describe("canonical API contract", () => {
     expect(canonicalContract.paths["/v1/incidents/{incidentId}/workspace"].get.operationId).toBe(
       "getIncidentWorkspace",
     );
+    expect(
+      canonicalContract.paths["/v1/incidents/{incidentId}/response-plan"].get.operationId,
+    ).toBe("getResponsePlanReview");
+    expect(
+      canonicalContract.paths["/v1/incidents/{incidentId}/response-plan"].post.operationId,
+    ).toBe("createResponsePlan");
+    expect(
+      canonicalContract.paths["/v1/incidents/{incidentId}/response-plan"].put.operationId,
+    ).toBe("editResponsePlan");
     expect(canonicalContract.paths["/v1/session"].get.operationId).toBe("getOperatorSession");
     expect(canonicalContract.components.securitySchemes.operatorOidc.scheme).toBe("bearer");
     const session = canonicalContract.components.schemas.OperatorSession;
@@ -79,6 +94,25 @@ describe("canonical API contract", () => {
       "packet.persisted",
       "incident.completed",
     ]);
+  });
+
+  it("keeps typed response-plan requests bounded and command targets discriminated", () => {
+    const schemas = canonicalContract.components.schemas;
+    expect(schemas.SimulatorQuarantineCommand.properties.target.allOf[1]).toMatchObject({
+      properties: { kind: { const: "color-resource" } },
+    });
+    expect(schemas.SimulatorFrameRerenderCommand.properties.target.allOf[1]).toMatchObject({
+      properties: { kind: { const: "frame" } },
+    });
+    expect(schemas.SimulatorDerivativeRerenderCommand.properties.target.allOf[1]).toMatchObject({
+      properties: { kind: { const: "derivative" } },
+    });
+    for (const request of [schemas.CreateResponsePlanRequest, schemas.EditResponsePlanRequest]) {
+      expect(request.additionalProperties).toBe(false);
+      expect(request.properties.targets.maxItems).toBe(64);
+      expect(request.properties.exclusions.maxItems).toBe(64);
+      expect(request.properties.commands.maxItems).toBe(64);
+    }
   });
 });
 

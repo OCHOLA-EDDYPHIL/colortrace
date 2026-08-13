@@ -77,6 +77,20 @@ class ResponsePlanService:
             raise ResponsePlanError("service-identity-required")
         return principal.actor()
 
+    def preauthorize_plan_editor(
+        self,
+        principal: VerifiedPrincipal | None,
+        *,
+        incident_id: str,
+    ) -> None:
+        """Fail closed before an adapter registers canonical plan authority."""
+        self._authorize(
+            principal,
+            incident_id=incident_id,
+            role=EDITOR_ROLE,
+            kinds=frozenset({"human"}),
+        )
+
     @staticmethod
     def _request_digest(value: Mapping[str, Any]) -> str:
         try:
@@ -1084,25 +1098,24 @@ class ResponsePlanService:
     def current_plan(self, incident_id: str) -> dict[str, Any]:
         incident = require_identifier(incident_id)
         with self._repository.transaction(write=False) as connection:
+            plan = self._current_plan(connection, incident)
             self._validate_history(connection, incident)
-            return cast(dict[str, Any], plain_json(self._current_plan(connection, incident)))
+            return cast(dict[str, Any], plain_json(plan))
 
     def plan_version(self, incident_id: str, version: int) -> dict[str, Any]:
         incident = require_identifier(incident_id)
         selected_version = self._require_version(version, minimum=1)
         with self._repository.transaction(write=False) as connection:
+            plan = self._plan_version(connection, incident, selected_version)
             self._validate_history(connection, incident)
-            return cast(
-                dict[str, Any],
-                plain_json(self._plan_version(connection, incident, selected_version)),
-            )
+            return cast(dict[str, Any], plain_json(plan))
 
     def decision(self, incident_id: str, version: int) -> dict[str, Any] | None:
         incident = require_identifier(incident_id)
         selected_version = self._require_version(version, minimum=1)
         with self._repository.transaction(write=False) as connection:
-            self._validate_history(connection, incident)
             plan = self._plan_version(connection, incident, selected_version)
+            self._validate_history(connection, incident)
             decision = self._decision(connection, incident, selected_version)
             if decision is None:
                 return None

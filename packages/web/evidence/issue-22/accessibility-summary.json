@@ -1,0 +1,43 @@
+{
+  "schema": "colortrace-accessibility-evidence/v1",
+  "issue": 22,
+  "generated_at": "2026-08-13T19:33:48.232Z",
+  "source_test": "packages/web/e2e/incident-workspace.spec.ts",
+  "engine": {
+    "name": "axe-core",
+    "version": "4.13.0"
+  },
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "tags": [
+    "wcag2a",
+    "wcag2aa",
+    "wcag21a",
+    "wcag21aa",
+    "wcag22aa"
+  ],
+  "violations": 0,
+  "incomplete": 0,
+  "serious_or_critical_color_contrast_incomplete": 0,
+  "passes": 26,
+  "screenshots": [
+    {
+      "path": "packages/web/evidence/issue-22/response-plan-review-1440x900.png",
+      "sha256": "f07ead312a99ccbba419bf9b1c5b67c8f86cc9329709d701d1b8802cdc7797a5"
+    },
+    {
+      "path": "packages/web/evidence/issue-22/response-plan-review-390x844.png",
+      "sha256": "475a5b4205ed8d13a12044bdb714133564b20ecbc862276f169eeff98dd40522"
+    },
+    {
+      "path": "packages/web/evidence/issue-22/response-plan-actions-1440x900.png",
+      "sha256": "b13f6edc90fb926257d0fdd698f6efe321fbc351746e42323dc8ae8a13230176"
+    },
+    {
+      "path": "packages/web/evidence/issue-22/response-plan-actions-390x844.png",
+      "sha256": "9811417f182a5c012eccd7396f43561e223a8a838fb75c4194c87d88ff7b8959"
+    }
+  ]
+}
