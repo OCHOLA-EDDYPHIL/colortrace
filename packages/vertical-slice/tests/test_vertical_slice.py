@@ -129,6 +129,28 @@ class FakeModel:
         )
 
 
+class LateDraftingTimeoutModel(FakeModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.turns: list[str] = []
+
+    async def generate(self, call: ModelCall) -> ModelOutput:
+        self.turns.append(call.turn_kind)
+        if call.turn_kind == "response-drafting":
+            await asyncio.sleep(60)
+        return await super().generate(call)
+
+
+class FixedValidator:
+    def __init__(self, result: Mapping[str, Any]) -> None:
+        self.result = json.loads(json.dumps(result))
+
+    def validate(self, bundle_root: Path, *, incident_id: str) -> dict[str, Any]:
+        assert bundle_root.is_dir()
+        assert self.result["incident_id"] == incident_id
+        return json.loads(json.dumps(self.result))
+
+
 class FakeSession:
     def __init__(self, tracker: FakeEvidence) -> None:
         self.tracker = tracker
@@ -435,6 +457,62 @@ def test_service_timeout_is_durable_and_clean_reset_is_exact(
         api.get_incident("incident-timeout")
 
 
+def test_late_drafting_timeout_preserves_completed_provenance(
+    policy: InvestigationPolicy,
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    store = SqliteIncidentStore(tmp_path / "late-timeout.sqlite3")
+    api = VerticalSliceApi(store, clock=lambda: NOW)
+    model = LateDraftingTimeoutModel()
+    validator_result = ColorStateValidatorGateway().validate(
+        canonical_bundle, incident_id="incident-late-timeout"
+    )
+    selected_worker = VerticalSliceWorker(
+        store,
+        policy=policy,
+        model=model,
+        evidence=FakeEvidence(correlation),
+        validator=FixedValidator(validator_result),
+        clock=lambda: NOW,
+        service_timeout_seconds=1,
+    )
+
+    packet = asyncio.run(
+        run_vertical_slice(
+            api=api,
+            worker=selected_worker,
+            alert=alert(correlation, incident_id="incident-late-timeout"),
+            bundle_root=canonical_bundle,
+        )
+    )
+    replay = api.replay("incident-late-timeout")
+
+    assert model.turns == ["evidence-selection", "response-drafting"]
+    assert packet["status"] == "unresolved"
+    assert len(packet["evidence_ids"]) >= 4
+    assert len(packet["deterministic_results"]) == 1
+    assert len(replay["validator_results"]) == 1
+    assert [item["turn_kind"] for item in packet["invocation_records"]] == [
+        "evidence-selection",
+        "response-drafting",
+    ]
+    assert packet["invocation_records"][1]["result_class"] == "failed"
+    assert packet["invocation_records"][1]["error_code"] == "cancelled"
+    assert packet["budget_use"]["model_turns"] == 2
+    assert packet["budget_use"]["input_tokens"] == 1000
+    assert packet["budget_use"]["output_tokens"] == 100
+    assert packet["budget_use"]["unavailable_input_tokens_reserved"] > 0
+    assert packet["budget_use"]["unavailable_output_tokens_reserved"] == 1792
+    assert packet["budget_use"]["mcp_attempts"] == 4
+    assert packet["budget_use"]["validator_calls"] == 5
+    assert packet["budget_use"]["elapsed_ms"] >= 900
+    assert "drafting" in packet["state_history"]
+    assert replay["invocations"] == packet["invocation_records"]
+    validate_replay(replay)
+
+
 def test_duplicate_identity_conflict_and_oracle_path_fail_closed(
     policy: InvestigationPolicy,
     canonical_bundle: Path,
@@ -521,4 +599,23 @@ def test_openapi_preserves_intake_and_packet_contract_surfaces() -> None:
     assert (
         schemas["Claim"]["properties"]["state"]
         == packet_schema["$defs"]["claim"]["properties"]["state"]
+    )
+    packet_properties = schemas["ResponsePacket"]["properties"]
+    assert packet_properties["deterministic_results"]["items"]["$ref"].endswith(
+        "/DeterministicResult"
+    )
+    assert packet_properties["invocation_records"]["items"]["$ref"].endswith("/ModelInvocation")
+    assert packet_properties["unresolved_items"]["items"]["$ref"].endswith("/UnresolvedItem")
+    replay_properties = schemas["IncidentReplay"]["properties"]
+    assert replay_properties["evidence"]["items"]["$ref"].endswith("/EvidenceEnvelope")
+    assert replay_properties["validator_results"]["items"]["$ref"].endswith("/ValidatorResult")
+    assert replay_properties["invocations"]["items"]["$ref"].endswith("/ModelInvocation")
+    assert schemas["TraceEvent"]["properties"]["event_type"]["enum"] == list(
+        (
+            "api.intake.accepted",
+            "task.queued",
+            "worker.started",
+            "packet.persisted",
+            "incident.completed",
+        )
     )

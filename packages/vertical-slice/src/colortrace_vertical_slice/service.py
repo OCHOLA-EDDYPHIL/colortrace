@@ -16,6 +16,7 @@ from colortrace_investigation import (
     ModelGateway,
     ModelOutput,
     TrackedSemaphore,
+    WorkflowProgress,
 )
 from colortrace_investigation.contracts import (
     RESPONSE_PACKET_VERSION,
@@ -159,11 +160,28 @@ class VerticalSliceWorker:
         code: str,
         timed_out: bool,
         evidence_ids: Sequence[str],
-        maximum_calls_in_flight_observed: int,
-        mcp_attempts: int,
+        progress: WorkflowProgress,
     ) -> dict[str, Any]:
-        intake = AlertIntake.from_mapping(work.alert)
-        cited = sorted(set(evidence_ids))
+        intake = progress.intake or AlertIntake.from_mapping(work.alert)
+        cited = sorted(set(evidence_ids) | progress.evidence_ids)
+        deterministic_results = cast(
+            list[dict[str, Any]], plain_json(progress.deterministic_results)
+        )
+        classified_claims = cast(list[dict[str, Any]], plain_json(progress.classified_claims))
+        invocations = cast(list[dict[str, Any]], plain_json(progress.invocations))
+        scoped_items: dict[tuple[str, str], dict[str, str]] = {}
+        if progress.classified_scope is not None:
+            for group in ("affected", "safe", "unknown"):
+                for raw in cast(
+                    Sequence[Mapping[str, str]], progress.classified_scope.get(group, ())
+                ):
+                    item = {"kind": raw["kind"], "id": raw["id"]}
+                    scoped_items[(item["kind"], item["id"])] = item
+        state_history = list(progress.state_history)
+        if not state_history or state_history[-1] not in {"finalization", "complete"}:
+            state_history.append("finalization")
+        if state_history[-1] != "complete":
+            state_history.append("complete")
         normalized = {
             "incident_id": work.incident_id,
             "reason_codes": [code],
@@ -196,35 +214,23 @@ class VerticalSliceWorker:
             "status": "unresolved",
             "fixed_window": intake.window.to_dict(),
             "evidence_ids": cited,
-            "deterministic_results": [],
-            "claims": [claim],
+            "deterministic_results": deterministic_results,
+            "claims": [*classified_claims, claim],
             "scope": {
                 "state": "unresolved",
                 "policy": "single-causal-resource-scope/v1",
                 "affected": [],
                 "safe": [],
-                "unknown": [],
+                "unknown": [scoped_items[key] for key in sorted(scoped_items)],
                 "reason_codes": [code],
             },
-            "invocation_records": [],
-            "budget_use": {
-                "elapsed_ms": 120_000 if timed_out else 0,
-                "model_turns": 0,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "unavailable_input_tokens_reserved": 32_000,
-                "unavailable_output_tokens_reserved": 4_096,
-                "mcp_attempts": min(8, mcp_attempts),
-                "validator_calls": 0,
-                "trusted_transient_retries": 0,
-                "model_visible_bytes": 0,
-                "maximum_calls_in_flight_observed": min(2, maximum_calls_in_flight_observed),
-            },
+            "invocation_records": invocations,
+            "budget_use": progress.budget_snapshot(),
             "unresolved_items": [{"code": code, "stage": "worker", "evidence_ids": cited}],
             "candidate_plan": None,
             "no_action_reason": "budget-exhausted" if timed_out else "evidence-unavailable",
             "model_advisory": None,
-            "state_history": ["intake", "finalization", "complete"],
+            "state_history": state_history,
             "finalized_at": timestamp(self._clock().astimezone(UTC)),
         }
         return finalize_response_packet(packet_body)
@@ -237,6 +243,7 @@ class VerticalSliceWorker:
         work = self._store.claim_task(task_id, now=now)
         evidence = RecordingEvidenceCollector(self._evidence)
         validator = RecordingValidatorGateway(self._validator)
+        progress = WorkflowProgress()
         workflow = InvestigationWorkflow(
             policy=self._policy,
             model=self._model,
@@ -245,6 +252,7 @@ class VerticalSliceWorker:
             clock=self._clock,
             monotonic=self._monotonic,
             shared_limiter=self._shared,
+            progress=progress,
         )
         try:
             packet = await asyncio.wait_for(
@@ -257,8 +265,7 @@ class VerticalSliceWorker:
                 code="service-timeout",
                 timed_out=True,
                 evidence_ids=[cast(str, item["evidence_id"]) for item in evidence.envelopes],
-                maximum_calls_in_flight_observed=(evidence.maximum_calls_in_flight_observed),
-                mcp_attempts=evidence.tool_calls_used,
+                progress=progress,
             )
         except asyncio.CancelledError:
             raise
@@ -268,8 +275,7 @@ class VerticalSliceWorker:
                 code="worker-service-failure",
                 timed_out=False,
                 evidence_ids=[cast(str, item["evidence_id"]) for item in evidence.envelopes],
-                maximum_calls_in_flight_observed=(evidence.maximum_calls_in_flight_observed),
-                mcp_attempts=evidence.tool_calls_used,
+                progress=progress,
             )
         packet_result_ids = {
             cast(str, item["result_id"])

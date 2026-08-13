@@ -2,6 +2,7 @@
   "schema_version": 1,
   "python": {
     "allowed_ai_packages": [
+      "colortrace-investigation",
       "google-adk",
       "google-cloud-aiplatform",
       "google-genai",
@@ -10,7 +11,6 @@
     "allowed_non_ai_runtime_packages": [
       "colortrace-fixture",
       "colortrace-grafana-mcp",
-      "colortrace-investigation",
       "colortrace-validator",
       "jsonschema",
       "opencolorio",

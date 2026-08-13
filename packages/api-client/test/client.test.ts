@@ -1,11 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
   type AlertIntake,
+  type CandidatePlan,
   createClient,
   createIncident,
+  type DeterministicResult,
+  type EvidenceEnvelope,
   getIncident,
+  type IncidentReplay,
+  type ModelInvocation,
   replayIncident,
+  type ResponsePacket,
+  type TraceEvent,
+  type UnresolvedItem,
+  type ValidatorResult,
 } from "../src/index";
 
 const alert: AlertIntake = {
@@ -35,6 +44,19 @@ const alert: AlertIntake = {
 };
 
 describe("generated incident client", () => {
+  it("keeps persisted provenance fields concrete", () => {
+    expectTypeOf<
+      ResponsePacket["deterministic_results"][number]
+    >().toEqualTypeOf<DeterministicResult>();
+    expectTypeOf<ResponsePacket["invocation_records"][number]>().toEqualTypeOf<ModelInvocation>();
+    expectTypeOf<ResponsePacket["unresolved_items"][number]>().toEqualTypeOf<UnresolvedItem>();
+    expectTypeOf<Exclude<ResponsePacket["candidate_plan"], null>>().toEqualTypeOf<CandidatePlan>();
+    expectTypeOf<IncidentReplay["evidence"][number]>().toEqualTypeOf<EvidenceEnvelope>();
+    expectTypeOf<IncidentReplay["validator_results"][number]>().toEqualTypeOf<ValidatorResult>();
+    expectTypeOf<IncidentReplay["invocations"][number]>().toEqualTypeOf<ModelInvocation>();
+    expectTypeOf<IncidentReplay["trace_events"][number]>().toEqualTypeOf<TraceEvent>();
+  });
+
   it("sends the exact typed alert body to the admission boundary", async () => {
     const requests: Request[] = [];
     const generatedClient = createClient({

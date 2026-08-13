@@ -28,6 +28,39 @@ describe("canonical API contract", () => {
       "rejected",
       "unresolved",
     ]);
+    const packet = canonicalContract.components.schemas.ResponsePacket.properties;
+    expect(packet.deterministic_results.items.$ref).toBe(
+      "#/components/schemas/DeterministicResult",
+    );
+    expect(packet.invocation_records.items.$ref).toBe("#/components/schemas/ModelInvocation");
+    expect(packet.unresolved_items.items.$ref).toBe("#/components/schemas/UnresolvedItem");
+    expect(packet.candidate_plan.oneOf[1]?.$ref).toBe("#/components/schemas/CandidatePlan");
+    expect(packet.model_advisory.oneOf[1]?.$ref).toBe("#/components/schemas/ModelAdvisory");
+    expect(packet.no_action_reason.oneOf[1]?.enum).toEqual([
+      "budget-exhausted",
+      "contradictory-evidence",
+      "evidence-unavailable",
+      "incomplete-evidence",
+      "invalid-intake",
+      "model-unavailable",
+      "no-affected-targets",
+      "policy-drift",
+      "stale-evidence",
+      "validator-unresolved",
+    ]);
+
+    const replay = canonicalContract.components.schemas.IncidentReplay.properties;
+    expect(replay.evidence.items.$ref).toBe("#/components/schemas/EvidenceEnvelope");
+    expect(replay.evidence_batches.items.$ref).toBe("#/components/schemas/EvidenceBatch");
+    expect(replay.validator_results.items.$ref).toBe("#/components/schemas/ValidatorResult");
+    expect(replay.invocations.items.$ref).toBe("#/components/schemas/ModelInvocation");
+    expect(canonicalContract.components.schemas.TraceEvent.properties.event_type.enum).toEqual([
+      "api.intake.accepted",
+      "task.queued",
+      "worker.started",
+      "packet.persisted",
+      "incident.completed",
+    ]);
   });
 });
 
