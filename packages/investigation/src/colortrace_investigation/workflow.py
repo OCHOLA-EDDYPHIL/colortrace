@@ -1460,7 +1460,7 @@ class InvestigationWorkflow:
                 "quoted_evidence_excerpts": _project_advisory_evidence_views(
                     assessment.model_views
                 ),
-                "allowed_evidence_ids": sorted(evidence_ids),
+                "allowed_evidence_ids": sorted(assessment.evidence_ids),
                 "authority": "advisory-only",
             }
             output, records, blocker = await self._model_call(
@@ -1477,7 +1477,9 @@ class InvestigationWorkflow:
                 blockers.append(blocker)
             elif output is not None:
                 try:
-                    advisory = ModelAdvisory.from_bytes(output.content, frozenset(evidence_ids))
+                    advisory = ModelAdvisory.from_bytes(
+                        output.content, frozenset(assessment.evidence_ids)
+                    )
                 except ContractError as error:
                     blockers.append(Blocker(_normalized_code(error.code), "drafting"))
 

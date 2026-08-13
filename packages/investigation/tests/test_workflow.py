@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -131,6 +132,7 @@ class FakeModel:
         output_tokens: int = 100,
         delay: float = 0,
         invalid_selection: Mapping[str, Any] | None = None,
+        advisory_evidence_ids: tuple[str, ...] | None = None,
     ) -> None:
         self.selected = selected
         self.hypotheses = hypotheses
@@ -139,6 +141,7 @@ class FakeModel:
         self.output_tokens = output_tokens
         self.delay = delay
         self.invalid_selection = invalid_selection
+        self.advisory_evidence_ids = advisory_evidence_ids
         self.calls: list[ModelCall] = []
         self.in_flight = 0
         self.maximum_in_flight = 0
@@ -163,11 +166,15 @@ class FakeModel:
                 value = {
                     "schema": "model-advisory/v1",
                     "summary": "Quoted evidence was retained as untrusted data.",
-                    "evidence_ids": [
-                        item
-                        for item in allowed
-                        if isinstance(item, str) and item.startswith("sha256:")
-                    ][:4],
+                    "evidence_ids": (
+                        list(self.advisory_evidence_ids)
+                        if self.advisory_evidence_ids is not None
+                        else [
+                            item
+                            for item in allowed
+                            if isinstance(item, str) and item.startswith("sha256:")
+                        ][:4]
+                    ),
                 }
             return ModelOutput(
                 json.dumps(value, sort_keys=True, separators=(",", ":")).encode(),
@@ -639,7 +646,29 @@ def test_four_large_excerpts_are_projected_without_changing_authority_or_facts(
         "claims": packet["claims"],
         "scope": packet["scope"],
     }
-    assert set(draft_payload["allowed_evidence_ids"]) == set(packet["evidence_ids"])
+    excerpt_ids = {model_view["evidence_id"] for model_view in model_views}
+    allowed_evidence_ids = draft_payload["allowed_evidence_ids"]
+    assert allowed_evidence_ids == sorted(excerpt_ids)
+    assert all(re.fullmatch(r"sha256:[0-9a-f]{64}", item) for item in allowed_evidence_ids)
+    validator_ids = set(packet["evidence_ids"]) - excerpt_ids
+    assert validator_ids
+    assert validator_ids.isdisjoint(allowed_evidence_ids)
+    result_evidence_ids = {
+        evidence_id
+        for result in packet["deterministic_results"]
+        for evidence_id in result["evidence_ids"]
+    }
+    claim_evidence_ids = {
+        evidence_id for claim in packet["claims"] for evidence_id in claim["evidence_ids"]
+    }
+    claim_result_ids = {
+        claim["deterministic_result_evidence_id"]
+        for claim in packet["claims"]
+        if claim["deterministic_result_evidence_id"] is not None
+    }
+    assert validator_ids == result_evidence_ids | claim_evidence_ids | claim_result_ids
+    assert set(packet["model_advisory"]["evidence_ids"]) <= excerpt_ids
+    assert set(packet["model_advisory"]["evidence_ids"]).isdisjoint(validator_ids)
     for model_view in model_views:
         source = source_by_id[model_view["evidence_id"]]
         assert model_view["query_key"] == source["observation"]["query_key"]
@@ -899,6 +928,13 @@ def test_injection_remains_quoted_and_cannot_change_facts_or_tools(
         "model-selection/v1",
         "model-advisory/v1",
     ]
+    draft_payload = model.calls[1].payload
+    excerpt_ids = {view["evidence_id"] for view in draft_payload["quoted_evidence_excerpts"]}
+    assert set(draft_payload["allowed_evidence_ids"]) == excerpt_ids
+    assert set(draft_payload["allowed_evidence_ids"]).isdisjoint(
+        set(injected["evidence_ids"]) - excerpt_ids
+    )
+    assert set(injected["model_advisory"]["evidence_ids"]) <= excerpt_ids
     assert set(model.calls[0].payload["alert"]["available_query_keys"]) == set(
         mcp_subject.QUERY_KEYS
     )
@@ -922,6 +958,25 @@ def test_invalid_model_tool_arguments_are_rejected_before_evidence(
     assert packet["status"] == "unresolved"
     assert evidence.collections == 0
     assert "model-output-invalid" in {item["code"] for item in packet["unresolved_items"]}
+
+
+def test_drafting_rejects_citation_outside_quoted_evidence(
+    policy: InvestigationPolicy, bundles: dict[str, Path]
+) -> None:
+    packet, model, _ = asyncio.run(
+        execute(
+            policy,
+            bundles["canonical"],
+            model=FakeModel(advisory_evidence_ids=(f"sha256:{'f' * 64}",)),
+        )
+    )
+
+    assert len(model.calls) == 2
+    assert f"sha256:{'f' * 64}" not in model.calls[1].payload["allowed_evidence_ids"]
+    assert packet["status"] == "unresolved"
+    assert packet["candidate_plan"] is None
+    assert packet["model_advisory"] is None
+    assert "model-citation-invalid" in {item["code"] for item in packet["unresolved_items"]}
 
 
 def test_one_trusted_model_retry_then_second_timeout_is_terminal(
@@ -1062,7 +1117,10 @@ def test_model_instructions_pin_each_output_contract() -> None:
     assert (
         "schema field exactly to model-selection/v1" in _SYSTEM_INSTRUCTIONS["evidence-selection"]
     )
-    assert "schema field exactly to model-advisory/v1" in _SYSTEM_INSTRUCTIONS["response-drafting"]
+    drafting = _SYSTEM_INSTRUCTIONS["response-drafting"]
+    assert "schema field exactly to model-advisory/v1" in drafting
+    assert "Cite 1-4 unique evidence_ids copied exactly from allowed_evidence_ids" in drafting
+    assert "summary at most 1024 characters" in drafting
 
 
 def test_pinned_adk_runner_assembles_only_vertex_json_response_schema() -> None:
