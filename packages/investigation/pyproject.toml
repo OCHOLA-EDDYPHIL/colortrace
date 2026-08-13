@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "colortrace-investigation"
+version = "1.0.0"
+description = "Bounded Gemini investigation workflow with deterministic authority"
+requires-python = ">=3.12"
+dependencies = [
+    "colortrace-grafana-mcp",
+    "colortrace-validator",
+    "google-adk==2.6.3",
+    "google-genai==2.17.0",
+    "jsonschema==4.25.1",
+]
+
+[tool.uv.sources]
+colortrace-grafana-mcp = {workspace = true}
+colortrace-validator = {workspace = true}
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/colortrace_investigation"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/colortrace_investigation/schemas" = "colortrace_investigation/schemas"

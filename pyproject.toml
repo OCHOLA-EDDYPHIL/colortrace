@@ -18,6 +18,7 @@ package = false
 members = [
     "packages/fixture-generator",
     "packages/grafana-mcp",
+    "packages/investigation",
     "packages/repo-tools",
     "packages/telemetry",
     "packages/validators",
@@ -37,6 +38,7 @@ strict = true
 files = [
     "packages/fixture-generator/src",
     "packages/grafana-mcp/src",
+    "packages/investigation/src",
     "packages/repo-tools/src",
     "packages/telemetry/src",
     "packages/validators/src",
@@ -47,6 +49,7 @@ addopts = ["--strict-config", "--strict-markers"]
 testpaths = [
     "packages/fixture-generator/tests",
     "packages/grafana-mcp/tests",
+    "packages/investigation/tests",
     "packages/repo-tools/tests",
     "packages/telemetry/tests",
     "packages/validators/tests",

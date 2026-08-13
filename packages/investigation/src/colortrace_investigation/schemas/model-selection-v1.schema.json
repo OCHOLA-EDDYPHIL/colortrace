@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/model-selection-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "hypothesis_keys", "query_keys"],
+  "properties": {
+    "schema": {"const": "model-selection/v1"},
+    "hypothesis_keys": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "color-resource-drift",
+          "nominal-config-drift",
+          "unrelated-event",
+          "worker-only-failure"
+        ]
+      }
+    },
+    "query_keys": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "alert.rule",
+          "log.correlated-events",
+          "metric.correlated-observations",
+          "trace.by-id"
+        ]
+      }
+    }
+  }
+}
