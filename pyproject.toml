@@ -22,6 +22,7 @@ members = [
     "packages/repo-tools",
     "packages/telemetry",
     "packages/validators",
+    "packages/vertical-slice",
 ]
 
 [tool.ruff]
@@ -42,6 +43,7 @@ files = [
     "packages/repo-tools/src",
     "packages/telemetry/src",
     "packages/validators/src",
+    "packages/vertical-slice/src",
 ]
 
 [tool.pytest.ini_options]
@@ -53,4 +55,5 @@ testpaths = [
     "packages/repo-tools/tests",
     "packages/telemetry/tests",
     "packages/validators/tests",
+    "packages/vertical-slice/tests",
 ]

@@ -14,6 +14,7 @@ from .workflow import (
     InvestigationWorkflow,
     TrackedSemaphore,
     WorkflowError,
+    WorkflowProgress,
 )
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "ModelOutput",
     "ModelSelection",
     "TrackedSemaphore",
+    "WorkflowProgress",
     "WorkflowError",
     "validate_response_packet",
 ]

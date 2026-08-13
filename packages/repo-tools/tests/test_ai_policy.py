@@ -171,6 +171,16 @@ dependencies = ["requests==1.0.0"]
         )
         self.assertEqual(check_ai_policy(self.root), [])
 
+    def test_investigation_runtime_is_classified_as_ai_enabled(self) -> None:
+        policy = json.loads(
+            (REPOSITORY_ROOT / "policy" / "ai-boundary.json").read_text(encoding="utf-8")
+        )
+        self.assertIn("colortrace-investigation", policy["python"]["allowed_ai_packages"])
+        self.assertNotIn(
+            "colortrace-investigation",
+            policy["python"]["allowed_non_ai_runtime_packages"],
+        )
+
     def test_policy_requires_closed_classification_keys(self) -> None:
         policy_path = self.root / "policy" / "ai-boundary.json"
         policy = json.loads(policy_path.read_text(encoding="utf-8"))

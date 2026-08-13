@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/incident-replay-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "incident",
+    "task",
+    "alert",
+    "evidence_batches",
+    "evidence",
+    "validator_results",
+    "invocations",
+    "packet",
+    "trace_events",
+    "derivation_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "incident-replay/v1"},
+    "incident": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "incident_id",
+        "alert_id",
+        "status",
+        "version",
+        "alert_sha256",
+        "trace_id",
+        "packet_id",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "schema": {"const": "incident-record/v1"},
+        "incident_id": {"$ref": "#/$defs/identifier"},
+        "alert_id": {"$ref": "#/$defs/identifier"},
+        "status": {"enum": ["resolved", "unresolved"]},
+        "version": {"type": "integer", "minimum": 3},
+        "alert_sha256": {"$ref": "#/$defs/digest"},
+        "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "packet_id": {"type": "string", "pattern": "^response-packet:[0-9a-f]{64}$"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "updated_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "task_id",
+        "incident_id",
+        "expected_incident_version",
+        "alert_sha256",
+        "trace_id",
+        "status",
+        "packet_id",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "schema": {"const": "incident-task/v1"},
+        "task_id": {"type": "string", "pattern": "^task:[0-9a-f]{64}$"},
+        "incident_id": {"$ref": "#/$defs/identifier"},
+        "expected_incident_version": {"type": "integer", "minimum": 1},
+        "alert_sha256": {"$ref": "#/$defs/digest"},
+        "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "status": {"const": "complete"},
+        "packet_id": {"type": "string", "pattern": "^response-packet:[0-9a-f]{64}$"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "updated_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "alert": {"type": "object"},
+    "evidence_batches": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {"type": "object"}
+    },
+    "evidence": {"type": "array", "maxItems": 8, "items": {"type": "object"}},
+    "validator_results": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {"type": "object"}
+    },
+    "invocations": {"type": "array", "maxItems": 6, "items": {"type": "object"}},
+    "packet": {"type": "object"},
+    "trace_events": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {"type": "object"}
+    },
+    "derivation_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

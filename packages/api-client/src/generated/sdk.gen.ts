@@ -9,7 +9,16 @@ import {
   type TDataShape,
 } from "./client";
 import { client } from "./client.gen";
-import type { GetSyntheticOperationErrors, GetSyntheticOperationResponses } from "./types.gen";
+import type {
+  AlertIntake,
+  CreateIncidentErrors,
+  CreateIncidentResponses,
+  GetIncidentErrors,
+  GetIncidentResponses,
+  Identifier,
+  ReplayIncidentErrors,
+  ReplayIncidentResponses,
+} from "./types.gen";
 
 export type Options<
   TData extends TDataShape = TDataShape,
@@ -29,40 +38,66 @@ export type Options<
   meta?: keyof ClientMeta extends never ? Record<string, unknown> : ClientMeta;
 };
 
-/**
- * Get a synthetic fixture response
- */
-export const getSyntheticOperation = <ThrowOnError extends boolean = false>(
+export const createIncident = <ThrowOnError extends boolean = false>(
   parameters: {
-    fixtureId: string;
-    includeMetadata?: boolean;
+    alertIntake: AlertIntake;
   },
   options?: Options<never, ThrowOnError>,
-): RequestResult<
-  GetSyntheticOperationResponses,
-  GetSyntheticOperationErrors,
-  ThrowOnError,
-  "data"
-> => {
-  const params = buildClientParams(
-    [parameters],
-    [
-      {
-        args: [
-          { in: "path", key: "fixtureId" },
-          { in: "query", key: "includeMetadata" },
-        ],
-      },
-    ],
-  );
-  return (options?.client ?? client).get<
-    GetSyntheticOperationResponses,
-    GetSyntheticOperationErrors,
+): RequestResult<CreateIncidentResponses, CreateIncidentErrors, ThrowOnError, "data"> => {
+  const params = buildClientParams([parameters], [{ args: [{ key: "alertIntake", map: "body" }] }]);
+  return (options?.client ?? client).post<
+    CreateIncidentResponses,
+    CreateIncidentErrors,
     ThrowOnError,
     "data"
   >({
     responseStyle: "data",
-    url: "/synthetic/{fixtureId}",
+    url: "/v1/incidents",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
+  });
+};
+
+export const getIncident = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<GetIncidentResponses, GetIncidentErrors, ThrowOnError, "data"> => {
+  const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "incidentId" }] }]);
+  return (options?.client ?? client).get<
+    GetIncidentResponses,
+    GetIncidentErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    url: "/v1/incidents/{incidentId}",
+    ...options,
+    ...params,
+  });
+};
+
+export const replayIncident = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<ReplayIncidentResponses, ReplayIncidentErrors, ThrowOnError, "data"> => {
+  const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "incidentId" }] }]);
+  return (options?.client ?? client).get<
+    ReplayIncidentResponses,
+    ReplayIncidentErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    url: "/v1/incidents/{incidentId}/replay",
     ...options,
     ...params,
   });

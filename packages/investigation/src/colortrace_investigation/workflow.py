@@ -289,6 +289,31 @@ class BudgetLedger:
         }
 
 
+@dataclass(slots=True)
+class WorkflowProgress:
+    ledger: BudgetLedger | None = None
+    shared_limiter: TrackedSemaphore | None = None
+    intake: AlertIntake | None = None
+    invocations: list[dict[str, Any]] = field(default_factory=list)
+    evidence_ids: set[str] = field(default_factory=set)
+    deterministic_results: list[dict[str, Any]] = field(default_factory=list)
+    classified_claims: list[dict[str, Any]] = field(default_factory=list)
+    classified_scope: dict[str, Any] | None = None
+    state_history: list[str] = field(default_factory=list)
+
+    def begin(self, ledger: BudgetLedger, shared_limiter: TrackedSemaphore) -> None:
+        if self.ledger is not None or self.state_history:
+            raise WorkflowError("workflow-progress-reused")
+        self.ledger = ledger
+        self.shared_limiter = shared_limiter
+        self.state_history.append("intake")
+
+    def budget_snapshot(self) -> dict[str, int]:
+        if self.ledger is None or self.shared_limiter is None:
+            raise WorkflowError("workflow-progress-unavailable")
+        return self.ledger.snapshot(self.shared_limiter)
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceAssessment:
     evidence_ids: tuple[str, ...]
@@ -1049,6 +1074,7 @@ class InvestigationWorkflow:
         clock: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] | None = None,
         shared_limiter: TrackedSemaphore | None = None,
+        progress: WorkflowProgress | None = None,
     ) -> None:
         self._policy = policy
         self._model = model
@@ -1057,6 +1083,7 @@ class InvestigationWorkflow:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._monotonic = monotonic or system_monotonic
         self._shared = shared_limiter or TrackedSemaphore(policy.budgets.maximum_calls_in_flight)
+        self._progress = progress
         if self._shared.capacity != policy.budgets.maximum_calls_in_flight:
             raise WorkflowError("concurrency-policy")
         self._model_lock = asyncio.Lock()
@@ -1229,6 +1256,26 @@ class InvestigationWorkflow:
             except ModelFailure as error:
                 failure = error
             except asyncio.CancelledError:
+                try:
+                    ledger.reserve_unavailable_model_usage(input_upper_bound, maximum_output)
+                except WorkflowError:
+                    pass
+                records.append(
+                    self._invocation_record(
+                        intake=intake,
+                        turn_kind=turn_kind,
+                        attempt=attempt,
+                        input_value=payload,
+                        input_evidence_ids=input_evidence_ids,
+                        output=None,
+                        latency_ms=int(max(0.0, self._monotonic() - started) * 1000),
+                        result_class="failed",
+                        error_code="cancelled",
+                        inventory_version=inventory_version,
+                    )
+                )
+                if self._progress is not None:
+                    self._progress.invocations.extend(records)
                 raise
             except Exception:
                 failure = ModelFailure("model-provider", transient=False)
@@ -1304,13 +1351,21 @@ class InvestigationWorkflow:
     async def run(self, alert: Mapping[str, Any], *, bundle_root: Path) -> dict[str, Any]:
         ledger = BudgetLedger(self._policy, self._monotonic)
         blockers: list[Blocker] = []
-        invocations: list[dict[str, Any]] = []
-        evidence_ids: set[str] = set()
-        deterministic_results: list[dict[str, Any]] = []
-        classified_claims: list[dict[str, Any]] = []
+        if self._progress is None:
+            invocations: list[dict[str, Any]] = []
+            evidence_ids: set[str] = set()
+            deterministic_results: list[dict[str, Any]] = []
+            classified_claims: list[dict[str, Any]] = []
+            state_history = ["intake"]
+        else:
+            self._progress.begin(ledger, self._shared)
+            invocations = self._progress.invocations
+            evidence_ids = self._progress.evidence_ids
+            deterministic_results = self._progress.deterministic_results
+            classified_claims = self._progress.classified_claims
+            state_history = self._progress.state_history
         classified_scope: dict[str, Any] | None = None
         advisory: ModelAdvisory | None = None
-        state_history = ["intake"]
         now = self._clock().astimezone(UTC)
         intake: AlertIntake
         try:
@@ -1329,6 +1384,8 @@ class InvestigationWorkflow:
                 FrozenWindow(now, now, now),
             )
             blockers.append(Blocker("invalid-intake", "intake"))
+        if self._progress is not None:
+            self._progress.intake = intake
 
         selection: ModelSelection | None = None
         assessment: EvidenceAssessment | None = None
@@ -1430,6 +1487,8 @@ class InvestigationWorkflow:
                         () if assessment is None else assessment.evidence_ids,
                     ),
                 )
+                if self._progress is not None:
+                    self._progress.classified_claims = classified_claims
                 blockers.extend(claim_blockers)
                 evidence_ids.update(claim_evidence)
             except WorkflowError as error:
@@ -1442,6 +1501,8 @@ class InvestigationWorkflow:
                 classified_scope, scope_blockers = await self._validator_call(
                     ledger, lambda: classify_scope(validator_result)
                 )
+                if self._progress is not None:
+                    self._progress.classified_scope = classified_scope
                 blockers.extend(scope_blockers)
             except WorkflowError as error:
                 blockers.append(Blocker(_normalized_code(error.code), "scope"))

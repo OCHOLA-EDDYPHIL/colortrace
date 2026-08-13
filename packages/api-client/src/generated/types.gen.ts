@@ -4,35 +4,726 @@ export type ClientOptions = {
   baseUrl: `${string}://${string}` | (string & {});
 };
 
-export type SyntheticResponse = {
-  fixtureId: string;
-  status: "ok";
+export type Identifier = string;
+
+export type AlertIdentifier = string;
+
+export type GrafanaUid = string;
+
+export type Digest = string;
+
+export type TraceId = string;
+
+export type AlertIntake = {
+  schema: "alert-intake/v1";
+  incident_id: AlertIdentifier;
+  alert_id: AlertIdentifier;
+  alert_started_at: string;
+  retrieved_at: string;
+  measured_clock_skew_seconds: number;
+  binding: {
+    prometheus_datasource_uid: GrafanaUid;
+    loki_datasource_uid: GrafanaUid;
+    tempo_datasource_uid: GrafanaUid;
+    alert_rule_uid: GrafanaUid;
+  };
+  correlation_keys: CorrelationKeys;
+  predecessor_event_sha256: null | Digest;
 };
 
-export type GetSyntheticOperationData = {
+export type GrafanaBinding = {
+  prometheus_datasource_uid: GrafanaUid;
+  loki_datasource_uid: GrafanaUid;
+  tempo_datasource_uid: GrafanaUid;
+  alert_rule_uid: GrafanaUid;
+};
+
+export type CorrelationKeys = {
+  fixture_id: AlertIdentifier;
+  run_id: AlertIdentifier;
+  job_id: AlertIdentifier;
+  worker_id: AlertIdentifier;
+  artifact_id: AlertIdentifier;
+  trace_id: string;
+  config_sha256: UnprefixedDigest;
+  transform_id: AlertIdentifier;
+};
+
+export type IncidentAccepted = {
+  schema: "incident-accepted/v1";
+  incident_id: Identifier;
+  task_id: string;
+  status: "queued" | "running" | "resolved" | "unresolved";
+  version: number;
+  trace_id: TraceId;
+  duplicate: boolean;
+};
+
+export type IncidentRecord = {
+  schema: "incident-record/v1";
+  incident_id: Identifier;
+  alert_id: Identifier;
+  status: "queued" | "running" | "resolved" | "unresolved";
+  version: number;
+  alert_sha256: Digest;
+  trace_id: TraceId;
+  packet_id: null | string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskRecord = {
+  schema: "incident-task/v1";
+  task_id: string;
+  incident_id: Identifier;
+  expected_incident_version: number;
+  alert_sha256: Digest;
+  trace_id: TraceId;
+  status: "queued" | "running" | "complete";
+  packet_id: null | string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScopeItem = {
+  kind: "derivative" | "frame";
+  id: Identifier;
+};
+
+export type Claim = {
+  schema: "claim/v1";
+  claim_id: Identifier;
+  claim_type: string;
+  subject: {
+    kind: string;
+    value: null | Identifier;
+  };
+  state: "confirmed" | "inferred" | "rejected" | "unresolved";
+  policy: string;
+  normalized_inputs_sha256: string;
+  deterministic_result_evidence_id: null | Identifier;
+  source_validator_result_id: null | Identifier;
+  derivation_sha256: string;
+  contradiction_links: Array<Identifier>;
+  evidence_ids: Array<Identifier>;
+  reason_codes: Array<string>;
+};
+
+export type ResponsePacket = {
+  schema: "response-packet/v1";
+  packet_id: string;
+  incident_id: Identifier;
+  version: 1;
+  status: "resolved" | "unresolved";
+  fixed_window: {
+    start: string;
+    end: string;
+    frozen_at: string;
+  };
+  evidence_ids: Array<Identifier>;
+  deterministic_results: Array<DeterministicResult>;
+  claims: Array<Claim>;
+  scope: IncidentScope;
+  invocation_records: Array<ModelInvocation>;
+  budget_use: BudgetUse;
+  unresolved_items: Array<UnresolvedItem>;
+  candidate_plan: null | CandidatePlan;
+  no_action_reason:
+    | null
+    | "budget-exhausted"
+    | "contradictory-evidence"
+    | "evidence-unavailable"
+    | "incomplete-evidence"
+    | "invalid-intake"
+    | "model-unavailable"
+    | "no-affected-targets"
+    | "policy-drift"
+    | "stale-evidence"
+    | "validator-unresolved";
+  model_advisory: null | ModelAdvisory;
+  state_history: Array<
+    | "intake"
+    | "selection"
+    | "evidence"
+    | "assessment"
+    | "validation"
+    | "drafting"
+    | "finalization"
+    | "complete"
+  >;
+  finalized_at: string;
+  derivation_sha256: Digest;
+};
+
+export type IncidentView = {
+  schema: "incident-view/v1";
+  incident: IncidentRecord;
+  task: TaskRecord;
+  packet: null | ResponsePacket;
+};
+
+export type TraceEvent = {
+  schema: "incident-trace-event/v1";
+  event_id: string;
+  incident_id: Identifier;
+  sequence: number;
+  event_type:
+    | "api.intake.accepted"
+    | "task.queued"
+    | "worker.started"
+    | "packet.persisted"
+    | "incident.completed";
+  trace_id: string;
+  span_id: string;
+  parent_span_id: null | string;
+  predecessor_event_sha256: null | Digest;
+  payload: {
+    [key: string]: unknown;
+  };
+  payload_sha256: Digest;
+  occurred_at: string;
+  event_sha256: Digest;
+};
+
+export type IncidentReplay = {
+  schema: "incident-replay/v1";
+  incident: CompletedIncidentRecord;
+  task: CompletedTaskRecord;
+  alert: AlertIntake;
+  evidence_batches: Array<EvidenceBatch>;
+  evidence: Array<EvidenceEnvelope>;
+  validator_results: Array<ValidatorResult>;
+  invocations: Array<ModelInvocation>;
+  packet: ResponsePacket;
+  trace_events: [TraceEvent, TraceEvent, TraceEvent, TraceEvent, TraceEvent];
+  derivation_sha256: Digest;
+};
+
+export type Error = {
+  code: string;
+};
+
+export type ModelInvocation = {
+  schema: "model-tool-invocation/v1";
+  invocation_id: string;
+  incident_id: Identifier;
+  turn_kind: "evidence-selection" | "response-drafting";
+  attempt: number;
+  model: "gemini-3.5-flash";
+  location: "global";
+  framework: "google-adk";
+  framework_version: "2.6.3";
+  client_version: "2.17.0";
+  prompt_version: "evidence-selection/v1" | "response-drafting/v1";
+  policy_version: "bounded-investigation/v1";
+  tool_inventory_version: null | string;
+  normalized_input_sha256: Digest;
+  input_evidence_ids: Array<Identifier>;
+  output_sha256: null | Digest;
+  latency_ms: number;
+  usage: {
+    input_tokens: null | number;
+    output_tokens: null | number;
+  };
+  result_class: "accepted" | "budget-rejected" | "failed" | "invalid";
+  error_code: null | string;
+  trace_id: string;
+  derivation_sha256: Digest;
+};
+
+export type DeterministicResult = {
+  result_id: Identifier;
+  validator: "colortrace-validator";
+  validator_version: "1.0.0";
+  status: "resolved" | "unresolved";
+  policy_versions: {
+    [key: string]: string;
+  };
+  derivation_sha256: string;
+  evidence_ids: Array<Identifier>;
+};
+
+export type IncidentScope = {
+  state: "resolved" | "unresolved";
+  policy: "single-causal-resource-scope/v1";
+  affected: Array<ScopeItem>;
+  safe: Array<ScopeItem>;
+  unknown: Array<ScopeItem>;
+  reason_codes: Array<string>;
+};
+
+export type BudgetUse = {
+  elapsed_ms: number;
+  model_turns: number;
+  input_tokens: number;
+  output_tokens: number;
+  unavailable_input_tokens_reserved: number;
+  unavailable_output_tokens_reserved: number;
+  mcp_attempts: number;
+  validator_calls: number;
+  trusted_transient_retries: number;
+  model_visible_bytes: number;
+  maximum_calls_in_flight_observed: number;
+};
+
+export type UnresolvedItem = {
+  code: string;
+  stage: string;
+  evidence_ids: Array<Identifier>;
+};
+
+export type CandidatePlan = {
+  schema: "candidate-plan-reference/v1";
+  plan_id: string;
+  non_executable: true;
+  targets: Array<ScopeItem>;
+  claim_ids: Array<Identifier>;
+};
+
+export type ModelAdvisory = {
+  trust: "untrusted-model-output";
+  summary: string;
+  evidence_ids: Array<Identifier>;
+  output_sha256: Digest;
+};
+
+/**
+ * ColorTrace evidence envelope
+ */
+export type EvidenceEnvelope = {
+  schema: "evidence-envelope/v1";
+  evidence_id: Digest;
+  incident_id: Identifier;
+  request_id: Identifier;
+  source: EvidenceSource;
+  observation: EvidenceObservation;
+  timing: {
+    source_time: null | string;
+    event_time: null | string;
+    retrieved_at: string;
+    freshness: "current" | "stale" | "unresolved";
+  };
+  content_sha256: Digest;
+  content: unknown;
+  display_excerpt: string;
+  correlation_keys: {
+    [key: string]: string;
+  };
+  collection: {
+    outcome: "collected" | "error";
+    attempts: number;
+    retries: number;
+    error: null | {
+      code: string;
+      retryable: false;
+    };
+  };
+  trust: "untrusted-provider-data" | "deterministic-result";
+  producer_version: Identifier;
+  predecessor_event_sha256: null | Digest;
+  event_sha256: Digest;
+};
+
+/**
+ * Registered ColorTrace evidence sources
+ */
+export type EvidenceSource = GrafanaEvidenceSource;
+
+/**
+ * Registered ColorTrace evidence observations
+ */
+export type EvidenceObservation = GrafanaQueryObservation;
+
+/**
+ * Official Grafana MCP evidence source
+ */
+export type GrafanaEvidenceSource = {
+  kind: "grafana-mcp";
+  server: "mcp-grafana";
+  server_version: "1.1.0";
+  server_commit: "007e8d82154899a28e19e8dfe9c2bb4452c5211a";
+  binary_sha256: "7b4f978ee4e31053cad3392626b6896d3da2315d5e6b2bcbba815c9b04872236";
+  mcp_sdk_version: "1.29.0";
+  mcp_protocol_version: "2025-06-18";
+  tool: "alerting_manage_rules" | "query_loki_logs" | "query_prometheus" | "tempo_get-trace";
+  tool_input_schema_sha256: string;
+  tool_annotations_sha256: string;
+  inventory_version: string;
+};
+
+/**
+ * Typed Grafana MCP query observation
+ */
+export type GrafanaQueryObservation = {
+  kind: "grafana-mcp-query";
+  query_key:
+    | "alert.rule"
+    | "log.correlated-events"
+    | "metric.correlated-observations"
+    | "trace.by-id";
+  catalog_version: "grafana-evidence-query-catalog/v1";
+  catalog_sha256: string;
+  normalized_arguments: {
+    [key: string]: unknown;
+  };
+  model_visible_arguments: Array<string>;
+  fixed_time_range: {
+    start: string;
+    end: string;
+  };
+};
+
+export type ValidationReasonCode =
+  | "candidate-resource-used-by-safe-job"
+  | "causal-resource-confirmed"
+  | "causal-resource-matches-approved-declaration"
+  | "comparison-match-safe"
+  | "comparison-threshold-indeterminate"
+  | "contradictory-authoritative-evidence"
+  | "declared-reference-contract-invalid"
+  | "declared-reference-digest-mismatch"
+  | "declared-reference-mismatch"
+  | "declared-resources-contract-invalid"
+  | "declared-resources-digest-mismatch"
+  | "derivative-buffer-digest-mismatch"
+  | "derivative-inherits-parent-scope"
+  | "distractor-authoritatively-rejected"
+  | "exact-lineage-invalid"
+  | "fixture-contract-invalid"
+  | "incomplete-decisive-evidence"
+  | "job-manifest-digest-mismatch"
+  | "job-manifest-missing"
+  | "job-runtime-correlation-mismatch"
+  | "malformed-float-buffer"
+  | "manifest-json-invalid"
+  | "missing-approved-resource-control"
+  | "missing-declared-reference"
+  | "missing-declared-resources"
+  | "missing-lineage-manifest"
+  | "missing-output-buffer"
+  | "missing-reference-buffer"
+  | "missing-resolved-resource-manifest"
+  | "multiple-causal-resource-candidates"
+  | "no-causal-resource-candidate"
+  | "no-mismatch-observations"
+  | "nominal-config-authoritatively-rejected"
+  | "nominal-config-digest-mismatch"
+  | "ocio-config-invalid"
+  | "ocio-processor-identity-mismatch"
+  | "ocio-resource-resolution-mismatch"
+  | "ocio-structure-invalid"
+  | "output-buffer-digest-mismatch"
+  | "reference-buffer-digest-mismatch"
+  | "reference-threshold-match"
+  | "reference-threshold-mismatch"
+  | "resolved-resource-contract-invalid"
+  | "resolved-resource-digest-mismatch"
+  | "resolved-resource-manifest-digest-mismatch"
+  | "result-size-limit-exceeded"
+  | "runtime-manifest-digest-mismatch"
+  | "runtime-manifest-missing"
+  | "safe-control-missing-on-implicated-worker"
+  | "telemetry-contract-invalid"
+  | "telemetry-digest-mismatch"
+  | "unsafe-path"
+  | "unsupported-policy"
+  | "worker-alone-authoritatively-rejected";
+
+export type ValidatorScope = {
+  schema: "color-state-scope/v1";
+  state: "resolved" | "unresolved";
+  policy: "single-causal-resource-scope/v1";
+  causal_resource_sha256: ValidatorScopeDigest | null;
+  frames: Array<ValidatorScopeFrame>;
+  derivatives: Array<ValidatorScopeDerivative>;
+  reason_codes: ValidatorScopeReasons;
+};
+
+export type ValidatorResult = {
+  schema: "color-state-validation-result/v1";
+  result_id: string;
+  request_id: ValidatorIdentifier;
+  incident_id: ValidatorIdentifier;
+  status: "resolved" | "unresolved";
+  validator: {
+    name: "colortrace-validator";
+    version: "1.0.0";
+    ocio_version: "2.5.2";
+  };
+  policies: {
+    comparison: "declared-reference-comparison/v1";
+    scope: "single-causal-resource-scope/v1";
+    lineage: "exact-typed-lineage/v1";
+    claim: "deterministic-claim/v1";
+  };
+  thresholds: {
+    match_maximum_absolute_channel_error_lte: "0.000001";
+    match_rmse_lte: "0.0000005";
+    mismatch_maximum_absolute_channel_error_gt: "0.0001";
+    mismatch_fraction_pixels_at_or_above_0_02_gte: "0.10";
+    mismatch_nearest_rank_p95_gte: "0.04";
+  };
+  request_sha256: ValidatorDigest;
+  runtime_manifest_sha256: ValidatorDigest;
+  comparisons: Array<ValidatorComparison>;
+  scope: ValidatorScope;
+  claims: Array<ValidatorClaim>;
+  evidence: Array<ValidatorEvidence>;
+  reason_codes: ValidatorReasons;
+  derivation_sha256: ValidatorDigest;
+};
+
+export type GrafanaToolPin = {
+  input_schema_sha256: string;
+  annotations_sha256: string;
+  idempotent: boolean;
+  model_input_schema_sha256: null | string;
+};
+
+export type GrafanaToolInventory = {
+  schema: "grafana-mcp-tool-inventory/v1";
+  server_version: "1.1.0";
+  server_commit: "007e8d82154899a28e19e8dfe9c2bb4452c5211a";
+  binary_sha256: "7b4f978ee4e31053cad3392626b6896d3da2315d5e6b2bcbba815c9b04872236";
+  mcp_sdk_version: "1.29.0";
+  mcp_protocol_version: "2025-06-18";
+  selected_tools: {
+    alerting_manage_rules: GrafanaToolPin;
+    query_loki_logs: GrafanaToolPin;
+    query_prometheus: GrafanaToolPin;
+    "tempo_get-trace": GrafanaToolPin;
+  };
+  inventory_version: Digest;
+};
+
+export type EvidenceAttempt = {
+  query_key:
+    | "alert.rule"
+    | "log.correlated-events"
+    | "metric.correlated-observations"
+    | "trace.by-id";
+  tool: "alerting_manage_rules" | "query_loki_logs" | "query_prometheus" | "tempo_get-trace";
+  attempt: number;
+  retry: boolean;
+  normalized_arguments: {
+    [key: string]: unknown;
+  };
+  arguments_sha256: Digest;
+  started_at: string;
+  completed_at: string;
+  outcome:
+    | "collected"
+    | "authentication"
+    | "authorization"
+    | "credential_exposure"
+    | "incomplete_result"
+    | "malformed_result"
+    | "oversized_result"
+    | "provider_error"
+    | "timeout"
+    | "transport";
+};
+
+export type EvidenceBatch = {
+  schema: "grafana-evidence-batch-result/v1";
+  inventory: GrafanaToolInventory;
+  tool_calls_used: number;
+  maximum_calls_in_flight_observed: number;
+  attempts: Array<EvidenceAttempt>;
+  envelopes: Array<EvidenceEnvelope>;
+};
+
+export type CompletedIncidentRecord = {
+  schema: "incident-record/v1";
+  incident_id: Identifier;
+  alert_id: Identifier;
+  status: "resolved" | "unresolved";
+  version: number;
+  alert_sha256: Digest;
+  trace_id: TraceId;
+  packet_id: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CompletedTaskRecord = {
+  schema: "incident-task/v1";
+  task_id: string;
+  incident_id: Identifier;
+  expected_incident_version: number;
+  alert_sha256: Digest;
+  trace_id: TraceId;
+  status: "complete";
+  packet_id: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type UnprefixedDigest = string;
+
+export type ValidatorScopeIdentifier = string;
+
+export type ValidatorScopeNullableIdentifier = ValidatorScopeIdentifier | null;
+
+export type ValidatorScopeDigest = string;
+
+export type ValidatorScopeReasons = Array<ValidationReasonCode>;
+
+export type ValidatorScopeFrame = {
+  job_id: ValidatorScopeIdentifier;
+  frame_id: ValidatorScopeNullableIdentifier;
+  output_id: ValidatorScopeNullableIdentifier;
+  worker_id: ValidatorScopeNullableIdentifier;
+  state: "affected" | "safe" | "unknown";
+  reason_codes: ValidatorScopeReasons;
+  evidence_ids: Array<ValidatorScopeIdentifier>;
+};
+
+export type ValidatorScopeDerivative = {
+  artifact_id: ValidatorScopeIdentifier;
+  parent_artifact_id: ValidatorScopeNullableIdentifier;
+  state: "affected" | "safe" | "unknown";
+  lineage_policy: "exact-typed-lineage/v1";
+  reason_codes: ValidatorScopeReasons;
+  evidence_ids: Array<ValidatorScopeIdentifier>;
+};
+
+export type ValidatorIdentifier = string;
+
+export type ValidatorNullableIdentifier = ValidatorIdentifier | null;
+
+export type ValidatorDigest = string;
+
+export type ValidatorReasons = Array<ValidationReasonCode>;
+
+export type ValidatorMetrics = {
+  maximum_absolute_channel_error: string;
+  rmse: string;
+  fraction_pixels_at_or_above_0_02: string;
+  nearest_rank_p95: string;
+  pixels: number;
+};
+
+export type ValidatorComparison = {
+  comparison_id: ValidatorIdentifier;
+  job_id: ValidatorIdentifier;
+  frame_id: ValidatorNullableIdentifier;
+  output_id: ValidatorNullableIdentifier;
+  worker_id: ValidatorNullableIdentifier;
+  transform_id: "look/main/v1" | "identity/v1" | null;
+  state: "reference_match" | "reference_mismatch" | "unresolved";
+  policy: "declared-reference-comparison/v1";
+  metrics: ValidatorMetrics | null;
+  nominal_config_sha256: ValidatorDigest | null;
+  resolved_resource_sha256: ValidatorDigest | null;
+  reason_codes: ValidatorReasons;
+  evidence_ids: Array<ValidatorIdentifier>;
+};
+
+export type ValidatorClaim = {
+  schema: "claim/v1";
+  claim_id: ValidatorIdentifier;
+  claim_type: "causal-resource" | "nominal-config" | "worker-alone" | "distractor";
+  subject: {
+    kind: "resource-sha256" | "config-sha256" | "worker-id" | "event-id";
+    value: ValidatorIdentifier | null;
+  };
+  state: "confirmed" | "inferred" | "rejected" | "unresolved";
+  policy: "deterministic-claim/v1";
+  normalized_inputs_sha256: ValidatorDigest;
+  deterministic_result_evidence_id: string;
+  derivation_sha256: ValidatorDigest;
+  contradiction_links: Array<ValidatorIdentifier>;
+  evidence_ids: Array<ValidatorIdentifier>;
+  reason_codes: ValidatorReasons;
+};
+
+export type ValidatorEvidence = {
+  evidence_id: ValidatorIdentifier;
+  kind: string;
+  path: string;
+  sha256: ValidatorDigest;
+};
+
+export type CreateIncidentData = {
+  body: AlertIntake;
+  path?: never;
+  query?: never;
+  url: "/v1/incidents";
+};
+
+export type CreateIncidentErrors = {
+  /**
+   * The incident identity was already used for different alert content.
+   */
+  409: Error;
+};
+
+export type CreateIncidentError = CreateIncidentErrors[keyof CreateIncidentErrors];
+
+export type CreateIncidentResponses = {
+  /**
+   * The alert is durably admitted to the worker queue.
+   */
+  202: IncidentAccepted;
+};
+
+export type CreateIncidentResponse = CreateIncidentResponses[keyof CreateIncidentResponses];
+
+export type GetIncidentData = {
   body?: never;
   path: {
-    fixtureId: string;
+    incidentId: Identifier;
   };
-  query?: {
-    includeMetadata?: boolean;
+  query?: never;
+  url: "/v1/incidents/{incidentId}";
+};
+
+export type GetIncidentErrors = {
+  /**
+   * No incident has this identity.
+   */
+  404: Error;
+};
+
+export type GetIncidentError = GetIncidentErrors[keyof GetIncidentErrors];
+
+export type GetIncidentResponses = {
+  /**
+   * The persisted incident and exact packet when complete.
+   */
+  200: IncidentView;
+};
+
+export type GetIncidentResponse = GetIncidentResponses[keyof GetIncidentResponses];
+
+export type ReplayIncidentData = {
+  body?: never;
+  path: {
+    incidentId: Identifier;
   };
-  url: "/synthetic/{fixtureId}";
+  query?: never;
+  url: "/v1/incidents/{incidentId}/replay";
 };
 
-export type GetSyntheticOperationErrors = {
+export type ReplayIncidentErrors = {
   /**
-   * Synthetic fixture not found
+   * No incident has this identity.
    */
-  404: unknown;
-};
-
-export type GetSyntheticOperationResponses = {
+  404: Error;
   /**
-   * Synthetic response
+   * The incident is incomplete or persisted provenance failed verification.
    */
-  200: SyntheticResponse;
+  409: Error;
 };
 
-export type GetSyntheticOperationResponse =
-  GetSyntheticOperationResponses[keyof GetSyntheticOperationResponses];
+export type ReplayIncidentError = ReplayIncidentErrors[keyof ReplayIncidentErrors];
+
+export type ReplayIncidentResponses = {
+  /**
+   * The integrity-checked evidence, invocation, packet, and trace replay.
+   */
+  200: IncidentReplay;
+};
+
+export type ReplayIncidentResponse = ReplayIncidentResponses[keyof ReplayIncidentResponses];
