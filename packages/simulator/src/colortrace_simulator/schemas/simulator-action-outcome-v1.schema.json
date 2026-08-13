@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-action-outcome-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "outcome_id", "action_id", "task_key", "operation_id", "payload_sha256",
+    "status", "reason_codes", "incident_id", "incident_version", "plan_id", "plan_version",
+    "plan_sha256", "approval_id", "approval_sha256", "authorization_id",
+    "authorization_sha256", "consumption_id", "consumption_sha256", "admission_id",
+    "admission_sha256", "dispatch_bundle_sha256", "action_envelope_sha256",
+    "action_started_at", "publication_intent_id", "publication_intent_sha256",
+    "publication_receipt_id", "publication_receipt_sha256", "publication_promoted_at",
+    "completed_at", "fixture_id", "predecessor_publication_pointer_sha256",
+    "predecessor_publication_generation", "candidate_publication_pointer_sha256",
+    "candidate_publication_generation", "source_generation", "candidate_generation",
+    "source_batch_id", "source_batch_sha256", "active_publication_pointer_sha256",
+    "active_runtime_manifest_sha256", "candidate_fixture_manifest_sha256",
+    "candidate_runtime_manifest_sha256", "candidate_lineage_manifest_sha256",
+    "declared_resource_manifest_sha256", "preservation_manifest_sha256",
+    "safe_complement_before_sha256", "safe_complement_after_sha256",
+    "safe_complement_proof_sha256", "candidate_seal_sha256", "candidate_tree_sha256",
+    "targets", "exclusions", "command_outcomes", "new_trace_ids", "outcome_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "simulator-action-outcome/v1"},
+    "outcome_id": {"type": "string", "pattern": "^simulator-action-outcome:[0-9a-f]{64}$"},
+    "action_id": {"type": "string", "pattern": "^simulator-action:[0-9a-f]{64}$"},
+    "task_key": {"type": "string", "pattern": "^dispatch-task:[0-9a-f]{64}$"},
+    "operation_id": {"type": "string", "pattern": "^dispatch-operation:[0-9a-f]{64}$"},
+    "payload_sha256": {"$ref": "#/$defs/digest"},
+    "status": {"enum": ["succeeded", "failed"]},
+    "reason_codes": {
+      "type": "array", "maxItems": 32, "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"}
+    },
+    "incident_id": {"$ref": "#/$defs/id"},
+    "incident_version": {"type": "integer", "minimum": 1},
+    "plan_id": {"$ref": "#/$defs/id"},
+    "plan_version": {"type": "integer", "minimum": 1},
+    "plan_sha256": {"$ref": "#/$defs/digest"},
+    "approval_id": {"$ref": "#/$defs/id"},
+    "approval_sha256": {"$ref": "#/$defs/digest"},
+    "authorization_id": {"$ref": "#/$defs/id"},
+    "authorization_sha256": {"$ref": "#/$defs/digest"},
+    "consumption_id": {"$ref": "#/$defs/id"},
+    "consumption_sha256": {"$ref": "#/$defs/digest"},
+    "admission_id": {"type": "string", "pattern": "^simulator-admission:[0-9a-f]{64}$"},
+    "admission_sha256": {"$ref": "#/$defs/digest"},
+    "dispatch_bundle_sha256": {"$ref": "#/$defs/digest"},
+    "action_envelope_sha256": {"$ref": "#/$defs/digest"},
+    "action_started_at": {"type": "string", "format": "date-time"},
+    "publication_intent_id": {"$ref": "#/$defs/nullableId"},
+    "publication_intent_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "publication_receipt_id": {"$ref": "#/$defs/nullableId"},
+    "publication_receipt_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "publication_promoted_at": {"$ref": "#/$defs/nullableTime"},
+    "completed_at": {"type": "string", "format": "date-time"},
+    "fixture_id": {"$ref": "#/$defs/nullableId"},
+    "predecessor_publication_pointer_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "predecessor_publication_generation": {"$ref": "#/$defs/nullableGeneration"},
+    "candidate_publication_pointer_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "candidate_publication_generation": {"$ref": "#/$defs/nullableGeneration"},
+    "source_generation": {"$ref": "#/$defs/nullableGeneration"},
+    "candidate_generation": {"$ref": "#/$defs/nullableGeneration"},
+    "source_batch_id": {"$ref": "#/$defs/nullableId"},
+    "source_batch_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "active_publication_pointer_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "active_runtime_manifest_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "candidate_fixture_manifest_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "candidate_runtime_manifest_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "candidate_lineage_manifest_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "declared_resource_manifest_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "preservation_manifest_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "safe_complement_before_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "safe_complement_after_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "safe_complement_proof_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "candidate_seal_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "candidate_tree_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "targets": {
+      "type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/target"}
+    },
+    "exclusions": {
+      "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/target"}
+    },
+    "command_outcomes": {
+      "type": "array", "maxItems": 5, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/commandResult"}
+    },
+    "new_trace_ids": {
+      "type": "array", "maxItems": 5, "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[0-9a-f]{32}$"}
+    },
+    "outcome_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "succeeded"}}},
+      "then": {
+        "properties": {
+          "reason_codes": {"maxItems": 0},
+          "publication_intent_id": {"$ref": "#/$defs/id"},
+          "publication_intent_sha256": {"$ref": "#/$defs/digest"},
+          "publication_receipt_id": {"$ref": "#/$defs/id"},
+          "publication_receipt_sha256": {"$ref": "#/$defs/digest"},
+          "publication_promoted_at": {"type": "string", "format": "date-time"},
+          "fixture_id": {"$ref": "#/$defs/id"},
+          "predecessor_publication_pointer_sha256": {"$ref": "#/$defs/digest"},
+          "predecessor_publication_generation": {"type": "integer", "minimum": 1},
+          "candidate_publication_pointer_sha256": {"$ref": "#/$defs/digest"},
+          "candidate_publication_generation": {"type": "integer", "minimum": 2},
+          "source_generation": {"type": "integer", "minimum": 1},
+          "candidate_generation": {"type": "integer", "minimum": 2},
+          "source_batch_id": {"$ref": "#/$defs/id"},
+          "source_batch_sha256": {"$ref": "#/$defs/digest"},
+          "active_publication_pointer_sha256": {"$ref": "#/$defs/digest"},
+          "active_runtime_manifest_sha256": {"$ref": "#/$defs/digest"},
+          "candidate_fixture_manifest_sha256": {"$ref": "#/$defs/digest"},
+          "candidate_runtime_manifest_sha256": {"$ref": "#/$defs/digest"},
+          "candidate_lineage_manifest_sha256": {"$ref": "#/$defs/digest"},
+          "declared_resource_manifest_sha256": {"$ref": "#/$defs/digest"},
+          "preservation_manifest_sha256": {"$ref": "#/$defs/digest"},
+          "safe_complement_before_sha256": {"$ref": "#/$defs/digest"},
+          "safe_complement_after_sha256": {"$ref": "#/$defs/digest"},
+          "safe_complement_proof_sha256": {"$ref": "#/$defs/digest"},
+          "candidate_seal_sha256": {"$ref": "#/$defs/digest"},
+          "candidate_tree_sha256": {"$ref": "#/$defs/digest"},
+          "command_outcomes": {"minItems": 5, "maxItems": 5},
+          "new_trace_ids": {"minItems": 5, "maxItems": 5}
+        }
+      },
+      "else": {
+        "properties": {
+          "reason_codes": {"minItems": 1},
+          "publication_promoted_at": {"type": "null"},
+          "fixture_id": {"type": "null"},
+          "predecessor_publication_pointer_sha256": {"type": "null"},
+          "predecessor_publication_generation": {"type": "null"},
+          "candidate_publication_pointer_sha256": {"type": "null"},
+          "candidate_publication_generation": {"type": "null"},
+          "source_generation": {"type": "null"},
+          "candidate_generation": {"type": "null"},
+          "source_batch_id": {"type": "null"},
+          "source_batch_sha256": {"type": "null"},
+          "active_publication_pointer_sha256": {"type": "null"},
+          "active_runtime_manifest_sha256": {"type": "null"},
+          "candidate_fixture_manifest_sha256": {"type": "null"},
+          "candidate_runtime_manifest_sha256": {"type": "null"},
+          "candidate_lineage_manifest_sha256": {"type": "null"},
+          "declared_resource_manifest_sha256": {"type": "null"},
+          "preservation_manifest_sha256": {"type": "null"},
+          "safe_complement_before_sha256": {"type": "null"},
+          "safe_complement_after_sha256": {"type": "null"},
+          "safe_complement_proof_sha256": {"type": "null"},
+          "candidate_seal_sha256": {"type": "null"},
+          "candidate_tree_sha256": {"type": "null"},
+          "command_outcomes": {"maxItems": 0},
+          "new_trace_ids": {"maxItems": 0}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"},
+    "nullableDigest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
+    "nullableId": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]},
+    "nullableGeneration": {
+      "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1}]
+    },
+    "nullableTime": {
+      "oneOf": [{"type": "null"}, {"type": "string", "format": "date-time"}]
+    },
+    "target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "namespace", "kind", "id"],
+      "properties": {
+        "schema": {"const": "simulator-target/v1"},
+        "namespace": {"const": "colortrace-simulator"},
+        "kind": {"enum": ["color-resource", "frame", "derivative"]},
+        "id": {"$ref": "#/$defs/id"}
+      }
+    },
+    "resourceState": {
+      "type": "object", "additionalProperties": false,
+      "required": ["resource_sha256"],
+      "properties": {"resource_sha256": {"$ref": "#/$defs/digest"}}
+    },
+    "frameState": {
+      "type": "object", "additionalProperties": false,
+      "required": ["output_sha256", "display_sha256"],
+      "properties": {
+        "output_sha256": {"$ref": "#/$defs/digest"},
+        "display_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "derivativeState": {
+      "type": "object", "additionalProperties": false,
+      "required": ["derivative_sha256", "derivative_display_sha256"],
+      "properties": {
+        "derivative_sha256": {"$ref": "#/$defs/digest"},
+        "derivative_display_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "commandResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "command_id", "result_kind", "target", "trace_id", "before", "after"],
+      "properties": {
+        "schema": {"const": "simulator-command-result/v1"},
+        "command_id": {"$ref": "#/$defs/id"},
+        "result_kind": {"enum": ["quarantine", "frame", "derivative"]},
+        "target": {"$ref": "#/$defs/target"},
+        "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "before": {"type": "object"},
+        "after": {"type": "object"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"result_kind": {"const": "quarantine"}}},
+          "then": {
+            "properties": {
+              "target": {"allOf": [{"$ref": "#/$defs/target"}, {"properties": {"kind": {"const": "color-resource"}}}]},
+              "before": {"$ref": "#/$defs/resourceState"},
+              "after": {"$ref": "#/$defs/resourceState"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"result_kind": {"const": "frame"}}},
+          "then": {
+            "properties": {
+              "target": {"allOf": [{"$ref": "#/$defs/target"}, {"properties": {"kind": {"const": "frame"}}}]},
+              "before": {"$ref": "#/$defs/frameState"},
+              "after": {"$ref": "#/$defs/frameState"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"result_kind": {"const": "derivative"}}},
+          "then": {
+            "properties": {
+              "target": {"allOf": [{"$ref": "#/$defs/target"}, {"properties": {"kind": {"const": "derivative"}}}]},
+              "before": {"$ref": "#/$defs/derivativeState"},
+              "after": {"$ref": "#/$defs/derivativeState"}
+            }
+          }
+        }
+      ]
+    }
+  }
+}

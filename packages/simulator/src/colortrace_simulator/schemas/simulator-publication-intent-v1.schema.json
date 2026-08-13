@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-publication-intent-v1.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": [
+    "schema", "intent_id", "action_id", "operation_id", "claim_generation",
+    "dispatch_bundle_sha256", "action_envelope_sha256", "publication_id",
+    "predecessor_pointer", "predecessor_pointer_sha256", "predecessor_generation",
+    "candidate_generation", "fixture_id", "source_batch_id", "source_batch_sha256",
+    "predecessor_fixture_manifest_sha256", "candidate_fixture_manifest_sha256",
+    "candidate_runtime_manifest_sha256",
+    "candidate_lineage_manifest_sha256", "declared_resource_manifest_sha256",
+    "preservation_manifest_sha256", "safe_complement_before_sha256",
+    "safe_complement_after_sha256", "safe_complement_proof_sha256",
+    "candidate_seal_sha256", "candidate_tree_sha256", "candidate_ref", "quarantine",
+    "command_results", "candidate_pointer", "candidate_pointer_sha256", "prepared_at",
+    "intent_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "simulator-publication-intent/v1"},
+    "intent_id": {"type": "string", "pattern": "^simulator-publication-intent:[0-9a-f]{64}$"},
+    "action_id": {"type": "string", "pattern": "^simulator-action:[0-9a-f]{64}$"},
+    "operation_id": {"type": "string", "pattern": "^dispatch-operation:[0-9a-f]{64}$"},
+    "claim_generation": {"type": "integer", "minimum": 1},
+    "dispatch_bundle_sha256": {"$ref": "#/$defs/digest"},
+    "action_envelope_sha256": {"$ref": "#/$defs/digest"},
+    "publication_id": {"$ref": "#/$defs/id"},
+    "predecessor_pointer": {"type": "object"},
+    "predecessor_pointer_sha256": {"$ref": "#/$defs/digest"},
+    "predecessor_generation": {"type": "integer", "minimum": 1},
+    "candidate_generation": {"type": "integer", "minimum": 2},
+    "fixture_id": {"$ref": "#/$defs/id"},
+    "source_batch_id": {"$ref": "#/$defs/id"},
+    "source_batch_sha256": {"$ref": "#/$defs/digest"},
+    "predecessor_fixture_manifest_sha256": {"$ref": "#/$defs/digest"},
+    "candidate_fixture_manifest_sha256": {"$ref": "#/$defs/digest"},
+    "candidate_runtime_manifest_sha256": {"$ref": "#/$defs/digest"},
+    "candidate_lineage_manifest_sha256": {"$ref": "#/$defs/digest"},
+    "declared_resource_manifest_sha256": {"$ref": "#/$defs/digest"},
+    "preservation_manifest_sha256": {"$ref": "#/$defs/digest"},
+    "safe_complement_before_sha256": {"$ref": "#/$defs/digest"},
+    "safe_complement_after_sha256": {"$ref": "#/$defs/digest"},
+    "safe_complement_proof_sha256": {"$ref": "#/$defs/digest"},
+    "candidate_seal_sha256": {"$ref": "#/$defs/digest"},
+    "candidate_tree_sha256": {"$ref": "#/$defs/digest"},
+    "candidate_ref": {"$ref": "#/$defs/id"},
+    "quarantine": {"$ref": "#/$defs/quarantine"},
+    "command_results": {
+      "type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/commandResult"}
+    },
+    "candidate_pointer": {"type": "object"},
+    "candidate_pointer_sha256": {"$ref": "#/$defs/digest"},
+    "prepared_at": {"type": "string", "format": "date-time"},
+    "intent_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"},
+    "target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "namespace", "kind", "id"],
+      "properties": {
+        "schema": {"const": "simulator-target/v1"},
+        "namespace": {"const": "colortrace-simulator"},
+        "kind": {"enum": ["color-resource", "frame", "derivative"]},
+        "id": {"$ref": "#/$defs/id"}
+      }
+    },
+    "quarantine": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "logical_path", "source_generation", "resource_sha256", "replacement_sha256", "quarantine_path", "size"],
+      "properties": {
+        "schema": {"const": "simulator-quarantine-result/v1"},
+        "logical_path": {"const": "luts/show_look.cube"},
+        "source_generation": {"type": "integer", "minimum": 1},
+        "resource_sha256": {"$ref": "#/$defs/digest"},
+        "replacement_sha256": {"$ref": "#/$defs/digest"},
+        "quarantine_path": {"type": "string", "pattern": "^runtime/quarantine/sha256/[0-9a-f]{64}\\.cube$"},
+        "size": {"type": "integer", "minimum": 1}
+      }
+    },
+    "commandResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "command_id", "result_kind", "target", "trace_id", "before", "after"],
+      "properties": {
+        "schema": {"const": "simulator-command-result/v1"},
+        "command_id": {"$ref": "#/$defs/id"},
+        "result_kind": {"enum": ["quarantine", "frame", "derivative"]},
+        "target": {"$ref": "#/$defs/target"},
+        "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "before": {"type": "object"},
+        "after": {"type": "object"}
+      }
+    }
+  }
+}
