@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -687,6 +688,153 @@ def test_policy_and_google_runtime_pins_fail_closed(
     ):
         with pytest.raises(ModelFailure, match="model-runtime-drift"):
             AdkVertexGateway(project_id="colortrace-test")
+
+
+def test_vertex_gateway_uses_adk_root_chat_mode_for_one_bounded_call() -> None:
+    observed: dict[str, Any] = {}
+
+    class FakeRunner:
+        def __init__(self, *, agent: Any, **_: Any) -> None:
+            observed["mode"] = agent.mode
+            observed["output_schema"] = agent.output_schema
+            observed["response_schema"] = agent.generate_content_config.response_schema
+            observed["response_json_schema"] = agent.generate_content_config.response_json_schema
+
+        async def run_async(self, *, run_config: Any, **_: Any) -> AsyncIterator[Any]:
+            observed["maximum_calls"] = run_config.max_llm_calls
+            yield SimpleNamespace(
+                usage_metadata=SimpleNamespace(
+                    prompt_token_count=100,
+                    candidates_token_count=20,
+                    thoughts_token_count=0,
+                ),
+                error_code=None,
+                finish_reason=None,
+                content=SimpleNamespace(
+                    parts=[SimpleNamespace(text='{"schema":"model-selection/v1"}', thought=False)]
+                ),
+                is_final_response=lambda: True,
+            )
+
+        async def close(self) -> None:
+            return
+
+    call = ModelCall(
+        "evidence-selection",
+        {"schema": "evidence-selection-input/v1"},
+        {"type": "object"},
+        512,
+    )
+    with patch("colortrace_investigation.model.Runner", FakeRunner):
+        output = asyncio.run(AdkVertexGateway(project_id="colortrace-test").generate(call))
+
+    assert observed == {
+        "mode": "chat",
+        "output_schema": None,
+        "response_schema": None,
+        "response_json_schema": {"type": "object"},
+        "maximum_calls": 1,
+    }
+    assert output.input_tokens == 100
+    assert output.output_tokens == 20
+
+
+def test_pinned_adk_runner_assembles_only_vertex_json_response_schema() -> None:
+    from google.adk.agents import LlmAgent
+    from google.adk.agents.run_config import RunConfig
+    from google.adk.models.base_llm import BaseLlm
+    from google.adk.models.llm_response import LlmResponse
+    from google.adk.runners import Runner
+    from google.adk.sessions import InMemorySessionService
+    from google.genai import models as genai_models
+    from google.genai import types as genai_types
+
+    captured: dict[str, Any] = {}
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema", "query_keys"],
+        "properties": {
+            "schema": {"const": "model-selection/v1"},
+            "query_keys": {
+                "type": "array",
+                "uniqueItems": True,
+                "items": {"type": "string"},
+            },
+        },
+    }
+
+    class CapturingLlm(BaseLlm):
+        async def generate_content_async(
+            self, llm_request: Any, stream: bool = False
+        ) -> AsyncIterator[Any]:
+            assert stream is False
+            captured["response_schema"] = llm_request.config.response_schema
+            captured["response_json_schema"] = llm_request.config.response_json_schema
+            serialized = genai_models._GenerateContentConfig_to_vertex(
+                None, llm_request.config, {}, {}
+            )
+            captured["serialized_keys"] = sorted(serialized)
+            yield LlmResponse(
+                content=genai_types.Content(
+                    role="model",
+                    parts=[
+                        genai_types.Part.from_text(
+                            text='{"query_keys":[],"schema":"model-selection/v1"}'
+                        )
+                    ],
+                ),
+                finish_reason=genai_types.FinishReason.STOP,
+            )
+
+    async def exercise() -> None:
+        service = InMemorySessionService()
+        agent = LlmAgent(
+            name="request_assembly_probe",
+            model=CapturingLlm(model="request-assembly-probe"),
+            instruction="Return the required JSON object.",
+            tools=[],
+            generate_content_config=genai_types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_json_schema=schema,
+            ),
+            mode="chat",
+        )
+        runner = Runner(
+            app_name="request-assembly-probe",
+            agent=agent,
+            session_service=service,
+            auto_create_session=False,
+        )
+        await service.create_session(
+            app_name="request-assembly-probe",
+            user_id="tester",
+            session_id="request-assembly-probe",
+            state={},
+        )
+        try:
+            async for _ in runner.run_async(
+                user_id="tester",
+                session_id="request-assembly-probe",
+                new_message=genai_types.Content(
+                    role="user", parts=[genai_types.Part.from_text(text="select")]
+                ),
+                run_config=RunConfig(max_llm_calls=1),
+            ):
+                pass
+        finally:
+            await service.delete_session(
+                app_name="request-assembly-probe",
+                user_id="tester",
+                session_id="request-assembly-probe",
+            )
+            await runner.close()
+
+    asyncio.run(exercise())
+    assert captured["response_schema"] is None
+    assert captured["response_json_schema"] == schema
+    assert "responseJsonSchema" in captured["serialized_keys"]
+    assert "responseSchema" not in captured["serialized_keys"]
 
 
 def test_invalid_intake_and_oracle_boundary_are_unresolved(

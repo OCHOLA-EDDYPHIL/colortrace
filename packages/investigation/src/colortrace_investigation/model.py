@@ -114,7 +114,6 @@ class AdkVertexGateway:
             model=model,
             instruction=_SYSTEM_INSTRUCTIONS[call.turn_kind],
             tools=[],
-            output_schema=dict(call.response_schema),
             generate_content_config=types.GenerateContentConfig(
                 temperature=0,
                 candidate_count=1,
@@ -126,7 +125,7 @@ class AdkVertexGateway:
                     thinking_level=types.ThinkingLevel.MINIMAL,
                 ),
             ),
-            mode="single_turn",
+            mode="chat",
             disallow_transfer_to_parent=True,
             disallow_transfer_to_peers=True,
         )
