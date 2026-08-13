@@ -4,11 +4,14 @@ import type {
   IncidentSummary,
   IncidentWorkspaceSource,
   HumanAuditEvent,
+  ResponsePlanReview,
   TaskRecord,
 } from "@colortrace/api-client";
 import { canonicalJsonSha256 } from "@colortrace/workspace-model";
 import { cloneReplayFixture } from "@colortrace/workspace-model/test-fixtures";
 import type { Page } from "@playwright/test";
+
+import { responsePlanReviewFixture } from "../test/response-plan-fixture.ts";
 
 type Mutable<T> = T extends readonly (infer Item)[]
   ? Mutable<Item>[]
@@ -17,6 +20,7 @@ type Mutable<T> = T extends readonly (infer Item)[]
     : T;
 
 export type CapturedApiRequest = {
+  readonly body: unknown | null;
   readonly headers: Readonly<Record<string, string>>;
   readonly method: string;
   readonly url: string;
@@ -25,6 +29,7 @@ export type CapturedApiRequest = {
 export type PreparedApi = {
   readonly incident: IncidentSummary;
   readonly replay: IncidentReplay;
+  readonly responsePlan: ResponsePlanReview;
   readonly source: IncidentWorkspaceSource;
 };
 
@@ -92,7 +97,12 @@ function preparedApi(providerExcerpt?: string, removedValidatorEvidenceId?: stri
     human_events: [humanEvent],
     replay: typedReplay,
   };
-  return { incident, replay: typedReplay, source };
+  return {
+    incident,
+    replay: typedReplay,
+    responsePlan: responsePlanReviewFixture({ incidentId: incident.incident_id }),
+    source,
+  };
 }
 
 export async function installPreparedApi(
@@ -100,6 +110,11 @@ export async function installPreparedApi(
   options: {
     readonly providerExcerpt?: string;
     readonly removedValidatorEvidenceId?: string;
+    readonly approvalMode?: "ambiguous-once" | "normal" | "refresh-fails-once";
+    readonly responsePlanCommandId?: string;
+    readonly responsePlanState?: ResponsePlanReview["state"];
+    readonly responsePlanUncertainty?: boolean;
+    readonly sessionStatus?: "active" | "expired";
     readonly viewPacket?: "exact" | "mismatched" | "missing";
     readonly oidcToken?: string | null;
   } = {},
@@ -109,6 +124,19 @@ export async function installPreparedApi(
   readonly oidcToken: string | null;
 }> {
   const data = preparedApi(options.providerExcerpt, options.removedValidatorEvidenceId);
+  let responsePlan = responsePlanReviewFixture({
+    commandId: options.responsePlanCommandId,
+    incidentId: data.incident.incident_id,
+    state: options.responsePlanState,
+    ...(options.responsePlanState === "stale" ? { currentIncidentVersion: 8 } : {}),
+    ...(options.responsePlanUncertainty === true
+      ? {
+          blockingUnresolvedItemIds: ["validator-blocker"],
+          unknownTargetIds: ["frame-unknown-0009"],
+          unresolvedItemIds: ["validator-blocker", "operator-review-note"],
+        }
+      : {}),
+  });
   const oidcToken =
     options.oidcToken === undefined
       ? `acceptance-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
@@ -137,22 +165,25 @@ export async function installPreparedApi(
     view: { ...data.source.view, packet: viewPacket },
   };
   const captured: CapturedApiRequest[] = [];
+  let approvalAttempts = 0;
+  let failNextPlanRead = false;
 
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     captured.push({
+      body: request.postData() === null ? null : request.postDataJSON(),
       headers: await request.allHeaders(),
       method: request.method(),
       url: request.url(),
     });
 
-    if (request.method() !== "GET") {
-      await route.fulfill({ json: { code: "method-not-allowed" }, status: 405 });
-      return;
-    }
     if (url.pathname === "/v1/session") {
-      if (oidcToken === null || request.headers().authorization !== `Bearer ${oidcToken}`) {
+      if (
+        oidcToken === null ||
+        options.sessionStatus === "expired" ||
+        request.headers().authorization !== `Bearer ${oidcToken}`
+      ) {
         await route.fulfill({ json: { code: "authentication-required" }, status: 401 });
         return;
       }
@@ -161,7 +192,7 @@ export async function installPreparedApi(
           schema: "operator-session/v1",
           subject: "operator@example.test",
           display_name: "Pipeline operator",
-          roles: ["operator"],
+          roles: ["operator", "response-plan.editor", "response-plan.approver"],
           issuer: "https://identity.example.test/tenant",
           audience: "colortrace-api",
           principal_kind: "human",
@@ -181,6 +212,84 @@ export async function installPreparedApi(
     }
     if (url.pathname === `/v1/incidents/${data.incident.incident_id}/workspace`) {
       await route.fulfill({ json: source });
+      return;
+    }
+    if (url.pathname === `/v1/incidents/${data.incident.incident_id}/response-plan`) {
+      if (request.method() === "GET") {
+        if (failNextPlanRead) {
+          failNextPlanRead = false;
+          await route.fulfill({ json: { code: "temporary-read-failure" }, status: 503 });
+          return;
+        }
+        await route.fulfill({ json: responsePlan });
+        return;
+      }
+      if (oidcToken === null || request.headers().authorization !== `Bearer ${oidcToken}`) {
+        await route.fulfill({ json: { code: "authentication-required" }, status: 401 });
+        return;
+      }
+      if (request.method() === "PUT") {
+        const body = request.postDataJSON() as {
+          commands: ResponsePlanReview["plan"]["commands"];
+          unresolved_acknowledged: boolean;
+        };
+        const editedPlan = {
+          ...responsePlan.plan,
+          commands: body.commands,
+          version: responsePlan.plan.version + 1,
+          previous_plan_sha256: responsePlan.plan.plan_sha256,
+          unresolved_acknowledged: body.unresolved_acknowledged,
+          plan_sha256: `sha256:${"b".repeat(64)}`,
+          created_at: "2026-08-13T18:10:00.000Z",
+        };
+        responsePlan = {
+          ...responsePlan,
+          state: "pending",
+          plan: editedPlan,
+          decision: null,
+        };
+        await route.fulfill({ json: editedPlan });
+        return;
+      }
+    }
+    if (
+      url.pathname === `/v1/incidents/${data.incident.incident_id}/response-plan/approve` &&
+      request.method() === "POST"
+    ) {
+      if (oidcToken === null || request.headers().authorization !== `Bearer ${oidcToken}`) {
+        await route.fulfill({ json: { code: "authentication-required" }, status: 401 });
+        return;
+      }
+      approvalAttempts += 1;
+      responsePlan = responsePlanReviewFixture({
+        incidentId: data.incident.incident_id,
+        state: "approved",
+      });
+      if (options.approvalMode === "ambiguous-once" && approvalAttempts === 1) {
+        await route.abort("connectionreset");
+        return;
+      }
+      if (options.approvalMode === "refresh-fails-once") failNextPlanRead = true;
+      await route.fulfill({ json: responsePlan.decision });
+      return;
+    }
+    if (
+      url.pathname === `/v1/incidents/${data.incident.incident_id}/response-plan/reject` &&
+      request.method() === "POST"
+    ) {
+      if (oidcToken === null || request.headers().authorization !== `Bearer ${oidcToken}`) {
+        await route.fulfill({ json: { code: "authentication-required" }, status: 401 });
+        return;
+      }
+      responsePlan = responsePlanReviewFixture({
+        incidentId: data.incident.incident_id,
+        state: "rejected",
+      });
+      await route.fulfill({ json: responsePlan.decision });
+      return;
+    }
+    if (request.method() !== "GET") {
+      await route.fulfill({ json: { code: "method-not-allowed" }, status: 405 });
       return;
     }
     await route.fulfill({ json: { code: "resource-unavailable" }, status: 404 });

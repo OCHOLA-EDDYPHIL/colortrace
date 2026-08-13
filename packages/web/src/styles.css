@@ -420,6 +420,7 @@ main {
 
 .status-badge[data-status="resolved"],
 .status-badge[data-status="confirmed"],
+.status-badge[data-status="approved"],
 .status-badge[data-status="succeeded"],
 .status-badge[data-status="available"],
 .status-badge[data-status="safe"] {
@@ -435,6 +436,7 @@ main {
 }
 
 .status-badge[data-status="queued"],
+.status-badge[data-status="pending"],
 .status-badge[data-status="informational"],
 .status-badge[data-status="workflow-event"] {
   border-style: dotted;
@@ -1274,6 +1276,266 @@ main {
   margin-top: 0;
 }
 
+.plan-panel {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.plan-identity code,
+.plan-record-list code,
+.plan-command-list code {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--accent-strong);
+  font-size: 0.76rem;
+}
+
+.plan-scope-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.plan-subsection {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+  background: var(--surface-raised);
+}
+
+.plan-subsection h3,
+.plan-controls h3 {
+  margin: 0 0 0.8rem;
+}
+
+.plan-subsection__intro {
+  margin: -0.25rem 0 0.8rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.plan-command-stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.plan-envelope-bindings {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.plan-uncertainty-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.plan-uncertainty-grid > section {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.8rem;
+  background: #10141c;
+}
+
+.plan-uncertainty-grid h4,
+.plan-uncertainty-grid p {
+  margin: 0 0 0.55rem;
+}
+
+.plan-uncertainty-grid p {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.plan-record-list,
+.plan-command-list {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plan-record-list li,
+.plan-command-list > li {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.8rem;
+  background: #10141c;
+}
+
+.plan-command-list > li {
+  padding: 1rem;
+}
+
+.plan-command-list .metadata-list--compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.plan-note,
+.plan-warning {
+  margin: 0;
+  border-left: 3px solid var(--accent);
+  padding: 0.75rem 0.9rem;
+  background: #10141c;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.plan-warning {
+  border-left-color: var(--warning);
+  color: var(--text);
+}
+
+.plan-controls {
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+}
+
+.plan-controls__buttons,
+.plan-confirm__actions,
+.plan-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+}
+
+.plan-controls label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.plan-controls select,
+.plan-controls input[type="text"] {
+  min-height: 46px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+  background: #0d1017;
+  color: var(--text);
+}
+
+.plan-revision-fields {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0 0 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.8rem;
+}
+
+.plan-revision-fields legend {
+  padding: 0 0.35rem;
+  color: var(--text);
+  font-weight: 800;
+}
+
+.plan-revision-fields p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.plan-revision-fields__checkbox {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.plan-revision-fields__checkbox input {
+  width: 1rem;
+  height: 1rem;
+}
+
+.plan-recovery {
+  margin-top: 0.75rem;
+  border: 0;
+  padding: 0;
+}
+
+.secondary-button,
+.danger-button {
+  min-height: 46px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 0.7rem 1rem;
+  background: var(--surface-active);
+  color: var(--text);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.danger-button {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.secondary-button:disabled,
+.danger-button:disabled,
+.plan-controls select:disabled,
+.plan-controls input:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.plan-confirm {
+  position: fixed;
+  z-index: 20;
+  top: 50%;
+  left: 50%;
+  width: min(calc(100% - 2rem), 640px);
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--focus);
+  border-radius: 14px;
+  padding: 1.25rem;
+  background: #141821;
+  box-shadow: 0 0 0 100vmax rgb(3 5 8 / 82%);
+}
+
+.plan-confirm p {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.plan-confirm code {
+  color: var(--accent-strong);
+  overflow-wrap: anywhere;
+}
+
+.plan-confirm__uncertainty {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.plan-confirm__uncertainty div {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem;
+}
+
+.plan-confirm__uncertainty dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.plan-confirm__uncertainty dd {
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+  font-size: 0.78rem;
+}
+
 @media (max-width: 1080px) {
   .workspace-content-grid,
   .evidence-scope-grid {
@@ -1299,8 +1561,19 @@ main {
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   }
 
+  .plan-envelope-bindings,
+  .plan-uncertainty-grid,
+  .plan-confirm__uncertainty,
+  .plan-command-list .metadata-list--compact {
+    grid-template-columns: 1fr;
+  }
+
   main {
     padding: 1rem;
+  }
+
+  .plan-scope-grid {
+    grid-template-columns: 1fr;
   }
 }
 

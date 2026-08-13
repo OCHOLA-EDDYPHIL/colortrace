@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/response-plan-decision-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "decision_id",
+    "outcome",
+    "incident_id",
+    "incident_version",
+    "plan_id",
+    "plan_version",
+    "plan_sha256",
+    "response_packet_id",
+    "response_packet_sha256",
+    "deterministic_scope_sha256",
+    "targets",
+    "exclusions",
+    "commands",
+    "targets_sha256",
+    "exclusions_sha256",
+    "commands_sha256",
+    "unresolved_item_ids",
+    "blocking_unresolved_item_ids",
+    "unknown_target_ids",
+    "unresolved_acknowledged",
+    "reason_code",
+    "actor",
+    "idempotency_key",
+    "decided_at",
+    "decision_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "response-plan-decision/v1"},
+    "decision_id": {"type": "string", "pattern": "^plan-decision:[0-9a-f]{64}$"},
+    "outcome": {"enum": ["approved", "rejected"]},
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "incident_version": {"type": "integer", "minimum": 1},
+    "plan_id": {"type": "string", "pattern": "^response-plan:[0-9a-f]{64}$"},
+    "plan_version": {"type": "integer", "minimum": 1},
+    "plan_sha256": {"$ref": "#/$defs/digest"},
+    "response_packet_id": {"type": "string", "pattern": "^response-packet:[0-9a-f]{64}$"},
+    "response_packet_sha256": {"$ref": "#/$defs/digest"},
+    "deterministic_scope_sha256": {"$ref": "#/$defs/digest"},
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/target"}
+    },
+    "exclusions": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/target"}
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {"$ref": "simulator-command-v1.schema.json"}
+    },
+    "targets_sha256": {"$ref": "#/$defs/digest"},
+    "exclusions_sha256": {"$ref": "#/$defs/digest"},
+    "commands_sha256": {"$ref": "#/$defs/digest"},
+    "unresolved_item_ids": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/identifier"}
+    },
+    "blocking_unresolved_item_ids": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/identifier"}
+    },
+    "unknown_target_ids": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/identifier"}
+    },
+    "unresolved_acknowledged": {"type": "boolean"},
+    "reason_code": {
+      "oneOf": [
+        {"type": "null"},
+        {"enum": ["unsafe-scope", "insufficient-evidence", "incorrect-command", "unresolved-risk"]}
+      ]
+    },
+    "actor": {"$ref": "#/$defs/actor"},
+    "idempotency_key": {"$ref": "#/$defs/idempotency"},
+    "decided_at": {"type": "string", "format": "date-time"},
+    "decision_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"outcome": {"const": "approved"}}},
+      "then": {"properties": {"reason_code": {"type": "null"}}},
+      "else": {
+        "properties": {
+          "reason_code": {
+            "enum": ["unsafe-scope", "insufficient-evidence", "incorrect-command", "unresolved-risk"]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "idempotency": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "namespace", "kind", "id"],
+      "properties": {
+        "schema": {"const": "simulator-target/v1"},
+        "namespace": {"const": "colortrace-simulator"},
+        "kind": {"enum": ["color-resource", "frame", "derivative"]},
+        "id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "subject", "audience", "kind"],
+      "properties": {
+        "issuer": {"type": "string", "minLength": 1, "maxLength": 512},
+        "subject": {"type": "string", "minLength": 1, "maxLength": 255},
+        "audience": {"type": "string", "minLength": 1, "maxLength": 255},
+        "kind": {"const": "human"}
+      }
+    }
+  }
+}

@@ -711,6 +711,305 @@ export type ValidatorEvidence = {
   sha256: ValidatorDigest;
 };
 
+export type ResponsePlanActor = {
+  issuer: string;
+  subject: OidcSubject;
+  audience: string;
+  kind: "human" | "service";
+};
+
+export type SimulatorTarget = {
+  schema: "simulator-target/v1";
+  namespace: "colortrace-simulator";
+  kind: "color-resource" | "frame" | "derivative";
+  id: Identifier;
+};
+
+export type SimulatorActionEnvelope = {
+  schema: "simulator-action-envelope/v1";
+  fixture_id: Identifier;
+  fixture_manifest_sha256: Digest;
+  fixture_generation: number;
+  source_batch_id: Identifier;
+  source_batch_sha256: Digest;
+  runtime_manifest_sha256: Digest;
+  runtime_generation: number;
+  expected_publication_pointer_sha256: Digest;
+  expected_publication_generation: number;
+  expected_resource_sha256: Digest;
+  replacement_resource_logical_path: "luts/show_look.cube";
+  replacement_resource_sha256: Digest;
+  declared_resource_manifest_sha256: Digest;
+  ocio_version: "2.5.2";
+  preservation_manifest_sha256: Digest;
+  safe_complement_sha256: Digest;
+  lineage_manifest_sha256: Digest;
+  lineage_generation: number;
+};
+
+export type SimulatorQuarantineCommand = {
+  schema: "simulator-quarantine-command/v1";
+  command_id: Identifier;
+  namespace: "colortrace-simulator";
+  target: SimulatorTarget & {
+    kind?: "color-resource";
+  };
+  action_envelope: SimulatorActionEnvelope;
+  expected_resource_sha256: Digest;
+  mode: "quarantine-and-install-approved-replacement";
+};
+
+export type SimulatorFrameRerenderCommand = {
+  schema: "simulator-targeted-rerender-command/v1";
+  command_id: Identifier;
+  namespace: "colortrace-simulator";
+  target: SimulatorTarget & {
+    kind?: "frame";
+  };
+  action_envelope: SimulatorActionEnvelope;
+  job_id: Identifier;
+  transform_id: "look/main/v1" | "identity/v1";
+  source_id: Identifier;
+  source_manifest_sha256: Digest;
+  source_png_sha256: Digest;
+  expected_config_sha256: Digest;
+  expected_output_sha256: Digest;
+  expected_display_sha256: Digest;
+  lineage_parent_artifact_id: Identifier;
+};
+
+export type SimulatorDerivativeRerenderCommand = {
+  schema: "simulator-targeted-rerender-command/v1";
+  command_id: Identifier;
+  namespace: "colortrace-simulator";
+  target: SimulatorTarget & {
+    kind?: "derivative";
+  };
+  action_envelope: SimulatorActionEnvelope;
+  job_id: Identifier;
+  transform_id: "look/main/v1" | "identity/v1";
+  source_id: Identifier;
+  source_manifest_sha256: Digest;
+  source_png_sha256: Digest;
+  expected_config_sha256: Digest;
+  expected_derivative_sha256: Digest;
+  expected_derivative_display_sha256: Digest;
+  lineage_parent_artifact_id: Identifier;
+};
+
+export type SimulatorCommand =
+  | SimulatorQuarantineCommand
+  | SimulatorFrameRerenderCommand
+  | SimulatorDerivativeRerenderCommand;
+
+export type ResponsePlan = {
+  schema: "response-plan/v1";
+  plan_id: Identifier;
+  incident_id: Identifier;
+  incident_version: number;
+  version: number;
+  previous_plan_sha256: Digest | null;
+  response_packet_id: Identifier;
+  response_packet_sha256: Digest;
+  deterministic_scope_sha256: Digest;
+  targets: Array<SimulatorTarget>;
+  exclusions: Array<SimulatorTarget>;
+  commands: Array<SimulatorCommand>;
+  unresolved_item_ids: Array<Identifier>;
+  blocking_unresolved_item_ids: Array<Identifier>;
+  unknown_target_ids: Array<Identifier>;
+  unresolved_acknowledged: boolean;
+  created_by: ResponsePlanActor;
+  created_at: string;
+  plan_sha256: Digest;
+};
+
+export type ResponsePlanDecision = {
+  schema: "response-plan-decision/v1";
+  decision_id: Identifier;
+  outcome: "approved" | "rejected";
+  incident_id: Identifier;
+  incident_version: number;
+  plan_id: Identifier;
+  plan_version: number;
+  plan_sha256: Digest;
+  response_packet_id: Identifier;
+  response_packet_sha256: Digest;
+  deterministic_scope_sha256: Digest;
+  targets: Array<SimulatorTarget>;
+  exclusions: Array<SimulatorTarget>;
+  commands: Array<SimulatorCommand>;
+  targets_sha256: Digest;
+  exclusions_sha256: Digest;
+  commands_sha256: Digest;
+  unresolved_item_ids: Array<Identifier>;
+  blocking_unresolved_item_ids: Array<Identifier>;
+  unknown_target_ids: Array<Identifier>;
+  unresolved_acknowledged: boolean;
+  reason_code:
+    | "unsafe-scope"
+    | "insufficient-evidence"
+    | "incorrect-command"
+    | "unresolved-risk"
+    | null;
+  actor: ResponsePlanActor;
+  idempotency_key: string;
+  decided_at: string;
+  decision_sha256: Digest;
+};
+
+export type ResponsePlanAuditEvent = {
+  schema: "response-plan-audit-event/v1";
+  event_id: Identifier;
+  sequence: number;
+  event_type:
+    | "plan.created"
+    | "plan.edited"
+    | "plan.approved"
+    | "plan.rejected"
+    | "dispatch.authorized"
+    | "dispatch.consumed";
+  incident_id: Identifier;
+  plan_id: Identifier;
+  plan_version: number;
+  plan_sha256: Digest;
+  record_sha256: Digest;
+  actor: ResponsePlanActor;
+  idempotency_key: string;
+  predecessor_event_sha256: Digest | null;
+  occurred_at: string;
+  event_sha256: Digest;
+};
+
+export type ResponsePlanDraft = {
+  schema: "response-plan-draft/v1";
+  incident_id: Identifier;
+  incident_version: number;
+  response_packet_id: Identifier;
+  response_packet_sha256: Digest;
+  deterministic_scope_sha256: Digest;
+  targets: Array<SimulatorTarget>;
+  exclusions: Array<SimulatorTarget>;
+  unresolved_item_ids: Array<Identifier>;
+  blocking_unresolved_item_ids: Array<Identifier>;
+  unknown_target_ids: Array<Identifier>;
+};
+
+export type ResponsePlanReview = {
+  schema: "response-plan-review/v1";
+  state: "pending" | "approved" | "rejected" | "stale";
+  current_incident_version: number;
+  plan: ResponsePlan;
+  decision: ResponsePlanDecision | null;
+  audit_events: Array<ResponsePlanAuditEvent>;
+};
+
+export type CreateResponsePlanRequest = {
+  expected_incident_version: number;
+  expected_plan_version: 0;
+  response_packet_id: Identifier;
+  response_packet_sha256: Digest;
+  deterministic_scope_sha256: Digest;
+  targets: Array<SimulatorTarget>;
+  exclusions: Array<SimulatorTarget>;
+  commands: Array<SimulatorCommand>;
+  unresolved_acknowledged: boolean;
+  idempotency_key: string;
+};
+
+export type EditResponsePlanRequest = {
+  expected_incident_version: number;
+  expected_plan_version: number;
+  expected_plan_sha256: Digest;
+  response_packet_id: Identifier;
+  response_packet_sha256: Digest;
+  deterministic_scope_sha256: Digest;
+  targets: Array<SimulatorTarget>;
+  exclusions: Array<SimulatorTarget>;
+  commands: Array<SimulatorCommand>;
+  unresolved_acknowledged: boolean;
+  idempotency_key: string;
+};
+
+export type DecideResponsePlanRequest = {
+  expected_incident_version: number;
+  expected_plan_version: number;
+  expected_plan_sha256: Digest;
+  idempotency_key: string;
+};
+
+export type RejectResponsePlanRequest = {
+  expected_incident_version: number;
+  expected_plan_version: number;
+  expected_plan_sha256: Digest;
+  reason_code: "unsafe-scope" | "insufficient-evidence" | "incorrect-command" | "unresolved-risk";
+  idempotency_key: string;
+};
+
+export type ConsumeResponsePlanDispatchRequest = {
+  authorization_id: Identifier;
+  expected_incident_version: number;
+  expected_plan_version: number;
+  expected_plan_sha256: Digest;
+  expected_task_key: Identifier;
+  expected_payload_sha256: Digest;
+  idempotency_key: string;
+};
+
+export type ResponsePlanDispatchAuthorization = {
+  schema: "response-plan-dispatch-authorization/v1";
+  authorization_id: Identifier;
+  authorization_policy: "response-plan-dispatch-policy/v1";
+  authorized_role: "response-plan.dispatcher";
+  operation_id: Identifier;
+  task_key: Identifier;
+  payload_sha256: Digest;
+  incident_id: Identifier;
+  incident_version: number;
+  plan_id: Identifier;
+  plan_version: number;
+  plan_sha256: Digest;
+  response_packet_id: Identifier;
+  response_packet_sha256: Digest;
+  deterministic_scope_sha256: Digest;
+  approval_id: Identifier;
+  approval_sha256: Digest;
+  targets: Array<SimulatorTarget>;
+  exclusions: Array<SimulatorTarget>;
+  commands: Array<SimulatorCommand>;
+  unresolved_item_ids: Array<Identifier>;
+  blocking_unresolved_item_ids: Array<Identifier>;
+  unknown_target_ids: Array<Identifier>;
+  unresolved_acknowledged: boolean;
+  actor: ResponsePlanActor;
+  idempotency_key: string;
+  authorized_at: string;
+  authorization_sha256: Digest;
+};
+
+export type ResponsePlanDispatchConsumption = {
+  schema: "response-plan-dispatch-consumption/v1";
+  consumption_id: Identifier;
+  authorization_policy: "response-plan-dispatch-policy/v1";
+  authorized_role: "response-plan.dispatcher";
+  authorization_id: Identifier;
+  authorization_sha256: Digest;
+  operation_id: Identifier;
+  task_key: Identifier;
+  payload_sha256: Digest;
+  incident_id: Identifier;
+  incident_version: number;
+  plan_id: Identifier;
+  plan_version: number;
+  plan_sha256: Digest;
+  approval_id: Identifier;
+  approval_sha256: Digest;
+  actor: ResponsePlanActor;
+  idempotency_key: string;
+  consumed_at: string;
+  consumption_sha256: Digest;
+};
+
 export type ListIncidentsData = {
   body?: never;
   path?: never;
@@ -858,6 +1157,281 @@ export type GetIncidentWorkspaceResponses = {
 
 export type GetIncidentWorkspaceResponse =
   GetIncidentWorkspaceResponses[keyof GetIncidentWorkspaceResponses];
+
+export type GetResponsePlanDraftData = {
+  body?: never;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan/draft";
+};
+
+export type GetResponsePlanDraftErrors = {
+  /**
+   * The incident has no safe canonical plan scope.
+   */
+  409: Error;
+};
+
+export type GetResponsePlanDraftError =
+  GetResponsePlanDraftErrors[keyof GetResponsePlanDraftErrors];
+
+export type GetResponsePlanDraftResponses = {
+  /**
+   * Canonical immutable scope available for a typed plan.
+   */
+  200: ResponsePlanDraft;
+};
+
+export type GetResponsePlanDraftResponse =
+  GetResponsePlanDraftResponses[keyof GetResponsePlanDraftResponses];
+
+export type GetResponsePlanReviewData = {
+  body?: never;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan";
+};
+
+export type GetResponsePlanReviewErrors = {
+  /**
+   * No response plan exists for this incident.
+   */
+  404: Error;
+};
+
+export type GetResponsePlanReviewError =
+  GetResponsePlanReviewErrors[keyof GetResponsePlanReviewErrors];
+
+export type GetResponsePlanReviewResponses = {
+  /**
+   * The current immutable plan, decision, and verified audit history.
+   */
+  200: ResponsePlanReview;
+};
+
+export type GetResponsePlanReviewResponse =
+  GetResponsePlanReviewResponses[keyof GetResponsePlanReviewResponses];
+
+export type CreateResponsePlanData = {
+  body: CreateResponsePlanRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan";
+};
+
+export type CreateResponsePlanErrors = {
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type CreateResponsePlanError = CreateResponsePlanErrors[keyof CreateResponsePlanErrors];
+
+export type CreateResponsePlanResponses = {
+  /**
+   * The first immutable plan version.
+   */
+  201: ResponsePlan;
+};
+
+export type CreateResponsePlanResponse =
+  CreateResponsePlanResponses[keyof CreateResponsePlanResponses];
+
+export type EditResponsePlanData = {
+  body: EditResponsePlanRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan";
+};
+
+export type EditResponsePlanErrors = {
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type EditResponsePlanError = EditResponsePlanErrors[keyof EditResponsePlanErrors];
+
+export type EditResponsePlanResponses = {
+  /**
+   * A new immutable plan version that invalidates prior approval.
+   */
+  200: ResponsePlan;
+};
+
+export type EditResponsePlanResponse = EditResponsePlanResponses[keyof EditResponsePlanResponses];
+
+export type ApproveResponsePlanData = {
+  body: DecideResponsePlanRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan/approve";
+};
+
+export type ApproveResponsePlanErrors = {
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type ApproveResponsePlanError = ApproveResponsePlanErrors[keyof ApproveResponsePlanErrors];
+
+export type ApproveResponsePlanResponses = {
+  /**
+   * A hash-bound human approval.
+   */
+  200: ResponsePlanDecision;
+};
+
+export type ApproveResponsePlanResponse =
+  ApproveResponsePlanResponses[keyof ApproveResponsePlanResponses];
+
+export type RejectResponsePlanData = {
+  body: RejectResponsePlanRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan/reject";
+};
+
+export type RejectResponsePlanErrors = {
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type RejectResponsePlanError = RejectResponsePlanErrors[keyof RejectResponsePlanErrors];
+
+export type RejectResponsePlanResponses = {
+  /**
+   * A hash-bound human rejection.
+   */
+  200: ResponsePlanDecision;
+};
+
+export type RejectResponsePlanResponse =
+  RejectResponsePlanResponses[keyof RejectResponsePlanResponses];
+
+export type AuthorizeResponsePlanDispatchData = {
+  body: DecideResponsePlanRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan/dispatch-authorizations";
+};
+
+export type AuthorizeResponsePlanDispatchErrors = {
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type AuthorizeResponsePlanDispatchError =
+  AuthorizeResponsePlanDispatchErrors[keyof AuthorizeResponsePlanDispatchErrors];
+
+export type AuthorizeResponsePlanDispatchResponses = {
+  /**
+   * A service-only authorization for one exact operation, task, and payload.
+   */
+  200: ResponsePlanDispatchAuthorization;
+};
+
+export type AuthorizeResponsePlanDispatchResponse =
+  AuthorizeResponsePlanDispatchResponses[keyof AuthorizeResponsePlanDispatchResponses];
+
+export type ConsumeResponsePlanDispatchData = {
+  body: ConsumeResponsePlanDispatchRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan/dispatch-consumptions";
+};
+
+export type ConsumeResponsePlanDispatchErrors = {
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type ConsumeResponsePlanDispatchError =
+  ConsumeResponsePlanDispatchErrors[keyof ConsumeResponsePlanDispatchErrors];
+
+export type ConsumeResponsePlanDispatchResponses = {
+  /**
+   * The single-use capability redemption receipt.
+   */
+  200: ResponsePlanDispatchConsumption;
+};
+
+export type ConsumeResponsePlanDispatchResponse =
+  ConsumeResponsePlanDispatchResponses[keyof ConsumeResponsePlanDispatchResponses];
 
 export type GetOperatorSessionData = {
   body?: never;
