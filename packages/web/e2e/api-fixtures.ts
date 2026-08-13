@@ -28,11 +28,18 @@ export type PreparedApi = {
   readonly source: IncidentWorkspaceSource;
 };
 
-function preparedApi(providerExcerpt?: string): PreparedApi {
+function preparedApi(providerExcerpt?: string, removedValidatorEvidenceId?: string): PreparedApi {
   const replay = cloneReplayFixture() as Mutable<ReturnType<typeof cloneReplayFixture>>;
   if (providerExcerpt !== undefined) {
     if (replay.evidence.length === 0) throw new Error("Canonical replay has no provider evidence");
     for (const evidence of replay.evidence) evidence.display_excerpt = providerExcerpt;
+  }
+  if (removedValidatorEvidenceId !== undefined) {
+    const validator = replay.validator_results[0];
+    if (validator === undefined) throw new Error("Canonical replay has no validator result");
+    validator.evidence = validator.evidence.filter(
+      (artifact) => artifact.evidence_id !== removedValidatorEvidenceId,
+    );
   }
 
   const incident: IncidentSummary = {
@@ -92,6 +99,7 @@ export async function installPreparedApi(
   page: Page,
   options: {
     readonly providerExcerpt?: string;
+    readonly removedValidatorEvidenceId?: string;
     readonly viewPacket?: "exact" | "mismatched" | "missing";
     readonly oidcToken?: string | null;
   } = {},
@@ -100,7 +108,7 @@ export async function installPreparedApi(
   readonly data: PreparedApi;
   readonly oidcToken: string | null;
 }> {
-  const data = preparedApi(options.providerExcerpt);
+  const data = preparedApi(options.providerExcerpt, options.removedValidatorEvidenceId);
   const oidcToken =
     options.oidcToken === undefined
       ? `acceptance-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`

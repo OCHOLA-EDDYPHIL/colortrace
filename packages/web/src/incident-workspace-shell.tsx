@@ -1,8 +1,10 @@
 import { useEffect, useRef } from "react";
 
+import { EvidenceView } from "./evidence-view.tsx";
 import { IncidentInbox } from "./incident-inbox.tsx";
 import { IncidentOverview } from "./incident-overview.tsx";
 import { InvestigationTimeline } from "./investigation-timeline.tsx";
+import { ScopeView } from "./scope-view.tsx";
 import { StatusBadge } from "./status-badge.tsx";
 import { Timestamp } from "./time.tsx";
 import type { IncidentInboxItem, IncidentWorkspaceViewState } from "./view-state.ts";
@@ -258,6 +260,17 @@ function WorkspaceContent({
             <InvestigationTimeline
               entries={workspace.timeline}
               evidence={workspace.evidence.items}
+            />
+          </div>
+          <div className="evidence-scope-grid">
+            <ScopeView
+              evidence={workspace.evidence.items}
+              limitations={workspace.limitations}
+              scope={workspace.scope}
+            />
+            <EvidenceView
+              evidence={workspace.evidence.items}
+              missingReferences={workspace.evidence.missing_references}
             />
           </div>
         </div>
