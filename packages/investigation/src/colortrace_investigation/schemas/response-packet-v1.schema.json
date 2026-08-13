@@ -1,0 +1,308 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/response-packet-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "packet_id",
+    "incident_id",
+    "version",
+    "status",
+    "fixed_window",
+    "evidence_ids",
+    "deterministic_results",
+    "claims",
+    "scope",
+    "invocation_records",
+    "budget_use",
+    "unresolved_items",
+    "candidate_plan",
+    "no_action_reason",
+    "model_advisory",
+    "state_history",
+    "finalized_at",
+    "derivation_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "response-packet/v1"},
+    "packet_id": {"type": "string", "pattern": "^response-packet:[0-9a-f]{64}$"},
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "version": {"const": 1},
+    "status": {"enum": ["resolved", "unresolved"]},
+    "fixed_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "frozen_at"],
+      "properties": {
+        "start": {"type": "string", "format": "date-time"},
+        "end": {"type": "string", "format": "date-time"},
+        "frozen_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "evidence_ids": {
+      "type": "array",
+      "maxItems": 512,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/identifier"}
+    },
+    "deterministic_results": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {"$ref": "#/$defs/deterministic_result"}
+    },
+    "claims": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {"$ref": "#/$defs/claim"}
+    },
+    "scope": {"$ref": "#/$defs/scope"},
+    "invocation_records": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {"$ref": "model-tool-invocation-v1.schema.json"}
+    },
+    "budget_use": {"$ref": "#/$defs/budget"},
+    "unresolved_items": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/unresolved_item"}
+    },
+    "candidate_plan": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/candidate_plan"}]
+    },
+    "no_action_reason": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "enum": [
+            "budget-exhausted",
+            "contradictory-evidence",
+            "evidence-unavailable",
+            "incomplete-evidence",
+            "invalid-intake",
+            "model-unavailable",
+            "no-affected-targets",
+            "policy-drift",
+            "stale-evidence",
+            "validator-unresolved"
+          ]
+        }
+      ]
+    },
+    "model_advisory": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/model_advisory"}]
+    },
+    "state_history": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 16,
+      "items": {
+        "enum": [
+          "intake",
+          "selection",
+          "evidence",
+          "assessment",
+          "validation",
+          "drafting",
+          "finalization",
+          "complete"
+        ]
+      }
+    },
+    "finalized_at": {"type": "string", "format": "date-time"},
+    "derivation_sha256": {"$ref": "#/$defs/prefixed_digest"}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 256},
+    "prefixed_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "deterministic_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result_id",
+        "validator",
+        "validator_version",
+        "status",
+        "policy_versions",
+        "derivation_sha256",
+        "evidence_ids"
+      ],
+      "properties": {
+        "result_id": {"$ref": "#/$defs/identifier"},
+        "validator": {"const": "colortrace-validator"},
+        "validator_version": {"const": "1.0.0"},
+        "status": {"enum": ["resolved", "unresolved"]},
+        "policy_versions": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 128}
+        },
+        "derivation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "evidence_ids": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "claim_id",
+        "claim_type",
+        "subject",
+        "state",
+        "policy",
+        "normalized_inputs_sha256",
+        "deterministic_result_evidence_id",
+        "source_validator_result_id",
+        "derivation_sha256",
+        "contradiction_links",
+        "evidence_ids",
+        "reason_codes"
+      ],
+      "properties": {
+        "schema": {"const": "claim/v1"},
+        "claim_id": {"$ref": "#/$defs/identifier"},
+        "claim_type": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"},
+        "subject": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"},
+            "value": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/identifier"}]}
+          }
+        },
+        "state": {"enum": ["confirmed", "inferred", "rejected", "unresolved"]},
+        "policy": {"type": "string", "minLength": 1, "maxLength": 128},
+        "normalized_inputs_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "deterministic_result_evidence_id": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/identifier"}]
+        },
+        "source_validator_result_id": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/identifier"}]
+        },
+        "derivation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "contradiction_links": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "evidence_ids": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "reason_codes": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"}
+        }
+      }
+    },
+    "scope_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"enum": ["derivative", "frame"]},
+        "id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "policy", "affected", "safe", "unknown", "reason_codes"],
+      "properties": {
+        "state": {"enum": ["resolved", "unresolved"]},
+        "policy": {"const": "single-causal-resource-scope/v1"},
+        "affected": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/scope_item"}},
+        "safe": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/scope_item"}},
+        "unknown": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/scope_item"}},
+        "reason_codes": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"}
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "elapsed_ms",
+        "model_turns",
+        "input_tokens",
+        "output_tokens",
+        "unavailable_input_tokens_reserved",
+        "unavailable_output_tokens_reserved",
+        "mcp_attempts",
+        "validator_calls",
+        "trusted_transient_retries",
+        "model_visible_bytes",
+        "maximum_calls_in_flight_observed"
+      ],
+      "properties": {
+        "elapsed_ms": {"type": "integer", "minimum": 0},
+        "model_turns": {"type": "integer", "minimum": 0, "maximum": 6},
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "unavailable_input_tokens_reserved": {"type": "integer", "minimum": 0},
+        "unavailable_output_tokens_reserved": {"type": "integer", "minimum": 0},
+        "mcp_attempts": {"type": "integer", "minimum": 0, "maximum": 8},
+        "validator_calls": {"type": "integer", "minimum": 0, "maximum": 6},
+        "trusted_transient_retries": {"type": "integer", "minimum": 0, "maximum": 1},
+        "model_visible_bytes": {"type": "integer", "minimum": 0, "maximum": 1048576},
+        "maximum_calls_in_flight_observed": {"type": "integer", "minimum": 0, "maximum": 2}
+      }
+    },
+    "unresolved_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "stage", "evidence_ids"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"},
+        "stage": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"},
+        "evidence_ids": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        }
+      }
+    },
+    "candidate_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "plan_id", "non_executable", "targets", "claim_ids"],
+      "properties": {
+        "schema": {"const": "candidate-plan-reference/v1"},
+        "plan_id": {"type": "string", "pattern": "^candidate-plan:[0-9a-f]{64}$"},
+        "non_executable": {"const": true},
+        "targets": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"$ref": "#/$defs/scope_item"}},
+        "claim_ids": {"type": "array", "minItems": 1, "maxItems": 128, "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}}
+      }
+    },
+    "model_advisory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trust", "summary", "evidence_ids", "output_sha256"],
+      "properties": {
+        "trust": {"const": "untrusted-model-output"},
+        "summary": {"type": "string", "maxLength": 1024},
+        "evidence_ids": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}},
+        "output_sha256": {"$ref": "#/$defs/prefixed_digest"}
+      }
+    }
+  }
+}

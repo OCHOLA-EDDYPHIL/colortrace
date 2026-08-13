@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/alert-intake-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "incident_id",
+    "alert_id",
+    "alert_started_at",
+    "retrieved_at",
+    "measured_clock_skew_seconds",
+    "binding",
+    "correlation_keys",
+    "predecessor_event_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "alert-intake/v1"},
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "alert_id": {"$ref": "#/$defs/identifier"},
+    "alert_started_at": {"type": "string", "format": "date-time"},
+    "retrieved_at": {"type": "string", "format": "date-time"},
+    "measured_clock_skew_seconds": {"type": "integer", "minimum": 0, "maximum": 5},
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prometheus_datasource_uid",
+        "loki_datasource_uid",
+        "tempo_datasource_uid",
+        "alert_rule_uid"
+      ],
+      "properties": {
+        "prometheus_datasource_uid": {"$ref": "#/$defs/uid"},
+        "loki_datasource_uid": {"$ref": "#/$defs/uid"},
+        "tempo_datasource_uid": {"$ref": "#/$defs/uid"},
+        "alert_rule_uid": {"$ref": "#/$defs/uid"}
+      }
+    },
+    "correlation_keys": {"$ref": "#/$defs/correlation"},
+    "predecessor_event_sha256": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/prefixed_digest"}]
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+    },
+    "uid": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "prefixed_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "correlation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixture_id",
+        "run_id",
+        "job_id",
+        "worker_id",
+        "artifact_id",
+        "trace_id",
+        "config_sha256",
+        "transform_id"
+      ],
+      "properties": {
+        "fixture_id": {"$ref": "#/$defs/identifier"},
+        "run_id": {"$ref": "#/$defs/identifier"},
+        "job_id": {"$ref": "#/$defs/identifier"},
+        "worker_id": {"$ref": "#/$defs/identifier"},
+        "artifact_id": {"$ref": "#/$defs/identifier"},
+        "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "config_sha256": {"$ref": "#/$defs/digest"},
+        "transform_id": {"$ref": "#/$defs/identifier"}
+      }
+    }
+  }
+}
