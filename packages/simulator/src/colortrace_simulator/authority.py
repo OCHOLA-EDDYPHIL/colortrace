@@ -9,7 +9,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any, cast
 
-from colortrace_response_plans import (  # type: ignore[import-untyped]
+from colortrace_response_plans import (
     ResponsePlanError,
     validate_audit_chain,
     validate_decision,

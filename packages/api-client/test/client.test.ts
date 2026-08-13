@@ -1,6 +1,8 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
+  type AdmitSimulatorActionRequest,
+  admitSimulatorAction,
   type AlertIntake,
   type CandidatePlan,
   createClient,
@@ -12,6 +14,7 @@ import {
   type ModelInvocation,
   replayIncident,
   type ResponsePacket,
+  type SimulatorActionAdmission,
   type TraceEvent,
   type UnresolvedItem,
   type ValidatorResult,
@@ -119,5 +122,65 @@ describe("generated incident client", () => {
       "https://example.invalid/v1/incidents/incident%2F001",
       "https://example.invalid/v1/incidents/incident%2F001/replay",
     ]);
+  });
+
+  it("admits only the opaque typed simulator dispatch identity", async () => {
+    const requests: Request[] = [];
+    const body: AdmitSimulatorActionRequest = {
+      schema: "simulator-action-admission-request/v1",
+      task_key: `dispatch-task:${"1".repeat(64)}`,
+      operation_id: `dispatch-operation:${"2".repeat(64)}`,
+      payload_sha256: `sha256:${"3".repeat(64)}`,
+    };
+    const admission: SimulatorActionAdmission = {
+      ...body,
+      schema: "simulator-action-admission/v1",
+      admission_id: `simulator-admission:${"4".repeat(64)}`,
+      action_id: `simulator-action:${"5".repeat(64)}`,
+      dispatch_bundle_sha256: `sha256:${"6".repeat(64)}`,
+      incident_id: "incident-001",
+      incident_version: 3,
+      plan_id: `response-plan:${"7".repeat(64)}`,
+      plan_version: 2,
+      plan_sha256: `sha256:${"8".repeat(64)}`,
+      approval_id: `plan-decision:${"9".repeat(64)}`,
+      approval_sha256: `sha256:${"a".repeat(64)}`,
+      authorization_id: `dispatch-authorization:${"b".repeat(64)}`,
+      authorization_sha256: `sha256:${"c".repeat(64)}`,
+      consumption_id: `dispatch-consumption:${"d".repeat(64)}`,
+      consumption_sha256: `sha256:${"e".repeat(64)}`,
+      executor_actor: {
+        issuer: "https://identity.example.test",
+        subject: "simulator@example.test",
+        audience: "colortrace-api",
+        kind: "service",
+      },
+      admitted_at: "2026-08-13T21:00:00Z",
+      admission_sha256: `sha256:${"f".repeat(64)}`,
+    };
+    const generatedClient = createClient({
+      baseUrl: "https://example.invalid",
+      fetch: async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        requests.push(request);
+        return new Response(JSON.stringify(admission), {
+          headers: { "Content-Type": "application/json" },
+          status: 202,
+        });
+      },
+    });
+
+    const response = await admitSimulatorAction(
+      { incidentId: "incident/001", admitSimulatorActionRequest: body },
+      { client: generatedClient, throwOnError: true },
+    );
+
+    expect(response).toEqual(admission);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.method).toBe("POST");
+    expect(requests[0]?.url).toBe(
+      "https://example.invalid/internal/v1/incidents/incident%2F001/simulator-actions",
+    );
+    await expect(requests[0]?.json()).resolves.toEqual(body);
   });
 });

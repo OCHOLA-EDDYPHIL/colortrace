@@ -492,6 +492,49 @@
         }
       }
     },
+    "/internal/v1/incidents/{incidentId}/simulator-actions": {
+      "post": {
+        "operationId": "admitSimulatorAction",
+        "security": [{ "operatorOidc": [] }],
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AdmitSimulatorActionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The exact consumed dispatch is durably admitted for local simulator execution.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SimulatorActionAdmission" }
+              }
+            }
+          },
+          "400": {
+            "description": "The opaque dispatch identity is malformed.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/AuthenticationError" },
+          "403": { "$ref": "#/components/responses/AuthorityError" },
+          "409": { "$ref": "#/components/responses/ConflictError" }
+        }
+      }
+    },
     "/v1/session": {
       "get": {
         "operationId": "getOperatorSession",
@@ -3903,6 +3946,108 @@
           "expected_task_key": { "$ref": "#/components/schemas/Identifier" },
           "expected_payload_sha256": { "$ref": "#/components/schemas/Digest" },
           "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      },
+      "AdmitSimulatorActionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema", "task_key", "operation_id", "payload_sha256"],
+        "properties": {
+          "schema": { "const": "simulator-action-admission-request/v1" },
+          "task_key": {
+            "type": "string",
+            "pattern": "^dispatch-task:[0-9a-f]{64}$"
+          },
+          "operation_id": {
+            "type": "string",
+            "pattern": "^dispatch-operation:[0-9a-f]{64}$"
+          },
+          "payload_sha256": { "$ref": "#/components/schemas/Digest" }
+        }
+      },
+      "SimulatorExecutorActor": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issuer", "subject", "audience", "kind"],
+        "properties": {
+          "issuer": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "subject": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "audience": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "kind": { "const": "service" }
+        }
+      },
+      "SimulatorActionAdmission": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "admission_id",
+          "action_id",
+          "task_key",
+          "operation_id",
+          "payload_sha256",
+          "dispatch_bundle_sha256",
+          "incident_id",
+          "incident_version",
+          "plan_id",
+          "plan_version",
+          "plan_sha256",
+          "approval_id",
+          "approval_sha256",
+          "authorization_id",
+          "authorization_sha256",
+          "consumption_id",
+          "consumption_sha256",
+          "executor_actor",
+          "admitted_at",
+          "admission_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "simulator-action-admission/v1" },
+          "admission_id": {
+            "type": "string",
+            "pattern": "^simulator-admission:[0-9a-f]{64}$"
+          },
+          "action_id": {
+            "type": "string",
+            "pattern": "^simulator-action:[0-9a-f]{64}$"
+          },
+          "task_key": {
+            "type": "string",
+            "pattern": "^dispatch-task:[0-9a-f]{64}$"
+          },
+          "operation_id": {
+            "type": "string",
+            "pattern": "^dispatch-operation:[0-9a-f]{64}$"
+          },
+          "payload_sha256": { "$ref": "#/components/schemas/Digest" },
+          "dispatch_bundle_sha256": { "$ref": "#/components/schemas/Digest" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "incident_version": { "type": "integer", "minimum": 1 },
+          "plan_id": {
+            "type": "string",
+            "pattern": "^response-plan:[0-9a-f]{64}$"
+          },
+          "plan_version": { "type": "integer", "minimum": 1 },
+          "plan_sha256": { "$ref": "#/components/schemas/Digest" },
+          "approval_id": {
+            "type": "string",
+            "pattern": "^plan-decision:[0-9a-f]{64}$"
+          },
+          "approval_sha256": { "$ref": "#/components/schemas/Digest" },
+          "authorization_id": {
+            "type": "string",
+            "pattern": "^dispatch-authorization:[0-9a-f]{64}$"
+          },
+          "authorization_sha256": { "$ref": "#/components/schemas/Digest" },
+          "consumption_id": {
+            "type": "string",
+            "pattern": "^dispatch-consumption:[0-9a-f]{64}$"
+          },
+          "consumption_sha256": { "$ref": "#/components/schemas/Digest" },
+          "executor_actor": { "$ref": "#/components/schemas/SimulatorExecutorActor" },
+          "admitted_at": { "type": "string", "format": "date-time" },
+          "admission_sha256": { "$ref": "#/components/schemas/Digest" }
         }
       },
       "ResponsePlanDispatchAuthorization": {

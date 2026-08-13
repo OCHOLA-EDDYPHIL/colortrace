@@ -10,6 +10,9 @@ import {
 } from "./client";
 import { client } from "./client.gen";
 import type {
+  AdmitSimulatorActionErrors,
+  AdmitSimulatorActionRequest,
+  AdmitSimulatorActionResponses,
   AlertIntake,
   ApproveResponsePlanErrors,
   ApproveResponsePlanResponses,
@@ -459,6 +462,48 @@ export const consumeResponsePlanDispatch = <ThrowOnError extends boolean = false
     responseStyle: "data",
     security: [{ scheme: "bearer", type: "http" }],
     url: "/v1/incidents/{incidentId}/response-plan/dispatch-consumptions",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
+  });
+};
+
+export const admitSimulatorAction = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+    admitSimulatorActionRequest: AdmitSimulatorActionRequest;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<
+  AdmitSimulatorActionResponses,
+  AdmitSimulatorActionErrors,
+  ThrowOnError,
+  "data"
+> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "path", key: "incidentId" },
+          { key: "admitSimulatorActionRequest", map: "body" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).post<
+    AdmitSimulatorActionResponses,
+    AdmitSimulatorActionErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/internal/v1/incidents/{incidentId}/simulator-actions",
     ...options,
     ...params,
     headers: {
