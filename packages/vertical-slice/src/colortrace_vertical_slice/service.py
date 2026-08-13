@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic as system_monotonic
 from typing import Any, Protocol, cast
+from uuid import uuid4
 
 from colortrace_grafana_mcp import EvidenceBatch, ExecutionControls
 from colortrace_investigation import (
@@ -27,7 +29,12 @@ from colortrace_investigation.contracts import (
 )
 from colortrace_investigation.workflow import EvidenceCollector, EvidenceResult, ValidatorGateway
 
-from .contracts import SliceContractError, plain_json
+from .contracts import (
+    CLAIM_HEARTBEAT_SECONDS,
+    SliceContractError,
+    plain_json,
+    require_identifier,
+)
 from .store import SqliteIncidentStore, WorkItem
 
 
@@ -140,6 +147,8 @@ class VerticalSliceWorker:
         clock: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] | None = None,
         service_timeout_seconds: float = 121.0,
+        owner_id: str | None = None,
+        heartbeat_sleep: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         if service_timeout_seconds <= 0 or service_timeout_seconds > 121:
             raise SliceContractError("service-timeout-policy")
@@ -151,7 +160,25 @@ class VerticalSliceWorker:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._monotonic = monotonic or system_monotonic
         self._service_timeout_seconds = service_timeout_seconds
+        self._owner_id = require_identifier(
+            owner_id or f"worker:{uuid4().hex}", code="claim-owner-invalid"
+        )
+        self._heartbeat_sleep = heartbeat_sleep or asyncio.sleep
         self._shared = TrackedSemaphore(policy.budgets.maximum_calls_in_flight)
+
+    def _now(self) -> str:
+        return timestamp(self._clock().astimezone(UTC))
+
+    async def _maintain_claim(self, work: WorkItem) -> None:
+        while True:
+            await self._heartbeat_sleep(CLAIM_HEARTBEAT_SECONDS)
+            self._store.renew_claim(work, now=self._now())
+
+    @staticmethod
+    async def _stop_heartbeat(task: asyncio.Task[None]) -> None:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
     def _fallback_packet(
         self,
@@ -239,8 +266,16 @@ class VerticalSliceWorker:
         completed = self._store.completed_packet(task_id)
         if completed is not None:
             return completed
-        now = timestamp(self._clock().astimezone(UTC))
-        work = self._store.claim_task(task_id, now=now)
+        try:
+            work = self._store.claim_task(task_id, owner=self._owner_id, now=self._now())
+        except SliceContractError as error:
+            if error.code != "task-complete":
+                raise
+            completed = self._store.completed_packet(task_id)
+            if completed is None:
+                raise SliceContractError("store-integrity") from error
+            return completed
+        heartbeat = asyncio.create_task(self._maintain_claim(work))
         evidence = RecordingEvidenceCollector(self._evidence)
         validator = RecordingValidatorGateway(self._validator)
         progress = WorkflowProgress()
@@ -255,43 +290,55 @@ class VerticalSliceWorker:
             progress=progress,
         )
         try:
-            packet = await asyncio.wait_for(
-                workflow.run(work.alert, bundle_root=bundle_root),
-                timeout=self._service_timeout_seconds,
-            )
-        except TimeoutError:
-            packet = self._fallback_packet(
+            try:
+                packet = await asyncio.wait_for(
+                    workflow.run(work.alert, bundle_root=bundle_root),
+                    timeout=self._service_timeout_seconds,
+                )
+            except TimeoutError:
+                packet = self._fallback_packet(
+                    work,
+                    code="service-timeout",
+                    timed_out=True,
+                    evidence_ids=[cast(str, item["evidence_id"]) for item in evidence.envelopes],
+                    progress=progress,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                packet = self._fallback_packet(
+                    work,
+                    code="worker-service-failure",
+                    timed_out=False,
+                    evidence_ids=[cast(str, item["evidence_id"]) for item in evidence.envelopes],
+                    progress=progress,
+                )
+            if heartbeat.done():
+                heartbeat.result()
+            packet_result_ids = {
+                cast(str, item["result_id"])
+                for item in cast(Sequence[Mapping[str, Any]], packet["deterministic_results"])
+            }
+            persisted_validator_results = [
+                item for item in validator.results if item.get("result_id") in packet_result_ids
+            ]
+            return self._store.complete_task(
                 work,
-                code="service-timeout",
-                timed_out=True,
-                evidence_ids=[cast(str, item["evidence_id"]) for item in evidence.envelopes],
-                progress=progress,
+                packet=packet,
+                evidence=evidence.envelopes,
+                evidence_batches=evidence.batches,
+                validator_results=persisted_validator_results,
+                now=self._now(),
             )
         except asyncio.CancelledError:
+            with suppress(SliceContractError):
+                await self._stop_heartbeat(heartbeat)
+            with suppress(SliceContractError):
+                self._store.expire_claim(work, now=self._now())
             raise
-        except Exception:
-            packet = self._fallback_packet(
-                work,
-                code="worker-service-failure",
-                timed_out=False,
-                evidence_ids=[cast(str, item["evidence_id"]) for item in evidence.envelopes],
-                progress=progress,
-            )
-        packet_result_ids = {
-            cast(str, item["result_id"])
-            for item in cast(Sequence[Mapping[str, Any]], packet["deterministic_results"])
-        }
-        persisted_validator_results = [
-            item for item in validator.results if item.get("result_id") in packet_result_ids
-        ]
-        return self._store.complete_task(
-            work,
-            packet=packet,
-            evidence=evidence.envelopes,
-            evidence_batches=evidence.batches,
-            validator_results=persisted_validator_results,
-            now=timestamp(self._clock().astimezone(UTC)),
-        )
+        finally:
+            if not heartbeat.done():
+                await self._stop_heartbeat(heartbeat)
 
 
 async def run_vertical_slice(

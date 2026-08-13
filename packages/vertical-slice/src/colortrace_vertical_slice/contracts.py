@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from datetime import timedelta
 from functools import cache
 from pathlib import Path
 from types import MappingProxyType
@@ -11,6 +12,7 @@ from colortrace_grafana_mcp import AdapterError, validate_evidence_envelope
 from colortrace_investigation.contracts import (
     AlertIntake,
     canonical_json_bytes,
+    parse_timestamp,
     prefixed_sha256,
     strict_json_bytes,
     strict_json_file,
@@ -30,9 +32,20 @@ from jsonschema import (  # type: ignore[import-untyped]
 SCHEMA_ROOT = Path(__file__).parent / "schemas"
 TASK_SCHEMA = "incident-task/v1"
 REPLAY_SCHEMA = "incident-replay/v1"
-STORE_SCHEMA_VERSION = 1
+CLAIM_EVENT_SCHEMA = "incident-claim-event/v1"
+STORE_SCHEMA_VERSION = 2
+CLAIM_LEASE_SECONDS = 30
+CLAIM_HEARTBEAT_SECONDS = 10
 INCIDENT_STATUSES = frozenset({"queued", "running", "resolved", "unresolved"})
 TASK_STATUSES = frozenset({"queued", "running", "complete"})
+CLAIM_EVENT_TYPES = (
+    "claim.acquired",
+    "claim.migrated",
+    "claim.renewed",
+    "claim.cancelled",
+    "claim.reclaimed",
+    "claim.completed",
+)
 TRACE_EVENT_TYPES = (
     "api.intake.accepted",
     "task.queued",
@@ -72,6 +85,24 @@ def require_prefixed_digest(value: Any, *, code: str = "digest-invalid") -> str:
     if not isinstance(value, str) or _PREFIXED_DIGEST.fullmatch(value) is None:
         raise SliceContractError(code)
     return value
+
+
+def normalize_timestamp(value: Any, *, code: str = "timestamp-invalid") -> str:
+    if not isinstance(value, str):
+        raise SliceContractError(code)
+    try:
+        return timestamp(parse_timestamp(value))
+    except InvestigationContractError as error:
+        raise SliceContractError(code) from error
+
+
+def claim_expiry(value: Any) -> str:
+    normalized = normalize_timestamp(value, code="claim-time-invalid")
+    try:
+        parsed = parse_timestamp(normalized)
+    except InvestigationContractError as error:  # pragma: no cover - normalized above
+        raise SliceContractError("claim-time-invalid") from error
+    return timestamp(parsed + timedelta(seconds=CLAIM_LEASE_SECONDS))
 
 
 @cache
@@ -173,6 +204,134 @@ def build_trace_event(
     event["event_sha256"] = event_sha256
     validate_schema("incident-trace-event-v1.schema.json", event)
     return event
+
+
+def build_claim_event(
+    *,
+    task_id: str,
+    incident_id: str,
+    sequence: int,
+    event_type: str,
+    owner: str,
+    generation: int,
+    lease_expires_at: str,
+    predecessor_event_sha256: str | None,
+    occurred_at: str,
+) -> dict[str, Any]:
+    if event_type not in CLAIM_EVENT_TYPES:
+        raise SliceContractError("claim-event-type-invalid")
+    if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
+        raise SliceContractError("claim-event-sequence-invalid")
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+        raise SliceContractError("claim-generation-invalid")
+    body = {
+        "schema": CLAIM_EVENT_SCHEMA,
+        "task_id": require_identifier(task_id),
+        "incident_id": require_identifier(incident_id),
+        "sequence": sequence,
+        "event_type": event_type,
+        "owner": require_identifier(owner, code="claim-owner-invalid"),
+        "generation": generation,
+        "lease_expires_at": normalize_timestamp(lease_expires_at, code="claim-expiry-invalid"),
+        "predecessor_event_sha256": predecessor_event_sha256,
+        "occurred_at": normalize_timestamp(occurred_at, code="claim-time-invalid"),
+    }
+    event_sha256 = prefixed_sha256(canonical_json_bytes(body))
+    event = {
+        **body,
+        "event_id": f"claim-event:{event_sha256.removeprefix('sha256:')}",
+        "event_sha256": event_sha256,
+    }
+    validate_schema("incident-claim-event-v1.schema.json", event)
+    return event
+
+
+def validate_claim_events(
+    events: Sequence[Mapping[str, Any]], *, task_id: str, incident_id: str
+) -> None:
+    expected_task = require_identifier(task_id)
+    expected_incident = require_identifier(incident_id)
+    predecessor: str | None = None
+    previous: Mapping[str, Any] | None = None
+    terminal = False
+    for sequence, event in enumerate(events, start=1):
+        validate_schema("incident-claim-event-v1.schema.json", event)
+        body = {
+            key: child for key, child in event.items() if key not in {"event_id", "event_sha256"}
+        }
+        expected_digest = prefixed_sha256(canonical_json_bytes(body))
+        if (
+            event.get("task_id") != expected_task
+            or event.get("incident_id") != expected_incident
+            or event.get("sequence") != sequence
+            or event.get("predecessor_event_sha256") != predecessor
+            or event.get("event_sha256") != expected_digest
+            or event.get("event_id") != f"claim-event:{expected_digest.removeprefix('sha256:')}"
+        ):
+            raise SliceContractError("claim-event-binding")
+        event_type = cast(str, event["event_type"])
+        owner = cast(str, event["owner"])
+        generation = cast(int, event["generation"])
+        try:
+            occurred_at = parse_timestamp(cast(str, event["occurred_at"]))
+            expires_at = parse_timestamp(cast(str, event["lease_expires_at"]))
+        except InvestigationContractError as error:
+            raise SliceContractError("claim-event-binding") from error
+        if terminal:
+            raise SliceContractError("claim-event-binding")
+        if previous is None:
+            if event_type not in {"claim.acquired", "claim.migrated"} or generation != 1:
+                raise SliceContractError("claim-event-binding")
+            if expires_at - occurred_at != timedelta(seconds=CLAIM_LEASE_SECONDS):
+                raise SliceContractError("claim-event-binding")
+        else:
+            previous_type = cast(str, previous["event_type"])
+            previous_owner = cast(str, previous["owner"])
+            previous_generation = cast(int, previous["generation"])
+            previous_occurred_at = parse_timestamp(cast(str, previous["occurred_at"]))
+            previous_expiry = parse_timestamp(cast(str, previous["lease_expires_at"]))
+            if occurred_at < previous_occurred_at or previous_type == "claim.completed":
+                raise SliceContractError("claim-event-binding")
+            if previous_type == "claim.cancelled" and event_type not in {
+                "claim.cancelled",
+                "claim.reclaimed",
+            }:
+                raise SliceContractError("claim-event-binding")
+            if event_type == "claim.reclaimed":
+                if generation != previous_generation + 1 or occurred_at < previous_expiry:
+                    raise SliceContractError("claim-event-binding")
+                if expires_at - occurred_at != timedelta(seconds=CLAIM_LEASE_SECONDS):
+                    raise SliceContractError("claim-event-binding")
+            elif event_type == "claim.renewed":
+                if (
+                    generation != previous_generation
+                    or owner != previous_owner
+                    or occurred_at >= previous_expiry
+                    or expires_at <= previous_expiry
+                    or expires_at - occurred_at != timedelta(seconds=CLAIM_LEASE_SECONDS)
+                ):
+                    raise SliceContractError("claim-event-binding")
+            elif event_type == "claim.cancelled":
+                if (
+                    generation != previous_generation
+                    or owner != previous_owner
+                    or expires_at > occurred_at
+                    or expires_at > previous_expiry
+                ):
+                    raise SliceContractError("claim-event-binding")
+            elif event_type == "claim.completed":
+                if (
+                    generation != previous_generation
+                    or owner != previous_owner
+                    or occurred_at >= previous_expiry
+                    or expires_at != previous_expiry
+                ):
+                    raise SliceContractError("claim-event-binding")
+                terminal = True
+            else:
+                raise SliceContractError("claim-event-binding")
+        predecessor = expected_digest
+        previous = event
 
 
 def validate_trace_events(
@@ -397,6 +556,10 @@ def readonly_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 __all__ = [
+    "CLAIM_EVENT_SCHEMA",
+    "CLAIM_EVENT_TYPES",
+    "CLAIM_HEARTBEAT_SECONDS",
+    "CLAIM_LEASE_SECONDS",
     "INCIDENT_STATUSES",
     "REPLAY_SCHEMA",
     "STORE_SCHEMA_VERSION",
@@ -405,10 +568,13 @@ __all__ = [
     "TASK_STATUSES",
     "TRACE_EVENT_TYPES",
     "alert_digest",
+    "build_claim_event",
     "build_task_envelope",
     "build_trace_event",
     "canonical_json_bytes",
+    "claim_expiry",
     "finalize_replay",
+    "normalize_timestamp",
     "plain_json",
     "prefixed_sha256",
     "readonly_mapping",
@@ -418,6 +584,7 @@ __all__ = [
     "stable_task_id",
     "strict_json_bytes",
     "timestamp",
+    "validate_claim_events",
     "validate_replay",
     "validate_schema",
 ]
