@@ -1,5 +1,13 @@
 export { IncidentInbox, type IncidentInboxProps } from "./incident-inbox.tsx";
 export {
+  evidenceAnchorId,
+  EvidenceCitation,
+  type EvidenceCitationProps,
+  type EvidenceCitationResolution,
+  resolveEvidenceCitation,
+} from "./evidence-citation.tsx";
+export { EvidenceView, type EvidenceViewProps } from "./evidence-view.tsx";
+export {
   createIncidentReadAdapter,
   IncidentApiError,
   type BearerTokenProvider,
@@ -33,5 +41,6 @@ export {
   StatusBadge,
   type StatusBadgeProps,
 } from "./status-badge.tsx";
+export { ScopeView, type ScopeViewProps } from "./scope-view.tsx";
 export { formatTimestamp, Timestamp, type TimestampProps } from "./time.tsx";
 export type { IncidentInboxItem, IncidentWorkspaceViewState } from "./view-state.ts";
