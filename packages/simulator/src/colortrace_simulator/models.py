@@ -101,7 +101,7 @@ class PreparedPublication:
     candidate_generation: int
     source_batch_id: str
     source_batch_sha256: str
-    fixture_manifest_sha256: str
+    candidate_fixture_manifest_sha256: str
     candidate_runtime_manifest_sha256: str
     candidate_lineage_manifest_sha256: str
     declared_resource_manifest_sha256: str
