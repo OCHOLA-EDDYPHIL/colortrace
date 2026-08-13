@@ -1,0 +1,63 @@
+{
+  "schema": "grafana-evidence-query-catalog/v1",
+  "templates": {
+    "alert.rule": {
+      "tool": "alerting_manage_rules",
+      "result_kind": "alert",
+      "maximum_bytes": 262144,
+      "maximum_items": 100,
+      "retry_policy": "one-trusted-transient"
+    },
+    "log.correlated-events": {
+      "tool": "query_loki_logs",
+      "result_kind": "log",
+      "maximum_bytes": 262144,
+      "maximum_items": 200,
+      "retry_policy": "one-trusted-transient"
+    },
+    "metric.correlated-observations": {
+      "tool": "query_prometheus",
+      "result_kind": "metric",
+      "maximum_bytes": 262144,
+      "maximum_items": 500,
+      "retry_policy": "one-trusted-transient"
+    },
+    "trace.by-id": {
+      "tool": "tempo_get-trace",
+      "result_kind": "trace",
+      "maximum_bytes": 2097152,
+      "maximum_items": 1,
+      "retry_policy": "never"
+    }
+  },
+  "limits": {
+    "maximum_calls": 8,
+    "maximum_calls_in_flight": 2,
+    "call_timeout_seconds": 20,
+    "maximum_window_seconds": 600,
+    "maximum_model_visible_bytes": 1048576,
+    "maximum_excerpt_characters": 4096
+  },
+  "redacted_keys": [
+    "api-key",
+    "api_key",
+    "authorization",
+    "client_secret",
+    "cookie",
+    "credential",
+    "grafana_service_account_token",
+    "password",
+    "secret",
+    "set-cookie",
+    "token"
+  ],
+  "redacted_label_prefixes": [
+    "cloud_account",
+    "cloud_availability_zone",
+    "host_",
+    "k8s_",
+    "process_",
+    "service_instance",
+    "user_"
+  ]
+}

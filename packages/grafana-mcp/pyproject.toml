@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "colortrace-grafana-mcp"
+version = "1.0.0"
+description = "Bounded read-only Grafana MCP evidence collection"
+requires-python = ">=3.12"
+dependencies = [
+    "jsonschema==4.25.1",
+    "mcp==1.29.0",
+]
+
+[project.scripts]
+colortrace-grafana-mcp = "colortrace_grafana_mcp.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/colortrace_grafana_mcp"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/colortrace_grafana_mcp/schemas" = "colortrace_grafana_mcp/schemas"

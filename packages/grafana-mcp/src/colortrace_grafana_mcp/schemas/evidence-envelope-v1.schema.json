@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/evidence-envelope-v1.schema.json",
+  "title": "ColorTrace evidence envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "evidence_id",
+    "incident_id",
+    "request_id",
+    "source",
+    "observation",
+    "timing",
+    "content_sha256",
+    "content",
+    "display_excerpt",
+    "correlation_keys",
+    "collection",
+    "trust",
+    "producer_version",
+    "predecessor_event_sha256",
+    "event_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "evidence-envelope/v1"},
+    "evidence_id": {"$ref": "#/$defs/prefixed_digest"},
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "request_id": {"$ref": "#/$defs/identifier"},
+    "source": {"$ref": "evidence-source-registry-v1.schema.json"},
+    "observation": {"$ref": "evidence-observation-registry-v1.schema.json"},
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_time", "event_time", "retrieved_at", "freshness"],
+      "properties": {
+        "source_time": {"oneOf": [{"type": "null"}, {"type": "string", "format": "date-time"}]},
+        "event_time": {"oneOf": [{"type": "null"}, {"type": "string", "format": "date-time"}]},
+        "retrieved_at": {"type": "string", "format": "date-time"},
+        "freshness": {"enum": ["current", "stale", "unresolved"]}
+      }
+    },
+    "content_sha256": {"$ref": "#/$defs/prefixed_digest"},
+    "content": {},
+    "display_excerpt": {"type": "string", "maxLength": 4096},
+    "correlation_keys": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "attempts", "retries", "error"],
+      "properties": {
+        "outcome": {"enum": ["collected", "error"]},
+        "attempts": {"type": "integer", "minimum": 0, "maximum": 8},
+        "retries": {"type": "integer", "minimum": 0, "maximum": 1},
+        "error": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["code", "retryable"],
+              "properties": {
+                "code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$"},
+                "retryable": {"const": false}
+              }
+            }
+          ]
+        }
+      }
+    },
+    "trust": {"enum": ["untrusted-provider-data", "deterministic-result"]},
+    "producer_version": {"$ref": "#/$defs/identifier"},
+    "predecessor_event_sha256": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/prefixed_digest"}]
+    },
+    "event_sha256": {"$ref": "#/$defs/prefixed_digest"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+    },
+    "prefixed_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
