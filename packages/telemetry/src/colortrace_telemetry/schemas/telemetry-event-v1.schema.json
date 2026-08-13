@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/telemetry-event-v1.schema.json",
+  "title": "One attempted simulator telemetry delivery",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "event_id",
+    "signal",
+    "event_name",
+    "scheduled_at",
+    "emitted_at",
+    "delivery_delay_ms",
+    "delivery_ordinal",
+    "correlation",
+    "observation"
+  ],
+  "properties": {
+    "schema": {"const": "telemetry-event/v1"},
+    "event_id": {"type": "string", "pattern": "^evt-[0-9a-f]{24}$"},
+    "signal": {"enum": ["metric", "log", "trace"]},
+    "event_name": {
+      "enum": [
+        "colortrace.declared_reference.observed",
+        "colortrace.declared_reference.log",
+        "colortrace.declared_reference.trace"
+      ]
+    },
+    "scheduled_at": {"type": "string", "format": "date-time"},
+    "emitted_at": {"type": "string", "format": "date-time"},
+    "delivery_delay_ms": {"type": "integer", "minimum": 0, "maximum": 600000},
+    "delivery_ordinal": {"type": "integer", "minimum": 0, "maximum": 1},
+    "correlation": {
+      "$ref": "correlation-contract-v1.schema.json"
+    },
+    "observation": {
+      "$ref": "declared-reference-observation-v1.schema.json"
+    }
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/backend-correlation-report-v1.schema.json",
+  "title": "Real-backend 50-run telemetry correlation report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "receipt_sha256",
+    "isolation_receipt_sha256",
+    "execution_boundary",
+    "run_count",
+    "signal_results",
+    "metric_series",
+    "metric_series_limit",
+    "alert",
+    "pass"
+  ],
+  "properties": {
+    "schema": {"const": "backend-correlation-report/v1"},
+    "receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "isolation_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "execution_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "stack_config_sha256",
+        "alert_contract_sha256",
+        "image_digest",
+        "expected_grafana_version",
+        "observed_grafana_version",
+        "live_parity_claimed"
+      ],
+      "properties": {
+        "scope": {"const": "local-50-run-backend-suite-only"},
+        "stack_config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "alert_contract_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "image_digest": {
+          "const": "sha256:bb182ac3174a20923fa58f00d1790fa71eb06cc0150078c0b0e8feb9e6611492"
+        },
+        "expected_grafana_version": {"const": "13.1.1"},
+        "observed_grafana_version": {"const": "13.1.1"},
+        "live_parity_claimed": {"const": false}
+      }
+    },
+    "run_count": {"const": 50},
+    "signal_results": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric", "log", "trace"],
+      "properties": {
+        "metric": {"$ref": "#/$defs/signal"},
+        "log": {"$ref": "#/$defs/signal"},
+        "trace": {"$ref": "#/$defs/signal"}
+      }
+    },
+    "metric_series": {"type": "integer", "minimum": 1},
+    "metric_series_limit": {"const": 600},
+    "alert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uid",
+        "provisioned",
+        "firing",
+        "scheduler_interval_seconds",
+        "evidence_window_seconds",
+        "execution_error_state",
+        "no_data_state"
+      ],
+      "properties": {
+        "uid": {"const": "ct-declared-reference-divergence-v1"},
+        "provisioned": {"const": true},
+        "firing": {"const": true},
+        "scheduler_interval_seconds": {"const": 60},
+        "evidence_window_seconds": {"const": 600},
+        "execution_error_state": {"const": "Error"},
+        "no_data_state": {"const": "NoData"}
+      }
+    },
+    "pass": {"const": true}
+  },
+  "$defs": {
+    "signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_events",
+        "deliveries",
+        "jobs",
+        "outcomes",
+        "correlation_fields",
+        "pass"
+      ],
+      "properties": {
+        "logical_events": {"const": 300},
+        "deliveries": {"type": "integer", "minimum": 290, "maximum": 310},
+        "jobs": {"type": "integer", "const": 6},
+        "outcomes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["on_time", "late", "duplicate", "missing"],
+          "properties": {
+            "on_time": {"type": "integer", "minimum": 1},
+            "late": {"type": "integer", "minimum": 1},
+            "duplicate": {"type": "integer", "minimum": 1},
+            "missing": {"type": "integer", "minimum": 1}
+          }
+        },
+        "correlation_fields": {
+          "const": [
+            "fixture_id",
+            "run_id",
+            "job_id",
+            "worker_id",
+            "artifact_id",
+            "trace_id",
+            "config_sha256",
+            "resource_sha256",
+            "transform_id"
+          ]
+        },
+        "pass": {"const": true}
+      }
+    }
+  }
+}

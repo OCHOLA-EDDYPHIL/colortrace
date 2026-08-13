@@ -2,6 +2,7 @@ SHELL := /bin/sh
 
 TOOL_IMAGE := colortrace-dev:phase1
 GITLEAKS_IMAGE := zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+TELEMETRY_IMAGE := grafana/otel-lgtm@sha256:bb182ac3174a20923fa58f00d1790fa71eb06cc0150078c0b0e8feb9e6611492
 HOST_UID := $(shell id -u)
 HOST_GID := $(shell id -g)
 WORKSPACE := $(CURDIR)
@@ -27,9 +28,21 @@ TOOL_RUN_OFFLINE := docker run --rm \
 	--env UV_CACHE_DIR=/workspace/.cache/uv \
 	$(TOOL_IMAGE)
 
+TOOL_RUN_HOST := docker run --rm \
+	--network host \
+	--pull=never \
+	--user $(HOST_UID):$(HOST_GID) \
+	--volume $(WORKSPACE):/workspace \
+	--workdir /workspace \
+	--env CI=true \
+	--env HOME=/workspace/.cache/home \
+	--env UV_CACHE_DIR=/workspace/.cache/uv \
+	$(TOOL_IMAGE)
+
 .PHONY: bootstrap build-tools prepare-cache format generate generate-fixture check check-fast \
 	check-format check-lint check-typecheck check-unit check-contract \
-	check-generated check-license check-policy check-secret check-secret-fixture check-bootstrap
+	check-generated check-license check-policy check-secret check-secret-fixture check-telemetry \
+	check-bootstrap
 
 prepare-cache:
 	@mkdir -p "$(CACHE_HOME)" "$(WORKSPACE)/.cache/uv" "$(WORKSPACE)/.cache/pnpm"
@@ -37,6 +50,7 @@ prepare-cache:
 build-tools:
 	docker build --pull --file Dockerfile.dev --tag $(TOOL_IMAGE) .
 	docker pull $(GITLEAKS_IMAGE)
+	docker pull $(TELEMETRY_IMAGE)
 
 bootstrap: prepare-cache build-tools
 	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
@@ -96,6 +110,56 @@ check-policy: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo ai-policy
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo actions
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo binary-assets
+
+check-telemetry: prepare-cache
+	@set -eu; \
+	suite_root="$$(mktemp -d "$(WORKSPACE)/.cache/telemetry-suite.XXXXXX")"; \
+	private_root="$$(mktemp -d)"; \
+	container_root="/workspace$${suite_root#$(WORKSPACE)}"; \
+	project_name="colortrace-telemetry-$$$$"; \
+	cleanup() { \
+		docker compose --project-name "$$project_name" \
+			--file config/telemetry/compose.yaml down --volumes --remove-orphans >/dev/null 2>&1 || true; \
+		test -n "$$suite_root" && chmod -R u+w "$$suite_root" 2>/dev/null || true; \
+		test -n "$$suite_root" && rm -rf "$$suite_root"; \
+		test -n "$$private_root" && chmod -R u+w "$$private_root" 2>/dev/null || true; \
+		test -n "$$private_root" && rm -rf "$$private_root"; \
+	}; \
+	trap cleanup EXIT HUP INT TERM; \
+	: > "$$private_root/neutral-probe"; \
+	docker run --rm --network none --pull=never \
+		--user $(HOST_UID):$(HOST_GID) \
+		--volume $(WORKSPACE):/workspace \
+		--volume "$$private_root:/isolated-fixture-private" \
+		--workdir /workspace \
+		--env CI=true \
+		--env HOME=/workspace/.cache/home \
+		--env UV_CACHE_DIR=/workspace/.cache/uv \
+		$(TOOL_IMAGE) uv run --offline colortrace-fixture generate \
+		--bundle "$$container_root/runtime-bundle" \
+		--oracle /isolated-fixture-private/offline-oracle; \
+	test -f "$$private_root/offline-oracle/fixture-oracle.json"; \
+	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-fixture validate \
+		--scenario "$$container_root/runtime-bundle"; \
+	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-telemetry isolation \
+		--report "$$container_root/telemetry-isolation.json"; \
+	sed -n '1p' "$$suite_root/telemetry-isolation.json"; \
+	sha256sum "$$suite_root/telemetry-isolation.json"; \
+	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-telemetry no-grafana \
+		--scenario "$$container_root/runtime-bundle" \
+		--isolation-receipt "$$container_root/telemetry-isolation.json" \
+		--report "$$container_root/no-grafana.json"; \
+	docker compose --project-name "$$project_name" \
+		--file config/telemetry/compose.yaml up --detach --wait; \
+	$(TOOL_RUN_HOST) uv run --offline colortrace-telemetry integration \
+		--scenario "$$container_root/runtime-bundle" \
+		--isolation-receipt "$$container_root/telemetry-isolation.json" \
+		--receipt "$$container_root/emission-receipt.json" \
+		--report "$$container_root/backend-report.json"; \
+	sed -n '1p' "$$suite_root/no-grafana.json"; \
+	sha256sum "$$suite_root/no-grafana.json"; \
+	sed -n '1p' "$$suite_root/backend-report.json"; \
+	sha256sum "$$suite_root/backend-report.json" "$$suite_root/emission-receipt.json"
 
 check-secret:
 	@set -eu; \
@@ -169,7 +233,7 @@ check-secret-fixture:
 
 check-fast: check-format check-lint check-typecheck check-unit check-contract check-generated check-license check-policy check-secret-fixture
 
-check: check-fast check-secret
+check: check-fast check-telemetry check-secret
 
 check-bootstrap:
 	@tmp_dir="$$(mktemp -d)"; \

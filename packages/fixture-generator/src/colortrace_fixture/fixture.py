@@ -19,11 +19,12 @@ from array import array
 from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
+from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 import PyOpenColorIO as ocio  # type: ignore[import-untyped]
-from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
+from jsonschema import Draft202012Validator, ValidationError  # type: ignore[import-untyped]
 
 WIDTH = 512
 HEIGHT = 288
@@ -36,6 +37,8 @@ RUNTIME_MANIFEST_VERSION = "fixture-runtime-manifest/v1"
 RESOURCE_MANIFEST_VERSION = "resolved-resource-manifest/v1"
 LINEAGE_VERSION = "artifact-lineage/v1"
 COMPARISON_VERSION = "declared-reference-comparison/v1"
+VALIDATOR_REPORT_VERSION = "fixture-validator-report/v1"
+VALIDATOR_RECEIPT_VERSION = "validator-receipt/v1"
 ORACLE_VERSION = "fixture-oracle/v1"
 GENERATOR_VERSION = "generated-chart/v1"
 FLOAT_BUFFER_VERSION = "rgb-float32-buffer/v1"
@@ -58,8 +61,10 @@ SCHEMA_FILES = {
     "fixture-provenance/v1": "fixture-provenance-v1.schema.json",
     "fixture-runtime-manifest/v1": "fixture-runtime-manifest-v1.schema.json",
     "fixture-telemetry/v1": "fixture-telemetry-v1.schema.json",
+    VALIDATOR_REPORT_VERSION: "fixture-validator-report-v1.schema.json",
     "generated-source/v1": "generated-source-v1.schema.json",
     "resolved-resource-manifest/v1": "resolved-resource-manifest-v1.schema.json",
+    VALIDATOR_RECEIPT_VERSION: "validator-receipt-v1.schema.json",
 }
 
 PALETTE = (
@@ -271,19 +276,35 @@ def finalize_bundle_inputs(bundle_root: Path) -> None:
         subtree.chmod(0o555)
 
 
-def validate_contract_instances(bundle_root: Path, oracle_path: Path | None = None) -> None:
+@cache
+def contract_validators() -> dict[str, Draft202012Validator]:
     validators: dict[str, Draft202012Validator] = {}
     for schema_name, filename in SCHEMA_FILES.items():
         schema = read_json(SCHEMA_ROOT / filename)
         Draft202012Validator.check_schema(schema)
         validators[schema_name] = Draft202012Validator(schema)
+    return validators
+
+
+def validate_contract_document(document: dict[str, Any]) -> None:
+    schema_name = document.get("schema")
+    if not isinstance(schema_name, str) or schema_name not in SCHEMA_FILES:
+        raise ValueError("document does not declare a registered fixture schema")
+    try:
+        contract_validators()[schema_name].validate(document)
+    except ValidationError as error:
+        raise ValueError(f"{schema_name} schema validation failed: {error.message}") from error
+
+
+def validate_contract_instances(bundle_root: Path, oracle_path: Path | None = None) -> None:
+    validators = contract_validators()
     paths = list(bundle_root.rglob("*.json"))
     if oracle_path is not None:
         paths.append(oracle_path)
     for path in sorted(paths):
         document = read_json(path)
         if isinstance(document, dict) and document.get("schema") in validators:
-            validators[document["schema"]].validate(document)
+            validate_contract_document(document)
 
 
 def enter_bundle_landlock(bundle_root: Path) -> int:
@@ -1478,7 +1499,7 @@ def validate_existing(scenario_root: Path) -> dict[str, Any]:
         )
 
     report = {
-        "schema": "fixture-validator-report/v1",
+        "schema": VALIDATOR_REPORT_VERSION,
         "fixture_id": fixture["fixture_id"],
         "variant_id": fixture["variant_id"],
         "ocio_version": ocio.__version__,
@@ -1489,14 +1510,25 @@ def validate_existing(scenario_root: Path) -> dict[str, Any]:
         "diff_images": sorted(diff_index, key=lambda item: item["job_id"]),
     }
     report_path = reports / "validator-report.json"
+    validate_contract_document(report)
     report_digest = write_json(report_path, report)
+    stored_report = read_json(report_path)
+    if not isinstance(stored_report, dict):
+        raise ValueError("persisted validator report is not an object")
+    validate_contract_document(stored_report)
     receipt = {
-        "schema": "validator-receipt/v1",
+        "schema": VALIDATOR_RECEIPT_VERSION,
         "report": rel(report_path, scenario_root),
         "report_sha256": report_digest,
         "truth_material_inside_runtime_bundle": oracle_visible,
     }
-    write_json(reports / "validator-receipt.json", receipt)
+    validate_contract_document(receipt)
+    receipt_path = reports / "validator-receipt.json"
+    write_json(receipt_path, receipt)
+    stored_receipt = read_json(receipt_path)
+    if not isinstance(stored_receipt, dict):
+        raise ValueError("persisted validator receipt is not an object")
+    validate_contract_document(stored_receipt)
     return report
 
 
@@ -1557,6 +1589,8 @@ def run_isolated_validator(script: Path, scenario_root: Path, python: Path) -> d
 
 def validate_landlocked_worker(scenario_root: Path, denied_probe: Path) -> dict[str, Any]:
     scenario_root = scenario_root.resolve(strict=True)
+    # Load trusted package schemas before Landlock intentionally removes package-file access.
+    contract_validators()
     abi = enter_bundle_landlock(scenario_root)
     try:
         denied_probe.read_bytes()

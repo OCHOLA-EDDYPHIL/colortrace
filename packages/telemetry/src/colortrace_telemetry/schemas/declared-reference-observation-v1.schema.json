@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/declared-reference-observation-v1.schema.json",
+  "title": "Declared-reference comparison observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "policy",
+    "state",
+    "measurements"
+  ],
+  "properties": {
+    "schema": {"const": "declared-reference-observation/v1"},
+    "policy": {"const": "declared-reference-comparison/v1"},
+    "state": {
+      "enum": ["reference_match", "reference_mismatch", "unresolved"]
+    },
+    "measurements": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/measurements"}
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"state": {"const": "unresolved"}}},
+      "then": {"properties": {"measurements": {"type": "null"}}},
+      "else": {"properties": {"measurements": {"$ref": "#/$defs/measurements"}}}
+    }
+  ],
+  "$defs": {
+    "decimal": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)([.][0-9]+)?$"
+    },
+    "measurements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximum_absolute_channel_error",
+        "rmse",
+        "fraction_pixels_at_or_above_0_02",
+        "nearest_rank_p95",
+        "pixels"
+      ],
+      "properties": {
+        "maximum_absolute_channel_error": {"$ref": "#/$defs/decimal"},
+        "rmse": {"$ref": "#/$defs/decimal"},
+        "fraction_pixels_at_or_above_0_02": {"$ref": "#/$defs/decimal"},
+        "nearest_rank_p95": {"$ref": "#/$defs/decimal"},
+        "pixels": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

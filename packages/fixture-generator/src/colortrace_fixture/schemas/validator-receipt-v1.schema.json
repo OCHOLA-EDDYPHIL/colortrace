@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/validator-receipt-v1.schema.json",
+  "title": "Fixture validator report receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "report",
+    "report_sha256",
+    "truth_material_inside_runtime_bundle"
+  ],
+  "properties": {
+    "schema": {"const": "validator-receipt/v1"},
+    "report": {"const": "reports/validator-report.json"},
+    "report_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "truth_material_inside_runtime_bundle": {"const": false}
+  }
+}
