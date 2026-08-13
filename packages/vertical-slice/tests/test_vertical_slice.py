@@ -94,6 +94,20 @@ def canonical_bundle(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return bundle
 
 
+@pytest.fixture(scope="session")
+def missing_resource_bundle(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("vertical-slice-missing-resource")
+    bundle = root / "runtime-bundle"
+    build_scenario(
+        bundle,
+        oracle_root=root / "offline-truth",
+        variant_id="missing-resource",
+        seed=CANONICAL_SEED,
+        omit_resource_role="b2",
+    )
+    return bundle
+
+
 class FakeModel:
     def __init__(self, *, delay: float = 0) -> None:
         self.delay = delay
@@ -414,6 +428,39 @@ def test_missing_trace_finishes_unresolved_and_replays_provenance(
     assert replay["packet"] == packet
     assert len(replay["evidence"]) == 4
     assert replay["validator_results"] == []
+    validate_replay(replay)
+
+
+def test_unresolved_validator_claims_remain_bound_in_persisted_replay(
+    policy: InvestigationPolicy,
+    missing_resource_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(missing_resource_bundle)
+    store = SqliteIncidentStore(tmp_path / "unresolved-validator.sqlite3")
+    api = VerticalSliceApi(store, clock=lambda: NOW)
+
+    packet = asyncio.run(
+        run_vertical_slice(
+            api=api,
+            worker=worker(store, policy, correlation),
+            alert=alert(correlation, incident_id="incident-unresolved-validator"),
+            bundle_root=missing_resource_bundle,
+        )
+    )
+    replay = api.replay("incident-unresolved-validator")
+
+    assert packet["status"] == "unresolved"
+    assert packet["deterministic_results"][0]["status"] == "unresolved"
+    result_id = packet["deterministic_results"][0]["result_id"]
+    validator_result = replay["validator_results"][0]
+    assert {
+        claim["deterministic_result_evidence_id"]
+        for claim in validator_result["claims"]
+        if claim["deterministic_result_evidence_id"] is not None
+    } <= set(packet["evidence_ids"])
+    assert replay["packet"] == packet
+    assert validator_result["result_id"] == result_id
     validate_replay(replay)
 
 

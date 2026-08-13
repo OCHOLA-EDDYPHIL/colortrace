@@ -217,6 +217,15 @@ def _validator_evidence_ids(result: Mapping[str, Any]) -> set[str]:
         if not isinstance(item, Mapping):
             raise SliceContractError("validator-result-invalid")
         identifiers.add(require_identifier(item.get("evidence_id")))
+    claims = result.get("claims")
+    if not isinstance(claims, Sequence) or isinstance(claims, (str, bytes, bytearray)):
+        raise SliceContractError("validator-result-invalid")
+    for claim in claims:
+        if not isinstance(claim, Mapping):
+            raise SliceContractError("validator-result-invalid")
+        deterministic_id = claim.get("deterministic_result_evidence_id")
+        if deterministic_id is not None:
+            identifiers.add(require_identifier(deterministic_id))
     return identifiers
 
 
