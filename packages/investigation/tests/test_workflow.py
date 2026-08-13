@@ -582,6 +582,15 @@ def test_injection_remains_quoted_and_cannot_change_facts_or_tools(
     ]
     assert injected["scope"] == clean["scope"]
     assert all(call.response_schema.get("properties") is not None for call in model.calls)
+    assert [call.payload["input_contract"] for call in model.calls] == [
+        "evidence-selection-input/v1",
+        "response-drafting-input/v1",
+    ]
+    assert all("schema" not in call.payload for call in model.calls)
+    assert [call.response_schema["properties"]["schema"]["const"] for call in model.calls] == [
+        "model-selection/v1",
+        "model-advisory/v1",
+    ]
     assert set(model.calls[0].payload["alert"]["available_query_keys"]) == set(
         mcp_subject.QUERY_KEYS
     )
@@ -721,7 +730,7 @@ def test_vertex_gateway_uses_adk_root_chat_mode_for_one_bounded_call() -> None:
 
     call = ModelCall(
         "evidence-selection",
-        {"schema": "evidence-selection-input/v1"},
+        {"input_contract": "evidence-selection-input/v1"},
         {"type": "object"},
         512,
     )
@@ -737,6 +746,15 @@ def test_vertex_gateway_uses_adk_root_chat_mode_for_one_bounded_call() -> None:
     }
     assert output.input_tokens == 100
     assert output.output_tokens == 20
+
+
+def test_model_instructions_pin_each_output_contract() -> None:
+    from colortrace_investigation.model import _SYSTEM_INSTRUCTIONS
+
+    assert (
+        "schema field exactly to model-selection/v1" in _SYSTEM_INSTRUCTIONS["evidence-selection"]
+    )
+    assert "schema field exactly to model-advisory/v1" in _SYSTEM_INSTRUCTIONS["response-drafting"]
 
 
 def test_pinned_adk_runner_assembles_only_vertex_json_response_schema() -> None:

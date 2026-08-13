@@ -1160,7 +1160,7 @@ class InvestigationWorkflow:
         if not blockers:
             state_history.append("selection")
             selection_payload = {
-                "schema": "evidence-selection-input/v1",
+                "input_contract": "evidence-selection-input/v1",
                 "policy_version": self._policy.version,
                 "policy_sha256": self._policy.digest,
                 "alert": intake.model_view(),
@@ -1276,7 +1276,7 @@ class InvestigationWorkflow:
         if not blockers and assessment is not None and classified_scope is not None:
             state_history.append("drafting")
             draft_payload = {
-                "schema": "response-drafting-input/v1",
+                "input_contract": "response-drafting-input/v1",
                 "policy_version": self._policy.version,
                 "deterministic_facts": {
                     "claims": classified_claims,
