@@ -5,6 +5,7 @@ from .contracts import (
     CLAIM_LEASE_SECONDS,
     SliceContractError,
     validate_claim_events,
+    validate_human_audit_events,
     validate_replay,
 )
 from .service import VerticalSliceApi, VerticalSliceWorker, run_vertical_slice
@@ -21,5 +22,6 @@ __all__ = [
     "WorkItem",
     "run_vertical_slice",
     "validate_claim_events",
+    "validate_human_audit_events",
     "validate_replay",
 ]

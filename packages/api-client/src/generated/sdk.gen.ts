@@ -15,7 +15,13 @@ import type {
   CreateIncidentResponses,
   GetIncidentErrors,
   GetIncidentResponses,
+  GetIncidentWorkspaceErrors,
+  GetIncidentWorkspaceResponses,
+  GetOperatorSessionErrors,
+  GetOperatorSessionResponses,
   Identifier,
+  ListIncidentsErrors,
+  ListIncidentsResponses,
   ReplayIncidentErrors,
   ReplayIncidentResponses,
 } from "./types.gen";
@@ -38,6 +44,37 @@ export type Options<
   meta?: keyof ClientMeta extends never ? Record<string, unknown> : ClientMeta;
 };
 
+export const listIncidents = <ThrowOnError extends boolean = false>(
+  parameters?: {
+    limit?: number;
+    cursor?: string;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<ListIncidentsResponses, ListIncidentsErrors, ThrowOnError, "data"> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "query", key: "limit" },
+          { in: "query", key: "cursor" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).get<
+    ListIncidentsResponses,
+    ListIncidentsErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    url: "/v1/incidents",
+    ...options,
+    ...params,
+  });
+};
+
 export const createIncident = <ThrowOnError extends boolean = false>(
   parameters: {
     alertIntake: AlertIntake;
@@ -52,6 +89,7 @@ export const createIncident = <ThrowOnError extends boolean = false>(
     "data"
   >({
     responseStyle: "data",
+    security: [{ scheme: "bearer", type: "http" }],
     url: "/v1/incidents",
     ...options,
     ...params,
@@ -102,3 +140,43 @@ export const replayIncident = <ThrowOnError extends boolean = false>(
     ...params,
   });
 };
+
+export const getIncidentWorkspace = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<
+  GetIncidentWorkspaceResponses,
+  GetIncidentWorkspaceErrors,
+  ThrowOnError,
+  "data"
+> => {
+  const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "incidentId" }] }]);
+  return (options?.client ?? client).get<
+    GetIncidentWorkspaceResponses,
+    GetIncidentWorkspaceErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    url: "/v1/incidents/{incidentId}/workspace",
+    ...options,
+    ...params,
+  });
+};
+
+export const getOperatorSession = <ThrowOnError extends boolean = false>(
+  options?: Options<never, ThrowOnError>,
+): RequestResult<GetOperatorSessionResponses, GetOperatorSessionErrors, ThrowOnError, "data"> =>
+  (options?.client ?? client).get<
+    GetOperatorSessionResponses,
+    GetOperatorSessionErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [{ scheme: "bearer", type: "http" }],
+    url: "/v1/session",
+    ...options,
+  });

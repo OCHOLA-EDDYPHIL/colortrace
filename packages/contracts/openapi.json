@@ -2,12 +2,63 @@
   "openapi": "3.1.0",
   "info": {
     "title": "ColorTrace Incident API",
-    "version": "1.0.0"
+    "version": "2.0.0"
   },
   "paths": {
     "/v1/incidents": {
+      "get": {
+        "operationId": "listIncidents",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 25
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A stable page of incidents ordered by most recent update.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The cursor is malformed or outside the supported page boundary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "operationId": "createIncident",
+        "security": [
+          {
+            "operatorOidc": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -31,6 +82,16 @@
           },
           "409": {
             "description": "The incident identity was already used for different alert content.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The bearer token is absent or invalid.",
             "content": {
               "application/json": {
                 "schema": {
@@ -125,13 +186,104 @@
           }
         }
       }
+    },
+    "/v1/incidents/{incidentId}/workspace": {
+      "get": {
+        "operationId": "getIncidentWorkspace",
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The incident view and integrity-checked replay when available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentWorkspaceSource"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No incident has this identity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Persisted provenance failed integrity verification.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/session": {
+      "get": {
+        "operationId": "getOperatorSession",
+        "security": [
+          {
+            "operatorOidc": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The verified operator identity projected from an OIDC token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The bearer token is absent or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
+    "securitySchemes": {
+      "operatorOidc": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "OIDC JWT"
+      }
+    },
     "schemas": {
       "Identifier": {
         "type": "string",
         "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+      },
+      "OidcSubject": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
       },
       "AlertIdentifier": {
         "type": "string",
@@ -325,6 +477,291 @@
           },
           "duplicate": {
             "type": "boolean"
+          }
+        }
+      },
+      "OperatorSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "subject",
+          "display_name",
+          "roles",
+          "issuer",
+          "audience",
+          "principal_kind"
+        ],
+        "properties": {
+          "schema": {
+            "const": "operator-session/v1"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/OidcSubject"
+          },
+          "display_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "roles": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9._:-]{0,63}$"
+            }
+          },
+          "issuer": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048
+          },
+          "audience": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "principal_kind": {
+            "enum": ["human", "service"]
+          }
+        }
+      },
+      "IncidentSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "incident_id",
+          "alert_id",
+          "status",
+          "version",
+          "trace_id",
+          "packet_id",
+          "created_at",
+          "updated_at",
+          "delayed",
+          "missing"
+        ],
+        "properties": {
+          "schema": {
+            "const": "incident-summary/v1"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "alert_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "status": {
+            "enum": ["queued", "running", "resolved", "unresolved"]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/TraceId"
+          },
+          "packet_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^response-packet:[0-9a-f]{64}$"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "delayed": {
+            "type": "boolean"
+          },
+          "missing": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          }
+        }
+      },
+      "IncidentList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema", "items", "next_cursor"],
+        "properties": {
+          "schema": {
+            "const": "incident-list/v1"
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "$ref": "#/components/schemas/IncidentSummary"
+            }
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            ]
+          }
+        }
+      },
+      "IncidentWorkspaceSource": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema", "view", "replay_state", "human_events", "replay"],
+        "properties": {
+          "schema": {
+            "const": "incident-workspace-source/v1"
+          },
+          "view": {
+            "$ref": "#/components/schemas/IncidentView"
+          },
+          "replay_state": {
+            "enum": ["pending", "ready"]
+          },
+          "human_events": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "$ref": "#/components/schemas/HumanAuditEvent"
+            }
+          },
+          "replay": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IncidentReplay"
+              }
+            ]
+          }
+        }
+      },
+      "HumanAuditActor": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["subject", "display_name", "issuer", "audience", "principal_kind"],
+        "properties": {
+          "subject": {
+            "$ref": "#/components/schemas/OidcSubject"
+          },
+          "display_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "issuer": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048
+          },
+          "audience": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "principal_kind": {
+            "const": "human"
+          }
+        }
+      },
+      "HumanAuditCitation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["namespace", "id"],
+        "properties": {
+          "namespace": {
+            "const": "trace-event"
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^event:[0-9a-f]{64}$"
+          }
+        }
+      },
+      "HumanAuditEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "event_id",
+          "incident_id",
+          "sequence",
+          "event_type",
+          "actor",
+          "predecessor_event_sha256",
+          "occurred_at",
+          "citations",
+          "event_sha256"
+        ],
+        "properties": {
+          "schema": {
+            "const": "incident-human-audit-event/v1"
+          },
+          "event_id": {
+            "type": "string",
+            "pattern": "^human-audit-event:[0-9a-f]{64}$"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096
+          },
+          "event_type": {
+            "const": "incident.admitted"
+          },
+          "actor": {
+            "$ref": "#/components/schemas/HumanAuditActor"
+          },
+          "predecessor_event_sha256": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Digest"
+              }
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "citations": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/HumanAuditCitation"
+            }
+          },
+          "event_sha256": {
+            "$ref": "#/components/schemas/Digest"
           }
         }
       },

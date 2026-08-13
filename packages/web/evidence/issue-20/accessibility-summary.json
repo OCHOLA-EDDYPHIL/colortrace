@@ -1,0 +1,29 @@
+{
+  "schema": "colortrace-accessibility-evidence/v1",
+  "issue": 20,
+  "generated_at": "2026-08-13T17:00:18.584Z",
+  "source_test": "packages/web/e2e/incident-workspace.spec.ts",
+  "engine": {
+    "name": "axe-core",
+    "version": "4.13.0"
+  },
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "tags": ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"],
+  "violations": 0,
+  "incomplete": 0,
+  "serious_or_critical_color_contrast_incomplete": 0,
+  "passes": 20,
+  "screenshots": [
+    {
+      "path": "packages/web/evidence/issue-20/incident-workspace-1440x900.png",
+      "sha256": "3f2376870d7c3feaa6644981949c810e285ef89d814ae9f1d5c7c6defba01ad7"
+    },
+    {
+      "path": "packages/web/evidence/issue-20/incident-workspace-390x844.png",
+      "sha256": "c51a2d17c00bf11c2f21029f7be352f041a7613eb37de499e53336b45c36e0a3"
+    }
+  ]
+}

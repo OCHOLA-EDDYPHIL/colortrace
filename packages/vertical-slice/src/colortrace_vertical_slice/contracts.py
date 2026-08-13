@@ -33,7 +33,8 @@ SCHEMA_ROOT = Path(__file__).parent / "schemas"
 TASK_SCHEMA = "incident-task/v1"
 REPLAY_SCHEMA = "incident-replay/v1"
 CLAIM_EVENT_SCHEMA = "incident-claim-event/v1"
-STORE_SCHEMA_VERSION = 2
+HUMAN_AUDIT_EVENT_SCHEMA = "incident-human-audit-event/v1"
+STORE_SCHEMA_VERSION = 4
 CLAIM_LEASE_SECONDS = 30
 CLAIM_HEARTBEAT_SECONDS = 10
 INCIDENT_STATUSES = frozenset({"queued", "running", "resolved", "unresolved"})
@@ -46,6 +47,7 @@ CLAIM_EVENT_TYPES = (
     "claim.reclaimed",
     "claim.completed",
 )
+HUMAN_AUDIT_EVENT_TYPES = ("incident.admitted",)
 TRACE_EVENT_TYPES = (
     "api.intake.accepted",
     "task.queued",
@@ -244,6 +246,106 @@ def build_claim_event(
     }
     validate_schema("incident-claim-event-v1.schema.json", event)
     return event
+
+
+def human_audit_actor(value: Mapping[str, Any]) -> dict[str, str]:
+    if set(value) != {
+        "subject",
+        "display_name",
+        "issuer",
+        "audience",
+        "principal_kind",
+    }:
+        raise SliceContractError("human-audit-actor-invalid")
+    subject = value.get("subject")
+    display_name = value.get("display_name")
+    issuer = value.get("issuer")
+    audience = value.get("audience")
+    principal_kind = value.get("principal_kind")
+    if (
+        not isinstance(subject, str)
+        or not subject
+        or len(subject) > 256
+        or subject.strip() != subject
+        or not isinstance(display_name, str)
+        or not display_name
+        or len(display_name) > 256
+        or display_name.strip() != display_name
+        or not isinstance(issuer, str)
+        or not issuer
+        or len(issuer) > 2_048
+        or issuer.strip() != issuer
+        or not isinstance(audience, str)
+        or not audience
+        or len(audience) > 4_096
+        or audience.strip() != audience
+        or principal_kind != "human"
+    ):
+        raise SliceContractError("human-audit-actor-invalid")
+    return {
+        "subject": subject,
+        "display_name": display_name,
+        "issuer": issuer,
+        "audience": audience,
+        "principal_kind": "human",
+    }
+
+
+def build_human_audit_event(
+    *,
+    incident_id: str,
+    sequence: int,
+    event_type: str,
+    actor: Mapping[str, Any],
+    predecessor_event_sha256: str | None,
+    occurred_at: str,
+    citations: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    if event_type not in HUMAN_AUDIT_EVENT_TYPES:
+        raise SliceContractError("human-audit-event-type-invalid")
+    if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
+        raise SliceContractError("human-audit-sequence-invalid")
+    citation_values = cast(list[dict[str, Any]], plain_json(citations))
+    body = {
+        "schema": HUMAN_AUDIT_EVENT_SCHEMA,
+        "incident_id": require_identifier(incident_id),
+        "sequence": sequence,
+        "event_type": event_type,
+        "actor": human_audit_actor(actor),
+        "predecessor_event_sha256": predecessor_event_sha256,
+        "occurred_at": normalize_timestamp(occurred_at, code="human-audit-time-invalid"),
+        "citations": citation_values,
+    }
+    event_sha256 = prefixed_sha256(canonical_json_bytes(body))
+    event = {
+        **body,
+        "event_id": f"human-audit-event:{event_sha256.removeprefix('sha256:')}",
+        "event_sha256": event_sha256,
+    }
+    validate_schema("incident-human-audit-event-v1.schema.json", event)
+    return event
+
+
+def validate_human_audit_events(events: Sequence[Mapping[str, Any]], *, incident_id: str) -> None:
+    expected_incident = require_identifier(incident_id)
+    predecessor: str | None = None
+    for sequence, event in enumerate(events, start=1):
+        validate_schema("incident-human-audit-event-v1.schema.json", event)
+        body = {
+            key: child for key, child in event.items() if key not in {"event_id", "event_sha256"}
+        }
+        expected_digest = prefixed_sha256(canonical_json_bytes(body))
+        if (
+            event.get("incident_id") != expected_incident
+            or event.get("sequence") != sequence
+            or event.get("predecessor_event_sha256") != predecessor
+            or event.get("event_sha256") != expected_digest
+            or event.get("event_id")
+            != f"human-audit-event:{expected_digest.removeprefix('sha256:')}"
+        ):
+            raise SliceContractError("human-audit-event-binding")
+        human_audit_actor(cast(Mapping[str, Any], event["actor"]))
+        predecessor = expected_digest
 
 
 def validate_claim_events(
