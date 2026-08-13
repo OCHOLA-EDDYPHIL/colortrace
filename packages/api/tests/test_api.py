@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +55,9 @@ class FakeVerifier:
             "https://identity.example.test/tenant",
             "colortrace-api",
             "human",
+            frozenset({"incident-new", "incident-api-human"}),
+            f"sha256:{'a' * 64}",
+            datetime.now(UTC) + timedelta(minutes=5),
         )
 
 

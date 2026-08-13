@@ -72,6 +72,9 @@ class NeverResolver:
 def environment(database_path: Path) -> dict[str, str]:
     return {
         "COLORTRACE_DATABASE_PATH": str(database_path),
+        "COLORTRACE_RESPONSE_PLAN_DATABASE_PATH": str(
+            database_path.with_name(f"{database_path.stem}-response-plans.sqlite3")
+        ),
         "COLORTRACE_OIDC_ISSUER": "https://identity.example.test/tenant",
         "COLORTRACE_OIDC_AUDIENCE": "colortrace-api",
         "COLORTRACE_OIDC_JWKS_URI": "https://identity.example.test/jwks",
@@ -125,6 +128,7 @@ def test_environment_factory_composes_public_reads_without_auth_bypass(tmp_path:
     "missing",
     [
         "COLORTRACE_DATABASE_PATH",
+        "COLORTRACE_RESPONSE_PLAN_DATABASE_PATH",
         "COLORTRACE_OIDC_ISSUER",
         "COLORTRACE_OIDC_AUDIENCE",
         "COLORTRACE_OIDC_JWKS_URI",
@@ -146,6 +150,11 @@ def test_factory_fails_closed_when_required_environment_is_missing(
     ("field", "value", "expected_code"),
     [
         ("COLORTRACE_DATABASE_PATH", "relative.sqlite3", "database-path-invalid"),
+        (
+            "COLORTRACE_RESPONSE_PLAN_DATABASE_PATH",
+            "relative.sqlite3",
+            "database-path-invalid",
+        ),
         (
             "COLORTRACE_OIDC_ISSUER",
             "http://identity.example.test/tenant",

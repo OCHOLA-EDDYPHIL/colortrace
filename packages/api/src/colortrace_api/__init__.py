@@ -3,6 +3,7 @@
 from .app import IncidentService, create_app
 from .auth import Principal, PrincipalKind, TokenVerifier
 from .oidc import HttpsJwksResolver, JwksResolver, OidcTokenVerifier, OidcVerificationError
+from .response_plans import ResponsePlanApi, ResponsePlanCoordinator
 from .runtime import (
     ApiRuntimeConfig,
     ApiRuntimeConfigurationError,
@@ -21,6 +22,8 @@ __all__ = [
     "OidcVerificationError",
     "Principal",
     "PrincipalKind",
+    "ResponsePlanApi",
+    "ResponsePlanCoordinator",
     "StoredIncidentService",
     "StoredIncidentStore",
     "TokenVerifier",

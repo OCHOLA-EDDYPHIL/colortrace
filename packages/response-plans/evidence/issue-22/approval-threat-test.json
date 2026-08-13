@@ -1,0 +1,128 @@
+{
+  "schema": "colortrace-approval-threat-test/v1",
+  "issue": 22,
+  "verified_at": "2026-08-13T19:34:00Z",
+  "candidate_base": "46f7f63f042e17240aee4152e1d72da4ece910fb",
+  "result": "pass",
+  "test_runs": [
+    {
+      "command": "uv run --offline pytest packages/response-plans/tests/test_response_plans.py -q",
+      "passed": 29,
+      "failed": 0
+    },
+    {
+      "command": "uv run --offline pytest packages/api/tests/test_response_plan_api.py -q",
+      "passed": 6,
+      "failed": 0
+    },
+    {
+      "command": "pnpm --filter @colortrace/web exec vitest run test/response-plan-review.test.tsx test/incident-workspace-app.test.tsx",
+      "passed": 25,
+      "failed": 0
+    },
+    {
+      "command": "COLORTRACE_CAPTURE_ISSUE_22_EVIDENCE=1 packages/web/node_modules/.bin/playwright test --config packages/web/playwright.config.ts packages/web/e2e/incident-workspace.spec.ts --workers=1",
+      "passed": 17,
+      "failed": 0
+    }
+  ],
+  "threats": [
+    {
+      "id": "anonymous-model-role-idor",
+      "control": "Only a verified, unexpired human with the exact incident membership and role can create, edit, approve, or reject; preauthorization occurs before canonical authority registration.",
+      "evidence": [
+        "packages/response-plans/tests/test_response_plans.py::test_anonymous_public_wrong_role_idor_and_model_mutations_fail_closed",
+        "packages/response-plans/tests/test_response_plans.py::test_verified_identity_and_canonical_authority_boundaries_reject_forgery",
+        "packages/api/tests/test_response_plan_api.py::test_public_can_review_but_cannot_create_or_decide_and_idor_fails",
+        "packages/api/tests/test_response_plan_api.py::test_idor_edit_denial_has_no_authority_or_mutation_side_effects",
+        "packages/api/tests/test_response_plan_api.py::test_expired_credential_and_unexpected_request_fields_fail_closed"
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "stale-concurrent-authority",
+      "control": "Every mutation compares the current incident version, plan version, and plan hash transactionally; cross-connection approval is serialized.",
+      "evidence": [
+        "packages/response-plans/tests/test_response_plans.py::test_expected_versions_hashes_and_concurrent_approval_reject_stale_writes",
+        "packages/response-plans/tests/test_response_plans.py::test_live_incident_version_not_plan_snapshot_controls_approval",
+        "packages/response-plans/tests/test_response_plans.py::test_cross_connection_concurrent_approval_is_serialized",
+        "packages/web/e2e/incident-workspace.spec.ts::keeps stale approval authority visibly disabled"
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "scope-command-hash-binding",
+      "control": "Approval and dispatch bind the immutable incident, packet, deterministic scope, exact targets, protected exclusions, typed commands, action envelope, unresolved acknowledgement, actor, and idempotency key.",
+      "evidence": [
+        "packages/response-plans/tests/test_response_plans.py::test_approval_and_dispatch_bind_exact_plan_scope_commands_and_actor",
+        "packages/response-plans/tests/test_response_plans.py::test_only_exact_typed_simulator_commands_and_targets_are_accepted",
+        "packages/response-plans/tests/test_response_plans.py::test_plan_scope_is_exactly_bound_to_registered_canonical_packet",
+        "packages/web/test/response-plan-review.test.tsx::renders the complete shared envelope, command fields, and exact uncertainty IDs",
+        "packages/web/e2e/incident-workspace.spec.ts::requires exact confirmation and sends immutable bindings before approval"
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "edit-invalidation",
+      "control": "A typed edit creates a new immutable version, links its predecessor, invalidates prior approval and unconsumed authorization, and returns to pending review.",
+      "evidence": [
+        "packages/response-plans/tests/test_response_plans.py::test_edit_creates_immutable_version_and_invalidates_prior_approval",
+        "packages/response-plans/tests/test_response_plans.py::test_plan_edit_invalidates_unconsumed_authorization",
+        "packages/api/tests/test_response_plan_api.py::test_approval_binds_expected_version_edit_invalidates_and_rejection_blocks_dispatch",
+        "packages/web/e2e/incident-workspace.spec.ts::makes an approved-plan edit immutable and visibly returns it to pending review"
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "rejected-unapproved-dispatch",
+      "control": "Dispatch authorization requires the current approved decision; rejected, unapproved, blocking, or unknown scope cannot dispatch.",
+      "evidence": [
+        "packages/response-plans/tests/test_response_plans.py::test_unapproved_and_rejected_plans_cannot_dispatch",
+        "packages/response-plans/tests/test_response_plans.py::test_rejected_and_semantically_invalid_decisions_never_validate_for_dispatch",
+        "packages/response-plans/tests/test_response_plans.py::test_blocking_evidence_and_unknown_targets_prohibit_plan_creation_and_approval",
+        "packages/web/e2e/incident-workspace.spec.ts::renders rejected plans as decided and exposes no dispatch control"
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "replay-idempotency-once-only",
+      "control": "A logical request key replays only its authoritative exact result, conflicting reuse fails, duplicate authorization is prohibited, and dispatch consumption is once-only.",
+      "evidence": [
+        "packages/response-plans/tests/test_response_plans.py::test_idempotent_replay_is_exact_and_conflicting_key_use_is_rejected",
+        "packages/response-plans/tests/test_response_plans.py::test_every_idempotency_replay_rejects_arbitrary_and_crossed_results",
+        "packages/response-plans/tests/test_response_plans.py::test_distinct_keys_cannot_mint_duplicate_dispatch_authorizations",
+        "packages/response-plans/tests/test_response_plans.py::test_dispatch_consumption_rechecks_current_authority_and_is_once_only",
+        "packages/api/tests/test_response_plan_api.py::test_service_only_dispatch_is_single_use_and_authoritative_replay_is_exact"
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "audit-tamper-restart",
+      "control": "Append-only audit events reconcile against immutable records and a trusted head; tampering, rewind, orphan records, schema drift, and restart replay are verified or rejected.",
+      "evidence": [
+        "packages/response-plans/tests/test_response_plans.py::test_audit_plan_decision_and_authorization_tampering_is_detected",
+        "packages/response-plans/tests/test_response_plans.py::test_file_repository_survives_restart_and_preserves_replay",
+        "packages/response-plans/tests/test_response_plans.py::test_file_repository_rejects_table_and_index_definition_drift",
+        "packages/response-plans/tests/test_response_plans.py::test_file_repository_rejects_noop_audit_trigger_and_rewound_tail",
+        "packages/response-plans/tests/test_response_plans.py::test_audit_head_record_reconciliation_and_append_only_storage",
+        "packages/response-plans/tests/test_response_plans.py::test_audit_history_rejects_structurally_valid_orphan_authorization"
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "browser-authority-and-recovery",
+      "control": "The browser renders all approval-relevant values as inert text, requires a keyboard-safe second confirmation, retains the same idempotency key for ambiguous retry, never replays an accepted mutation during reconciliation, and prevents cross-incident result projection.",
+      "evidence": [
+        "packages/web/test/response-plan-review.test.tsx::renders exact immutable bindings and keeps command text inert",
+        "packages/web/test/response-plan-review.test.tsx::traps dialog focus, cancels with Escape, and restores the originating action",
+        "packages/web/test/incident-workspace-app.test.tsx::retries an ambiguous approval with the retained logical-action idempotency key",
+        "packages/web/test/incident-workspace-app.test.tsx::reports post-commit refresh failure separately and reconciles without replay",
+        "packages/web/test/incident-workspace-app.test.tsx::cannot project an old incident mutation completion into a newly selected plan",
+        "packages/web/e2e/incident-workspace.spec.ts::retries an ambiguous approval with one retained idempotency key",
+        "packages/web/e2e/incident-workspace.spec.ts::reconciles an accepted approval without replaying it after refresh failure",
+        "packages/web/e2e/incident-workspace.spec.ts::passes automated WCAG A and AA checks for the prepared workspace"
+      ],
+      "result": "pass"
+    }
+  ]
+}

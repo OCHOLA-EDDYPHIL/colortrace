@@ -15,6 +15,7 @@ import {
   HOST_OIDC_TOKEN_PROVIDER_CONTRACT,
 } from "../src/host-auth.ts";
 import { IncidentWorkspaceApp, projectWorkspaceSource } from "../src/incident-workspace-app.tsx";
+import { responsePlanReviewFixture } from "./response-plan-fixture.ts";
 
 type Mutable<T> = T extends readonly (infer Item)[]
   ? Mutable<Item>[]
@@ -164,6 +165,18 @@ function sessionResponse(): Response {
   });
 }
 
+function planSessionResponse(): Response {
+  return jsonResponse({
+    schema: "operator-session/v1",
+    subject: "operator-1",
+    display_name: "Pipeline operator",
+    roles: ["operator", "response-plan.editor", "response-plan.approver"],
+    issuer: "https://identity.example.test/tenant",
+    audience: "colortrace-api",
+    principal_kind: "human",
+  });
+}
+
 function incidentListResponse(items: readonly IncidentSummary[]): Response {
   return jsonResponse({ schema: "incident-list/v1", items, next_cursor: null });
 }
@@ -183,6 +196,12 @@ function routedFetch(route: (request: Request) => Promise<Response> | Response):
 
 function routePath(request: Request): string {
   return new URL(request.url).pathname;
+}
+
+function absentResponsePlan(request: Request): Response | null {
+  return routePath(request).endsWith("/response-plan")
+    ? jsonResponse({ code: "plan-not-found" }, 404)
+    : null;
 }
 
 afterEach(cleanup);
@@ -252,6 +271,77 @@ describe("incident read adapter", () => {
       status: 401,
     });
   });
+
+  it("binds authenticated plan mutations to exact immutable preconditions", async () => {
+    const review = responsePlanReviewFixture();
+    const { fetch, requests } = routedFetch((request) => {
+      if (request.method === "PUT") return jsonResponse(review.plan);
+      return jsonResponse(
+        review.decision ?? {
+          schema: "response-plan-decision/v1",
+          outcome: "approved",
+        },
+      );
+    });
+    const adapter = createIncidentReadAdapter({
+      baseUrl: "https://web.test",
+      fetch,
+      tokenProvider: () => "ephemeral-plan-token",
+    });
+
+    await adapter.approveResponsePlan(review.plan.incident_id, review.plan, "approve-key");
+    const replacement = `sha256:${"4".repeat(64)}`;
+    const revision = {
+      commands: review.plan.commands.map((command) => ({
+        ...command,
+        action_envelope: {
+          ...command.action_envelope,
+          replacement_resource_sha256: replacement,
+        },
+      })),
+      unresolved_acknowledged: true,
+    };
+    await adapter.editResponsePlan(review.plan.incident_id, review.plan, revision, "edit-key");
+    await adapter.rejectResponsePlan(
+      review.plan.incident_id,
+      review.plan,
+      "unsafe-scope",
+      "reject-key",
+    );
+
+    expect(requests.map((request) => request.method)).toEqual(["POST", "PUT", "POST"]);
+    expect(
+      requests.every(
+        (request) => request.headers.get("Authorization") === "Bearer ephemeral-plan-token",
+      ),
+    ).toBe(true);
+    expect(await requests[0]?.clone().json()).toEqual({
+      expected_incident_version: review.plan.incident_version,
+      expected_plan_version: review.plan.version,
+      expected_plan_sha256: review.plan.plan_sha256,
+      idempotency_key: "approve-key",
+    });
+    expect(await requests[1]?.clone().json()).toEqual({
+      expected_incident_version: review.plan.incident_version,
+      expected_plan_version: review.plan.version,
+      expected_plan_sha256: review.plan.plan_sha256,
+      response_packet_id: review.plan.response_packet_id,
+      response_packet_sha256: review.plan.response_packet_sha256,
+      deterministic_scope_sha256: review.plan.deterministic_scope_sha256,
+      targets: review.plan.targets,
+      exclusions: review.plan.exclusions,
+      commands: revision.commands,
+      unresolved_acknowledged: revision.unresolved_acknowledged,
+      idempotency_key: "edit-key",
+    });
+    expect(await requests[2]?.clone().json()).toEqual({
+      expected_incident_version: review.plan.incident_version,
+      expected_plan_version: review.plan.version,
+      expected_plan_sha256: review.plan.plan_sha256,
+      reason_code: "unsafe-scope",
+      idempotency_key: "reject-key",
+    });
+  });
 });
 
 describe("IncidentWorkspaceApp", () => {
@@ -281,6 +371,8 @@ describe("IncidentWorkspaceApp", () => {
     const { fetch } = routedFetch((request) => {
       if (routePath(request) === "/v1/session") return sessionResponse();
       if (routePath(request) === "/v1/incidents") return incidentListResponse([item]);
+      const absent = absentResponsePlan(request);
+      if (absent !== null) return absent;
       return jsonResponse(readySource(item));
     });
 
@@ -295,6 +387,173 @@ describe("IncidentWorkspaceApp", () => {
     expect(screen.getAllByText(item.incident_id).length).toBeGreaterThan(0);
   });
 
+  it("retries an ambiguous approval with the retained logical-action idempotency key", async () => {
+    const review = responsePlanReviewFixture({ incidentId: "incident-ambiguous-approval" });
+    const item = summary(review.plan.incident_id);
+    let currentReview = review;
+    let approvalAttempts = 0;
+    const { fetch, requests } = routedFetch((request) => {
+      const path = routePath(request);
+      if (path === "/v1/session") return planSessionResponse();
+      if (path === "/v1/incidents") return incidentListResponse([item]);
+      if (path.endsWith("/workspace")) return jsonResponse(readySource(item));
+      if (path.endsWith("/response-plan") && request.method === "GET") {
+        return jsonResponse(currentReview);
+      }
+      if (path.endsWith("/response-plan/approve") && request.method === "POST") {
+        approvalAttempts += 1;
+        if (approvalAttempts === 1) throw new TypeError("connection reset after request");
+        currentReview = responsePlanReviewFixture({
+          incidentId: item.incident_id,
+          state: "approved",
+        });
+        return jsonResponse(currentReview.decision);
+      }
+      return jsonResponse({ code: "unexpected" }, 500);
+    });
+
+    render(
+      <IncidentWorkspaceApp
+        adapter={createIncidentReadAdapter({
+          baseUrl: "https://web.test",
+          fetch,
+          tokenProvider: () => "ephemeral-plan-token",
+        })}
+      />,
+    );
+
+    const approve = await screen.findByRole("button", { name: "Approve exact plan" });
+    fireEvent.click(approve);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm approve" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/mutation did not complete/i);
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry exact action" }));
+    expect(await screen.findByText(/Approved by/i)).toBeVisible();
+
+    const approvalRequests = requests.filter((request) =>
+      routePath(request).endsWith("/response-plan/approve"),
+    );
+    expect(approvalRequests).toHaveLength(2);
+    const first = (await approvalRequests[0]?.clone().json()) as { idempotency_key: string };
+    const second = (await approvalRequests[1]?.clone().json()) as { idempotency_key: string };
+    expect(second.idempotency_key).toBe(first.idempotency_key);
+  });
+
+  it("reports post-commit refresh failure separately and reconciles without replay", async () => {
+    const review = responsePlanReviewFixture({ incidentId: "incident-reconcile-approval" });
+    const item = summary(review.plan.incident_id);
+    let currentReview = review;
+    let failNextPlanRead = false;
+    const { fetch, requests } = routedFetch((request) => {
+      const path = routePath(request);
+      if (path === "/v1/session") return planSessionResponse();
+      if (path === "/v1/incidents") return incidentListResponse([item]);
+      if (path.endsWith("/workspace")) return jsonResponse(readySource(item));
+      if (path.endsWith("/response-plan") && request.method === "GET") {
+        if (failNextPlanRead) {
+          failNextPlanRead = false;
+          return jsonResponse({ code: "temporary-read-failure" }, 503);
+        }
+        return jsonResponse(currentReview);
+      }
+      if (path.endsWith("/response-plan/approve") && request.method === "POST") {
+        currentReview = responsePlanReviewFixture({
+          incidentId: item.incident_id,
+          state: "approved",
+        });
+        failNextPlanRead = true;
+        return jsonResponse(currentReview.decision);
+      }
+      return jsonResponse({ code: "unexpected" }, 500);
+    });
+
+    render(
+      <IncidentWorkspaceApp
+        adapter={createIncidentReadAdapter({
+          baseUrl: "https://web.test",
+          fetch,
+          tokenProvider: () => "ephemeral-plan-token",
+        })}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve exact plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm approve" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/mutation was accepted/i);
+    expect(screen.queryByRole("button", { name: "Retry exact action" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile plan state" }));
+    expect(await screen.findByText(/Approved by/i)).toBeVisible();
+    expect(
+      requests.filter((request) => routePath(request).endsWith("/response-plan/approve")),
+    ).toHaveLength(1);
+  });
+
+  it("cannot project an old incident mutation completion into a newly selected plan", async () => {
+    const first = summary("incident-mutation-slow");
+    const second = summary("incident-mutation-fast");
+    const firstReview = responsePlanReviewFixture({
+      commandId: "quarantine-first-incident",
+      incidentId: first.incident_id,
+    });
+    const secondReview = responsePlanReviewFixture({
+      commandId: "quarantine-second-incident",
+      incidentId: second.incident_id,
+    });
+    const approvalResponse = deferred<Response>();
+    const { fetch, requests } = routedFetch((request) => {
+      const path = routePath(request);
+      if (path === "/v1/session") return planSessionResponse();
+      if (path === "/v1/incidents") return incidentListResponse([first, second]);
+      if (path.endsWith("/workspace")) {
+        return jsonResponse(readySource(path.includes(second.incident_id) ? second : first));
+      }
+      if (path.endsWith("/response-plan") && request.method === "GET") {
+        return jsonResponse(path.includes(second.incident_id) ? secondReview : firstReview);
+      }
+      if (path.endsWith("/response-plan/approve") && request.method === "POST") {
+        return approvalResponse.promise;
+      }
+      return jsonResponse({ code: "unexpected" }, 500);
+    });
+
+    render(
+      <IncidentWorkspaceApp
+        adapter={createIncidentReadAdapter({
+          baseUrl: "https://web.test",
+          fetch,
+          tokenProvider: () => "ephemeral-plan-token",
+        })}
+      />,
+    );
+
+    expect(await screen.findByText("quarantine-first-incident")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Approve exact plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm approve" }));
+    const inbox = screen.getByRole("navigation", { name: "Incident inbox" });
+    fireEvent.click(within(inbox).getByRole("link", { name: new RegExp(second.incident_id) }));
+    expect(await screen.findByText("quarantine-second-incident")).toBeVisible();
+
+    const approvedFirst = responsePlanReviewFixture({
+      incidentId: first.incident_id,
+      state: "approved",
+    });
+    await act(async () => {
+      approvalResponse.resolve(jsonResponse(approvedFirst.decision));
+      await approvalResponse.promise;
+    });
+
+    expect(screen.getByText("quarantine-second-incident")).toBeVisible();
+    expect(screen.queryByText(/Approved by/i)).toBeNull();
+    expect(
+      requests.filter(
+        (request) =>
+          routePath(request) === `/v1/incidents/${first.incident_id}/response-plan` &&
+          request.method === "GET",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("keeps pending replay, delayed, and missing records explicit", async () => {
     const item = summary("incident-running", "running", {
       delayed: true,
@@ -303,6 +562,8 @@ describe("IncidentWorkspaceApp", () => {
     const { fetch } = routedFetch((request) => {
       if (routePath(request) === "/v1/session") return sessionResponse();
       if (routePath(request) === "/v1/incidents") return incidentListResponse([item]);
+      const absent = absentResponsePlan(request);
+      if (absent !== null) return absent;
       return jsonResponse(pendingSource(item));
     });
 
@@ -325,6 +586,8 @@ describe("IncidentWorkspaceApp", () => {
         return jsonResponse({ code: "operator-token-required" }, 401);
       }
       if (routePath(request) === "/v1/incidents") return incidentListResponse([item]);
+      const absent = absentResponsePlan(request);
+      if (absent !== null) return absent;
       return jsonResponse(readySource(item));
     });
 
@@ -368,6 +631,8 @@ describe("IncidentWorkspaceApp", () => {
       const path = routePath(request);
       if (path === "/v1/session") return sessionResponse();
       if (path === "/v1/incidents") return incidentListResponse([first, second]);
+      const absent = absentResponsePlan(request);
+      if (absent !== null) return absent;
       return jsonResponse(readySource(path.includes("second") ? second : first));
     });
 
@@ -430,6 +695,8 @@ describe("IncidentWorkspaceApp", () => {
       const path = routePath(request);
       if (path === "/v1/session") return sessionResponse();
       if (path === "/v1/incidents") return incidentListResponse([first, second]);
+      const absent = absentResponsePlan(request);
+      if (absent !== null) return absent;
       if (path.includes(first.incident_id)) return slowResponse.promise;
       return jsonResponse(readySource(second));
     });

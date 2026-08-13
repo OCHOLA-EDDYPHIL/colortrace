@@ -19,7 +19,22 @@ type Mutable<T> = T extends readonly (infer Item)[]
     ? { -readonly [Key in keyof T]: Mutable<T[Key]> }
     : T;
 
-const viewer = { kind: "authenticated", displayName: "Pipeline operator" } as const;
+const viewer = {
+  kind: "authenticated",
+  displayName: "Pipeline operator",
+  principalKind: "human",
+  roles: ["response-plan.editor", "response-plan.approver"],
+} as const;
+
+const responsePlan = {
+  actionError: null,
+  busy: false,
+  capabilities: { canApprove: false, canEdit: false, session: "read-only" },
+  onApprove: () => undefined,
+  onEdit: () => undefined,
+  onReject: () => undefined,
+  state: { kind: "absent" },
+} as const;
 
 function renderCompleted(replay: Parameters<typeof projectIncidentReplay>[0]) {
   const workspace = projectIncidentReplay(replay);
@@ -27,6 +42,7 @@ function renderCompleted(replay: Parameters<typeof projectIncidentReplay>[0]) {
   const rendered = render(
     <IncidentWorkspaceShell
       incidents={[incident]}
+      responsePlan={responsePlan}
       selectedIncidentId={incident.id}
       state={{ kind: "workspace", workspace }}
       viewer={viewer}

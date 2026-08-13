@@ -1,22 +1,53 @@
 import {
+  approveResponsePlan,
   createClient,
+  editResponsePlan,
   getIncidentWorkspace,
   getOperatorSession,
+  getResponsePlanReview,
   type IncidentSummary,
   type IncidentWorkspaceSource,
   listIncidents,
   type OperatorSession,
+  type ResponsePlan,
+  type ResponsePlanDecision,
+  type ResponsePlanReview,
+  rejectResponsePlan,
 } from "@colortrace/api-client";
 
 export type BearerTokenProvider = () => Promise<string | undefined> | string | undefined;
 
+export type ResponsePlanRevision = Pick<ResponsePlan, "commands" | "unresolved_acknowledged">;
+
 export type IncidentReadAdapter = {
+  readonly credentialConfigured: boolean;
+  readonly approveResponsePlan: (
+    incidentId: string,
+    plan: ResponsePlan,
+    idempotencyKey: string,
+  ) => Promise<ResponsePlanDecision>;
+  readonly editResponsePlan: (
+    incidentId: string,
+    plan: ResponsePlan,
+    revision: ResponsePlanRevision,
+    idempotencyKey: string,
+  ) => Promise<ResponsePlan>;
+  readonly getResponsePlan: (
+    incidentId: string,
+    signal?: AbortSignal,
+  ) => Promise<ResponsePlanReview | null>;
   readonly getSession: (signal?: AbortSignal) => Promise<OperatorSession>;
   readonly getWorkspace: (
     incidentId: string,
     signal?: AbortSignal,
   ) => Promise<IncidentWorkspaceSource>;
   readonly listIncidents: (signal?: AbortSignal) => Promise<readonly IncidentSummary[]>;
+  readonly rejectResponsePlan: (
+    incidentId: string,
+    plan: ResponsePlan,
+    reasonCode: "incorrect-command" | "insufficient-evidence" | "unresolved-risk" | "unsafe-scope",
+    idempotencyKey: string,
+  ) => Promise<ResponsePlanDecision>;
 };
 
 export type IncidentReadAdapterOptions = {
@@ -76,6 +107,40 @@ export function createIncidentReadAdapter({
   });
 
   return {
+    credentialConfigured: tokenProvider !== undefined,
+    approveResponsePlan: (incidentId, plan, idempotencyKey) =>
+      approveResponsePlan(
+        {
+          incidentId,
+          decideResponsePlanRequest: {
+            expected_incident_version: plan.incident_version,
+            expected_plan_version: plan.version,
+            expected_plan_sha256: plan.plan_sha256,
+            idempotency_key: idempotencyKey,
+          },
+        },
+        { client, throwOnError: true },
+      ),
+    editResponsePlan: (incidentId, plan, revision, idempotencyKey) =>
+      editResponsePlan(
+        {
+          incidentId,
+          editResponsePlanRequest: {
+            expected_incident_version: plan.incident_version,
+            expected_plan_version: plan.version,
+            expected_plan_sha256: plan.plan_sha256,
+            response_packet_id: plan.response_packet_id,
+            response_packet_sha256: plan.response_packet_sha256,
+            deterministic_scope_sha256: plan.deterministic_scope_sha256,
+            targets: plan.targets,
+            exclusions: plan.exclusions,
+            commands: revision.commands,
+            unresolved_acknowledged: revision.unresolved_acknowledged,
+            idempotency_key: idempotencyKey,
+          },
+        },
+        { client, throwOnError: true },
+      ),
     getSession: (signal) =>
       getOperatorSession({
         client,
@@ -91,6 +156,21 @@ export function createIncidentReadAdapter({
           ...(signal === undefined ? {} : { signal }),
         },
       ),
+    getResponsePlan: async (incidentId, signal) => {
+      try {
+        return await getResponsePlanReview(
+          { incidentId },
+          {
+            client,
+            throwOnError: true,
+            ...(signal === undefined ? {} : { signal }),
+          },
+        );
+      } catch (error) {
+        if (error instanceof IncidentApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
     listIncidents: async (signal) => {
       const response = await listIncidents(undefined, {
         client,
@@ -99,5 +179,19 @@ export function createIncidentReadAdapter({
       });
       return response.items;
     },
+    rejectResponsePlan: (incidentId, plan, reasonCode, idempotencyKey) =>
+      rejectResponsePlan(
+        {
+          incidentId,
+          rejectResponsePlanRequest: {
+            expected_incident_version: plan.incident_version,
+            expected_plan_version: plan.version,
+            expected_plan_sha256: plan.plan_sha256,
+            reason_code: reasonCode,
+            idempotency_key: idempotencyKey,
+          },
+        },
+        { client, throwOnError: true },
+      ),
   };
 }

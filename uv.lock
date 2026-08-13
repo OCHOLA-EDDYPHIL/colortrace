@@ -9,6 +9,7 @@ members = [
     "colortrace-grafana-mcp",
     "colortrace-investigation",
     "colortrace-repo",
+    "colortrace-response-plans",
     "colortrace-telemetry",
     "colortrace-validator",
     "colortrace-vertical-slice",
@@ -278,6 +279,7 @@ name = "colortrace-api"
 version = "0.1.0"
 source = { editable = "packages/api" }
 dependencies = [
+    { name = "colortrace-response-plans" },
     { name = "colortrace-vertical-slice" },
     { name = "fastapi" },
     { name = "pyjwt", extra = ["crypto"] },
@@ -286,6 +288,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "colortrace-response-plans", editable = "packages/response-plans" },
     { name = "colortrace-vertical-slice", editable = "packages/vertical-slice" },
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.13.0" },
@@ -353,6 +356,17 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pyyaml", specifier = "==6.0.3" }]
+
+[[package]]
+name = "colortrace-response-plans"
+version = "1.0.0"
+source = { editable = "packages/response-plans" }
+dependencies = [
+    { name = "jsonschema" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "jsonschema", specifier = "==4.25.1" }]
 
 [[package]]
 name = "colortrace-telemetry"

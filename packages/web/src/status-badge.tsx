@@ -16,21 +16,31 @@ type BadgeValue =
   | WorkspaceScopeClassification
   | WorkspaceTimelineCategory
   | WorkspaceTimelineStatus
-  | "integrity-error";
+  | "approved"
+  | "color-resource"
+  | "derivative"
+  | "frame"
+  | "integrity-error"
+  | "pending";
 
 const BADGE_LABEL: Readonly<Record<BadgeValue, string>> = {
   affected: "Affected",
+  approved: "Approved",
   available: "Available",
   causal: "Causal resource",
+  "color-resource": "Color resource",
   confirmed: "Confirmed",
+  derivative: "Derivative",
   "deterministic-result": "Deterministic result",
   error: "Collection error",
   failed: "Failed",
+  frame: "Frame",
   "human-event": "Human event",
   inferred: "Inferred",
   informational: "Informational",
   "integrity-error": "Integrity error",
   "model-reasoning": "Model reasoning",
+  pending: "Pending",
   queued: "Queued",
   rejected: "Rejected",
   resolved: "Resolved",
