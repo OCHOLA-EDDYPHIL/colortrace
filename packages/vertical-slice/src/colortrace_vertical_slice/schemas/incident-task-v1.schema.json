@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/incident-task-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "incident_id",
+    "expected_incident_version",
+    "alert_sha256",
+    "trace_id",
+    "created_at"
+  ],
+  "properties": {
+    "schema": {"const": "incident-task/v1"},
+    "task_id": {"type": "string", "pattern": "^task:[0-9a-f]{64}$"},
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "expected_incident_version": {"type": "integer", "minimum": 1},
+    "alert_sha256": {"$ref": "#/$defs/digest"},
+    "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "status": {"enum": ["queued", "running", "complete"]},
+    "packet_id": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "pattern": "^response-packet:[0-9a-f]{64}$"}
+      ]
+    },
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

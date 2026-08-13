@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "colortrace-vertical-slice"
+version = "1.0.0"
+description = "Persisted alert-to-response-packet API and worker boundary"
+requires-python = ">=3.12"
+dependencies = [
+    "colortrace-grafana-mcp",
+    "colortrace-investigation",
+    "colortrace-validator",
+    "jsonschema==4.25.1",
+]
+
+[project.scripts]
+colortrace-slice = "colortrace_vertical_slice.cli:main"
+
+[tool.uv.sources]
+colortrace-grafana-mcp = {workspace = true}
+colortrace-investigation = {workspace = true}
+colortrace-validator = {workspace = true}
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/colortrace_vertical_slice"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/colortrace_vertical_slice/schemas" = "colortrace_vertical_slice/schemas"

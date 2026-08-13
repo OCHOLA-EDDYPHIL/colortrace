@@ -1,8 +1,2568 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "API Contract",
-    "version": "0.0.0"
+    "title": "ColorTrace Incident API",
+    "version": "1.0.0"
   },
-  "paths": {}
+  "paths": {
+    "/v1/incidents": {
+      "post": {
+        "operationId": "createIncident",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertIntake"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The alert is durably admitted to the worker queue.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentAccepted"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The incident identity was already used for different alert content.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/incidents/{incidentId}": {
+      "get": {
+        "operationId": "getIncident",
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The persisted incident and exact packet when complete.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No incident has this identity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/incidents/{incidentId}/replay": {
+      "get": {
+        "operationId": "replayIncident",
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The integrity-checked evidence, invocation, packet, and trace replay.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentReplay"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No incident has this identity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The incident is incomplete or persisted provenance failed verification.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Identifier": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+      },
+      "AlertIdentifier": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+      },
+      "GrafanaUid": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+      },
+      "Digest": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "TraceId": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{32}$"
+      },
+      "AlertIntake": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "incident_id",
+          "alert_id",
+          "alert_started_at",
+          "retrieved_at",
+          "measured_clock_skew_seconds",
+          "binding",
+          "correlation_keys",
+          "predecessor_event_sha256"
+        ],
+        "properties": {
+          "schema": {
+            "const": "alert-intake/v1"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/AlertIdentifier"
+          },
+          "alert_id": {
+            "$ref": "#/components/schemas/AlertIdentifier"
+          },
+          "alert_started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "retrieved_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "measured_clock_skew_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5
+          },
+          "binding": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "prometheus_datasource_uid",
+              "loki_datasource_uid",
+              "tempo_datasource_uid",
+              "alert_rule_uid"
+            ],
+            "properties": {
+              "prometheus_datasource_uid": {
+                "$ref": "#/components/schemas/GrafanaUid"
+              },
+              "loki_datasource_uid": {
+                "$ref": "#/components/schemas/GrafanaUid"
+              },
+              "tempo_datasource_uid": {
+                "$ref": "#/components/schemas/GrafanaUid"
+              },
+              "alert_rule_uid": {
+                "$ref": "#/components/schemas/GrafanaUid"
+              }
+            }
+          },
+          "correlation_keys": {
+            "$ref": "#/components/schemas/CorrelationKeys"
+          },
+          "predecessor_event_sha256": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Digest"
+              }
+            ]
+          }
+        }
+      },
+      "GrafanaBinding": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "prometheus_datasource_uid",
+          "loki_datasource_uid",
+          "tempo_datasource_uid",
+          "alert_rule_uid"
+        ],
+        "properties": {
+          "prometheus_datasource_uid": {
+            "$ref": "#/components/schemas/GrafanaUid"
+          },
+          "loki_datasource_uid": {
+            "$ref": "#/components/schemas/GrafanaUid"
+          },
+          "tempo_datasource_uid": {
+            "$ref": "#/components/schemas/GrafanaUid"
+          },
+          "alert_rule_uid": {
+            "$ref": "#/components/schemas/GrafanaUid"
+          }
+        }
+      },
+      "CorrelationKeys": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "fixture_id",
+          "run_id",
+          "job_id",
+          "worker_id",
+          "artifact_id",
+          "trace_id",
+          "config_sha256",
+          "transform_id"
+        ],
+        "properties": {
+          "fixture_id": {
+            "$ref": "#/components/schemas/AlertIdentifier"
+          },
+          "run_id": {
+            "$ref": "#/components/schemas/AlertIdentifier"
+          },
+          "job_id": {
+            "$ref": "#/components/schemas/AlertIdentifier"
+          },
+          "worker_id": {
+            "$ref": "#/components/schemas/AlertIdentifier"
+          },
+          "artifact_id": {
+            "$ref": "#/components/schemas/AlertIdentifier"
+          },
+          "trace_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$"
+          },
+          "config_sha256": {
+            "$ref": "#/components/schemas/UnprefixedDigest"
+          },
+          "transform_id": {
+            "$ref": "#/components/schemas/AlertIdentifier"
+          }
+        }
+      },
+      "IncidentAccepted": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "incident_id",
+          "task_id",
+          "status",
+          "version",
+          "trace_id",
+          "duplicate"
+        ],
+        "properties": {
+          "schema": {
+            "const": "incident-accepted/v1"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "task_id": {
+            "type": "string",
+            "pattern": "^task:[0-9a-f]{64}$"
+          },
+          "status": {
+            "enum": ["queued", "running", "resolved", "unresolved"]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/TraceId"
+          },
+          "duplicate": {
+            "type": "boolean"
+          }
+        }
+      },
+      "IncidentRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "incident_id",
+          "alert_id",
+          "status",
+          "version",
+          "alert_sha256",
+          "trace_id",
+          "packet_id",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "schema": {
+            "const": "incident-record/v1"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "alert_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "status": {
+            "enum": ["queued", "running", "resolved", "unresolved"]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "alert_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/TraceId"
+          },
+          "packet_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^response-packet:[0-9a-f]{64}$"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TaskRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "task_id",
+          "incident_id",
+          "expected_incident_version",
+          "alert_sha256",
+          "trace_id",
+          "status",
+          "packet_id",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "schema": {
+            "const": "incident-task/v1"
+          },
+          "task_id": {
+            "type": "string",
+            "pattern": "^task:[0-9a-f]{64}$"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "expected_incident_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "alert_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/TraceId"
+          },
+          "status": {
+            "enum": ["queued", "running", "complete"]
+          },
+          "packet_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^response-packet:[0-9a-f]{64}$"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ScopeItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "id"],
+        "properties": {
+          "kind": {
+            "enum": ["derivative", "frame"]
+          },
+          "id": {
+            "$ref": "#/components/schemas/Identifier"
+          }
+        }
+      },
+      "Claim": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "claim_id",
+          "claim_type",
+          "subject",
+          "state",
+          "policy",
+          "normalized_inputs_sha256",
+          "deterministic_result_evidence_id",
+          "source_validator_result_id",
+          "derivation_sha256",
+          "contradiction_links",
+          "evidence_ids",
+          "reason_codes"
+        ],
+        "properties": {
+          "schema": {
+            "const": "claim/v1"
+          },
+          "claim_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "claim_type": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,63}$"
+          },
+          "subject": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "value"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{1,63}$"
+              },
+              "value": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/Identifier"
+                  }
+                ]
+              }
+            }
+          },
+          "state": {
+            "enum": ["confirmed", "inferred", "rejected", "unresolved"]
+          },
+          "policy": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "normalized_inputs_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "deterministic_result_evidence_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Identifier"
+              }
+            ]
+          },
+          "source_validator_result_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Identifier"
+              }
+            ]
+          },
+          "derivation_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "contradiction_links": {
+            "type": "array",
+            "maxItems": 128,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 256,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          },
+          "reason_codes": {
+            "type": "array",
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{1,63}$"
+            }
+          }
+        }
+      },
+      "ResponsePacket": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "packet_id",
+          "incident_id",
+          "version",
+          "status",
+          "fixed_window",
+          "evidence_ids",
+          "deterministic_results",
+          "claims",
+          "scope",
+          "invocation_records",
+          "budget_use",
+          "unresolved_items",
+          "candidate_plan",
+          "no_action_reason",
+          "model_advisory",
+          "state_history",
+          "finalized_at",
+          "derivation_sha256"
+        ],
+        "properties": {
+          "schema": {
+            "const": "response-packet/v1"
+          },
+          "packet_id": {
+            "type": "string",
+            "pattern": "^response-packet:[0-9a-f]{64}$"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "version": {
+            "const": 1
+          },
+          "status": {
+            "enum": ["resolved", "unresolved"]
+          },
+          "fixed_window": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["start", "end", "frozen_at"],
+            "properties": {
+              "start": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "end": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "frozen_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 512,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          },
+          "deterministic_results": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "$ref": "#/components/schemas/DeterministicResult"
+            }
+          },
+          "claims": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "$ref": "#/components/schemas/Claim"
+            }
+          },
+          "scope": {
+            "$ref": "#/components/schemas/IncidentScope"
+          },
+          "invocation_records": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {
+              "$ref": "#/components/schemas/ModelInvocation"
+            }
+          },
+          "budget_use": {
+            "$ref": "#/components/schemas/BudgetUse"
+          },
+          "unresolved_items": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/components/schemas/UnresolvedItem"
+            }
+          },
+          "candidate_plan": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CandidatePlan"
+              }
+            ]
+          },
+          "no_action_reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "enum": [
+                  "budget-exhausted",
+                  "contradictory-evidence",
+                  "evidence-unavailable",
+                  "incomplete-evidence",
+                  "invalid-intake",
+                  "model-unavailable",
+                  "no-affected-targets",
+                  "policy-drift",
+                  "stale-evidence",
+                  "validator-unresolved"
+                ]
+              }
+            ]
+          },
+          "model_advisory": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModelAdvisory"
+              }
+            ]
+          },
+          "state_history": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 16,
+            "items": {
+              "enum": [
+                "intake",
+                "selection",
+                "evidence",
+                "assessment",
+                "validation",
+                "drafting",
+                "finalization",
+                "complete"
+              ]
+            }
+          },
+          "finalized_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "derivation_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          }
+        }
+      },
+      "IncidentView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema", "incident", "task", "packet"],
+        "properties": {
+          "schema": {
+            "const": "incident-view/v1"
+          },
+          "incident": {
+            "$ref": "#/components/schemas/IncidentRecord"
+          },
+          "task": {
+            "$ref": "#/components/schemas/TaskRecord"
+          },
+          "packet": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ResponsePacket"
+              }
+            ]
+          }
+        }
+      },
+      "TraceEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "event_id",
+          "incident_id",
+          "sequence",
+          "event_type",
+          "trace_id",
+          "span_id",
+          "parent_span_id",
+          "predecessor_event_sha256",
+          "payload",
+          "payload_sha256",
+          "occurred_at",
+          "event_sha256"
+        ],
+        "properties": {
+          "schema": {
+            "const": "incident-trace-event/v1"
+          },
+          "event_id": {
+            "type": "string",
+            "pattern": "^event:[0-9a-f]{64}$"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64
+          },
+          "event_type": {
+            "enum": [
+              "api.intake.accepted",
+              "task.queued",
+              "worker.started",
+              "packet.persisted",
+              "incident.completed"
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$"
+          },
+          "span_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "parent_span_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{16}$"
+              }
+            ]
+          },
+          "predecessor_event_sha256": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Digest"
+              }
+            ]
+          },
+          "payload": {
+            "type": "object",
+            "maxProperties": 32
+          },
+          "payload_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "event_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          }
+        }
+      },
+      "IncidentReplay": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "incident",
+          "task",
+          "alert",
+          "evidence_batches",
+          "evidence",
+          "validator_results",
+          "invocations",
+          "packet",
+          "trace_events",
+          "derivation_sha256"
+        ],
+        "properties": {
+          "schema": {
+            "const": "incident-replay/v1"
+          },
+          "incident": {
+            "$ref": "#/components/schemas/CompletedIncidentRecord"
+          },
+          "task": {
+            "$ref": "#/components/schemas/CompletedTaskRecord"
+          },
+          "alert": {
+            "$ref": "#/components/schemas/AlertIntake"
+          },
+          "evidence_batches": {
+            "type": "array",
+            "maxItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/EvidenceBatch"
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/EvidenceEnvelope"
+            }
+          },
+          "validator_results": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {
+              "$ref": "#/components/schemas/ValidatorResult"
+            }
+          },
+          "invocations": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {
+              "$ref": "#/components/schemas/ModelInvocation"
+            }
+          },
+          "packet": {
+            "$ref": "#/components/schemas/ResponsePacket"
+          },
+          "trace_events": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "items": {
+              "$ref": "#/components/schemas/TraceEvent"
+            }
+          },
+          "derivation_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,63}$"
+          }
+        }
+      },
+      "ModelInvocation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "invocation_id",
+          "incident_id",
+          "turn_kind",
+          "attempt",
+          "model",
+          "location",
+          "framework",
+          "framework_version",
+          "client_version",
+          "prompt_version",
+          "policy_version",
+          "tool_inventory_version",
+          "normalized_input_sha256",
+          "input_evidence_ids",
+          "output_sha256",
+          "latency_ms",
+          "usage",
+          "result_class",
+          "error_code",
+          "trace_id",
+          "derivation_sha256"
+        ],
+        "properties": {
+          "schema": {
+            "const": "model-tool-invocation/v1"
+          },
+          "invocation_id": {
+            "type": "string",
+            "pattern": "^model-invocation:[0-9a-f]{64}$"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "turn_kind": {
+            "enum": ["evidence-selection", "response-drafting"]
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 6
+          },
+          "model": {
+            "const": "gemini-3.5-flash"
+          },
+          "location": {
+            "const": "global"
+          },
+          "framework": {
+            "const": "google-adk"
+          },
+          "framework_version": {
+            "const": "2.6.3"
+          },
+          "client_version": {
+            "const": "2.17.0"
+          },
+          "prompt_version": {
+            "enum": ["evidence-selection/v1", "response-drafting/v1"]
+          },
+          "policy_version": {
+            "const": "bounded-investigation/v1"
+          },
+          "tool_inventory_version": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            ]
+          },
+          "normalized_input_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "input_evidence_ids": {
+            "type": "array",
+            "maxItems": 256,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          },
+          "output_sha256": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Digest"
+              }
+            ]
+          },
+          "latency_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 120000
+          },
+          "usage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["input_tokens", "output_tokens"],
+            "properties": {
+              "input_tokens": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                ]
+              },
+              "output_tokens": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                ]
+              }
+            }
+          },
+          "result_class": {
+            "enum": ["accepted", "budget-rejected", "failed", "invalid"]
+          },
+          "error_code": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{1,63}$"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$"
+          },
+          "derivation_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          }
+        }
+      },
+      "DeterministicResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "result_id",
+          "validator",
+          "validator_version",
+          "status",
+          "policy_versions",
+          "derivation_sha256",
+          "evidence_ids"
+        ],
+        "properties": {
+          "result_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "validator": {
+            "const": "colortrace-validator"
+          },
+          "validator_version": {
+            "const": "1.0.0"
+          },
+          "status": {
+            "enum": ["resolved", "unresolved"]
+          },
+          "policy_versions": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 16,
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "derivation_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 256,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          }
+        }
+      },
+      "IncidentScope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state", "policy", "affected", "safe", "unknown", "reason_codes"],
+        "properties": {
+          "state": {
+            "enum": ["resolved", "unresolved"]
+          },
+          "policy": {
+            "const": "single-causal-resource-scope/v1"
+          },
+          "affected": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "$ref": "#/components/schemas/ScopeItem"
+            }
+          },
+          "safe": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "$ref": "#/components/schemas/ScopeItem"
+            }
+          },
+          "unknown": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "$ref": "#/components/schemas/ScopeItem"
+            }
+          },
+          "reason_codes": {
+            "type": "array",
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{1,63}$"
+            }
+          }
+        }
+      },
+      "BudgetUse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "elapsed_ms",
+          "model_turns",
+          "input_tokens",
+          "output_tokens",
+          "unavailable_input_tokens_reserved",
+          "unavailable_output_tokens_reserved",
+          "mcp_attempts",
+          "validator_calls",
+          "trusted_transient_retries",
+          "model_visible_bytes",
+          "maximum_calls_in_flight_observed"
+        ],
+        "properties": {
+          "elapsed_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "model_turns": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "input_tokens": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "output_tokens": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unavailable_input_tokens_reserved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unavailable_output_tokens_reserved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "mcp_attempts": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8
+          },
+          "validator_calls": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6
+          },
+          "trusted_transient_retries": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "model_visible_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1048576
+          },
+          "maximum_calls_in_flight_observed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2
+          }
+        }
+      },
+      "UnresolvedItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "stage", "evidence_ids"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,63}$"
+          },
+          "stage": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,63}$"
+          },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 256,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          }
+        }
+      },
+      "CandidatePlan": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema", "plan_id", "non_executable", "targets", "claim_ids"],
+        "properties": {
+          "schema": {
+            "const": "candidate-plan-reference/v1"
+          },
+          "plan_id": {
+            "type": "string",
+            "pattern": "^candidate-plan:[0-9a-f]{64}$"
+          },
+          "non_executable": {
+            "const": true
+          },
+          "targets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 256,
+            "items": {
+              "$ref": "#/components/schemas/ScopeItem"
+            }
+          },
+          "claim_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 128,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          }
+        }
+      },
+      "ModelAdvisory": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["trust", "summary", "evidence_ids", "output_sha256"],
+        "properties": {
+          "trust": {
+            "const": "untrusted-model-output"
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          },
+          "output_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          }
+        }
+      },
+      "EvidenceEnvelope": {
+        "title": "ColorTrace evidence envelope",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "evidence_id",
+          "incident_id",
+          "request_id",
+          "source",
+          "observation",
+          "timing",
+          "content_sha256",
+          "content",
+          "display_excerpt",
+          "correlation_keys",
+          "collection",
+          "trust",
+          "producer_version",
+          "predecessor_event_sha256",
+          "event_sha256"
+        ],
+        "properties": {
+          "schema": {
+            "const": "evidence-envelope/v1"
+          },
+          "evidence_id": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "request_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "source": {
+            "$ref": "#/components/schemas/EvidenceSource"
+          },
+          "observation": {
+            "$ref": "#/components/schemas/EvidenceObservation"
+          },
+          "timing": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source_time", "event_time", "retrieved_at", "freshness"],
+            "properties": {
+              "source_time": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                ]
+              },
+              "event_time": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                ]
+              },
+              "retrieved_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "freshness": {
+                "enum": ["current", "stale", "unresolved"]
+              }
+            }
+          },
+          "content_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "content": {},
+          "display_excerpt": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "correlation_keys": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 32,
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "collection": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["outcome", "attempts", "retries", "error"],
+            "properties": {
+              "outcome": {
+                "enum": ["collected", "error"]
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 8
+              },
+              "retries": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "error": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["code", "retryable"],
+                    "properties": {
+                      "code": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_]{1,63}$"
+                      },
+                      "retryable": {
+                        "const": false
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "trust": {
+            "enum": ["untrusted-provider-data", "deterministic-result"]
+          },
+          "producer_version": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "predecessor_event_sha256": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Digest"
+              }
+            ]
+          },
+          "event_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          }
+        }
+      },
+      "EvidenceSource": {
+        "title": "Registered ColorTrace evidence sources",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/GrafanaEvidenceSource"
+          }
+        ]
+      },
+      "EvidenceObservation": {
+        "title": "Registered ColorTrace evidence observations",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/GrafanaQueryObservation"
+          }
+        ]
+      },
+      "GrafanaEvidenceSource": {
+        "title": "Official Grafana MCP evidence source",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "server",
+          "server_version",
+          "server_commit",
+          "binary_sha256",
+          "mcp_sdk_version",
+          "mcp_protocol_version",
+          "tool",
+          "tool_input_schema_sha256",
+          "tool_annotations_sha256",
+          "inventory_version"
+        ],
+        "properties": {
+          "kind": {
+            "const": "grafana-mcp"
+          },
+          "server": {
+            "const": "mcp-grafana"
+          },
+          "server_version": {
+            "const": "1.1.0"
+          },
+          "server_commit": {
+            "const": "007e8d82154899a28e19e8dfe9c2bb4452c5211a"
+          },
+          "binary_sha256": {
+            "const": "7b4f978ee4e31053cad3392626b6896d3da2315d5e6b2bcbba815c9b04872236"
+          },
+          "mcp_sdk_version": {
+            "const": "1.29.0"
+          },
+          "mcp_protocol_version": {
+            "const": "2025-06-18"
+          },
+          "tool": {
+            "enum": [
+              "alerting_manage_rules",
+              "query_loki_logs",
+              "query_prometheus",
+              "tempo_get-trace"
+            ]
+          },
+          "tool_input_schema_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "tool_annotations_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "inventory_version": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      },
+      "GrafanaQueryObservation": {
+        "title": "Typed Grafana MCP query observation",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "query_key",
+          "catalog_version",
+          "catalog_sha256",
+          "normalized_arguments",
+          "model_visible_arguments",
+          "fixed_time_range"
+        ],
+        "properties": {
+          "kind": {
+            "const": "grafana-mcp-query"
+          },
+          "query_key": {
+            "enum": [
+              "alert.rule",
+              "log.correlated-events",
+              "metric.correlated-observations",
+              "trace.by-id"
+            ]
+          },
+          "catalog_version": {
+            "const": "grafana-evidence-query-catalog/v1"
+          },
+          "catalog_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "normalized_arguments": {
+            "type": "object"
+          },
+          "model_visible_arguments": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "fixed_time_range": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["start", "end"],
+            "properties": {
+              "start": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "end": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      },
+      "ValidationReasonCode": {
+        "enum": [
+          "candidate-resource-used-by-safe-job",
+          "causal-resource-confirmed",
+          "causal-resource-matches-approved-declaration",
+          "comparison-match-safe",
+          "comparison-threshold-indeterminate",
+          "contradictory-authoritative-evidence",
+          "declared-reference-contract-invalid",
+          "declared-reference-digest-mismatch",
+          "declared-reference-mismatch",
+          "declared-resources-contract-invalid",
+          "declared-resources-digest-mismatch",
+          "derivative-buffer-digest-mismatch",
+          "derivative-inherits-parent-scope",
+          "distractor-authoritatively-rejected",
+          "exact-lineage-invalid",
+          "fixture-contract-invalid",
+          "incomplete-decisive-evidence",
+          "job-manifest-digest-mismatch",
+          "job-manifest-missing",
+          "job-runtime-correlation-mismatch",
+          "malformed-float-buffer",
+          "manifest-json-invalid",
+          "missing-approved-resource-control",
+          "missing-declared-reference",
+          "missing-declared-resources",
+          "missing-lineage-manifest",
+          "missing-output-buffer",
+          "missing-reference-buffer",
+          "missing-resolved-resource-manifest",
+          "multiple-causal-resource-candidates",
+          "no-causal-resource-candidate",
+          "no-mismatch-observations",
+          "nominal-config-authoritatively-rejected",
+          "nominal-config-digest-mismatch",
+          "ocio-config-invalid",
+          "ocio-processor-identity-mismatch",
+          "ocio-resource-resolution-mismatch",
+          "ocio-structure-invalid",
+          "output-buffer-digest-mismatch",
+          "reference-buffer-digest-mismatch",
+          "reference-threshold-match",
+          "reference-threshold-mismatch",
+          "resolved-resource-contract-invalid",
+          "resolved-resource-digest-mismatch",
+          "resolved-resource-manifest-digest-mismatch",
+          "result-size-limit-exceeded",
+          "runtime-manifest-digest-mismatch",
+          "runtime-manifest-missing",
+          "safe-control-missing-on-implicated-worker",
+          "telemetry-contract-invalid",
+          "telemetry-digest-mismatch",
+          "unsafe-path",
+          "unsupported-policy",
+          "worker-alone-authoritatively-rejected"
+        ]
+      },
+      "ValidatorScope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "state",
+          "policy",
+          "causal_resource_sha256",
+          "frames",
+          "derivatives",
+          "reason_codes"
+        ],
+        "properties": {
+          "schema": {
+            "const": "color-state-scope/v1"
+          },
+          "state": {
+            "enum": ["resolved", "unresolved"]
+          },
+          "policy": {
+            "const": "single-causal-resource-scope/v1"
+          },
+          "causal_resource_sha256": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ValidatorScopeDigest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "frames": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/components/schemas/ValidatorScopeFrame"
+            }
+          },
+          "derivatives": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/components/schemas/ValidatorScopeDerivative"
+            }
+          },
+          "reason_codes": {
+            "$ref": "#/components/schemas/ValidatorScopeReasons"
+          }
+        }
+      },
+      "ValidatorResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "result_id",
+          "request_id",
+          "incident_id",
+          "status",
+          "validator",
+          "policies",
+          "thresholds",
+          "request_sha256",
+          "runtime_manifest_sha256",
+          "comparisons",
+          "scope",
+          "claims",
+          "evidence",
+          "reason_codes",
+          "derivation_sha256"
+        ],
+        "properties": {
+          "schema": {
+            "const": "color-state-validation-result/v1"
+          },
+          "result_id": {
+            "type": "string",
+            "pattern": "^validation-result:[0-9a-f]{64}$"
+          },
+          "request_id": {
+            "$ref": "#/components/schemas/ValidatorIdentifier"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/ValidatorIdentifier"
+          },
+          "status": {
+            "enum": ["resolved", "unresolved"]
+          },
+          "validator": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "version", "ocio_version"],
+            "properties": {
+              "name": {
+                "const": "colortrace-validator"
+              },
+              "version": {
+                "const": "1.0.0"
+              },
+              "ocio_version": {
+                "const": "2.5.2"
+              }
+            }
+          },
+          "policies": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["comparison", "scope", "lineage", "claim"],
+            "properties": {
+              "comparison": {
+                "const": "declared-reference-comparison/v1"
+              },
+              "scope": {
+                "const": "single-causal-resource-scope/v1"
+              },
+              "lineage": {
+                "const": "exact-typed-lineage/v1"
+              },
+              "claim": {
+                "const": "deterministic-claim/v1"
+              }
+            }
+          },
+          "thresholds": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "match_maximum_absolute_channel_error_lte",
+              "match_rmse_lte",
+              "mismatch_maximum_absolute_channel_error_gt",
+              "mismatch_fraction_pixels_at_or_above_0_02_gte",
+              "mismatch_nearest_rank_p95_gte"
+            ],
+            "properties": {
+              "match_maximum_absolute_channel_error_lte": {
+                "const": "0.000001"
+              },
+              "match_rmse_lte": {
+                "const": "0.0000005"
+              },
+              "mismatch_maximum_absolute_channel_error_gt": {
+                "const": "0.0001"
+              },
+              "mismatch_fraction_pixels_at_or_above_0_02_gte": {
+                "const": "0.10"
+              },
+              "mismatch_nearest_rank_p95_gte": {
+                "const": "0.04"
+              }
+            }
+          },
+          "request_sha256": {
+            "$ref": "#/components/schemas/ValidatorDigest"
+          },
+          "runtime_manifest_sha256": {
+            "$ref": "#/components/schemas/ValidatorDigest"
+          },
+          "comparisons": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/components/schemas/ValidatorComparison"
+            }
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ValidatorScope"
+          },
+          "claims": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/components/schemas/ValidatorClaim"
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "$ref": "#/components/schemas/ValidatorEvidence"
+            }
+          },
+          "reason_codes": {
+            "$ref": "#/components/schemas/ValidatorReasons"
+          },
+          "derivation_sha256": {
+            "$ref": "#/components/schemas/ValidatorDigest"
+          }
+        }
+      },
+      "GrafanaToolPin": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "input_schema_sha256",
+          "annotations_sha256",
+          "idempotent",
+          "model_input_schema_sha256"
+        ],
+        "properties": {
+          "input_schema_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "annotations_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "idempotent": {
+            "type": "boolean"
+          },
+          "model_input_schema_sha256": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            ]
+          }
+        }
+      },
+      "GrafanaToolInventory": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "server_version",
+          "server_commit",
+          "binary_sha256",
+          "mcp_sdk_version",
+          "mcp_protocol_version",
+          "selected_tools",
+          "inventory_version"
+        ],
+        "properties": {
+          "schema": {
+            "const": "grafana-mcp-tool-inventory/v1"
+          },
+          "server_version": {
+            "const": "1.1.0"
+          },
+          "server_commit": {
+            "const": "007e8d82154899a28e19e8dfe9c2bb4452c5211a"
+          },
+          "binary_sha256": {
+            "const": "7b4f978ee4e31053cad3392626b6896d3da2315d5e6b2bcbba815c9b04872236"
+          },
+          "mcp_sdk_version": {
+            "const": "1.29.0"
+          },
+          "mcp_protocol_version": {
+            "const": "2025-06-18"
+          },
+          "selected_tools": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "alerting_manage_rules",
+              "query_loki_logs",
+              "query_prometheus",
+              "tempo_get-trace"
+            ],
+            "properties": {
+              "alerting_manage_rules": {
+                "$ref": "#/components/schemas/GrafanaToolPin"
+              },
+              "query_loki_logs": {
+                "$ref": "#/components/schemas/GrafanaToolPin"
+              },
+              "query_prometheus": {
+                "$ref": "#/components/schemas/GrafanaToolPin"
+              },
+              "tempo_get-trace": {
+                "$ref": "#/components/schemas/GrafanaToolPin"
+              }
+            }
+          },
+          "inventory_version": {
+            "$ref": "#/components/schemas/Digest"
+          }
+        }
+      },
+      "EvidenceAttempt": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "query_key",
+          "tool",
+          "attempt",
+          "retry",
+          "normalized_arguments",
+          "arguments_sha256",
+          "started_at",
+          "completed_at",
+          "outcome"
+        ],
+        "properties": {
+          "query_key": {
+            "enum": [
+              "alert.rule",
+              "log.correlated-events",
+              "metric.correlated-observations",
+              "trace.by-id"
+            ]
+          },
+          "tool": {
+            "enum": [
+              "alerting_manage_rules",
+              "query_loki_logs",
+              "query_prometheus",
+              "tempo_get-trace"
+            ]
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2
+          },
+          "retry": {
+            "type": "boolean"
+          },
+          "normalized_arguments": {
+            "type": "object"
+          },
+          "arguments_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "outcome": {
+            "enum": [
+              "collected",
+              "authentication",
+              "authorization",
+              "credential_exposure",
+              "incomplete_result",
+              "malformed_result",
+              "oversized_result",
+              "provider_error",
+              "timeout",
+              "transport"
+            ]
+          }
+        }
+      },
+      "EvidenceBatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "inventory",
+          "tool_calls_used",
+          "maximum_calls_in_flight_observed",
+          "attempts",
+          "envelopes"
+        ],
+        "properties": {
+          "schema": {
+            "const": "grafana-evidence-batch-result/v1"
+          },
+          "inventory": {
+            "$ref": "#/components/schemas/GrafanaToolInventory"
+          },
+          "tool_calls_used": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8
+          },
+          "maximum_calls_in_flight_observed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "attempts": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/EvidenceAttempt"
+            }
+          },
+          "envelopes": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/EvidenceEnvelope"
+            }
+          }
+        }
+      },
+      "CompletedIncidentRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "incident_id",
+          "alert_id",
+          "status",
+          "version",
+          "alert_sha256",
+          "trace_id",
+          "packet_id",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "schema": {
+            "const": "incident-record/v1"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "alert_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "status": {
+            "enum": ["resolved", "unresolved"]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 3
+          },
+          "alert_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/TraceId"
+          },
+          "packet_id": {
+            "type": "string",
+            "pattern": "^response-packet:[0-9a-f]{64}$"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CompletedTaskRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "task_id",
+          "incident_id",
+          "expected_incident_version",
+          "alert_sha256",
+          "trace_id",
+          "status",
+          "packet_id",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "schema": {
+            "const": "incident-task/v1"
+          },
+          "task_id": {
+            "type": "string",
+            "pattern": "^task:[0-9a-f]{64}$"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "expected_incident_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "alert_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/TraceId"
+          },
+          "status": {
+            "const": "complete"
+          },
+          "packet_id": {
+            "type": "string",
+            "pattern": "^response-packet:[0-9a-f]{64}$"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "UnprefixedDigest": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "ValidatorScopeIdentifier": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "ValidatorScopeNullableIdentifier": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ValidatorScopeIdentifier"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "ValidatorScopeDigest": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "ValidatorScopeReasons": {
+        "type": "array",
+        "maxItems": 32,
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/components/schemas/ValidationReasonCode"
+        }
+      },
+      "ValidatorScopeFrame": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "job_id",
+          "frame_id",
+          "output_id",
+          "worker_id",
+          "state",
+          "reason_codes",
+          "evidence_ids"
+        ],
+        "properties": {
+          "job_id": {
+            "$ref": "#/components/schemas/ValidatorScopeIdentifier"
+          },
+          "frame_id": {
+            "$ref": "#/components/schemas/ValidatorScopeNullableIdentifier"
+          },
+          "output_id": {
+            "$ref": "#/components/schemas/ValidatorScopeNullableIdentifier"
+          },
+          "worker_id": {
+            "$ref": "#/components/schemas/ValidatorScopeNullableIdentifier"
+          },
+          "state": {
+            "enum": ["affected", "safe", "unknown"]
+          },
+          "reason_codes": {
+            "$ref": "#/components/schemas/ValidatorScopeReasons"
+          },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/ValidatorScopeIdentifier"
+            }
+          }
+        }
+      },
+      "ValidatorScopeDerivative": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "parent_artifact_id",
+          "state",
+          "lineage_policy",
+          "reason_codes",
+          "evidence_ids"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "#/components/schemas/ValidatorScopeIdentifier"
+          },
+          "parent_artifact_id": {
+            "$ref": "#/components/schemas/ValidatorScopeNullableIdentifier"
+          },
+          "state": {
+            "enum": ["affected", "safe", "unknown"]
+          },
+          "lineage_policy": {
+            "const": "exact-typed-lineage/v1"
+          },
+          "reason_codes": {
+            "$ref": "#/components/schemas/ValidatorScopeReasons"
+          },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/ValidatorScopeIdentifier"
+            }
+          }
+        }
+      },
+      "ValidatorIdentifier": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "ValidatorNullableIdentifier": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ValidatorIdentifier"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "ValidatorDigest": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "ValidatorReasons": {
+        "type": "array",
+        "maxItems": 32,
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/components/schemas/ValidationReasonCode"
+        }
+      },
+      "ValidatorMetrics": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "maximum_absolute_channel_error",
+          "rmse",
+          "fraction_pixels_at_or_above_0_02",
+          "nearest_rank_p95",
+          "pixels"
+        ],
+        "properties": {
+          "maximum_absolute_channel_error": {
+            "type": "string",
+            "pattern": "^[0-9.eE+-]+$"
+          },
+          "rmse": {
+            "type": "string",
+            "pattern": "^[0-9.eE+-]+$"
+          },
+          "fraction_pixels_at_or_above_0_02": {
+            "type": "string",
+            "pattern": "^[0-9.eE+-]+$"
+          },
+          "nearest_rank_p95": {
+            "type": "string",
+            "pattern": "^[0-9.eE+-]+$"
+          },
+          "pixels": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "ValidatorComparison": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "comparison_id",
+          "job_id",
+          "frame_id",
+          "output_id",
+          "worker_id",
+          "transform_id",
+          "state",
+          "policy",
+          "metrics",
+          "nominal_config_sha256",
+          "resolved_resource_sha256",
+          "reason_codes",
+          "evidence_ids"
+        ],
+        "properties": {
+          "comparison_id": {
+            "$ref": "#/components/schemas/ValidatorIdentifier"
+          },
+          "job_id": {
+            "$ref": "#/components/schemas/ValidatorIdentifier"
+          },
+          "frame_id": {
+            "$ref": "#/components/schemas/ValidatorNullableIdentifier"
+          },
+          "output_id": {
+            "$ref": "#/components/schemas/ValidatorNullableIdentifier"
+          },
+          "worker_id": {
+            "$ref": "#/components/schemas/ValidatorNullableIdentifier"
+          },
+          "transform_id": {
+            "anyOf": [
+              {
+                "enum": ["look/main/v1", "identity/v1"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": ["reference_match", "reference_mismatch", "unresolved"]
+          },
+          "policy": {
+            "const": "declared-reference-comparison/v1"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ValidatorMetrics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nominal_config_sha256": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ValidatorDigest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolved_resource_sha256": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ValidatorDigest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason_codes": {
+            "$ref": "#/components/schemas/ValidatorReasons"
+          },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/ValidatorIdentifier"
+            }
+          }
+        }
+      },
+      "ValidatorClaim": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "claim_id",
+          "claim_type",
+          "subject",
+          "state",
+          "policy",
+          "normalized_inputs_sha256",
+          "deterministic_result_evidence_id",
+          "derivation_sha256",
+          "contradiction_links",
+          "evidence_ids",
+          "reason_codes"
+        ],
+        "properties": {
+          "schema": {
+            "const": "claim/v1"
+          },
+          "claim_id": {
+            "$ref": "#/components/schemas/ValidatorIdentifier"
+          },
+          "claim_type": {
+            "enum": ["causal-resource", "nominal-config", "worker-alone", "distractor"]
+          },
+          "subject": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "value"],
+            "properties": {
+              "kind": {
+                "enum": ["resource-sha256", "config-sha256", "worker-id", "event-id"]
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ValidatorIdentifier"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "state": {
+            "enum": ["confirmed", "inferred", "rejected", "unresolved"]
+          },
+          "policy": {
+            "const": "deterministic-claim/v1"
+          },
+          "normalized_inputs_sha256": {
+            "$ref": "#/components/schemas/ValidatorDigest"
+          },
+          "deterministic_result_evidence_id": {
+            "type": "string",
+            "pattern": "^deterministic-result:[0-9a-f]{64}$"
+          },
+          "derivation_sha256": {
+            "$ref": "#/components/schemas/ValidatorDigest"
+          },
+          "contradiction_links": {
+            "type": "array",
+            "maxItems": 128,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/ValidatorIdentifier"
+            }
+          },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 128,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/ValidatorIdentifier"
+            }
+          },
+          "reason_codes": {
+            "$ref": "#/components/schemas/ValidatorReasons"
+          }
+        }
+      },
+      "ValidatorEvidence": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["evidence_id", "kind", "path", "sha256"],
+        "properties": {
+          "evidence_id": {
+            "$ref": "#/components/schemas/ValidatorIdentifier"
+          },
+          "kind": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$",
+            "maxLength": 64
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)(?!.*\\$).+$"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/ValidatorDigest"
+          }
+        }
+      }
+    }
+  }
 }

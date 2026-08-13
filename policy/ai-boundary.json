@@ -2,6 +2,7 @@
   "schema_version": 1,
   "python": {
     "allowed_ai_packages": [
+      "colortrace-investigation",
       "google-adk",
       "google-cloud-aiplatform",
       "google-genai",

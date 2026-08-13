@@ -10,6 +10,7 @@ members = [
     "colortrace-repo",
     "colortrace-telemetry",
     "colortrace-validator",
+    "colortrace-vertical-slice",
     "colortrace-workspace",
 ]
 
@@ -371,6 +372,25 @@ requires-dist = [
     { name = "colortrace-fixture", editable = "packages/fixture-generator" },
     { name = "jsonschema", specifier = "==4.25.1" },
     { name = "opencolorio", specifier = "==2.5.2" },
+]
+
+[[package]]
+name = "colortrace-vertical-slice"
+version = "1.0.0"
+source = { editable = "packages/vertical-slice" }
+dependencies = [
+    { name = "colortrace-grafana-mcp" },
+    { name = "colortrace-investigation" },
+    { name = "colortrace-validator" },
+    { name = "jsonschema" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "colortrace-grafana-mcp", editable = "packages/grafana-mcp" },
+    { name = "colortrace-investigation", editable = "packages/investigation" },
+    { name = "colortrace-validator", editable = "packages/validators" },
+    { name = "jsonschema", specifier = "==4.25.1" },
 ]
 
 [[package]]

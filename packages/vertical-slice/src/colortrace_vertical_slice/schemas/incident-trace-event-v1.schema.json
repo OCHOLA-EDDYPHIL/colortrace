@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/incident-trace-event-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "event_id",
+    "incident_id",
+    "sequence",
+    "event_type",
+    "trace_id",
+    "span_id",
+    "parent_span_id",
+    "predecessor_event_sha256",
+    "payload",
+    "payload_sha256",
+    "occurred_at",
+    "event_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "incident-trace-event/v1"},
+    "event_id": {"type": "string", "pattern": "^event:[0-9a-f]{64}$"},
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "sequence": {"type": "integer", "minimum": 1, "maximum": 64},
+    "event_type": {
+      "enum": [
+        "api.intake.accepted",
+        "task.queued",
+        "worker.started",
+        "packet.persisted",
+        "incident.completed"
+      ]
+    },
+    "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "span_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "parent_span_id": {
+      "oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[0-9a-f]{16}$"}]
+    },
+    "predecessor_event_sha256": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]
+    },
+    "payload": {"type": "object", "maxProperties": 32},
+    "payload_sha256": {"$ref": "#/$defs/digest"},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "event_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
