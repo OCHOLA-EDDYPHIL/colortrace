@@ -17,6 +17,7 @@ package = false
 [tool.uv.workspace]
 members = [
     "packages/fixture-generator",
+    "packages/grafana-mcp",
     "packages/repo-tools",
     "packages/telemetry",
     "packages/validators",
@@ -35,6 +36,7 @@ python_version = "3.12"
 strict = true
 files = [
     "packages/fixture-generator/src",
+    "packages/grafana-mcp/src",
     "packages/repo-tools/src",
     "packages/telemetry/src",
     "packages/validators/src",
@@ -44,6 +46,7 @@ files = [
 addopts = ["--strict-config", "--strict-markers"]
 testpaths = [
     "packages/fixture-generator/tests",
+    "packages/grafana-mcp/tests",
     "packages/repo-tools/tests",
     "packages/telemetry/tests",
     "packages/validators/tests",
