@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import sqlite3
+import threading
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -20,11 +22,13 @@ from colortrace_investigation import (
     ModelOutput,
 )
 from colortrace_vertical_slice import (
+    CLAIM_LEASE_SECONDS,
     SliceContractError,
     SqliteIncidentStore,
     VerticalSliceApi,
     VerticalSliceWorker,
     run_vertical_slice,
+    validate_claim_events,
     validate_replay,
 )
 from mcp import types
@@ -153,6 +157,17 @@ class LateDraftingTimeoutModel(FakeModel):
         if call.turn_kind == "response-drafting":
             await asyncio.sleep(60)
         return await super().generate(call)
+
+
+class BlockingModel(FakeModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+
+    async def generate(self, call: ModelCall) -> ModelOutput:
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
 
 
 class FixedValidator:
@@ -347,6 +362,15 @@ def worker(
         clock=lambda: NOW,
         service_timeout_seconds=service_timeout,
     )
+
+
+def downgrade_store_to_v1(database: Path) -> None:
+    with sqlite3.connect(database) as connection:
+        connection.execute("DROP TABLE claim_events")
+        connection.execute("ALTER TABLE tasks DROP COLUMN claim_expires_at")
+        connection.execute("ALTER TABLE tasks DROP COLUMN claim_generation")
+        connection.execute("ALTER TABLE tasks DROP COLUMN claim_owner")
+        connection.execute("UPDATE store_metadata SET schema_version = 1 WHERE singleton = 1")
 
 
 def test_canonical_slice_persists_exact_replay_and_idempotent_duplicate(
@@ -618,6 +642,408 @@ def test_replay_detects_persisted_packet_tampering(
         api.get_incident("incident-tamper")
     with pytest.raises(SliceContractError, match="stored-packet-digest"):
         api.replay("incident-tamper")
+
+
+def test_claim_heartbeat_extends_lease_and_exact_expiry_reclaims(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    store = SqliteIncidentStore(tmp_path / "claim-heartbeat.sqlite3")
+    accepted = VerticalSliceApi(store, clock=lambda: NOW).accept_alert(
+        alert(correlation, incident_id="incident-claim-heartbeat")
+    )
+    task_id = accepted["task_id"]
+
+    first = store.claim_task(task_id, owner="worker:first", now=instant(NOW))
+    assert first.claim_generation == 1
+    assert first.claim_expires_at == instant(NOW + timedelta(seconds=CLAIM_LEASE_SECONDS))
+
+    store.renew_claim(first, now=instant(NOW + timedelta(seconds=10)))
+    history = store.claim_history(task_id)
+    assert [event["event_type"] for event in history] == [
+        "claim.acquired",
+        "claim.renewed",
+    ]
+    assert history[-1]["lease_expires_at"] == instant(NOW + timedelta(seconds=40))
+    validate_claim_events(
+        history,
+        task_id=task_id,
+        incident_id="incident-claim-heartbeat",
+    )
+
+    with pytest.raises(SliceContractError, match="task-in-progress"):
+        store.claim_task(
+            task_id,
+            owner="worker:early",
+            now=instant(NOW + timedelta(seconds=30)),
+        )
+    second = store.claim_task(
+        task_id,
+        owner="worker:second",
+        now=instant(NOW + timedelta(seconds=40)),
+    )
+    assert second.claim_generation == 2
+    with pytest.raises(SliceContractError, match="claim-fenced"):
+        store.renew_claim(first, now=instant(NOW + timedelta(seconds=41)))
+
+
+def test_expired_claim_has_one_atomic_concurrent_reclaimer(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / "concurrent-reclaim.sqlite3"
+    store = SqliteIncidentStore(database)
+    task_id = VerticalSliceApi(store, clock=lambda: NOW).accept_alert(
+        alert(correlation, incident_id="incident-concurrent-reclaim")
+    )["task_id"]
+    store.claim_task(task_id, owner="worker:crashed", now=instant(NOW))
+    contenders = (SqliteIncidentStore(database), SqliteIncidentStore(database))
+    barrier = threading.Barrier(2)
+
+    def reclaim(selected: SqliteIncidentStore, owner: str) -> tuple[str, int | str]:
+        barrier.wait(timeout=2)
+        try:
+            work = selected.claim_task(
+                task_id,
+                owner=owner,
+                now=instant(NOW + timedelta(seconds=CLAIM_LEASE_SECONDS)),
+            )
+        except SliceContractError as error:
+            return "error", error.code
+        return "claimed", work.claim_generation
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(reclaim, selected, f"worker:contender-{index}")
+            for index, selected in enumerate(contenders, start=1)
+        ]
+        results = [future.result(timeout=5) for future in futures]
+
+    assert sorted(results) == [("claimed", 2), ("error", "task-in-progress")]
+    assert [event["event_type"] for event in store.claim_history(task_id)] == [
+        "claim.acquired",
+        "claim.reclaimed",
+    ]
+
+
+def test_concurrent_duplicate_returns_packet_when_completion_wins_claim_race(
+    policy: InvestigationPolicy,
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / "completion-duplicate-race.sqlite3"
+    primary_store = SqliteIncidentStore(database)
+    duplicate_store = SqliteIncidentStore(database)
+    api = VerticalSliceApi(primary_store, clock=lambda: NOW)
+    task_id = api.accept_alert(
+        alert(correlation, incident_id="incident-completion-duplicate-race")
+    )["task_id"]
+    primary = worker(primary_store, policy, correlation)
+    duplicate = worker(duplicate_store, policy, correlation)
+    precheck_complete = threading.Event()
+    allow_claim = threading.Event()
+    original_completed_packet = duplicate_store.completed_packet
+    completed_packet_calls = 0
+
+    def delayed_completed_packet(selected_task_id: str) -> dict[str, Any] | None:
+        nonlocal completed_packet_calls
+        completed_packet_calls += 1
+        if completed_packet_calls == 1:
+            precheck_complete.set()
+            if not allow_claim.wait(timeout=5):
+                raise AssertionError("completion race was not released")
+            return None
+        return original_completed_packet(selected_task_id)
+
+    with patch.object(duplicate_store, "completed_packet", side_effect=delayed_completed_packet):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            duplicate_result = executor.submit(
+                asyncio.run,
+                duplicate.execute(task_id, bundle_root=canonical_bundle),
+            )
+            assert precheck_complete.wait(timeout=5)
+            packet = asyncio.run(primary.execute(task_id, bundle_root=canonical_bundle))
+            allow_claim.set()
+            assert duplicate_result.result(timeout=10) == packet
+
+    assert completed_packet_calls == 2
+    assert api.replay("incident-completion-duplicate-race")["packet"] == packet
+
+
+def test_graceful_cancellation_expires_claim_for_immediate_reclaim(
+    policy: InvestigationPolicy,
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    store = SqliteIncidentStore(tmp_path / "cancelled-claim.sqlite3")
+    api = VerticalSliceApi(store, clock=lambda: NOW)
+    task_id = api.accept_alert(alert(correlation, incident_id="incident-cancelled-claim"))[
+        "task_id"
+    ]
+    model = BlockingModel()
+    selected_worker = VerticalSliceWorker(
+        store,
+        policy=policy,
+        model=model,
+        evidence=FakeEvidence(correlation),
+        validator=ColorStateValidatorGateway(),
+        clock=lambda: NOW,
+        owner_id="worker:cancelled",
+    )
+
+    async def cancel_running_work() -> None:
+        running = asyncio.create_task(
+            selected_worker.execute(task_id, bundle_root=canonical_bundle)
+        )
+        await asyncio.wait_for(model.started.wait(), timeout=2)
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+
+    asyncio.run(cancel_running_work())
+
+    history = store.claim_history(task_id)
+    assert [event["event_type"] for event in history] == [
+        "claim.acquired",
+        "claim.cancelled",
+    ]
+    assert history[-1]["lease_expires_at"] == instant(NOW)
+    reclaimed = store.claim_task(task_id, owner="worker:replacement", now=instant(NOW))
+    assert reclaimed.claim_generation == 2
+
+
+def test_stale_completion_is_fenced_without_partial_persistence(
+    policy: InvestigationPolicy,
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    intake = alert(correlation, incident_id="incident-stale-completion")
+    source = SqliteIncidentStore(tmp_path / "stale-source.sqlite3")
+    source_api = VerticalSliceApi(source, clock=lambda: NOW)
+    packet = asyncio.run(
+        run_vertical_slice(
+            api=source_api,
+            worker=worker(source, policy, correlation),
+            alert=intake,
+            bundle_root=canonical_bundle,
+        )
+    )
+    replay = source_api.replay("incident-stale-completion")
+
+    database = tmp_path / "stale-target.sqlite3"
+    target = SqliteIncidentStore(database)
+    task_id = VerticalSliceApi(target, clock=lambda: NOW).accept_alert(intake)["task_id"]
+    stale = target.claim_task(task_id, owner="worker:stale", now=instant(NOW))
+    target.renew_claim(stale, now=instant(NOW + timedelta(seconds=10)))
+    with pytest.raises(SliceContractError, match="claim-clock-regression"):
+        target.complete_task(
+            stale,
+            packet=packet,
+            evidence=replay["evidence"],
+            evidence_batches=replay["evidence_batches"],
+            validator_results=replay["validator_results"],
+            now=instant(NOW + timedelta(seconds=5)),
+        )
+    target.expire_claim(stale, now=instant(NOW + timedelta(seconds=20)))
+    with pytest.raises(SliceContractError, match="claim-clock-regression"):
+        target.complete_task(
+            stale,
+            packet=packet,
+            evidence=replay["evidence"],
+            evidence_batches=replay["evidence_batches"],
+            validator_results=replay["validator_results"],
+            now=instant(NOW + timedelta(seconds=15)),
+        )
+    expiry_time = instant(NOW + timedelta(seconds=20))
+    with pytest.raises(SliceContractError, match="claim-expired"):
+        target.complete_task(
+            stale,
+            packet=packet,
+            evidence=replay["evidence"],
+            evidence_batches=replay["evidence_batches"],
+            validator_results=replay["validator_results"],
+            now=expiry_time,
+        )
+    current = target.claim_task(
+        task_id,
+        owner="worker:current",
+        now=expiry_time,
+    )
+    completion_time = instant(NOW + timedelta(seconds=CLAIM_LEASE_SECONDS + 1))
+
+    with pytest.raises(SliceContractError, match="claim-fenced"):
+        target.complete_task(
+            stale,
+            packet=packet,
+            evidence=replay["evidence"],
+            evidence_batches=replay["evidence_batches"],
+            validator_results=replay["validator_results"],
+            now=completion_time,
+        )
+    with sqlite3.connect(database) as connection:
+        counts = [
+            connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in ("evidence", "evidence_batches", "validator_results", "packets")
+        ]
+    assert counts == [0, 0, 0, 0]
+    assert target.incident_view("incident-stale-completion")["incident"]["status"] == "running"
+
+    completed = target.complete_task(
+        current,
+        packet=packet,
+        evidence=replay["evidence"],
+        evidence_batches=replay["evidence_batches"],
+        validator_results=replay["validator_results"],
+        now=completion_time,
+    )
+    assert completed == packet
+    assert target.replay("incident-stale-completion")["packet"] == packet
+    assert [event["event_type"] for event in target.claim_history(task_id)] == [
+        "claim.acquired",
+        "claim.renewed",
+        "claim.cancelled",
+        "claim.reclaimed",
+        "claim.completed",
+    ]
+
+
+def test_running_v1_claim_migrates_and_reclaims_at_exact_expiry(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / "running-v1.sqlite3"
+    store = SqliteIncidentStore(database)
+    task_id = VerticalSliceApi(store, clock=lambda: NOW).accept_alert(
+        alert(correlation, incident_id="incident-running-v1")
+    )["task_id"]
+    store.claim_task(task_id, owner="worker:lost-before-migration", now=instant(NOW))
+    downgrade_store_to_v1(database)
+
+    migrated = SqliteIncidentStore(database)
+    migrated_history = migrated.claim_history(task_id)
+    assert [event["event_type"] for event in migrated_history] == ["claim.migrated"]
+    assert migrated_history[0]["owner"] == "migration:v1"
+    assert migrated_history[0]["lease_expires_at"] == instant(
+        NOW + timedelta(seconds=CLAIM_LEASE_SECONDS)
+    )
+    reclaimed = migrated.claim_task(
+        task_id,
+        owner="worker:after-migration",
+        now=instant(NOW + timedelta(seconds=CLAIM_LEASE_SECONDS)),
+    )
+    assert reclaimed.claim_generation == 2
+    with sqlite3.connect(database) as connection:
+        version = connection.execute(
+            "SELECT schema_version FROM store_metadata WHERE singleton = 1"
+        ).fetchone()[0]
+        trace_count = connection.execute("SELECT count(*) FROM trace_events").fetchone()[0]
+    assert version == 2
+    assert trace_count == 3
+
+
+def test_running_claim_rejects_missing_or_truncated_claim_history(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    missing_database = tmp_path / "missing-claim-history.sqlite3"
+    missing = SqliteIncidentStore(missing_database)
+    missing_task = VerticalSliceApi(missing, clock=lambda: NOW).accept_alert(
+        alert(correlation, incident_id="incident-missing-claim-history")
+    )["task_id"]
+    missing.claim_task(missing_task, owner="worker:missing-history", now=instant(NOW))
+    with sqlite3.connect(missing_database) as connection:
+        connection.execute("DELETE FROM claim_events WHERE task_id = ?", (missing_task,))
+    with pytest.raises(SliceContractError, match="stored-claim-state-binding"):
+        SqliteIncidentStore(missing_database)
+
+    truncated_database = tmp_path / "truncated-claim-history.sqlite3"
+    truncated = SqliteIncidentStore(truncated_database)
+    truncated_task = VerticalSliceApi(truncated, clock=lambda: NOW).accept_alert(
+        alert(correlation, incident_id="incident-truncated-claim-history")
+    )["task_id"]
+    work = truncated.claim_task(truncated_task, owner="worker:truncated-history", now=instant(NOW))
+    truncated.renew_claim(work, now=instant(NOW + timedelta(seconds=10)))
+    with sqlite3.connect(truncated_database) as connection:
+        connection.execute(
+            "DELETE FROM claim_events WHERE task_id = ? AND sequence = 2", (truncated_task,)
+        )
+    with pytest.raises(SliceContractError, match="stored-claim-state-binding"):
+        SqliteIncidentStore(truncated_database)
+
+
+def test_v1_migration_rolls_back_schema_and_version_on_failure(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / "failed-v1-migration.sqlite3"
+    store = SqliteIncidentStore(database)
+    task_id = VerticalSliceApi(store, clock=lambda: NOW).accept_alert(
+        alert(correlation, incident_id="incident-failed-v1-migration")
+    )["task_id"]
+    store.claim_task(task_id, owner="worker:lost", now=instant(NOW))
+    downgrade_store_to_v1(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE tasks SET updated_at = 'not-a-time' WHERE task_id = ?", (task_id,)
+        )
+
+    with pytest.raises(SliceContractError, match="stored-claim-time-invalid"):
+        SqliteIncidentStore(database)
+
+    with sqlite3.connect(database) as connection:
+        version = connection.execute(
+            "SELECT schema_version FROM store_metadata WHERE singleton = 1"
+        ).fetchone()[0]
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()}
+        claim_table = connection.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'claim_events'"
+        ).fetchone()
+    assert version == 1
+    assert not {"claim_owner", "claim_generation", "claim_expires_at"} & columns
+    assert claim_table is None
+
+
+def test_completed_v1_migration_preserves_replay_bytes_and_duplicate_idempotency(
+    policy: InvestigationPolicy,
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / "completed-v1.sqlite3"
+    store = SqliteIncidentStore(database)
+    api = VerticalSliceApi(store, clock=lambda: NOW)
+    intake = alert(correlation, incident_id="incident-completed-v1")
+    packet = asyncio.run(
+        run_vertical_slice(
+            api=api,
+            worker=worker(store, policy, correlation),
+            alert=intake,
+            bundle_root=canonical_bundle,
+        )
+    )
+    before = json.dumps(
+        api.replay("incident-completed-v1"), sort_keys=True, separators=(",", ":")
+    ).encode()
+    downgrade_store_to_v1(database)
+
+    migrated = SqliteIncidentStore(database)
+    migrated_api = VerticalSliceApi(migrated, clock=lambda: NOW)
+    after = json.dumps(
+        migrated_api.replay("incident-completed-v1"), sort_keys=True, separators=(",", ":")
+    ).encode()
+    assert after == before
+    duplicate = migrated_api.accept_alert(intake)
+    assert duplicate["duplicate"] is True
+    assert migrated.claim_history(duplicate["task_id"]) == []
+    assert migrated.completed_packet(duplicate["task_id"]) == packet
 
 
 def test_openapi_preserves_intake_and_packet_contract_surfaces() -> None:
