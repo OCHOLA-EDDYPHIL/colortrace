@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/model-advisory-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "summary", "evidence_ids"],
+  "properties": {
+    "schema": {"const": "model-advisory/v1"},
+    "summary": {"type": "string", "maxLength": 1024},
+    "evidence_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+    }
+  }
+}

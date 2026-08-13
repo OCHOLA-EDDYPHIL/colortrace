@@ -891,6 +891,41 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "PSF-2.0",
+      "name": "aiohappyeyeballs",
+      "source": "https://pypi.org/simple",
+      "version": "2.7.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0 AND MIT",
+      "name": "aiohttp",
+      "source": "https://pypi.org/simple",
+      "version": "3.14.3"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "aiosignal",
+      "source": "https://pypi.org/simple",
+      "version": "1.4.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "aiosqlite",
+      "source": "https://pypi.org/simple",
+      "version": "0.22.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "annotated-doc",
+      "source": "https://pypi.org/simple",
+      "version": "0.0.5"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "MIT",
       "name": "annotated-types",
       "source": "https://pypi.org/simple",
@@ -916,6 +951,13 @@
       "name": "attrs",
       "source": "https://pypi.org/simple",
       "version": "26.1.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "authlib",
+      "source": "https://pypi.org/simple",
+      "version": "1.7.2"
     },
     {
       "ecosystem": "pypi",
@@ -962,9 +1004,58 @@
     {
       "ecosystem": "pypi",
       "license": "Apache-2.0",
+      "name": "distro",
+      "source": "https://pypi.org/simple",
+      "version": "1.9.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "fastapi",
+      "source": "https://pypi.org/simple",
+      "version": "0.141.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "frozenlist",
+      "source": "https://pypi.org/simple",
+      "version": "1.8.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "google-adk",
+      "source": "https://pypi.org/simple",
+      "version": "2.6.3"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "google-auth",
+      "source": "https://pypi.org/simple",
+      "version": "2.56.3"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "google-genai",
+      "source": "https://pypi.org/simple",
+      "version": "2.17.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
       "name": "googleapis-common-protos",
       "source": "https://pypi.org/simple",
       "version": "1.75.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "graphviz",
+      "source": "https://pypi.org/simple",
+      "version": "0.21"
     },
     {
       "ecosystem": "pypi",
@@ -1010,6 +1101,13 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "joserfc",
+      "source": "https://pypi.org/simple",
+      "version": "1.7.4"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "MIT",
       "name": "jsonschema",
       "source": "https://pypi.org/simple",
@@ -1035,6 +1133,13 @@
       "name": "mcp",
       "source": "https://pypi.org/simple",
       "version": "1.29.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "multidict",
+      "source": "https://pypi.org/simple",
+      "version": "6.7.1"
     },
     {
       "ecosystem": "pypi",
@@ -1122,10 +1227,31 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "propcache",
+      "source": "https://pypi.org/simple",
+      "version": "0.5.2"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "BSD-3-Clause",
       "name": "protobuf",
       "source": "https://pypi.org/simple",
       "version": "6.33.6"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "BSD-2-Clause",
+      "name": "pyasn1",
+      "source": "https://pypi.org/simple",
+      "version": "0.6.4"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "BSD-2-Clause",
+      "name": "pyasn1-modules",
+      "source": "https://pypi.org/simple",
+      "version": "0.4.2"
     },
     {
       "ecosystem": "pypi",
@@ -1234,6 +1360,13 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "MIT OR Apache-2.0",
+      "name": "sniffio",
+      "source": "https://pypi.org/simple",
+      "version": "1.3.1"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "BSD-3-Clause",
       "name": "sse-starlette",
       "source": "https://pypi.org/simple",
@@ -1245,6 +1378,13 @@
       "name": "starlette",
       "source": "https://pypi.org/simple",
       "version": "1.6.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "tenacity",
+      "source": "https://pypi.org/simple",
+      "version": "9.1.4"
     },
     {
       "ecosystem": "pypi",
@@ -1262,6 +1402,20 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "tzdata",
+      "source": "https://pypi.org/simple",
+      "version": "2026.3"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "tzlocal",
+      "source": "https://pypi.org/simple",
+      "version": "5.4.4"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "MIT",
       "name": "urllib3",
       "source": "https://pypi.org/simple",
@@ -1273,6 +1427,27 @@
       "name": "uvicorn",
       "source": "https://pypi.org/simple",
       "version": "0.52.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "watchdog",
+      "source": "https://pypi.org/simple",
+      "version": "6.0.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "websockets",
+      "source": "https://pypi.org/simple",
+      "version": "15.0.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "yarl",
+      "source": "https://pypi.org/simple",
+      "version": "1.24.5"
     }
   ],
   "schema_version": 1
