@@ -1225,6 +1225,12 @@ def test_local_tempo_wrapper_exposes_only_trace_id() -> None:
     )
 
 
+def test_official_provider_timeout_precedes_client_deadline() -> None:
+    assert subject.MCP_GRAFANA_TIMEOUT_SECONDS == 15
+    assert subject.MCP_CLIENT_TIMEOUT_SECONDS == 20
+    assert subject.MCP_GRAFANA_TIMEOUT_SECONDS < subject.MCP_CLIENT_TIMEOUT_SECONDS
+
+
 def test_exact_official_binary_read_only_inventory(tmp_path: Path) -> None:
     binary = Path("/usr/local/bin/mcp-grafana")
     if not binary.is_file():

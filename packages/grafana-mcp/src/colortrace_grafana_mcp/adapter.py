@@ -65,6 +65,8 @@ QUERY_KEYS = (
     "trace.by-id",
 )
 MCP_ENABLED_CATEGORIES = ("alerting", "prometheus", "loki", "datasource", "proxied")
+MCP_GRAFANA_TIMEOUT_SECONDS = 15
+MCP_CLIENT_TIMEOUT_SECONDS = 20
 
 _SCHEMA_ROOT = Path(__file__).parent / "schemas"
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
@@ -919,7 +921,7 @@ async def _official_session_transport(runtime: OfficialMcpRuntime) -> AsyncItera
             "--transport=stdio",
             "--disable-write",
             f"--enabled-tools={','.join(MCP_ENABLED_CATEGORIES)}",
-            "--grafana-timeout=20s",
+            f"--grafana-timeout={MCP_GRAFANA_TIMEOUT_SECONDS}s",
             "--max-loki-log-limit=200",
             "--log-level=error",
         ],
@@ -934,7 +936,7 @@ async def _official_session_transport(runtime: OfficialMcpRuntime) -> AsyncItera
             async with ClientSession(
                 read,
                 write,
-                read_timeout_seconds=timedelta(seconds=20),
+                read_timeout_seconds=timedelta(seconds=MCP_CLIENT_TIMEOUT_SECONDS),
                 client_info=types.Implementation(name="colortrace-grafana-evidence", version="1"),
             ) as session:
                 initialize = types.InitializeRequest(
@@ -993,7 +995,7 @@ async def _list_all_tools(session: McpSession) -> list[types.Tool]:
 
 async def _load_inventory(session: McpSession) -> FrozenInventory:
     try:
-        tools = await asyncio.wait_for(_list_all_tools(session), timeout=20)
+        tools = await asyncio.wait_for(_list_all_tools(session), timeout=MCP_CLIENT_TIMEOUT_SECONDS)
         return freeze_tool_inventory(tools)
     except asyncio.CancelledError:
         raise
@@ -1397,9 +1399,9 @@ async def _collect_one(
                         session.call_tool(
                             bound.spec.tool,
                             call_arguments,
-                            read_timeout_seconds=timedelta(seconds=20),
+                            read_timeout_seconds=timedelta(seconds=MCP_CLIENT_TIMEOUT_SECONDS),
                         ),
-                        timeout=20,
+                        timeout=MCP_CLIENT_TIMEOUT_SECONDS,
                     )
                 except asyncio.CancelledError:
                     raise
