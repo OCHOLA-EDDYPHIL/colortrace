@@ -1,8 +1,526 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "API Contract",
-    "version": "0.0.0"
+    "title": "ColorTrace Incident API",
+    "version": "1.0.0"
   },
-  "paths": {}
+  "paths": {
+    "/v1/incidents": {
+      "post": {
+        "operationId": "createIncident",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AlertIntake" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The alert is durably admitted to the worker queue.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/IncidentAccepted" }
+              }
+            }
+          },
+          "409": {
+            "description": "The incident identity was already used for different alert content.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    },
+    "/v1/incidents/{incidentId}": {
+      "get": {
+        "operationId": "getIncident",
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The persisted incident and exact packet when complete.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/IncidentView" }
+              }
+            }
+          },
+          "404": {
+            "description": "No incident has this identity.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    },
+    "/v1/incidents/{incidentId}/replay": {
+      "get": {
+        "operationId": "replayIncident",
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The integrity-checked evidence, invocation, packet, and trace replay.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/IncidentReplay" }
+              }
+            }
+          },
+          "409": {
+            "description": "The incident is incomplete or persisted provenance failed verification.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          },
+          "404": {
+            "description": "No incident has this identity.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Identifier": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+      },
+      "AlertIdentifier": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+      },
+      "GrafanaUid": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+      },
+      "Digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+      "TraceId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+      "AlertIntake": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "incident_id",
+          "alert_id",
+          "alert_started_at",
+          "retrieved_at",
+          "measured_clock_skew_seconds",
+          "binding",
+          "correlation_keys",
+          "predecessor_event_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "alert-intake/v1" },
+          "incident_id": { "$ref": "#/components/schemas/AlertIdentifier" },
+          "alert_id": { "$ref": "#/components/schemas/AlertIdentifier" },
+          "alert_started_at": { "type": "string", "format": "date-time" },
+          "retrieved_at": { "type": "string", "format": "date-time" },
+          "measured_clock_skew_seconds": { "type": "integer", "minimum": 0, "maximum": 5 },
+          "binding": { "$ref": "#/components/schemas/GrafanaBinding" },
+          "correlation_keys": { "$ref": "#/components/schemas/CorrelationKeys" },
+          "predecessor_event_sha256": {
+            "oneOf": [{ "type": "null" }, { "$ref": "#/components/schemas/Digest" }]
+          }
+        }
+      },
+      "GrafanaBinding": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "prometheus_datasource_uid",
+          "loki_datasource_uid",
+          "tempo_datasource_uid",
+          "alert_rule_uid"
+        ],
+        "properties": {
+          "prometheus_datasource_uid": { "$ref": "#/components/schemas/GrafanaUid" },
+          "loki_datasource_uid": { "$ref": "#/components/schemas/GrafanaUid" },
+          "tempo_datasource_uid": { "$ref": "#/components/schemas/GrafanaUid" },
+          "alert_rule_uid": { "$ref": "#/components/schemas/GrafanaUid" }
+        }
+      },
+      "CorrelationKeys": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "fixture_id",
+          "run_id",
+          "job_id",
+          "worker_id",
+          "artifact_id",
+          "trace_id",
+          "config_sha256",
+          "transform_id"
+        ],
+        "properties": {
+          "fixture_id": { "$ref": "#/components/schemas/AlertIdentifier" },
+          "run_id": { "$ref": "#/components/schemas/AlertIdentifier" },
+          "job_id": { "$ref": "#/components/schemas/AlertIdentifier" },
+          "worker_id": { "$ref": "#/components/schemas/AlertIdentifier" },
+          "artifact_id": { "$ref": "#/components/schemas/AlertIdentifier" },
+          "trace_id": { "$ref": "#/components/schemas/TraceId" },
+          "config_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "transform_id": { "$ref": "#/components/schemas/AlertIdentifier" }
+        }
+      },
+      "IncidentAccepted": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "incident_id",
+          "task_id",
+          "status",
+          "version",
+          "trace_id",
+          "duplicate"
+        ],
+        "properties": {
+          "schema": { "const": "incident-accepted/v1" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "task_id": { "type": "string", "pattern": "^task:[0-9a-f]{64}$" },
+          "status": { "enum": ["queued", "running", "resolved", "unresolved"] },
+          "version": { "type": "integer", "minimum": 1 },
+          "trace_id": { "$ref": "#/components/schemas/TraceId" },
+          "duplicate": { "type": "boolean" }
+        }
+      },
+      "IncidentRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "incident_id",
+          "alert_id",
+          "status",
+          "version",
+          "alert_sha256",
+          "trace_id",
+          "packet_id",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "schema": { "const": "incident-record/v1" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "alert_id": { "$ref": "#/components/schemas/Identifier" },
+          "status": { "enum": ["queued", "running", "resolved", "unresolved"] },
+          "version": { "type": "integer", "minimum": 1 },
+          "alert_sha256": { "$ref": "#/components/schemas/Digest" },
+          "trace_id": { "$ref": "#/components/schemas/TraceId" },
+          "packet_id": {
+            "oneOf": [
+              { "type": "null" },
+              { "type": "string", "pattern": "^response-packet:[0-9a-f]{64}$" }
+            ]
+          },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "TaskRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "task_id",
+          "incident_id",
+          "expected_incident_version",
+          "alert_sha256",
+          "trace_id",
+          "status",
+          "packet_id",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "schema": { "const": "incident-task/v1" },
+          "task_id": { "type": "string", "pattern": "^task:[0-9a-f]{64}$" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "expected_incident_version": { "type": "integer", "minimum": 1 },
+          "alert_sha256": { "$ref": "#/components/schemas/Digest" },
+          "trace_id": { "$ref": "#/components/schemas/TraceId" },
+          "status": { "enum": ["queued", "running", "complete"] },
+          "packet_id": {
+            "oneOf": [
+              { "type": "null" },
+              { "type": "string", "pattern": "^response-packet:[0-9a-f]{64}$" }
+            ]
+          },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ScopeItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "id"],
+        "properties": {
+          "kind": { "enum": ["derivative", "frame"] },
+          "id": { "$ref": "#/components/schemas/Identifier" }
+        }
+      },
+      "Claim": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "claim_id",
+          "claim_type",
+          "subject",
+          "state",
+          "policy",
+          "normalized_inputs_sha256",
+          "deterministic_result_evidence_id",
+          "source_validator_result_id",
+          "derivation_sha256",
+          "contradiction_links",
+          "evidence_ids",
+          "reason_codes"
+        ],
+        "properties": {
+          "schema": { "const": "claim/v1" },
+          "claim_id": { "$ref": "#/components/schemas/Identifier" },
+          "claim_type": { "type": "string" },
+          "subject": { "type": "object" },
+          "state": { "enum": ["confirmed", "inferred", "rejected", "unresolved"] },
+          "policy": { "type": "string" },
+          "normalized_inputs_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "deterministic_result_evidence_id": {
+            "oneOf": [{ "type": "null" }, { "$ref": "#/components/schemas/Identifier" }]
+          },
+          "source_validator_result_id": {
+            "oneOf": [{ "type": "null" }, { "$ref": "#/components/schemas/Identifier" }]
+          },
+          "derivation_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "contradiction_links": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "evidence_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "reason_codes": { "type": "array", "uniqueItems": true, "items": { "type": "string" } }
+        }
+      },
+      "ResponsePacket": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "packet_id",
+          "incident_id",
+          "version",
+          "status",
+          "fixed_window",
+          "evidence_ids",
+          "deterministic_results",
+          "claims",
+          "scope",
+          "invocation_records",
+          "budget_use",
+          "unresolved_items",
+          "candidate_plan",
+          "no_action_reason",
+          "model_advisory",
+          "state_history",
+          "finalized_at",
+          "derivation_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "response-packet/v1" },
+          "packet_id": { "type": "string", "pattern": "^response-packet:[0-9a-f]{64}$" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "version": { "const": 1 },
+          "status": { "enum": ["resolved", "unresolved"] },
+          "fixed_window": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["start", "end", "frozen_at"],
+            "properties": {
+              "start": { "type": "string", "format": "date-time" },
+              "end": { "type": "string", "format": "date-time" },
+              "frozen_at": { "type": "string", "format": "date-time" }
+            }
+          },
+          "evidence_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "deterministic_results": { "type": "array", "items": { "type": "object" } },
+          "claims": { "type": "array", "items": { "$ref": "#/components/schemas/Claim" } },
+          "scope": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["state", "policy", "affected", "safe", "unknown", "reason_codes"],
+            "properties": {
+              "state": { "enum": ["resolved", "unresolved"] },
+              "policy": { "const": "single-causal-resource-scope/v1" },
+              "affected": {
+                "type": "array",
+                "items": { "$ref": "#/components/schemas/ScopeItem" }
+              },
+              "safe": { "type": "array", "items": { "$ref": "#/components/schemas/ScopeItem" } },
+              "unknown": { "type": "array", "items": { "$ref": "#/components/schemas/ScopeItem" } },
+              "reason_codes": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": { "type": "string" }
+              }
+            }
+          },
+          "invocation_records": { "type": "array", "items": { "type": "object" } },
+          "budget_use": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "elapsed_ms",
+              "model_turns",
+              "input_tokens",
+              "output_tokens",
+              "unavailable_input_tokens_reserved",
+              "unavailable_output_tokens_reserved",
+              "mcp_attempts",
+              "validator_calls",
+              "trusted_transient_retries",
+              "model_visible_bytes",
+              "maximum_calls_in_flight_observed"
+            ],
+            "properties": {
+              "elapsed_ms": { "type": "integer", "minimum": 0 },
+              "model_turns": { "type": "integer", "minimum": 0, "maximum": 6 },
+              "input_tokens": { "type": "integer", "minimum": 0 },
+              "output_tokens": { "type": "integer", "minimum": 0 },
+              "unavailable_input_tokens_reserved": { "type": "integer", "minimum": 0 },
+              "unavailable_output_tokens_reserved": { "type": "integer", "minimum": 0 },
+              "mcp_attempts": { "type": "integer", "minimum": 0, "maximum": 8 },
+              "validator_calls": { "type": "integer", "minimum": 0, "maximum": 6 },
+              "trusted_transient_retries": { "type": "integer", "minimum": 0, "maximum": 1 },
+              "model_visible_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+              "maximum_calls_in_flight_observed": { "type": "integer", "minimum": 0, "maximum": 2 }
+            }
+          },
+          "unresolved_items": { "type": "array", "items": { "type": "object" } },
+          "candidate_plan": { "oneOf": [{ "type": "null" }, { "type": "object" }] },
+          "no_action_reason": { "oneOf": [{ "type": "null" }, { "type": "string" }] },
+          "model_advisory": { "oneOf": [{ "type": "null" }, { "type": "object" }] },
+          "state_history": { "type": "array", "items": { "type": "string" } },
+          "finalized_at": { "type": "string", "format": "date-time" },
+          "derivation_sha256": { "$ref": "#/components/schemas/Digest" }
+        }
+      },
+      "IncidentView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema", "incident", "task", "packet"],
+        "properties": {
+          "schema": { "const": "incident-view/v1" },
+          "incident": { "$ref": "#/components/schemas/IncidentRecord" },
+          "task": { "$ref": "#/components/schemas/TaskRecord" },
+          "packet": {
+            "oneOf": [{ "type": "null" }, { "$ref": "#/components/schemas/ResponsePacket" }]
+          }
+        }
+      },
+      "TraceEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "event_id",
+          "incident_id",
+          "sequence",
+          "event_type",
+          "trace_id",
+          "span_id",
+          "parent_span_id",
+          "predecessor_event_sha256",
+          "payload",
+          "payload_sha256",
+          "occurred_at",
+          "event_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "incident-trace-event/v1" },
+          "event_id": { "type": "string", "pattern": "^event:[0-9a-f]{64}$" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "sequence": { "type": "integer", "minimum": 1 },
+          "event_type": { "type": "string" },
+          "trace_id": { "$ref": "#/components/schemas/TraceId" },
+          "span_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+          "parent_span_id": { "oneOf": [{ "type": "null" }, { "type": "string" }] },
+          "predecessor_event_sha256": {
+            "oneOf": [{ "type": "null" }, { "$ref": "#/components/schemas/Digest" }]
+          },
+          "payload": { "type": "object" },
+          "payload_sha256": { "$ref": "#/components/schemas/Digest" },
+          "occurred_at": { "type": "string", "format": "date-time" },
+          "event_sha256": { "$ref": "#/components/schemas/Digest" }
+        }
+      },
+      "IncidentReplay": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "incident",
+          "task",
+          "alert",
+          "evidence_batches",
+          "evidence",
+          "validator_results",
+          "invocations",
+          "packet",
+          "trace_events",
+          "derivation_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "incident-replay/v1" },
+          "incident": { "$ref": "#/components/schemas/IncidentRecord" },
+          "task": { "$ref": "#/components/schemas/TaskRecord" },
+          "alert": { "$ref": "#/components/schemas/AlertIntake" },
+          "evidence_batches": { "type": "array", "items": { "type": "object" } },
+          "evidence": { "type": "array", "items": { "type": "object" } },
+          "validator_results": { "type": "array", "items": { "type": "object" } },
+          "invocations": { "type": "array", "items": { "type": "object" } },
+          "packet": { "$ref": "#/components/schemas/ResponsePacket" },
+          "trace_events": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/TraceEvent" }
+          },
+          "derivation_sha256": { "$ref": "#/components/schemas/Digest" }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code"],
+        "properties": { "code": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$" } }
+      }
+    }
+  }
 }

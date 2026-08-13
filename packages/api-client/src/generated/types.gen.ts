@@ -4,35 +4,290 @@ export type ClientOptions = {
   baseUrl: `${string}://${string}` | (string & {});
 };
 
-export type SyntheticResponse = {
-  fixtureId: string;
-  status: "ok";
+export type Identifier = string;
+
+export type AlertIdentifier = string;
+
+export type GrafanaUid = string;
+
+export type Digest = string;
+
+export type TraceId = string;
+
+export type AlertIntake = {
+  schema: "alert-intake/v1";
+  incident_id: AlertIdentifier;
+  alert_id: AlertIdentifier;
+  alert_started_at: string;
+  retrieved_at: string;
+  measured_clock_skew_seconds: number;
+  binding: GrafanaBinding;
+  correlation_keys: CorrelationKeys;
+  predecessor_event_sha256: null | Digest;
 };
 
-export type GetSyntheticOperationData = {
+export type GrafanaBinding = {
+  prometheus_datasource_uid: GrafanaUid;
+  loki_datasource_uid: GrafanaUid;
+  tempo_datasource_uid: GrafanaUid;
+  alert_rule_uid: GrafanaUid;
+};
+
+export type CorrelationKeys = {
+  fixture_id: AlertIdentifier;
+  run_id: AlertIdentifier;
+  job_id: AlertIdentifier;
+  worker_id: AlertIdentifier;
+  artifact_id: AlertIdentifier;
+  trace_id: TraceId;
+  config_sha256: string;
+  transform_id: AlertIdentifier;
+};
+
+export type IncidentAccepted = {
+  schema: "incident-accepted/v1";
+  incident_id: Identifier;
+  task_id: string;
+  status: "queued" | "running" | "resolved" | "unresolved";
+  version: number;
+  trace_id: TraceId;
+  duplicate: boolean;
+};
+
+export type IncidentRecord = {
+  schema: "incident-record/v1";
+  incident_id: Identifier;
+  alert_id: Identifier;
+  status: "queued" | "running" | "resolved" | "unresolved";
+  version: number;
+  alert_sha256: Digest;
+  trace_id: TraceId;
+  packet_id: null | string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskRecord = {
+  schema: "incident-task/v1";
+  task_id: string;
+  incident_id: Identifier;
+  expected_incident_version: number;
+  alert_sha256: Digest;
+  trace_id: TraceId;
+  status: "queued" | "running" | "complete";
+  packet_id: null | string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScopeItem = {
+  kind: "derivative" | "frame";
+  id: Identifier;
+};
+
+export type Claim = {
+  schema: "claim/v1";
+  claim_id: Identifier;
+  claim_type: string;
+  subject: {
+    [key: string]: unknown;
+  };
+  state: "confirmed" | "inferred" | "rejected" | "unresolved";
+  policy: string;
+  normalized_inputs_sha256: string;
+  deterministic_result_evidence_id: null | Identifier;
+  source_validator_result_id: null | Identifier;
+  derivation_sha256: string;
+  contradiction_links: Array<Identifier>;
+  evidence_ids: Array<Identifier>;
+  reason_codes: Array<string>;
+};
+
+export type ResponsePacket = {
+  schema: "response-packet/v1";
+  packet_id: string;
+  incident_id: Identifier;
+  version: 1;
+  status: "resolved" | "unresolved";
+  fixed_window: {
+    start: string;
+    end: string;
+    frozen_at: string;
+  };
+  evidence_ids: Array<Identifier>;
+  deterministic_results: Array<{
+    [key: string]: unknown;
+  }>;
+  claims: Array<Claim>;
+  scope: {
+    state: "resolved" | "unresolved";
+    policy: "single-causal-resource-scope/v1";
+    affected: Array<ScopeItem>;
+    safe: Array<ScopeItem>;
+    unknown: Array<ScopeItem>;
+    reason_codes: Array<string>;
+  };
+  invocation_records: Array<{
+    [key: string]: unknown;
+  }>;
+  budget_use: {
+    elapsed_ms: number;
+    model_turns: number;
+    input_tokens: number;
+    output_tokens: number;
+    unavailable_input_tokens_reserved: number;
+    unavailable_output_tokens_reserved: number;
+    mcp_attempts: number;
+    validator_calls: number;
+    trusted_transient_retries: number;
+    model_visible_bytes: number;
+    maximum_calls_in_flight_observed: number;
+  };
+  unresolved_items: Array<{
+    [key: string]: unknown;
+  }>;
+  candidate_plan: null | {
+    [key: string]: unknown;
+  };
+  no_action_reason: null | string;
+  model_advisory: null | {
+    [key: string]: unknown;
+  };
+  state_history: Array<string>;
+  finalized_at: string;
+  derivation_sha256: Digest;
+};
+
+export type IncidentView = {
+  schema: "incident-view/v1";
+  incident: IncidentRecord;
+  task: TaskRecord;
+  packet: null | ResponsePacket;
+};
+
+export type TraceEvent = {
+  schema: "incident-trace-event/v1";
+  event_id: string;
+  incident_id: Identifier;
+  sequence: number;
+  event_type: string;
+  trace_id: TraceId;
+  span_id: string;
+  parent_span_id: null | string;
+  predecessor_event_sha256: null | Digest;
+  payload: {
+    [key: string]: unknown;
+  };
+  payload_sha256: Digest;
+  occurred_at: string;
+  event_sha256: Digest;
+};
+
+export type IncidentReplay = {
+  schema: "incident-replay/v1";
+  incident: IncidentRecord;
+  task: TaskRecord;
+  alert: AlertIntake;
+  evidence_batches: Array<{
+    [key: string]: unknown;
+  }>;
+  evidence: Array<{
+    [key: string]: unknown;
+  }>;
+  validator_results: Array<{
+    [key: string]: unknown;
+  }>;
+  invocations: Array<{
+    [key: string]: unknown;
+  }>;
+  packet: ResponsePacket;
+  trace_events: Array<TraceEvent>;
+  derivation_sha256: Digest;
+};
+
+export type Error = {
+  code: string;
+};
+
+export type CreateIncidentData = {
+  body: AlertIntake;
+  path?: never;
+  query?: never;
+  url: "/v1/incidents";
+};
+
+export type CreateIncidentErrors = {
+  /**
+   * The incident identity was already used for different alert content.
+   */
+  409: Error;
+};
+
+export type CreateIncidentError = CreateIncidentErrors[keyof CreateIncidentErrors];
+
+export type CreateIncidentResponses = {
+  /**
+   * The alert is durably admitted to the worker queue.
+   */
+  202: IncidentAccepted;
+};
+
+export type CreateIncidentResponse = CreateIncidentResponses[keyof CreateIncidentResponses];
+
+export type GetIncidentData = {
   body?: never;
   path: {
-    fixtureId: string;
+    incidentId: Identifier;
   };
-  query?: {
-    includeMetadata?: boolean;
+  query?: never;
+  url: "/v1/incidents/{incidentId}";
+};
+
+export type GetIncidentErrors = {
+  /**
+   * No incident has this identity.
+   */
+  404: Error;
+};
+
+export type GetIncidentError = GetIncidentErrors[keyof GetIncidentErrors];
+
+export type GetIncidentResponses = {
+  /**
+   * The persisted incident and exact packet when complete.
+   */
+  200: IncidentView;
+};
+
+export type GetIncidentResponse = GetIncidentResponses[keyof GetIncidentResponses];
+
+export type ReplayIncidentData = {
+  body?: never;
+  path: {
+    incidentId: Identifier;
   };
-  url: "/synthetic/{fixtureId}";
+  query?: never;
+  url: "/v1/incidents/{incidentId}/replay";
 };
 
-export type GetSyntheticOperationErrors = {
+export type ReplayIncidentErrors = {
   /**
-   * Synthetic fixture not found
+   * No incident has this identity.
    */
-  404: unknown;
-};
-
-export type GetSyntheticOperationResponses = {
+  404: Error;
   /**
-   * Synthetic response
+   * The incident is incomplete or persisted provenance failed verification.
    */
-  200: SyntheticResponse;
+  409: Error;
 };
 
-export type GetSyntheticOperationResponse =
-  GetSyntheticOperationResponses[keyof GetSyntheticOperationResponses];
+export type ReplayIncidentError = ReplayIncidentErrors[keyof ReplayIncidentErrors];
+
+export type ReplayIncidentResponses = {
+  /**
+   * The integrity-checked evidence, invocation, packet, and trace replay.
+   */
+  200: IncidentReplay;
+};
+
+export type ReplayIncidentResponse = ReplayIncidentResponses[keyof ReplayIncidentResponses];
