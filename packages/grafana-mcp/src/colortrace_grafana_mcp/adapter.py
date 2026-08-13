@@ -1229,7 +1229,7 @@ def _validate_provider_payload(bound: BoundCall, payload: Any) -> None:
                         or not isinstance(span.get("startTimeUnixNano"), str)
                         or not isinstance(span.get("endTimeUnixNano"), str)
                         or not isinstance(span.get("attributes"), dict)
-                        or not isinstance(span.get("events"), list)
+                        or ("events" in span and not isinstance(span.get("events"), list))
                         or not isinstance(span.get("status"), dict)
                     ):
                         raise AdapterError("malformed_result")

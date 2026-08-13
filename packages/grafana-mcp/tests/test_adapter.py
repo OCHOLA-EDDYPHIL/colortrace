@@ -954,6 +954,28 @@ def test_tempo_result_metadata_is_exact() -> None:
         assert result.envelopes[0]["collection"]["error"]["code"] == "malformed_result"
 
 
+def test_tempo_v2_accepts_omitted_empty_events_only() -> None:
+    payload = payload_for("tempo_get-trace")
+    span = payload["trace"]["services"][0]["scopes"][0]["spans"][0]
+
+    async def handler(name: str, _arguments: dict[str, Any]) -> types.CallToolResult:
+        return success(name, payload)
+
+    del span["events"]
+    result = collect_with(
+        FakeSession(handler),
+        request("trace.by-id"),
+    )
+    assert result.envelopes[0]["collection"]["outcome"] == "collected"
+
+    span["events"] = {}
+    result = collect_with(
+        FakeSession(handler),
+        request("trace.by-id"),
+    )
+    assert result.envelopes[0]["collection"]["error"]["code"] == "malformed_result"
+
+
 def test_result_item_and_byte_budgets_fail_closed() -> None:
     async def too_many(_name: str, _arguments: dict[str, Any]) -> types.CallToolResult:
         return types.CallToolResult(
