@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/telemetry-isolation-receipt-v1.schema.json",
+  "title": "Telemetry process private-fixture isolation receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "private_mount_visible",
+    "private_probe_read_outcome",
+    "private_mount_in_process_namespace",
+    "workspace_truth_material_paths",
+    "argv_contains_private_mount_reference",
+    "environment_contains_private_mount_reference",
+    "pass"
+  ],
+  "properties": {
+    "schema": {"const": "telemetry-isolation-receipt/v1"},
+    "private_mount_visible": {"const": false},
+    "private_probe_read_outcome": {"const": "not-mounted"},
+    "private_mount_in_process_namespace": {"const": false},
+    "workspace_truth_material_paths": {"type": "array", "maxItems": 0},
+    "argv_contains_private_mount_reference": {"const": false},
+    "environment_contains_private_mount_reference": {"const": false},
+    "pass": {"const": true}
+  }
+}

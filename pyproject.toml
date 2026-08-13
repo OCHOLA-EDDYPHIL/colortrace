@@ -15,7 +15,12 @@ dev = [
 package = false
 
 [tool.uv.workspace]
-members = ["packages/fixture-generator", "packages/repo-tools", "packages/validators"]
+members = [
+    "packages/fixture-generator",
+    "packages/repo-tools",
+    "packages/telemetry",
+    "packages/validators",
+]
 
 [tool.ruff]
 target-version = "py312"
@@ -28,12 +33,18 @@ select = ["B", "E", "F", "I", "UP"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["packages/fixture-generator/src", "packages/repo-tools/src", "packages/validators/src"]
+files = [
+    "packages/fixture-generator/src",
+    "packages/repo-tools/src",
+    "packages/telemetry/src",
+    "packages/validators/src",
+]
 
 [tool.pytest.ini_options]
 addopts = ["--strict-config", "--strict-markers"]
 testpaths = [
     "packages/fixture-generator/tests",
     "packages/repo-tools/tests",
+    "packages/telemetry/tests",
     "packages/validators/tests",
 ]

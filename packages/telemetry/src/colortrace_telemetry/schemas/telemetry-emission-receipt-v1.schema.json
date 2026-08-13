@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/telemetry-emission-receipt-v1.schema.json",
+  "title": "Deterministic simulator telemetry emission receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contract_version",
+    "source_fixture_manifest_sha256",
+    "source_validator_report_sha256",
+    "source_job_manifest_sha256",
+    "runs"
+  ],
+  "properties": {
+    "schema": {"const": "telemetry-emission-receipt/v1"},
+    "contract_version": {"const": "telemetry-event/v1"},
+    "source_fixture_manifest_sha256": {"$ref": "#/$defs/digest"},
+    "source_validator_report_sha256": {"$ref": "#/$defs/digest"},
+    "source_job_manifest_sha256": {
+      "type": "object",
+      "minProperties": 6,
+      "maxProperties": 6,
+      "additionalProperties": {"$ref": "#/$defs/digest"}
+    },
+    "runs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {"$ref": "#/$defs/run"}
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "case_index", "plans", "events"],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+        },
+        "case_index": {"type": "integer", "minimum": 0, "maximum": 49},
+        "plans": {
+          "type": "array",
+          "minItems": 18,
+          "maxItems": 18,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "event_id",
+              "job_id",
+              "signal",
+              "copies",
+              "delay_ms",
+              "outcome"
+            ],
+            "properties": {
+              "event_id": {"type": "string", "pattern": "^evt-[0-9a-f]{24}$"},
+              "job_id": {"type": "string", "minLength": 1},
+              "signal": {"enum": ["metric", "log", "trace"]},
+              "copies": {"type": "integer", "minimum": 0, "maximum": 2},
+              "delay_ms": {"type": "integer", "minimum": 0, "maximum": 600000},
+              "outcome": {"enum": ["on_time", "late", "duplicate", "missing"]}
+            }
+          }
+        },
+        "events": {
+          "type": "array",
+          "maxItems": 36,
+          "items": {"$ref": "telemetry-event-v1.schema.json"}
+        }
+      }
+    }
+  }
+}

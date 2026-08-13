@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/grafana-alert-contract-v1.schema.json",
+  "title": "Grafana declared-reference symptom alert contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "uid",
+    "observation_contract",
+    "comparison_policy",
+    "metric",
+    "selector",
+    "group_by",
+    "excluded_alert_keys",
+    "scheduler_interval_seconds",
+    "evidence_window_seconds",
+    "execution_error_state",
+    "no_data_state"
+  ],
+  "properties": {
+    "schema": {"const": "grafana-alert-contract/v1"},
+    "uid": {"const": "ct-declared-reference-divergence-v1"},
+    "observation_contract": {"const": "declared-reference-observation/v1"},
+    "comparison_policy": {"const": "declared-reference-comparison/v1"},
+    "metric": {"const": "colortrace_declared_reference_observations_total"},
+    "selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture_id", "declared_reference_state"],
+      "properties": {
+        "fixture_id": {"const": "ct-shadowed-lut-v1"},
+        "declared_reference_state": {"const": "reference_mismatch"}
+      }
+    },
+    "group_by": {
+      "const": [
+        "fixture_id",
+        "run_id",
+        "job_id",
+        "worker_id",
+        "artifact_id",
+        "trace_id",
+        "config_sha256",
+        "transform_id"
+      ]
+    },
+    "excluded_alert_keys": {"const": ["resource_sha256"]},
+    "scheduler_interval_seconds": {"const": 60},
+    "evidence_window_seconds": {"const": 600},
+    "execution_error_state": {"const": "Error"},
+    "no_data_state": {"const": "NoData"}
+  }
+}

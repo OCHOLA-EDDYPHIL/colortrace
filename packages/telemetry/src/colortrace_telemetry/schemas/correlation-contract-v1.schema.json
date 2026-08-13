@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/correlation-contract-v1.schema.json",
+  "title": "ColorTrace simulator telemetry correlation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "fixture_id",
+    "run_id",
+    "job_id",
+    "worker_id",
+    "artifact_id",
+    "trace_id",
+    "config_sha256",
+    "resource_sha256",
+    "transform_id"
+  ],
+  "properties": {
+    "fixture_id": {"const": "ct-shadowed-lut-v1"},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "job_id": {"$ref": "#/$defs/identifier"},
+    "worker_id": {"$ref": "#/$defs/identifier"},
+    "artifact_id": {"$ref": "#/$defs/identifier"},
+    "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "config_sha256": {"$ref": "#/$defs/digest"},
+    "resource_sha256": {
+      "oneOf": [
+        {"$ref": "#/$defs/digest"},
+        {"const": "none"}
+      ]
+    },
+    "transform_id": {"enum": ["look/main/v1", "identity/v1"]}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

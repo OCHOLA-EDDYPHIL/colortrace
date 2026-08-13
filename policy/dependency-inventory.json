@@ -905,10 +905,38 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "MPL-2.0",
+      "name": "certifi",
+      "source": "https://pypi.org/simple",
+      "version": "2026.7.22"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "charset-normalizer",
+      "source": "https://pypi.org/simple",
+      "version": "3.5.0"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "BSD-3-Clause",
       "name": "colorama",
       "source": "https://pypi.org/simple",
       "version": "0.4.6"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "googleapis-common-protos",
+      "source": "https://pypi.org/simple",
+      "version": "1.75.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "idna",
+      "source": "https://pypi.org/simple",
+      "version": "3.18"
     },
     {
       "ecosystem": "pypi",
@@ -961,6 +989,48 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "opentelemetry-api",
+      "source": "https://pypi.org/simple",
+      "version": "1.42.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "opentelemetry-exporter-otlp-proto-common",
+      "source": "https://pypi.org/simple",
+      "version": "1.42.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "opentelemetry-exporter-otlp-proto-http",
+      "source": "https://pypi.org/simple",
+      "version": "1.42.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "opentelemetry-proto",
+      "source": "https://pypi.org/simple",
+      "version": "1.42.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "opentelemetry-sdk",
+      "source": "https://pypi.org/simple",
+      "version": "1.42.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "opentelemetry-semantic-conventions",
+      "source": "https://pypi.org/simple",
+      "version": "0.63b1"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "Apache-2.0 OR BSD-2-Clause",
       "name": "packaging",
       "source": "https://pypi.org/simple",
@@ -979,6 +1049,13 @@
       "name": "pluggy",
       "source": "https://pypi.org/simple",
       "version": "1.6.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "protobuf",
+      "source": "https://pypi.org/simple",
+      "version": "6.33.6"
     },
     {
       "ecosystem": "pypi",
@@ -1010,6 +1087,13 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "requests",
+      "source": "https://pypi.org/simple",
+      "version": "2.34.2"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "MIT",
       "name": "rpds-py",
       "source": "https://pypi.org/simple",
@@ -1028,6 +1112,13 @@
       "name": "typing-extensions",
       "source": "https://pypi.org/simple",
       "version": "4.16.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "urllib3",
+      "source": "https://pypi.org/simple",
+      "version": "2.7.0"
     }
   ],
   "schema_version": 1
