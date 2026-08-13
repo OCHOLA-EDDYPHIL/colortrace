@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-command-v1.schema.json",
+  "oneOf": [
+    {"$ref": "#/$defs/quarantine"},
+    {"$ref": "#/$defs/rerender"}
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "namespace", "kind", "id"],
+      "properties": {
+        "schema": {"const": "simulator-target/v1"},
+        "namespace": {"const": "colortrace-simulator"},
+        "kind": {"enum": ["color-resource", "frame", "derivative"]},
+        "id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "quarantine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "command_id",
+        "namespace",
+        "target",
+        "expected_resource_sha256",
+        "mode"
+      ],
+      "properties": {
+        "schema": {"const": "simulator-quarantine-command/v1"},
+        "command_id": {"$ref": "#/$defs/identifier"},
+        "namespace": {"const": "colortrace-simulator"},
+        "target": {"$ref": "#/$defs/target"},
+        "expected_resource_sha256": {"$ref": "#/$defs/digest"},
+        "mode": {"const": "isolate"}
+      }
+    },
+    "rerender": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "command_id",
+        "namespace",
+        "target",
+        "expected_source_sha256",
+        "expected_config_sha256"
+      ],
+      "properties": {
+        "schema": {"const": "simulator-targeted-rerender-command/v1"},
+        "command_id": {"$ref": "#/$defs/identifier"},
+        "namespace": {"const": "colortrace-simulator"},
+        "target": {"$ref": "#/$defs/target"},
+        "expected_source_sha256": {"$ref": "#/$defs/digest"},
+        "expected_config_sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}
