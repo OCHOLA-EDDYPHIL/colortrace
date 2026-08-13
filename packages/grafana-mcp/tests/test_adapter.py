@@ -845,6 +845,27 @@ def test_sdk_timeout_error_retries_but_other_mcp_errors_do_not() -> None:
         )
 
 
+def test_provider_timeout_result_consumes_the_one_retry() -> None:
+    calls = 0
+
+    async def timeout_then_success(name: str, _arguments: dict[str, Any]) -> types.CallToolResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return types.CallToolResult(
+                isError=True,
+                content=[types.TextContent(type="text", text="context deadline exceeded")],
+            )
+        return success(name, payload_for(name))
+
+    result = collect_with(
+        FakeSession(timeout_then_success), request("metric.correlated-observations")
+    )
+    assert result.tool_calls_used == 2
+    assert result.envelopes[0]["collection"]["retries"] == 1
+    assert [attempt.outcome for attempt in result.attempts] == ["timeout", "collected"]
+
+
 def test_tempo_is_never_retried() -> None:
     async def handler(_name: str, _arguments: dict[str, Any]) -> types.CallToolResult:
         raise OSError

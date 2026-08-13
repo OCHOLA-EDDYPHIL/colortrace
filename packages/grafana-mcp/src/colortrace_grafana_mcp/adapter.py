@@ -1511,6 +1511,13 @@ async def _collect_one(
                     code,
                 )
             )
+            if (
+                code == "timeout"
+                and bound.spec.retry_policy == "one-trusted-transient"
+                and retries == 0
+            ):
+                retries += 1
+                continue
             return _RawCollection(
                 bound,
                 completed_at,
