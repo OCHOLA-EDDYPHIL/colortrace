@@ -73,12 +73,8 @@ _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _PREFIXED_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
-_SENSITIVE_TEXT_START = re.compile(
-    r"(?i)(?:\b(?:bearer|basic)\s+|"
-    r"\b(?:authorization|cookie|set[_-]?cookie|credential|password|secret|token|"
-    r"api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|id[_-]?token)"
-    r"\b[\"']?\s*[=:]\s*)"
-)
+_AUTH_SCHEME_START = re.compile(r"(?i)\b(?:bearer|basic)\s+")
+_TEXT_ASSIGNMENT = re.compile(r"(?i)\b(?P<key>[a-z0-9][a-z0-9._-]{0,255})[\"']?\s*[=:]\s*")
 _MAX_EMBEDDED_JSON_BYTES = 65_536
 _MAX_REDACTION_DEPTH = 64
 
@@ -1266,11 +1262,31 @@ def _validate_provider_payload(bound: BoundCall, payload: Any) -> None:
 
 def _is_sensitive_key(value: str, catalog: QueryCatalog) -> bool:
     normalized = _normalized_key(value)
-    return (
-        normalized in catalog.redacted_keys
-        or any(normalized.endswith(f"_{key}") for key in catalog.redacted_keys)
-        or any(normalized.startswith(prefix) for prefix in catalog.redacted_label_prefixes)
+    padded = f"_{normalized}_"
+    return any(f"_{key}_" in padded for key in catalog.redacted_keys) or any(
+        normalized.startswith(prefix) for prefix in catalog.redacted_label_prefixes
     )
+
+
+def _is_attribute_value_field(value: str) -> bool:
+    normalized = _normalized_key(value)
+    return (
+        normalized in {"value", "values"}
+        or normalized.startswith("value_")
+        or normalized.endswith("_value")
+    )
+
+
+def _sensitive_text_start(value: str, catalog: QueryCatalog) -> int | None:
+    scheme = _AUTH_SCHEME_START.search(value)
+    earliest = None if scheme is None else scheme.start()
+    for assignment in _TEXT_ASSIGNMENT.finditer(value):
+        if earliest is not None and assignment.start() >= earliest:
+            break
+        if _is_sensitive_key(assignment.group("key"), catalog):
+            earliest = assignment.start()
+            break
+    return earliest
 
 
 def _redact_text(value: str, catalog: QueryCatalog, *, depth: int) -> str:
@@ -1279,18 +1295,18 @@ def _redact_text(value: str, catalog: QueryCatalog, *, depth: int) -> str:
     except UnicodeError:
         return "[REDACTED]"
     stripped = value.lstrip()
-    if stripped.startswith(("{", "[")) and len(encoded) <= _MAX_EMBEDDED_JSON_BYTES:
+    if stripped.startswith(("{", "[", '"')) and len(encoded) <= _MAX_EMBEDDED_JSON_BYTES:
         try:
             structured = strict_json_bytes(encoded)
-            if isinstance(structured, (dict, list)):
+            if isinstance(structured, (dict, list, str)):
                 redacted = _redact(structured, catalog, _depth=depth + 1)
                 return canonical_json_bytes(redacted).decode("utf-8")
         except (AdapterError, RecursionError, TypeError, UnicodeError):
             pass
-    sensitive = _SENSITIVE_TEXT_START.search(value)
-    if sensitive is None:
+    sensitive_start = _sensitive_text_start(value, catalog)
+    if sensitive_start is None:
         return value
-    return f"{value[: sensitive.start()]}[REDACTED]"
+    return f"{value[:sensitive_start]}[REDACTED]"
 
 
 def _redact(value: Any, catalog: QueryCatalog, *, _depth: int = 0) -> Any:
@@ -1303,7 +1319,9 @@ def _redact(value: Any, catalog: QueryCatalog, *, _depth: int = 0) -> Any:
             attribute_key, catalog
         )
         for key, child in value.items():
-            if _is_sensitive_key(key, catalog) or (redact_attribute_value and key == "value"):
+            if _is_sensitive_key(key, catalog) or (
+                redact_attribute_value and _is_attribute_value_field(key)
+            ):
                 result[key] = "[REDACTED]"
             else:
                 result[key] = _redact(child, catalog, _depth=_depth + 1)
