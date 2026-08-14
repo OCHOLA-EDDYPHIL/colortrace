@@ -1,8 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
+
+
+def _plain_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _plain_json(child) for key, child in value.items()}
+    if isinstance(value, tuple):
+        return [_plain_json(child) for child in value]
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +156,34 @@ class PublicationOperationState:
     promotion: PromotionResult | None
 
 
+@dataclass(frozen=True, slots=True)
+class RecoveryArtifact:
+    """One allowlisted immutable artifact in a recovery snapshot."""
+
+    root: Literal["publication", "source-batch"]
+    logical_path: str
+    sha256: str
+    size: int
+    kind: str
+    role: str
+    target_kind: str
+    target_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RecoverySnapshot:
+    """A data-only view of the exact active publication after one action."""
+
+    document: Mapping[str, Any]
+    artifacts: tuple[RecoveryArtifact, ...]
+    _publication_id: str
+    _active_pointer_sha256: str
+    _trust_token: object
+
+    def to_dict(self) -> dict[str, Any]:
+        return cast(dict[str, Any], _plain_json(self.document))
+
+
 class PublicationPort(Protocol):
     def snapshot_for_action(self, action: BoundSimulatorAction) -> ActionSnapshot: ...
 
@@ -163,3 +200,21 @@ class PublicationPort(Protocol):
     def inspect_operation(self, operation_id: str) -> PublicationOperationState: ...
 
     def discard(self, prepared: PreparedPublication) -> None: ...
+
+
+class RecoveryPublicationPort(Protocol):
+    def snapshot_for_recovery(self, outcome: Mapping[str, Any]) -> RecoverySnapshot: ...
+
+    def read_recovery_artifact(
+        self,
+        snapshot: RecoverySnapshot,
+        artifact: RecoveryArtifact,
+    ) -> bytes: ...
+
+    def assert_recovery_snapshot_current(self, snapshot: RecoverySnapshot) -> None: ...
+
+    def guard_recovery_closure(
+        self,
+        snapshot: RecoverySnapshot,
+        outcome: Mapping[str, Any],
+    ) -> AbstractContextManager[None]: ...

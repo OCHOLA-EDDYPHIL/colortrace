@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 from colortrace_grafana_mcp import adapter as subject
 from colortrace_grafana_mcp import cli as cli_subject
+from colortrace_telemetry.action_contract import stable_action_event_id
 from mcp import McpError, types
 
 NOW = datetime(2026, 8, 13, 0, 5, tzinfo=UTC)
@@ -219,6 +220,251 @@ def collect_with(
     return result
 
 
+def _digest(character: str) -> str:
+    return f"sha256:{character * 64}"
+
+
+def action_documents() -> tuple[dict[str, Any], dict[str, Any]]:
+    traces = [f"{index:032x}" for index in range(1, 6)]
+    commands = [
+        {
+            "schema": "simulator-command-result/v1",
+            "command_id": f"command-{index}",
+            "result_kind": "frame",
+            "target": {"namespace": "fixture", "kind": "frame", "id": f"frame-{index}"},
+            "trace_id": traces[index],
+            "before": {"output_sha256": _digest("1"), "display_sha256": _digest("2")},
+            "after": {"output_sha256": _digest("3"), "display_sha256": _digest("4")},
+        }
+        for index in range(5)
+    ]
+    exclusions = [
+        {"namespace": "fixture", "kind": "frame", "id": f"safe-{index}"} for index in range(3)
+    ]
+    outcome_body: dict[str, Any] = {
+        "schema": "simulator-action-outcome/v1",
+        "action_id": f"simulator-action:{'1' * 64}",
+        "task_key": f"dispatch-task:{'2' * 64}",
+        "operation_id": f"dispatch-operation:{'3' * 64}",
+        "status": "succeeded",
+        "reason_codes": [],
+        "incident_id": "incident-1",
+        "incident_version": 1,
+        "admission_id": f"simulator-admission:{'4' * 64}",
+        "admission_sha256": _digest("4"),
+        "payload_sha256": _digest("5"),
+        "fixture_id": "fixture-1",
+        "plan_id": "plan-1",
+        "plan_version": 1,
+        "plan_sha256": _digest("6"),
+        "approval_id": "approval-1",
+        "approval_sha256": _digest("7"),
+        "authorization_id": "authorization-1",
+        "authorization_sha256": _digest("8"),
+        "consumption_id": "consumption-1",
+        "consumption_sha256": _digest("9"),
+        "dispatch_bundle_sha256": _digest("a"),
+        "action_envelope_sha256": _digest("b"),
+        "action_started_at": "2026-08-13T00:00:00.000Z",
+        "completed_at": "2026-08-13T00:01:00.000Z",
+        "publication_promoted_at": "2026-08-13T00:00:30.000Z",
+        "publication_intent_id": "publication-intent-1",
+        "publication_intent_sha256": _digest("c"),
+        "publication_receipt_id": "publication-receipt-1",
+        "publication_receipt_sha256": _digest("d"),
+        "predecessor_publication_pointer_sha256": _digest("e"),
+        "predecessor_publication_generation": 1,
+        "candidate_publication_pointer_sha256": _digest("f"),
+        "candidate_publication_generation": 2,
+        "source_generation": 1,
+        "candidate_generation": 2,
+        "source_batch_id": "source-batch-1",
+        "source_batch_sha256": _digest("0"),
+        "candidate_fixture_manifest_sha256": _digest("1"),
+        "candidate_runtime_manifest_sha256": _digest("2"),
+        "candidate_lineage_manifest_sha256": _digest("3"),
+        "declared_resource_manifest_sha256": _digest("4"),
+        "active_publication_pointer_sha256": _digest("f"),
+        "active_runtime_manifest_sha256": _digest("2"),
+        "preservation_manifest_sha256": _digest("5"),
+        "safe_complement_before_sha256": _digest("6"),
+        "safe_complement_after_sha256": _digest("6"),
+        "safe_complement_proof_sha256": _digest("7"),
+        "candidate_seal_sha256": _digest("8"),
+        "candidate_tree_sha256": _digest("9"),
+        "targets": [command["target"] for command in commands],
+        "exclusions": exclusions,
+        "command_outcomes": commands,
+        "new_trace_ids": traces,
+    }
+    outcome_sha256 = subject._prefixed_sha256(subject.canonical_json_bytes(outcome_body))
+    outcome = {
+        **outcome_body,
+        "outcome_id": f"simulator-action-outcome:{outcome_sha256.removeprefix('sha256:')}",
+        "outcome_sha256": outcome_sha256,
+    }
+    snapshot_body = {
+        "schema": "simulator-recovery-snapshot/v1",
+        "outcome_id": outcome["outcome_id"],
+        "outcome_sha256": outcome_sha256,
+        "action_id": outcome["action_id"],
+        "incident_id": outcome["incident_id"],
+        "incident_version": 1,
+        "operation_id": outcome["operation_id"],
+        "action_started_at": outcome["action_started_at"],
+        "action_completed_at": outcome["completed_at"],
+        "observed_at": "2026-08-13T00:02:00.000Z",
+        "active_publication": {
+            "pointer_sha256": outcome["active_publication_pointer_sha256"],
+            "runtime_manifest_sha256": outcome["active_runtime_manifest_sha256"],
+            "candidate_tree_sha256": outcome["candidate_tree_sha256"],
+        },
+        "targets": outcome["targets"],
+        "exclusions": exclusions,
+        "command_outcomes": commands,
+        "recomputed_safe_complement_sha256": outcome["safe_complement_after_sha256"],
+    }
+    snapshot_sha256 = subject._prefixed_sha256(subject.canonical_json_bytes(snapshot_body))
+    snapshot = {
+        **snapshot_body,
+        "snapshot_id": (f"simulator-recovery-snapshot:{snapshot_sha256.removeprefix('sha256:')}"),
+        "snapshot_sha256": snapshot_sha256,
+    }
+    return outcome, snapshot
+
+
+def action_batch() -> subject.SimulatorActionEvidenceBatch:
+    outcome, snapshot = action_documents()
+    return subject.SimulatorActionEvidenceBatch.from_documents(
+        outcome=outcome,
+        snapshot=snapshot,
+        evidence_request_id=f"recovery-evidence-request:{'a' * 64}",
+        evidence_request_sha256=_digest("a"),
+        catalog_sha256=catalog().digest,
+        binding={
+            "prometheus_datasource_uid": "prometheus-main",
+            "loki_datasource_uid": "loki-main",
+            "tempo_datasource_uid": "tempo-main",
+        },
+    )
+
+
+def action_payload(
+    tool: str, arguments: Mapping[str, Any], batch: subject.SimulatorActionEvidenceBatch
+) -> dict[str, Any]:
+    events = subject._expected_action_events(batch)
+    emitted_at = "2026-08-13T00:01:30.000Z"
+
+    def flat(event: subject._ExpectedActionEvent, *, normalized: bool) -> dict[str, Any]:
+        values = dict(event.attributes)
+        values["telemetry.emitted_at"] = emitted_at
+        return {
+            (name.replace(".", "_") if normalized else name): (
+                subject._action_attribute_text(value) if normalized else value
+            )
+            for name, value in values.items()
+        }
+
+    if tool == "query_prometheus":
+        return {
+            "data": [
+                {"metric": flat(event, normalized=True), "value": [1, "1"]}
+                for event in events.values()
+                if event.signal == "metric"
+            ]
+        }
+    if tool == "query_loki_logs":
+        rows = [
+            {
+                "timestamp": emitted_at,
+                "line": "simulator action observation",
+                "labels": {},
+                "structuredMetadata": flat(event, normalized=True),
+            }
+            for event in events.values()
+            if event.signal == "log"
+        ]
+        return {
+            "data": rows,
+            "metadata": {
+                "linesReturned": len(rows),
+                "maxLinesAllowed": 200,
+                "resultsTruncated": False,
+                "totalLinesScanned": len(rows),
+                "startTime": arguments["startRfc3339"],
+                "endTime": arguments["endRfc3339"],
+            },
+        }
+    if tool == "tempo_get-trace":
+        selected = next(
+            event
+            for event in events.values()
+            if event.signal == "trace" and event.trace_id == arguments["trace_id"]
+        )
+        return {
+            "trace": {
+                "traceId": arguments["trace_id"],
+                "services": [
+                    {
+                        "serviceName": "colortrace-simulator",
+                        "resource": {},
+                        "scopes": [
+                            {
+                                "name": "colortrace.telemetry",
+                                "spans": [
+                                    {
+                                        "spanId": "2" * 16,
+                                        "name": "simulator.action",
+                                        "startTimeUnixNano": "1",
+                                        "endTimeUnixNano": "2",
+                                        "attributes": flat(selected, normalized=False),
+                                        "events": [],
+                                        "status": {},
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+            "metrics": {"inspectedBytes": 1},
+            "status": "COMPLETE",
+        }
+    raise AssertionError(tool)
+
+
+def action_success(
+    tool: str, arguments: Mapping[str, Any], batch: subject.SimulatorActionEvidenceBatch
+) -> types.CallToolResult:
+    return types.CallToolResult(
+        _meta=(
+            {"encoding": "json", "type": "trace", "version": "2"}
+            if tool == "tempo_get-trace"
+            else None
+        ),
+        content=[
+            types.TextContent(
+                type="text",
+                text=json.dumps(action_payload(tool, arguments, batch), sort_keys=True),
+            )
+        ],
+    )
+
+
+def collect_action_with(
+    session: FakeSession, batch: subject.SimulatorActionEvidenceBatch
+) -> tuple[subject.EvidenceAdapter, subject.BatchResult]:
+    factory = FakeFactory(session)
+    adapter = subject.EvidenceAdapter(
+        runtime=runtime(), catalog=catalog(), session_factory=factory, clock=lambda: NOW
+    )
+    with patch.object(subject, "freeze_tool_inventory", return_value=inventory()):
+        result = asyncio.run(adapter.collect_simulator_action(batch))
+    assert factory.opened == 1
+    assert factory.closed == 1
+    return adapter, result
+
+
 def test_catalog_is_exact_and_tamper_fails_closed(tmp_path: Path) -> None:
     loaded = catalog()
     assert tuple(loaded.specs) == subject.QUERY_KEYS
@@ -238,6 +484,253 @@ def test_catalog_is_exact_and_tamper_fails_closed(tmp_path: Path) -> None:
     changed.write_text(json.dumps(value))
     with pytest.raises(subject.AdapterError, match="query_catalog_drift"):
         subject.QueryCatalog.load(changed)
+
+
+def test_simulator_action_collection_projects_exact_twenty_one_observations() -> None:
+    batch = action_batch()
+
+    async def handler(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        return action_success(name, arguments, batch)
+
+    session = FakeSession(handler)
+    adapter, result = collect_action_with(session, batch)
+    assert [name for name, _arguments in session.calls] == [
+        "query_prometheus",
+        "query_loki_logs",
+        *("tempo_get-trace" for _index in range(5)),
+    ]
+    assert result.tool_calls_used == 7
+    assert result.maximum_calls_in_flight_observed <= 2
+    assert len(result.envelopes) == 7
+    observations = adapter.normalize_simulator_action_observations(batch, result.envelopes)
+    assert len(observations) == 21
+    assert len({value["event_id"] for value in observations}) == 21
+    assert [value["signal"] for value in observations].count("metric") == 8
+    assert [value["signal"] for value in observations].count("log") == 8
+    assert [value["signal"] for value in observations].count("trace") == 5
+    assert {value["subject_kind"] for value in observations} == {"command", "safe"}
+    assert {value["outcome_sha256"] for value in observations} == {batch.outcome_sha256}
+    assert {value["clock_provenance"] for value in observations} == {"local-host-utc"}
+    assert {value["clock_skew_milliseconds"] for value in observations} == {0}
+    assert all(value["truncated"] is False for value in observations)
+
+    projection_session = FakeSession(handler)
+    projection_factory = FakeFactory(projection_session)
+    projection_adapter = subject.EvidenceAdapter(
+        runtime=runtime(),
+        catalog=catalog(),
+        session_factory=projection_factory,
+        clock=lambda: NOW,
+    )
+    with patch.object(subject, "freeze_tool_inventory", return_value=inventory()):
+        projection = asyncio.run(projection_adapter.collect_simulator_action_projection(batch))
+    assert projection.request_id == batch.request_id
+    assert projection.evidence_request_id == batch.evidence_request_id
+    assert projection.evidence_request_sha256 == batch.evidence_request_sha256
+    assert projection.catalog_sha256 == catalog().digest
+    assert projection.outcome_sha256 == batch.outcome_sha256
+    assert projection.snapshot_sha256 == batch.snapshot_sha256
+    assert projection.completed_at == NOW
+    assert len(projection.observations) == 21
+    assert projection.to_dict()["completed_at"] == "2026-08-13T00:05:00.000Z"
+
+
+def test_simulator_action_catalog_mismatch_fails_before_provider_access() -> None:
+    outcome, snapshot = action_documents()
+    batch = subject.SimulatorActionEvidenceBatch.from_documents(
+        outcome=outcome,
+        snapshot=snapshot,
+        evidence_request_id=f"recovery-evidence-request:{'a' * 64}",
+        evidence_request_sha256=_digest("a"),
+        catalog_sha256=_digest("f"),
+        binding={
+            "prometheus_datasource_uid": "prometheus-main",
+            "loki_datasource_uid": "loki-main",
+            "tempo_datasource_uid": "tempo-main",
+        },
+    )
+    factory = FakeFactory(FakeSession(lambda _name, _arguments: None))
+    adapter = subject.EvidenceAdapter(
+        runtime=runtime(),
+        catalog=catalog(),
+        session_factory=factory,
+        clock=lambda: NOW,
+    )
+    with pytest.raises(subject.AdapterError, match="action_catalog_binding_invalid"):
+        asyncio.run(adapter.collect_simulator_action(batch))
+    assert factory.opened == 0
+
+
+def test_simulator_action_event_identity_matches_canonical_telemetry_contract() -> None:
+    batch = action_batch()
+    for command in batch._outcome["command_outcomes"]:
+        for signal in ("metric", "log", "trace"):
+            assert subject._stable_action_event_id(
+                outcome_sha256=batch.outcome_sha256,
+                signal=signal,
+                subject={"command_id": command["command_id"]},
+            ) == stable_action_event_id(
+                outcome_sha256=batch.outcome_sha256,
+                signal=signal,
+                observation={
+                    "schema": "simulator-command-observation/v1",
+                    "result": {"command_id": command["command_id"]},
+                },
+            )
+    for target in batch._outcome["exclusions"]:
+        for signal in ("metric", "log"):
+            assert subject._stable_action_event_id(
+                outcome_sha256=batch.outcome_sha256,
+                signal=signal,
+                subject={"target": dict(target)},
+            ) == stable_action_event_id(
+                outcome_sha256=batch.outcome_sha256,
+                signal=signal,
+                observation={
+                    "schema": "simulator-safe-preservation-observation/v1",
+                    "target": dict(target),
+                },
+            )
+
+
+def test_simulator_action_retry_budget_is_shared_and_trace_never_retries() -> None:
+    batch = action_batch()
+    first_failures = {"query_prometheus", "query_loki_logs"}
+
+    async def handler(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        if name in first_failures:
+            first_failures.remove(name)
+            raise TimeoutError
+        return action_success(name, arguments, batch)
+
+    session = FakeSession(handler)
+    adapter, result = collect_action_with(session, batch)
+    assert result.tool_calls_used == 8
+    assert len(session.calls) == 8
+    assert sum(attempt.retry for attempt in result.attempts) == 1
+    assert sum(name == "tempo_get-trace" for name, _arguments in session.calls) == 5
+    assert (
+        sum(
+            envelope["collection"]["error"]
+            == {
+                "code": "budget_exhausted",
+                "retryable": False,
+            }
+            for envelope in result.envelopes
+        )
+        == 1
+    )
+    with pytest.raises(subject.AdapterError, match="action_evidence_unresolved"):
+        adapter.normalize_simulator_action_observations(batch, result.envelopes)
+
+
+def test_simulator_action_pre_action_provider_data_is_not_accepted() -> None:
+    batch = action_batch()
+
+    async def handler(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        payload = action_payload(name, arguments, batch)
+        if name == "query_prometheus":
+            for row in payload["data"]:
+                row["metric"]["telemetry_observed_at"] = "2026-08-13T00:00:00.000Z"
+        return types.CallToolResult(
+            _meta=(
+                {"encoding": "json", "type": "trace", "version": "2"}
+                if name == "tempo_get-trace"
+                else None
+            ),
+            content=[types.TextContent(type="text", text=json.dumps(payload))],
+        )
+
+    adapter, result = collect_action_with(FakeSession(handler), batch)
+    assert result.envelopes[0]["collection"]["error"] == {
+        "code": "pre_action_evidence",
+        "retryable": False,
+    }
+    with pytest.raises(subject.AdapterError, match="action_evidence_unresolved"):
+        adapter.normalize_simulator_action_observations(batch, result.envelopes)
+
+    projection_factory = FakeFactory(FakeSession(handler))
+    projection_adapter = subject.EvidenceAdapter(
+        runtime=runtime(),
+        catalog=catalog(),
+        session_factory=projection_factory,
+        clock=lambda: NOW,
+    )
+    with patch.object(subject, "freeze_tool_inventory", return_value=inventory()):
+        with pytest.raises(subject.AdapterError, match="action_evidence_unresolved"):
+            asyncio.run(projection_adapter.collect_simulator_action_projection(batch))
+
+
+def test_simulator_action_projection_deduplicates_byte_identical_events() -> None:
+    batch = action_batch()
+
+    async def handler(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        payload = action_payload(name, arguments, batch)
+        if name == "query_prometheus":
+            payload["data"].append(dict(payload["data"][0]))
+        return types.CallToolResult(
+            _meta=(
+                {"encoding": "json", "type": "trace", "version": "2"}
+                if name == "tempo_get-trace"
+                else None
+            ),
+            content=[types.TextContent(type="text", text=json.dumps(payload))],
+        )
+
+    adapter, result = collect_action_with(FakeSession(handler), batch)
+    observations = adapter.normalize_simulator_action_observations(batch, result.envelopes)
+    assert len(observations) == 21
+
+
+def test_simulator_action_authority_and_flattened_attributes_fail_closed() -> None:
+    outcome, snapshot = action_documents()
+    with pytest.raises(subject.AdapterError, match="action_request_invalid"):
+        subject.SimulatorActionEvidenceBatch.from_documents(
+            outcome=outcome,
+            snapshot=snapshot,
+            evidence_request_id=f"recovery-evidence-request:{'a' * 64}",
+            evidence_request_sha256=_digest("b"),
+            catalog_sha256=catalog().digest,
+            binding={
+                "prometheus_datasource_uid": "prometheus-main",
+                "loki_datasource_uid": "loki-main",
+                "tempo_datasource_uid": "tempo-main",
+            },
+        )
+    forged = dict(outcome)
+    forged["outcome_sha256"] = _digest("f")
+    with pytest.raises(subject.AdapterError, match="action_request_invalid"):
+        subject.SimulatorActionEvidenceBatch.from_documents(
+            outcome=forged,
+            snapshot=snapshot,
+            evidence_request_id=f"recovery-evidence-request:{'a' * 64}",
+            evidence_request_sha256=_digest("a"),
+            catalog_sha256=catalog().digest,
+            binding={
+                "prometheus_datasource_uid": "prometheus-main",
+                "loki_datasource_uid": "loki-main",
+                "tempo_datasource_uid": "tempo-main",
+            },
+        )
+
+    batch = action_batch()
+
+    async def handler(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        payload = action_payload(name, arguments, batch)
+        if name == "query_loki_logs":
+            payload["data"][0]["structuredMetadata"]["command_id"] = "forged-command"
+        return types.CallToolResult(
+            _meta=(
+                {"encoding": "json", "type": "trace", "version": "2"}
+                if name == "tempo_get-trace"
+                else None
+            ),
+            content=[types.TextContent(type="text", text=json.dumps(payload))],
+        )
+
+    adapter, result = collect_action_with(FakeSession(handler), batch)
+    with pytest.raises(subject.AdapterError, match="action_observation_correlation_mismatch"):
+        adapter.normalize_simulator_action_observations(batch, result.envelopes)
 
 
 def test_request_and_window_are_strict() -> None:

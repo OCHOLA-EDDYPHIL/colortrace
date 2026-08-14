@@ -7,6 +7,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
+from colortrace_recovery import (
+    RecoveryClosureService,
+    RecoveryIdentityBoundary,
+    SQLiteRecoveryRepository,
+)
 from colortrace_response_plans import (
     CanonicalAuthorityBoundary,
     OIDCTrustBoundary,
@@ -22,6 +27,9 @@ from fastapi import FastAPI
 
 from .app import create_app
 from .oidc import HttpsJwksResolver, JwksResolver, OidcTokenVerifier
+from .recovery import RecoveryCoordinator
+from .recovery_closure import LocalRecoveryClosureFence
+from .recovery_tasks import SQLiteRecoveryVerificationTaskStore
 from .response_plans import ResponsePlanCoordinator
 from .simulator_actions import SimulatorActionCoordinator
 from .simulator_runtime import LocalSimulatorRuntime
@@ -29,6 +37,8 @@ from .stored_service import StoredIncidentService, StoredIncidentStore
 
 DATABASE_PATH_ENV = "COLORTRACE_DATABASE_PATH"
 RESPONSE_PLAN_DATABASE_PATH_ENV = "COLORTRACE_RESPONSE_PLAN_DATABASE_PATH"
+RECOVERY_DATABASE_PATH_ENV = "COLORTRACE_RECOVERY_DATABASE_PATH"
+RECOVERY_TASK_DATABASE_PATH_ENV = "COLORTRACE_RECOVERY_TASK_DATABASE_PATH"
 OIDC_ISSUER_ENV = "COLORTRACE_OIDC_ISSUER"
 OIDC_AUDIENCE_ENV = "COLORTRACE_OIDC_AUDIENCE"
 OIDC_JWKS_URI_ENV = "COLORTRACE_OIDC_JWKS_URI"
@@ -79,9 +89,11 @@ class LocalSimulatorRuntimeFactory(Protocol):
 class ApiRuntimeConfig:
     database_path: Path
     response_plan_database_path: Path
+    recovery_database_path: Path
     oidc_issuer: str
     oidc_audience: str
     oidc_jwks_uri: str
+    recovery_task_database_path: Path | None = None
     oidc_leeway_seconds: float = 30.0
     simulator_mode: Literal["disabled", "local"] = "disabled"
     simulator_database_path: Path | None = None
@@ -94,8 +106,23 @@ class ApiRuntimeConfig:
         response_plan_database_path = _database_path(
             _required(environment, RESPONSE_PLAN_DATABASE_PATH_ENV)
         )
-        if response_plan_database_path == database_path:
-            raise ApiRuntimeConfigurationError("response-plan-database-path-invalid")
+        recovery_database_path = _database_path(_required(environment, RECOVERY_DATABASE_PATH_ENV))
+        recovery_task_value = environment.get(RECOVERY_TASK_DATABASE_PATH_ENV)
+        recovery_task_database_path = (
+            None if recovery_task_value is None else _database_path(recovery_task_value)
+        )
+        database_paths = tuple(
+            path
+            for path in (
+                database_path,
+                response_plan_database_path,
+                recovery_database_path,
+                recovery_task_database_path,
+            )
+            if path is not None
+        )
+        if len(set(database_paths)) != len(database_paths):
+            raise ApiRuntimeConfigurationError("database-path-overlap")
         issuer = _required(environment, OIDC_ISSUER_ENV)
         audience = _required(environment, OIDC_AUDIENCE_ENV)
         jwks_uri = _required(environment, OIDC_JWKS_URI_ENV)
@@ -108,6 +135,8 @@ class ApiRuntimeConfig:
         return cls(
             database_path=database_path,
             response_plan_database_path=response_plan_database_path,
+            recovery_database_path=recovery_database_path,
+            recovery_task_database_path=recovery_task_database_path,
             oidc_issuer=issuer,
             oidc_audience=audience,
             oidc_jwks_uri=jwks_uri,
@@ -202,15 +231,24 @@ def _local_simulator_paths(config: ApiRuntimeConfig) -> tuple[Path, Path, Path] 
     fixture_bundle = _directory_path(cast(Path, values[2]), must_exist=True)
     incident_database = _database_path(config.database_path)
     response_plan_database = _database_path(config.response_plan_database_path)
+    recovery_database = _database_path(config.recovery_database_path)
+    recovery_task_database = (
+        None
+        if config.recovery_task_database_path is None
+        else _database_path(config.recovery_task_database_path)
+    )
     paths = (
         incident_database,
         response_plan_database,
+        recovery_database,
+        recovery_task_database,
         database,
         workspace,
         fixture_bundle,
     )
-    for index, left in enumerate(paths):
-        for right in paths[index + 1 :]:
+    selected_paths = tuple(path for path in paths if path is not None)
+    for index, left in enumerate(selected_paths):
+        for right in selected_paths[index + 1 :]:
             if left == right or left in right.parents or right in left.parents:
                 raise ApiRuntimeConfigurationError("simulator-path-overlap")
     return database, workspace, fixture_bundle
@@ -278,6 +316,7 @@ def _local_simulator_runtime(
             repository=repository,
             service=service,
             telemetry_sink=sink,
+            recovery_publication=publication,
         )
     except Exception:
         try:
@@ -296,7 +335,20 @@ def create_runtime_app(
     local_simulator_factory: LocalSimulatorRuntimeFactory = _local_simulator_runtime,
     clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
+    selected_clock = _utc_now if clock is None else clock
     database_path = _database_path(config.database_path)
+    database_paths = (
+        database_path,
+        _database_path(config.response_plan_database_path),
+        _database_path(config.recovery_database_path),
+        *(
+            ()
+            if config.recovery_task_database_path is None
+            else (_database_path(config.recovery_task_database_path),)
+        ),
+    )
+    if len(set(database_paths)) != len(database_paths):
+        raise ApiRuntimeConfigurationError("database-path-overlap")
     local_simulator_paths = _local_simulator_paths(config)
     try:
         HttpsJwksResolver.validate_uri(config.oidc_jwks_uri)
@@ -339,6 +391,25 @@ def create_runtime_app(
         )
     except Exception:
         raise ApiRuntimeConfigurationError("response-plan-configuration-invalid") from None
+    recovery_task_store: SQLiteRecoveryVerificationTaskStore | None = None
+    if config.recovery_task_database_path is not None:
+        try:
+            recovery_task_store = SQLiteRecoveryVerificationTaskStore(
+                _database_path(config.recovery_task_database_path),
+                clock=selected_clock,
+            )
+        except Exception:
+            raise ApiRuntimeConfigurationError("recovery-task-configuration-invalid") from None
+    try:
+        recovery_repository = SQLiteRecoveryRepository(
+            _database_path(config.recovery_database_path)
+        )
+        recovery_identity_boundary = RecoveryIdentityBoundary(
+            trusted_issuers=frozenset({config.oidc_issuer}),
+            audience=config.oidc_audience,
+        )
+    except Exception:
+        raise ApiRuntimeConfigurationError("recovery-configuration-invalid") from None
     local_simulator: LocalSimulatorRuntime | None = None
     simulator_actions: SimulatorActionCoordinator | None = None
     if local_simulator_paths is not None:
@@ -360,14 +431,41 @@ def create_runtime_app(
             identity_boundary=identity_boundary,
             **({} if clock is None else {"clock": clock}),
         )
+    closure_fence = None
+    if (
+        local_simulator is not None
+        and isinstance(local_simulator.repository, SQLiteSimulatorRepository)
+        and local_simulator.recovery_publication is not None
+    ):
+        closure_fence = LocalRecoveryClosureFence(
+            repository=local_simulator.repository,
+            publication=local_simulator.recovery_publication,
+        )
+    recovery = RecoveryCoordinator(
+        incident_reader=service,
+        aggregate_reader=recovery_repository,
+        closure_service=RecoveryClosureService(
+            repository=recovery_repository,
+            identity_boundary=recovery_identity_boundary,
+            clock=selected_clock,
+        ),
+        identity_boundary=recovery_identity_boundary,
+        task_dispatcher=recovery_task_store,
+        closure_fence=closure_fence,
+        clock=selected_clock,
+    )
     app = create_app(
         service,
         token_verifier=verifier,
         response_plans=response_plans,
         simulator_actions=simulator_actions,
+        recovery=recovery,
+        recovery_verifications=None if recovery_task_store is None else recovery,
         lifespan=None if local_simulator is None else local_simulator.lifespan,
     )
     app.state.local_simulator_runtime = local_simulator
+    app.state.recovery_repository = recovery_repository
+    app.state.recovery_verification_task_store = recovery_task_store
     return app
 
 

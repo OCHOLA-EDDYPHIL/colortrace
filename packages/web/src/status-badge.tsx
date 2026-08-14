@@ -17,17 +17,30 @@ type BadgeValue =
   | WorkspaceTimelineCategory
   | WorkspaceTimelineStatus
   | "approved"
+  | "ambiguous"
+  | "closed"
   | "color-resource"
   | "derivative"
   | "frame"
   | "integrity-error"
-  | "pending";
+  | "late"
+  | "pending"
+  | "passed"
+  | "post-action"
+  | "pre-action"
+  | "recovery_failed"
+  | "recovery_unresolved"
+  | "recovery_verified"
+  | "verification_pending"
+  | "verification_running";
 
 const BADGE_LABEL: Readonly<Record<BadgeValue, string>> = {
   affected: "Affected",
+  ambiguous: "Time ambiguous",
   approved: "Approved",
   available: "Available",
   causal: "Causal resource",
+  closed: "Closed",
   "color-resource": "Color resource",
   confirmed: "Confirmed",
   derivative: "Derivative",
@@ -39,10 +52,17 @@ const BADGE_LABEL: Readonly<Record<BadgeValue, string>> = {
   inferred: "Inferred",
   informational: "Informational",
   "integrity-error": "Integrity error",
+  late: "Late evidence",
   "model-reasoning": "Model reasoning",
   pending: "Pending",
+  passed: "Passed",
+  "post-action": "Post-action",
+  "pre-action": "Pre-action",
   queued: "Queued",
   rejected: "Rejected",
+  recovery_failed: "Recovery failed",
+  recovery_unresolved: "Recovery unresolved",
+  recovery_verified: "Recovery verified",
   resolved: "Resolved",
   running: "Running",
   safe: "Safe",
@@ -51,6 +71,8 @@ const BADGE_LABEL: Readonly<Record<BadgeValue, string>> = {
   succeeded: "Succeeded",
   unknown: "Unknown",
   unresolved: "Unresolved",
+  verification_pending: "Verification pending",
+  verification_running: "Verification running",
   "workflow-event": "Workflow event",
 };
 

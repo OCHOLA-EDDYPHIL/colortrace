@@ -126,6 +126,90 @@ def _prepare(
     return action, snapshot, port.prepare(snapshot, _traces(action))
 
 
+def _recovery_outcome(action: BoundSimulatorAction, prepared: Any) -> dict[str, Any]:
+    body = {
+        "schema": "simulator-action-outcome/v1",
+        "action_id": f"simulator-action:{'a' * 64}",
+        "task_key": f"dispatch-task:{'b' * 64}",
+        "operation_id": action.identity.operation_id,
+        "payload_sha256": action.identity.payload_sha256,
+        "status": "succeeded",
+        "reason_codes": [],
+        "incident_id": action.incident_id,
+        "incident_version": action.incident_version,
+        "plan_id": action.plan_id,
+        "plan_version": action.plan_version,
+        "plan_sha256": action.plan_sha256,
+        "approval_id": action.approval_id,
+        "approval_sha256": action.approval_sha256,
+        "authorization_id": action.authorization_id,
+        "authorization_sha256": action.authorization_sha256,
+        "consumption_id": action.consumption_id,
+        "consumption_sha256": action.consumption_sha256,
+        "admission_id": f"simulator-admission:{'c' * 64}",
+        "admission_sha256": f"sha256:{'c' * 64}",
+        "dispatch_bundle_sha256": action.dispatch_bundle_sha256,
+        "action_envelope_sha256": action.action_envelope_sha256,
+        "action_started_at": "2026-08-13T12:00:00.000Z",
+        "publication_intent_id": f"simulator-publication-intent:{'d' * 64}",
+        "publication_intent_sha256": f"sha256:{'d' * 64}",
+        "publication_receipt_id": f"simulator-publication-receipt:{'e' * 64}",
+        "publication_receipt_sha256": f"sha256:{'e' * 64}",
+        "publication_promoted_at": "2026-08-13T12:00:01.000Z",
+        "completed_at": "2026-08-13T12:00:02.000Z",
+        "fixture_id": "colortrace-canonical",
+        "predecessor_publication_pointer_sha256": prepared.predecessor_pointer_sha256,
+        "predecessor_publication_generation": prepared.predecessor_generation,
+        "candidate_publication_pointer_sha256": prepared.candidate_pointer_sha256,
+        "candidate_publication_generation": prepared.candidate_generation,
+        "source_generation": prepared.predecessor_generation,
+        "candidate_generation": prepared.candidate_generation,
+        "source_batch_id": prepared.source_batch_id,
+        "source_batch_sha256": prepared.source_batch_sha256,
+        "active_publication_pointer_sha256": prepared.candidate_pointer_sha256,
+        "active_runtime_manifest_sha256": prepared.candidate_runtime_manifest_sha256,
+        "candidate_fixture_manifest_sha256": prepared.candidate_fixture_manifest_sha256,
+        "candidate_runtime_manifest_sha256": prepared.candidate_runtime_manifest_sha256,
+        "candidate_lineage_manifest_sha256": prepared.candidate_lineage_manifest_sha256,
+        "declared_resource_manifest_sha256": prepared.declared_resource_manifest_sha256,
+        "preservation_manifest_sha256": prepared.preservation_manifest_sha256,
+        "safe_complement_before_sha256": prepared.safe_complement_before_sha256,
+        "safe_complement_after_sha256": prepared.safe_complement_after_sha256,
+        "safe_complement_proof_sha256": prepared.safe_complement_proof_sha256,
+        "candidate_seal_sha256": prepared.candidate_seal_sha256,
+        "candidate_tree_sha256": prepared.candidate_tree_sha256,
+        "targets": list(action.targets),
+        "exclusions": list(action.exclusions),
+        "command_outcomes": list(prepared.command_results),
+        "new_trace_ids": sorted(result["trace_id"] for result in prepared.command_results),
+    }
+    outcome_sha256 = _digest(body)
+    return {
+        **body,
+        "outcome_id": f"simulator-action-outcome:{outcome_sha256.removeprefix('sha256:')}",
+        "outcome_sha256": outcome_sha256,
+    }
+
+
+def _promoted_recovery(
+    port: LocalPublicationPort,
+    operation_marker: str,
+) -> tuple[dict[str, Any], Any]:
+    operation_id = f"dispatch-operation:{operation_marker * 64}"
+    action, _snapshot, prepared = _prepare(port, operation_id)
+    return _finish_promoted_recovery(port, action, prepared)
+
+
+def _finish_promoted_recovery(
+    port: LocalPublicationPort,
+    action: BoundSimulatorAction,
+    prepared: Any,
+) -> tuple[dict[str, Any], Any]:
+    assert port.compare_and_swap(prepared).state == "promoted"
+    outcome = _recovery_outcome(action, prepared)
+    return outcome, port.snapshot_for_recovery(outcome)
+
+
 def test_canonical_targeted_recovery_promotes_once_and_preserves_safe_work(
     tmp_path: Path,
     canonical_bundle: Path,
@@ -295,6 +379,83 @@ def test_prepare_operation_lock_does_not_invert_publication_cas_lock(
     holder.join(timeout=2)
     assert not holder.is_alive()
     assert observed == [True]
+
+
+def test_recovery_closure_guard_accepts_exact_current_snapshot(
+    tmp_path: Path,
+    canonical_bundle: Path,
+) -> None:
+    port = _port(tmp_path, canonical_bundle)
+    outcome, recovery = _promoted_recovery(port, "a")
+
+    entered = False
+    with port.guard_recovery_closure(recovery, outcome):
+        entered = True
+
+    assert entered is True
+
+
+def test_recovery_closure_guard_rejects_snapshot_after_newer_publication(
+    tmp_path: Path,
+    canonical_bundle: Path,
+) -> None:
+    port = _port(tmp_path, canonical_bundle)
+    action, _snapshot, prepared = _prepare(port, f"dispatch-operation:{'a' * 64}")
+    _next_action, _next_snapshot, next_prepared = _prepare(
+        port,
+        f"dispatch-operation:{'b' * 64}",
+    )
+    outcome, recovery = _finish_promoted_recovery(port, action, prepared)
+    next_publication = port._publication_root(next_prepared.publication_id)
+    with port._publication_lock():
+        bundle_module._rename_frozen_tree(
+            port.root / next_prepared.candidate_ref,
+            next_publication,
+        )
+        assert (
+            port._write_active_pointer(next_prepared.candidate_pointer)
+            == next_prepared.candidate_pointer_sha256
+        )
+        assert port._load_active_context().pointer_sha256 == (
+            next_prepared.candidate_pointer_sha256
+        )
+
+    with pytest.raises(SimulatorBundleError, match="recovery-snapshot-stale"):
+        with port.guard_recovery_closure(recovery, outcome):
+            pytest.fail("stale recovery snapshot entered the closure guard")
+
+
+def test_recovery_closure_guard_serializes_concurrent_publication(
+    tmp_path: Path,
+    canonical_bundle: Path,
+) -> None:
+    port = _port(tmp_path, canonical_bundle)
+    action, _snapshot, prepared = _prepare(port, f"dispatch-operation:{'a' * 64}")
+    _next_action, _next_snapshot, next_prepared = _prepare(
+        port,
+        f"dispatch-operation:{'b' * 64}",
+    )
+    outcome, recovery = _finish_promoted_recovery(port, action, prepared)
+    started = threading.Event()
+    completed = threading.Event()
+    promotions: list[Any] = []
+
+    def promote() -> None:
+        started.set()
+        promotions.append(port.compare_and_swap(next_prepared))
+        completed.set()
+
+    worker = threading.Thread(target=promote, daemon=True)
+    with port.guard_recovery_closure(recovery, outcome):
+        worker.start()
+        assert started.wait(timeout=2)
+        assert not completed.wait(timeout=0.1)
+        assert port._load_active_context().pointer_sha256 == recovery._active_pointer_sha256
+    assert completed.wait(timeout=5)
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert [promotion.state for promotion in promotions] == ["conflict"]
 
 
 def test_active_candidate_rejects_leaf_tamper_and_missing_control(

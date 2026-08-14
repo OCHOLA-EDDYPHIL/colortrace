@@ -3,9 +3,14 @@ import type {
   IncidentReplay,
   IncidentSummary,
   IncidentWorkspaceSource,
+  RecoveryReview,
   TaskRecord,
 } from "@colortrace/api-client";
 import { cloneReplayFixture } from "@colortrace/workspace-model/test-fixtures";
+import {
+  cloneRecoveryReview,
+  recoveryReviewFixture,
+} from "@colortrace/workspace-model/recovery-test-fixture";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -14,7 +19,11 @@ import {
   captureHostOidcTokenProvider,
   HOST_OIDC_TOKEN_PROVIDER_CONTRACT,
 } from "../src/host-auth.ts";
-import { IncidentWorkspaceApp, projectWorkspaceSource } from "../src/incident-workspace-app.tsx";
+import {
+  IncidentWorkspaceApp,
+  projectRecoverySource,
+  projectWorkspaceSource,
+} from "../src/incident-workspace-app.tsx";
 import { responsePlanReviewFixture } from "./response-plan-fixture.ts";
 
 type Mutable<T> = T extends readonly (infer Item)[]
@@ -177,11 +186,37 @@ function planSessionResponse(): Response {
   });
 }
 
+function recoverySessionResponse(): Response {
+  return jsonResponse({
+    schema: "operator-session/v1",
+    subject: "operator-24",
+    display_name: "Pipeline operator",
+    roles: ["operator", "recovery.closer"],
+    issuer: "https://identity.example.test/tenant",
+    audience: "colortrace-api",
+    principal_kind: "human",
+  });
+}
+
+function apiRecoveryReview(
+  state:
+    | "closed"
+    | "recovery_failed"
+    | "recovery_unresolved"
+    | "recovery_verified" = "recovery_verified",
+  options: { readonly closureIdempotencyKey?: string; readonly closureReason?: string } = {},
+): RecoveryReview {
+  return recoveryReviewFixture(state, options) as unknown as RecoveryReview;
+}
+
 function incidentListResponse(items: readonly IncidentSummary[]): Response {
   return jsonResponse({ schema: "incident-list/v1", items, next_cursor: null });
 }
 
-function routedFetch(route: (request: Request) => Promise<Response> | Response): {
+function routedFetch(
+  route: (request: Request) => Promise<Response> | Response,
+  options: { readonly recovery?: boolean } = {},
+): {
   readonly fetch: typeof fetch;
   readonly requests: Request[];
 } {
@@ -189,6 +224,13 @@ function routedFetch(route: (request: Request) => Promise<Response> | Response):
   const fetchImplementation: typeof fetch = async (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
     requests.push(request);
+    if (
+      options.recovery !== true &&
+      request.method === "GET" &&
+      new URL(request.url).pathname.endsWith("/recovery")
+    ) {
+      return jsonResponse({ code: "recovery-not-found" }, 404);
+    }
     return route(request);
   };
   return { fetch: fetchImplementation, requests };
@@ -342,9 +384,59 @@ describe("incident read adapter", () => {
       idempotency_key: "reject-key",
     });
   });
+
+  it("binds human closure to the exact current packet, outcome, versions, and idempotency key", async () => {
+    const review = apiRecoveryReview();
+    const closed = apiRecoveryReview("closed");
+    if (review.packet === null || closed.closure === null) {
+      throw new Error("recovery fixtures must contain packet and closure records");
+    }
+    const { fetch, requests } = routedFetch(() => jsonResponse(closed.closure), { recovery: true });
+    const adapter = createIncidentReadAdapter({
+      baseUrl: "https://web.test",
+      fetch,
+      tokenProvider: () => "ephemeral-recovery-token",
+    });
+
+    await adapter.closeRecovery(
+      review.snapshot.incident_id,
+      review,
+      "Reviewed exact post-action evidence.",
+      "close-key-24",
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.method).toBe("POST");
+    expect(routePath(requests[0] as Request)).toBe(
+      `/v1/incidents/${review.snapshot.incident_id}/recovery/close`,
+    );
+    expect(requests[0]?.headers.get("Authorization")).toBe("Bearer ephemeral-recovery-token");
+    expect(await requests[0]?.clone().json()).toEqual({
+      schema: "recovery-closure-request/v1",
+      expected_incident_version: review.current_incident_version,
+      expected_workflow_version: review.workflow_version,
+      expected_packet_id: review.packet.packet_id,
+      expected_packet_sha256: review.packet.packet_sha256,
+      expected_outcome_id: review.packet.outcome_id,
+      expected_outcome_sha256: review.packet.outcome_sha256,
+      reason: "Reviewed exact post-action evidence.",
+      idempotency_key: "close-key-24",
+    });
+  });
 });
 
 describe("IncidentWorkspaceApp", () => {
+  it("fails closed when a recovery aggregate does not match the selected incident", () => {
+    const review = cloneRecoveryReview();
+
+    expect(
+      projectRecoverySource(review as unknown as RecoveryReview, "incident-other"),
+    ).toMatchObject({
+      kind: "integrity-error",
+      message: expect.stringContaining("identity-binding"),
+    });
+  });
+
   it("fails closed when a ready view packet is absent or differs from its replay", () => {
     const item = summary("incident-packet-binding");
     const source = readySource(item);
@@ -486,6 +578,242 @@ describe("IncidentWorkspaceApp", () => {
     expect(await screen.findByText(/Approved by/i)).toBeVisible();
     expect(
       requests.filter((request) => routePath(request).endsWith("/response-plan/approve")),
+    ).toHaveLength(1);
+  });
+
+  it("retries only an ambiguous closure with the retained exact idempotency key", async () => {
+    const initial = apiRecoveryReview();
+    const item = summary(initial.snapshot.incident_id);
+    let currentReview = initial;
+    let closeAttempts = 0;
+    const { fetch, requests } = routedFetch(
+      async (request) => {
+        const path = routePath(request);
+        if (path === "/v1/session") return recoverySessionResponse();
+        if (path === "/v1/incidents") return incidentListResponse([item]);
+        if (path.endsWith("/workspace")) return jsonResponse(readySource(item));
+        if (path.endsWith("/response-plan")) {
+          return jsonResponse({ code: "plan-not-found" }, 404);
+        }
+        if (path.endsWith("/recovery") && request.method === "GET") {
+          return jsonResponse(currentReview);
+        }
+        if (path.endsWith("/recovery/close") && request.method === "POST") {
+          closeAttempts += 1;
+          if (closeAttempts === 1) throw new TypeError("connection reset after closure request");
+          const body = (await request.clone().json()) as {
+            idempotency_key: string;
+            reason: string;
+          };
+          const completed = apiRecoveryReview("closed", {
+            closureIdempotencyKey: body.idempotency_key,
+            closureReason: body.reason,
+          });
+          currentReview = completed;
+          return jsonResponse(completed.closure);
+        }
+        return jsonResponse({ code: "unexpected" }, 500);
+      },
+      { recovery: true },
+    );
+
+    render(
+      <IncidentWorkspaceApp
+        adapter={createIncidentReadAdapter({
+          baseUrl: "https://web.test",
+          fetch,
+          tokenProvider: () => "ephemeral-recovery-token",
+        })}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Recovery verification and closure" }),
+    ).toBeVisible();
+    fireEvent.change(screen.getByRole("textbox", { name: "Closure reason" }), {
+      target: { value: "Reviewed exact post-action evidence." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Close verified recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm closure" }));
+    expect(await screen.findByText(/closure response was ambiguous/i)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry exact closure" }));
+    expect(await screen.findByText(/one immutable human closure record/i)).toBeVisible();
+
+    const closeRequests = requests.filter((request) =>
+      routePath(request).endsWith("/recovery/close"),
+    );
+    expect(closeRequests).toHaveLength(2);
+    const first = (await closeRequests[0]?.clone().json()) as { idempotency_key: string };
+    const second = (await closeRequests[1]?.clone().json()) as { idempotency_key: string };
+    expect(second.idempotency_key).toBe(first.idempotency_key);
+  });
+
+  it("retains the closure attempt after a 200 response until the exact closed state is visible", async () => {
+    const initial = apiRecoveryReview();
+    const item = summary(initial.snapshot.incident_id);
+    let completed: RecoveryReview | null = null;
+    let recoveryReads = 0;
+    const { fetch, requests } = routedFetch(
+      async (request) => {
+        const path = routePath(request);
+        if (path === "/v1/session") return recoverySessionResponse();
+        if (path === "/v1/incidents") return incidentListResponse([item]);
+        if (path.endsWith("/workspace")) return jsonResponse(readySource(item));
+        if (path.endsWith("/response-plan")) {
+          return jsonResponse({ code: "plan-not-found" }, 404);
+        }
+        if (path.endsWith("/recovery") && request.method === "GET") {
+          recoveryReads += 1;
+          return jsonResponse(completed !== null && recoveryReads >= 3 ? completed : initial);
+        }
+        if (path.endsWith("/recovery/close") && request.method === "POST") {
+          const body = (await request.clone().json()) as {
+            idempotency_key: string;
+            reason: string;
+          };
+          completed = apiRecoveryReview("closed", {
+            closureIdempotencyKey: body.idempotency_key,
+            closureReason: body.reason,
+          });
+          return jsonResponse(completed.closure);
+        }
+        return jsonResponse({ code: "unexpected" }, 500);
+      },
+      { recovery: true },
+    );
+
+    render(
+      <IncidentWorkspaceApp
+        adapter={createIncidentReadAdapter({
+          baseUrl: "https://web.test",
+          fetch,
+          tokenProvider: () => "ephemeral-recovery-token",
+        })}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Recovery verification and closure" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Closure reason" }), {
+      target: { value: "Reviewed exact post-action evidence." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Close verified recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm closure" }));
+
+    expect(await screen.findByText(/did not contain the exact bound closure/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Close verified recovery" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Retry exact closure" })).toBeNull();
+    expect(
+      requests.filter((request) => routePath(request).endsWith("/recovery/close")),
+    ).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile recovery state" }));
+    expect(await screen.findByText(/one immutable human closure record/i)).toBeVisible();
+    expect(
+      requests.filter((request) => routePath(request).endsWith("/recovery/close")),
+    ).toHaveLength(1);
+  });
+
+  it("reconciles an ambiguous attempt to an exact concurrent closure without replay", async () => {
+    const initial = apiRecoveryReview();
+    const concurrent = apiRecoveryReview("closed", {
+      closureIdempotencyKey: "concurrent-closure-key",
+      closureReason: "A concurrent authorized operator closed the exact recovery packet.",
+    });
+    const item = summary(initial.snapshot.incident_id);
+    let currentReview = initial;
+    const { fetch, requests } = routedFetch(
+      async (request) => {
+        const path = routePath(request);
+        if (path === "/v1/session") return recoverySessionResponse();
+        if (path === "/v1/incidents") return incidentListResponse([item]);
+        if (path.endsWith("/workspace")) return jsonResponse(readySource(item));
+        if (path.endsWith("/response-plan")) {
+          return jsonResponse({ code: "plan-not-found" }, 404);
+        }
+        if (path.endsWith("/recovery") && request.method === "GET") {
+          return jsonResponse(currentReview);
+        }
+        if (path.endsWith("/recovery/close") && request.method === "POST") {
+          currentReview = concurrent;
+          throw new TypeError("connection reset while a concurrent closure committed");
+        }
+        return jsonResponse({ code: "unexpected" }, 500);
+      },
+      { recovery: true },
+    );
+
+    render(
+      <IncidentWorkspaceApp
+        adapter={createIncidentReadAdapter({
+          baseUrl: "https://web.test",
+          fetch,
+          tokenProvider: () => "ephemeral-recovery-token",
+        })}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Recovery verification and closure" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Closure reason" }), {
+      target: { value: "Reviewed exact post-action evidence." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Close verified recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm closure" }));
+    expect(await screen.findByText(/closure response was ambiguous/i)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile recovery state" }));
+    expect(await screen.findByText(/one immutable human closure record/i)).toBeVisible();
+    expect(
+      requests.filter((request) => routePath(request).endsWith("/recovery/close")),
+    ).toHaveLength(1);
+  });
+
+  it("unlocks a definitively rejected closure only after authoritative reconciliation", async () => {
+    const initial = apiRecoveryReview();
+    const item = summary(initial.snapshot.incident_id);
+    const { fetch, requests } = routedFetch(
+      (request) => {
+        const path = routePath(request);
+        if (path === "/v1/session") return recoverySessionResponse();
+        if (path === "/v1/incidents") return incidentListResponse([item]);
+        if (path.endsWith("/workspace")) return jsonResponse(readySource(item));
+        if (path.endsWith("/response-plan")) {
+          return jsonResponse({ code: "plan-not-found" }, 404);
+        }
+        if (path.endsWith("/recovery") && request.method === "GET") {
+          return jsonResponse(initial);
+        }
+        if (path.endsWith("/recovery/close") && request.method === "POST") {
+          return jsonResponse({ code: "recovery-closure-forbidden" }, 403);
+        }
+        return jsonResponse({ code: "unexpected" }, 500);
+      },
+      { recovery: true },
+    );
+
+    render(
+      <IncidentWorkspaceApp
+        adapter={createIncidentReadAdapter({
+          baseUrl: "https://web.test",
+          fetch,
+          tokenProvider: () => "ephemeral-recovery-token",
+        })}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Recovery verification and closure" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Closure reason" }), {
+      target: { value: "Reviewed exact post-action evidence." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Close verified recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm closure" }));
+
+    expect(await screen.findByText(/closure was not accepted/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Close verified recovery" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile recovery state" }));
+    expect(await screen.findByRole("button", { name: "Close verified recovery" })).toBeEnabled();
+    expect(
+      requests.filter((request) => routePath(request).endsWith("/recovery/close")),
     ).toHaveLength(1);
   });
 

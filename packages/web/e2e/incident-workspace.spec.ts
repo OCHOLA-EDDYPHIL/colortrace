@@ -15,6 +15,7 @@ const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] as co
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const evidenceRoot = path.join(packageRoot, "evidence", "issue-21");
 const issue22EvidenceRoot = path.join(packageRoot, "evidence", "issue-22");
+const issue24EvidenceRoot = path.join(packageRoot, "evidence", "issue-24");
 const ISSUE_22_EVIDENCE_SCREENSHOTS = [
   {
     filename: "response-plan-review-1440x900.png",
@@ -95,6 +96,22 @@ async function captureIssue22ActionEvidence(page: Page, name: string) {
   await page.screenshot({
     animations: "disabled",
     path: path.join(issue22EvidenceRoot, name),
+  });
+}
+
+async function captureIssue24Evidence(page: Page, name: string) {
+  if (process.env.COLORTRACE_CAPTURE_ISSUE_24_EVIDENCE !== "1") return;
+  await mkdir(issue24EvidenceRoot, { recursive: true });
+  const recoveryTop = await page.locator(".recovery-panel").evaluate((element) => {
+    return element.getBoundingClientRect().top + window.scrollY;
+  });
+  await page.evaluate(
+    (top) => window.scrollTo({ behavior: "instant", top: Math.max(0, top - 16) }),
+    recoveryTop,
+  );
+  await page.screenshot({
+    animations: "disabled",
+    path: path.join(issue24EvidenceRoot, name),
   });
 }
 
@@ -430,6 +447,176 @@ test("keeps expired approval authority visibly disabled", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Approve exact plan" })).toBeDisabled();
 });
 
+test("renders exact post-action recovery authority and records explicit human closure", async ({
+  page,
+}) => {
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  const { captured, data, oidcToken } = await installPreparedApi(page, {
+    recoveryState: "recovery_verified",
+  });
+  const recovery = data.recovery;
+  if (recovery === null || recovery.packet === null) {
+    throw new Error("Prepared recovery must include its verified packet");
+  }
+  await page.goto("/");
+
+  const panel = page.locator(".recovery-panel");
+  await expect(
+    panel.getByRole("heading", { name: "Recovery verification and closure" }),
+  ).toBeVisible();
+  await expect(panel.getByText(/command success alone does not establish recovery/i)).toBeVisible();
+  await expect(panel.locator(".recovery-check-list > li")).toHaveCount(7);
+  await expect(
+    panel.getByText(recovery.snapshot.action_outcome.outcome_sha256).first(),
+  ).toBeVisible();
+  await expect(
+    panel
+      .locator(".recovery-safe-work")
+      .getByText(recovery.snapshot.action_outcome.safe_complement_before_sha256 ?? "missing"),
+  ).toHaveCount(3);
+  await panel.getByText("Open cited evidence and artifact records").click();
+  await expect(panel.locator(".recovery-record")).toHaveCount(22);
+  await captureIssue24Evidence(page, "recovery-verified-1440x900.png");
+
+  const reason = "Reviewed exact post-action evidence and safe-work preservation.";
+  await panel.getByRole("textbox", { name: "Closure reason" }).fill(reason);
+  const trigger = panel.getByRole("button", { name: "Close verified recovery" });
+  await trigger.click();
+  const dialog = page.getByRole("alertdialog", { name: "Close this exact verified recovery?" });
+  await expect(dialog).toContainText(recovery.packet.packet_sha256);
+  await expect(dialog).toContainText(recovery.packet.outcome_sha256);
+  const confirm = dialog.getByRole("button", { name: "Confirm closure" });
+  const cancel = dialog.getByRole("button", { name: "Cancel" });
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await page.getByRole("button", { name: "Confirm closure" }).click();
+
+  await expect(panel.getByText(/one immutable human closure record/i)).toBeVisible();
+  await expect(panel.getByText(reason)).toBeVisible();
+  const closureRequest = captured.find((request) => request.url.endsWith("/recovery/close"));
+  expect(closureRequest?.headers.authorization).toBe(`Bearer ${oidcToken}`);
+  expect(closureRequest?.body).toEqual({
+    schema: "recovery-closure-request/v1",
+    expected_incident_version: recovery.current_incident_version,
+    expected_workflow_version: recovery.workflow_version,
+    expected_packet_id: recovery.packet.packet_id,
+    expected_packet_sha256: recovery.packet.packet_sha256,
+    expected_outcome_id: recovery.packet.outcome_id,
+    expected_outcome_sha256: recovery.packet.outcome_sha256,
+    reason,
+    idempotency_key: expect.stringMatching(/^recovery-close-/),
+  });
+});
+
+test("keeps unresolved recovery fail-closed and legible on a small viewport", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize(MOBILE_VIEWPORT);
+  await installPreparedApi(page, { recoveryState: "recovery_unresolved" });
+  await page.goto("/");
+
+  const panel = page.locator(".recovery-panel");
+  await expect(
+    panel.locator('.status-badge[data-status="recovery_unresolved"]').first(),
+  ).toBeVisible();
+  await expect(panel.getByRole("textbox", { name: "Closure reason" })).toBeDisabled();
+  await expect(panel.getByRole("button", { name: "Close verified recovery" })).toBeDisabled();
+  await panel.getByText("Open cited evidence and artifact records").click();
+  await expect(panel.getByText("Late evidence")).toBeVisible();
+  await panel.scrollIntoViewIfNeeded();
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+
+  const results = await new AxeBuilder({ page }).withTags([...WCAG_TAGS]).analyze();
+  await testInfo.attach("recovery-axe-wcag-results", {
+    body: Buffer.from(JSON.stringify(results, null, 2)),
+    contentType: "application/json",
+  });
+  expect(
+    results.violations,
+    results.violations.map((violation) => `${violation.id}: ${violation.help}`).join("\n"),
+  ).toEqual([]);
+  const unresolvedContrast = results.incomplete.filter(
+    (result) =>
+      result.id === "color-contrast" &&
+      (result.impact === "serious" ||
+        result.impact === "critical" ||
+        result.nodes.some((node) => node.impact === "serious" || node.impact === "critical")),
+  );
+  expect(
+    unresolvedContrast,
+    unresolvedContrast
+      .map((result) => `${result.id}: ${result.help} (${result.nodes.length} nodes)`)
+      .join("\n"),
+  ).toEqual([]);
+  await captureIssue24Evidence(page, "recovery-unresolved-390x844.png");
+  if (process.env.COLORTRACE_CAPTURE_ISSUE_24_EVIDENCE === "1") {
+    const screenshotPath = path.join(issue24EvidenceRoot, "recovery-unresolved-390x844.png");
+    await writeFile(
+      path.join(issue24EvidenceRoot, "accessibility-summary.json"),
+      `${JSON.stringify(
+        {
+          schema: "colortrace-accessibility-evidence/v1",
+          issue: 24,
+          generated_at: new Date().toISOString(),
+          source_test: "packages/web/e2e/incident-workspace.spec.ts",
+          engine: results.testEngine,
+          viewport: MOBILE_VIEWPORT,
+          tags: WCAG_TAGS,
+          violations: results.violations.length,
+          incomplete: results.incomplete.length,
+          serious_or_critical_color_contrast_incomplete: unresolvedContrast.length,
+          passes: results.passes.length,
+          screenshots: [
+            {
+              path: "packages/web/evidence/issue-24/recovery-unresolved-390x844.png",
+              sha256: createHash("sha256")
+                .update(await readFile(screenshotPath))
+                .digest("hex"),
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+  }
+});
+
+test("retries an ambiguous closure with one retained exact idempotency key", async ({ page }) => {
+  const { captured } = await installPreparedApi(page, {
+    closureMode: "ambiguous-once",
+    recoveryState: "recovery_verified",
+  });
+  await page.goto("/");
+
+  const panel = page.locator(".recovery-panel");
+  await panel.getByRole("textbox", { name: "Closure reason" }).fill("Reviewed exact recovery.");
+  await panel.getByRole("button", { name: "Close verified recovery" }).click();
+  await page.getByRole("button", { name: "Confirm closure" }).click();
+  await expect(panel.getByRole("alert")).toContainText(/closure response was ambiguous/i);
+  await panel.getByRole("button", { name: "Retry exact closure" }).click();
+
+  await expect(panel.getByText(/one immutable human closure record/i)).toBeVisible();
+  const closures = captured.filter((request) => request.url.endsWith("/recovery/close"));
+  expect(closures).toHaveLength(2);
+  const first = closures[0]?.body as { idempotency_key: string } | undefined;
+  const second = closures[1]?.body as { idempotency_key: string } | undefined;
+  expect(first).toBeDefined();
+  expect(second?.idempotency_key).toBe(first?.idempotency_key);
+});
+
 test("renders rejected plans as decided and exposes no dispatch control", async ({ page }) => {
   await installPreparedApi(page, { responsePlanState: "rejected" });
   await page.goto("/");
@@ -572,6 +759,7 @@ test("uses a same-origin in-memory OIDC token provider without browser token sto
     "/v1/incidents",
     `/v1/incidents/${data.incident.incident_id}/workspace`,
     `/v1/incidents/${data.incident.incident_id}/response-plan`,
+    `/v1/incidents/${data.incident.incident_id}/recovery`,
   ]);
   const seenPaths = new Set(captured.map((request) => new URL(request.url).pathname));
   expect(seenPaths).toEqual(expectedPaths);

@@ -10,6 +10,8 @@ import {
 } from "./client";
 import { client } from "./client.gen";
 import type {
+  AdmitRecoveryVerificationErrors,
+  AdmitRecoveryVerificationResponses,
   AdmitSimulatorActionErrors,
   AdmitSimulatorActionRequest,
   AdmitSimulatorActionResponses,
@@ -18,6 +20,8 @@ import type {
   ApproveResponsePlanResponses,
   AuthorizeResponsePlanDispatchErrors,
   AuthorizeResponsePlanDispatchResponses,
+  CloseRecoveryErrors,
+  CloseRecoveryResponses,
   ConsumeResponsePlanDispatchErrors,
   ConsumeResponsePlanDispatchRequest,
   ConsumeResponsePlanDispatchResponses,
@@ -30,12 +34,16 @@ import type {
   EditResponsePlanErrors,
   EditResponsePlanRequest,
   EditResponsePlanResponses,
+  ExecuteRecoveryVerificationTaskErrors,
+  ExecuteRecoveryVerificationTaskResponses,
   GetIncidentErrors,
   GetIncidentResponses,
   GetIncidentWorkspaceErrors,
   GetIncidentWorkspaceResponses,
   GetOperatorSessionErrors,
   GetOperatorSessionResponses,
+  GetRecoveryReviewErrors,
+  GetRecoveryReviewResponses,
   GetResponsePlanDraftErrors,
   GetResponsePlanDraftResponses,
   GetResponsePlanReviewErrors,
@@ -43,6 +51,10 @@ import type {
   Identifier,
   ListIncidentsErrors,
   ListIncidentsResponses,
+  RecoveryClosureRequest,
+  RecoveryVerificationAdmissionRequest,
+  RecoveryVerificationTask,
+  RecoveryVerificationTaskKey,
   RejectResponsePlanErrors,
   RejectResponsePlanRequest,
   RejectResponsePlanResponses,
@@ -113,7 +125,13 @@ export const createIncident = <ThrowOnError extends boolean = false>(
     "data"
   >({
     responseStyle: "data",
-    security: [{ scheme: "bearer", type: "http" }],
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
     url: "/v1/incidents",
     ...options,
     ...params,
@@ -187,6 +205,69 @@ export const getIncidentWorkspace = <ThrowOnError extends boolean = false>(
     url: "/v1/incidents/{incidentId}/workspace",
     ...options,
     ...params,
+  });
+};
+
+export const getRecoveryReview = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<GetRecoveryReviewResponses, GetRecoveryReviewErrors, ThrowOnError, "data"> => {
+  const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "incidentId" }] }]);
+  return (options?.client ?? client).get<
+    GetRecoveryReviewResponses,
+    GetRecoveryReviewErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    url: "/v1/incidents/{incidentId}/recovery",
+    ...options,
+    ...params,
+  });
+};
+
+export const closeRecovery = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+    recoveryClosureRequest: RecoveryClosureRequest;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<CloseRecoveryResponses, CloseRecoveryErrors, ThrowOnError, "data"> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "path", key: "incidentId" },
+          { key: "recoveryClosureRequest", map: "body" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).post<
+    CloseRecoveryResponses,
+    CloseRecoveryErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
+    url: "/v1/incidents/{incidentId}/recovery/close",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
   });
 };
 
@@ -265,7 +346,13 @@ export const createResponsePlan = <ThrowOnError extends boolean = false>(
     "data"
   >({
     responseStyle: "data",
-    security: [{ scheme: "bearer", type: "http" }],
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
     url: "/v1/incidents/{incidentId}/response-plan",
     ...options,
     ...params,
@@ -302,7 +389,13 @@ export const editResponsePlan = <ThrowOnError extends boolean = false>(
     "data"
   >({
     responseStyle: "data",
-    security: [{ scheme: "bearer", type: "http" }],
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
     url: "/v1/incidents/{incidentId}/response-plan",
     ...options,
     ...params,
@@ -339,7 +432,13 @@ export const approveResponsePlan = <ThrowOnError extends boolean = false>(
     "data"
   >({
     responseStyle: "data",
-    security: [{ scheme: "bearer", type: "http" }],
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
     url: "/v1/incidents/{incidentId}/response-plan/approve",
     ...options,
     ...params,
@@ -376,7 +475,13 @@ export const rejectResponsePlan = <ThrowOnError extends boolean = false>(
     "data"
   >({
     responseStyle: "data",
-    security: [{ scheme: "bearer", type: "http" }],
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
     url: "/v1/incidents/{incidentId}/response-plan/reject",
     ...options,
     ...params,
@@ -418,7 +523,13 @@ export const authorizeResponsePlanDispatch = <ThrowOnError extends boolean = fal
     "data"
   >({
     responseStyle: "data",
-    security: [{ scheme: "bearer", type: "http" }],
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
     url: "/v1/incidents/{incidentId}/response-plan/dispatch-authorizations",
     ...options,
     ...params,
@@ -460,8 +571,110 @@ export const consumeResponsePlanDispatch = <ThrowOnError extends boolean = false
     "data"
   >({
     responseStyle: "data",
-    security: [{ scheme: "bearer", type: "http" }],
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
     url: "/v1/incidents/{incidentId}/response-plan/dispatch-consumptions",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
+  });
+};
+
+export const admitRecoveryVerification = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+    recoveryVerificationAdmissionRequest: RecoveryVerificationAdmissionRequest;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<
+  AdmitRecoveryVerificationResponses,
+  AdmitRecoveryVerificationErrors,
+  ThrowOnError,
+  "data"
+> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "path", key: "incidentId" },
+          { key: "recoveryVerificationAdmissionRequest", map: "body" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).post<
+    AdmitRecoveryVerificationResponses,
+    AdmitRecoveryVerificationErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [
+      {
+        key: "serviceOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
+    url: "/internal/v1/incidents/{incidentId}/recovery/verifications",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
+  });
+};
+
+export const executeRecoveryVerificationTask = <ThrowOnError extends boolean = false>(
+  parameters: {
+    taskKey: RecoveryVerificationTaskKey;
+    recoveryVerificationTask: RecoveryVerificationTask;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<
+  ExecuteRecoveryVerificationTaskResponses,
+  ExecuteRecoveryVerificationTaskErrors,
+  ThrowOnError,
+  "data"
+> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "path", key: "taskKey" },
+          { key: "recoveryVerificationTask", map: "body" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).post<
+    ExecuteRecoveryVerificationTaskResponses,
+    ExecuteRecoveryVerificationTaskErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [
+      {
+        key: "serviceOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
+    url: "/private/v1/recovery-verification-tasks/{taskKey}",
     ...options,
     ...params,
     headers: {
@@ -502,7 +715,13 @@ export const admitSimulatorAction = <ThrowOnError extends boolean = false>(
     "data"
   >({
     responseStyle: "data",
-    security: [{ scheme: "bearer", type: "http" }],
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
     url: "/internal/v1/incidents/{incidentId}/simulator-actions",
     ...options,
     ...params,
@@ -524,7 +743,13 @@ export const getOperatorSession = <ThrowOnError extends boolean = false>(
     "data"
   >({
     responseStyle: "data",
-    security: [{ scheme: "bearer", type: "http" }],
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
     url: "/v1/session",
     ...options,
   });

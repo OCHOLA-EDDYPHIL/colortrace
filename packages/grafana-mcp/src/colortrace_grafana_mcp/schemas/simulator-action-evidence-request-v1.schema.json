@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-action-evidence-request-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "request_id", "evidence_request_id", "evidence_request_sha256",
+    "catalog_sha256", "incident_id", "outcome_id", "outcome_sha256",
+    "snapshot_id", "snapshot_sha256", "action_id", "operation_id",
+    "action_started_at", "action_completed_at", "snapshot_observed_at",
+    "binding", "trace_ids", "predecessor_event_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "simulator-action-evidence-request/v1"},
+    "request_id": {"type": "string", "pattern": "^simulator-action-evidence:[0-9a-f]{64}$"},
+    "evidence_request_id": {"type": "string", "pattern": "^recovery-evidence-request:[0-9a-f]{64}$"},
+    "evidence_request_sha256": {"$ref": "#/$defs/digest"},
+    "catalog_sha256": {"$ref": "#/$defs/digest"},
+    "incident_id": {"$ref": "#/$defs/id"},
+    "outcome_id": {"type": "string", "pattern": "^simulator-action-outcome:[0-9a-f]{64}$"},
+    "outcome_sha256": {"$ref": "#/$defs/digest"},
+    "snapshot_id": {"type": "string", "pattern": "^simulator-recovery-snapshot:[0-9a-f]{64}$"},
+    "snapshot_sha256": {"$ref": "#/$defs/digest"},
+    "action_id": {"type": "string", "pattern": "^simulator-action:[0-9a-f]{64}$"},
+    "operation_id": {"type": "string", "pattern": "^dispatch-operation:[0-9a-f]{64}$"},
+    "action_started_at": {"type": "string", "format": "date-time"},
+    "action_completed_at": {"type": "string", "format": "date-time"},
+    "snapshot_observed_at": {"type": "string", "format": "date-time"},
+    "binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["prometheus_datasource_uid", "loki_datasource_uid", "tempo_datasource_uid"],
+      "properties": {
+        "prometheus_datasource_uid": {"$ref": "#/$defs/uid"},
+        "loki_datasource_uid": {"$ref": "#/$defs/uid"},
+        "tempo_datasource_uid": {"$ref": "#/$defs/uid"}
+      }
+    },
+    "trace_ids": {
+      "type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^(?!0{32}$)[0-9a-f]{32}$"}
+    },
+    "predecessor_event_sha256": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"},
+    "uid": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
