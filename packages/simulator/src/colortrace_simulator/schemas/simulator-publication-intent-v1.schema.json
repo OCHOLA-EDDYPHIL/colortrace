@@ -88,7 +88,7 @@
         "command_id": {"$ref": "#/$defs/id"},
         "result_kind": {"enum": ["quarantine", "frame", "derivative"]},
         "target": {"$ref": "#/$defs/target"},
-        "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "trace_id": {"type": "string", "pattern": "^(?!0{32}$)[0-9a-f]{32}$"},
         "before": {"type": "object"},
         "after": {"type": "object"}
       }

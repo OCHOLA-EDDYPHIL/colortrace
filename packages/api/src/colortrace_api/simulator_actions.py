@@ -10,6 +10,7 @@ from colortrace_simulator.authority import (
     ExecutorAuthorization,
     SimulatorAuthorityError,
     SimulatorExecutorBoundary,
+    validate_schema,
 )
 
 from .auth import Principal
@@ -78,7 +79,7 @@ class SimulatorActionCoordinator:
         values = (body.get("task_key"), body.get("operation_id"), body.get("payload_sha256"))
         if any(not isinstance(value, str) for value in values):
             raise SimulatorAuthorityError("admission-request-invalid")
-        return self._service.admit(
+        admission = self._service.admit(
             DispatchIdentity(
                 task_key=cast(str, values[0]),
                 operation_id=cast(str, values[1]),
@@ -86,6 +87,11 @@ class SimulatorActionCoordinator:
             ),
             executor=executor,
         )
+        try:
+            validate_schema("simulator-action-admission-v1.schema.json", admission)
+        except SimulatorAuthorityError as error:
+            raise SimulatorAuthorityError("admission-response-invalid") from error
+        return admission
 
 
 class SimulatorActionApi(Protocol):

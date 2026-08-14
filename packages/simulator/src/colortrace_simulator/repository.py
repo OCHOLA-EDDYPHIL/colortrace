@@ -34,6 +34,7 @@ from .models import (
 CLAIM_LEASE_SECONDS = 30
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}")
 _REASON = re.compile(r"[a-z][a-z0-9-]{1,63}")
+_TELEMETRY_EVENT_ID = re.compile(r"simulator-action-event:[0-9a-f]{64}")
 
 
 class SimulatorRepositoryError(RuntimeError):
@@ -133,6 +134,16 @@ CREATE TABLE simulator_action_outcomes (
     document BLOB NOT NULL,
     FOREIGN KEY (action_id) REFERENCES simulator_actions(action_id)
 );
+CREATE TABLE simulator_action_telemetry_receipts (
+    action_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK (sequence >= 1),
+    receipt_sha256 TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('emitted', 'failed')),
+    attempted_at TEXT NOT NULL,
+    document BLOB NOT NULL,
+    PRIMARY KEY (action_id, sequence),
+    FOREIGN KEY (action_id) REFERENCES simulator_action_outcomes(action_id)
+);
 CREATE TABLE simulator_action_audit_events (
     action_id TEXT NOT NULL,
     sequence INTEGER NOT NULL CHECK (sequence >= 1),
@@ -219,6 +230,7 @@ for _table in (
     "simulator_publication_intents",
     "simulator_publication_receipts",
     "simulator_action_outcomes",
+    "simulator_action_telemetry_receipts",
     "simulator_action_audit_events",
     "simulator_idempotency",
 ):
@@ -272,6 +284,23 @@ def _require_identifier(value: Any, *, code: str) -> str:
     if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
         raise SimulatorRepositoryError(code)
     return value
+
+
+def _service_actor_reference(actor: Mapping[str, str]) -> str:
+    digest = prefixed_sha256(
+        canonical_json_bytes(
+            {
+                "schema": "simulator-service-actor-reference/v1",
+                "actor": {
+                    "issuer": actor["issuer"],
+                    "subject": actor["subject"],
+                    "audience": actor["audience"],
+                    "kind": actor["kind"],
+                },
+            }
+        )
+    )
+    return f"service-actor:{digest.removeprefix('sha256:')}"
 
 
 def _parse_time(value: Any, *, code: str) -> datetime:
@@ -825,6 +854,9 @@ class SQLiteSimulatorRepository:
         if predecessor != head["event_sha256"] or seen != set(records):
             raise SimulatorRepositoryError("audit-record-binding")
         audit_by_record = {cast(str, event["record_sha256"]): event for event in audit_events}
+        executor_actor = cast(Mapping[str, str], admission["executor_actor"])
+        if audit_events[0]["actor_id"] != _service_actor_reference(executor_actor):
+            raise SimulatorRepositoryError("stored-admission-binding")
         if (
             audit_events[0]["event_type"] != "dispatch.admitted"
             or audit_events[0]["record_sha256"] != admission["admission_sha256"]
@@ -1138,7 +1170,7 @@ class SQLiteSimulatorRepository:
                 action_id=action.action_id,
                 event_type="dispatch.admitted",
                 record_sha256=cast(str, admission["admission_sha256"]),
-                actor_id=normalized_actor["subject"],
+                actor_id=_service_actor_reference(normalized_actor),
                 claim_generation=None,
                 occurred_at=now,
             )
@@ -1445,6 +1477,7 @@ class SQLiteSimulatorRepository:
             if (
                 not isinstance(trace_id, str)
                 or re.fullmatch(r"[0-9a-f]{32}", trace_id) is None
+                or trace_id == "0" * 32
                 or trace_id in traces
             ):
                 raise SimulatorRepositoryError("command-result-trace-invalid")
@@ -2161,6 +2194,200 @@ class SQLiteSimulatorRepository:
                 (action_id,),
             ).fetchone()
             return None if outcome is None else self.decode(outcome["document"])
+
+    @staticmethod
+    def _validate_telemetry_receipt(
+        receipt: Mapping[str, Any],
+        *,
+        outcome: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        document = cast(dict[str, Any], plain_json(receipt))
+        if set(document) != {
+            "schema",
+            "outcome_id",
+            "outcome_sha256",
+            "action_id",
+            "attempted_at",
+            "event_ids",
+            "emitted_event_ids",
+            "status",
+            "error_code",
+            "receipt_sha256",
+        } or any(
+            document.get(key) != outcome.get(key)
+            for key in ("outcome_id", "outcome_sha256", "action_id")
+        ):
+            raise SimulatorRepositoryError("telemetry-receipt-binding-invalid")
+        if document.get("schema") != "simulator-action-telemetry-receipt/v1":
+            raise SimulatorRepositoryError("telemetry-receipt-schema-invalid")
+        attempted_at = normalize_time(
+            cast(str, document.get("attempted_at")),
+            code="telemetry-receipt-time-invalid",
+        )
+        if _parse_time(attempted_at, code="telemetry-receipt-time-invalid") < _parse_time(
+            outcome["completed_at"],
+            code="outcome-time-invalid",
+        ):
+            raise SimulatorRepositoryError("telemetry-receipt-time-invalid")
+        event_ids = document.get("event_ids")
+        emitted_ids = document.get("emitted_event_ids")
+        if (
+            not isinstance(event_ids, list)
+            or not 2 <= len(event_ids) <= 192
+            or len(event_ids) != len(set(event_ids))
+            or any(
+                not isinstance(value, str) or _TELEMETRY_EVENT_ID.fullmatch(value) is None
+                for value in event_ids
+            )
+            or not isinstance(emitted_ids, list)
+            or len(emitted_ids) > len(event_ids)
+            or len(emitted_ids) != len(set(emitted_ids))
+            or event_ids[: len(emitted_ids)] != emitted_ids
+        ):
+            raise SimulatorRepositoryError("telemetry-receipt-events-invalid")
+        status = document.get("status")
+        error_code = document.get("error_code")
+        if status == "emitted":
+            if error_code is not None or emitted_ids != event_ids:
+                raise SimulatorRepositoryError("telemetry-receipt-status-invalid")
+        elif status == "failed":
+            if error_code not in {"sink-emit-failed", "sink-flush-failed"}:
+                raise SimulatorRepositoryError("telemetry-receipt-status-invalid")
+        else:
+            raise SimulatorRepositoryError("telemetry-receipt-status-invalid")
+        receipt_sha256 = document.get("receipt_sha256")
+        body = {key: child for key, child in document.items() if key != "receipt_sha256"}
+        if receipt_sha256 != prefixed_sha256(canonical_json_bytes(body)):
+            raise SimulatorRepositoryError("telemetry-receipt-digest-invalid")
+        return document
+
+    def record_telemetry_receipt(
+        self,
+        identity: DispatchIdentity,
+        receipt: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        action_id = stable_action_id(identity)
+        with self.transaction(write=True) as connection:
+            self._validate_history(connection, action_id)
+            row = self._action_row(connection, action_id)
+            self._assert_identity(row, identity)
+            outcome_row = connection.execute(
+                "SELECT document FROM simulator_action_outcomes WHERE action_id = ?",
+                (action_id,),
+            ).fetchone()
+            if outcome_row is None:
+                raise SimulatorRepositoryError("action-outcome-missing")
+            outcome = self.decode(outcome_row["document"])
+            document = self._validate_telemetry_receipt(receipt, outcome=outcome)
+            existing = connection.execute(
+                "SELECT action_id, document FROM simulator_action_telemetry_receipts "
+                "WHERE receipt_sha256 = ?",
+                (document["receipt_sha256"],),
+            ).fetchone()
+            if existing is not None:
+                if existing["action_id"] != action_id:
+                    raise SimulatorRepositoryError("telemetry-receipt-conflict")
+                stored = self.decode(existing["document"])
+                if stored != document:
+                    raise SimulatorRepositoryError("telemetry-receipt-conflict")
+                return stored
+            previous = connection.execute(
+                "SELECT sequence, attempted_at FROM simulator_action_telemetry_receipts "
+                "WHERE action_id = ? ORDER BY sequence DESC LIMIT 1",
+                (action_id,),
+            ).fetchone()
+            sequence = 1 if previous is None else cast(int, previous["sequence"]) + 1
+            if previous is not None and _parse_time(
+                document["attempted_at"], code="telemetry-receipt-time-invalid"
+            ) < _parse_time(previous["attempted_at"], code="telemetry-receipt-time-invalid"):
+                raise SimulatorRepositoryError("telemetry-receipt-clock-regression")
+            connection.execute(
+                "INSERT INTO simulator_action_telemetry_receipts("
+                "action_id, sequence, receipt_sha256, status, attempted_at, document) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    action_id,
+                    sequence,
+                    document["receipt_sha256"],
+                    document["status"],
+                    document["attempted_at"],
+                    canonical_json_bytes(document),
+                ),
+            )
+            return document
+
+    def telemetry_delivered(self, identity: DispatchIdentity) -> bool:
+        action_id = stable_action_id(identity)
+        with self.transaction(write=False) as connection:
+            self._validate_history(connection, action_id)
+            row = self._action_row(connection, action_id)
+            self._assert_identity(row, identity)
+            delivered = connection.execute(
+                "SELECT 1 FROM simulator_action_telemetry_receipts "
+                "WHERE action_id = ? AND status = 'emitted' LIMIT 1",
+                (action_id,),
+            ).fetchone()
+            return delivered is not None
+
+    def telemetry_history(self, identity: DispatchIdentity) -> list[dict[str, Any]]:
+        action_id = stable_action_id(identity)
+        with self.transaction(write=False) as connection:
+            self._validate_history(connection, action_id)
+            row = self._action_row(connection, action_id)
+            self._assert_identity(row, identity)
+            receipts = connection.execute(
+                "SELECT document FROM simulator_action_telemetry_receipts "
+                "WHERE action_id = ? ORDER BY sequence",
+                (action_id,),
+            ).fetchall()
+            return [self.decode(receipt["document"]) for receipt in receipts]
+
+    def pending_action_identities(self, *, limit: int = 100) -> list[DispatchIdentity]:
+        """Return restart-safe work without exposing stored commands to the runner."""
+
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1_000:
+            raise SimulatorRepositoryError("pending-action-limit-invalid")
+        with self.transaction(write=False) as connection:
+            rows = connection.execute(
+                "SELECT action_id, task_key, operation_id, payload_sha256 "
+                "FROM simulator_actions WHERE status IN "
+                "('queued', 'running', 'publication_pending') "
+                "ORDER BY CASE status WHEN 'publication_pending' THEN 0 "
+                "WHEN 'running' THEN 1 ELSE 2 END, admitted_at, action_id LIMIT ?",
+                (limit,),
+            ).fetchall()
+            identities: list[DispatchIdentity] = []
+            for row in rows:
+                action_id = cast(str, row["action_id"])
+                self._validate_history(connection, action_id)
+                identity = DispatchIdentity(
+                    task_key=cast(str, row["task_key"]),
+                    operation_id=cast(str, row["operation_id"]),
+                    payload_sha256=cast(str, row["payload_sha256"]),
+                )
+                if stable_action_id(identity) != action_id:
+                    raise SimulatorRepositoryError("stored-action-binding")
+                identities.append(identity)
+            return identities
+
+    def pending_telemetry_outcomes(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1_000:
+            raise SimulatorRepositoryError("telemetry-pending-limit-invalid")
+        with self.transaction(write=False) as connection:
+            rows = connection.execute(
+                "SELECT outcome.action_id, outcome.document "
+                "FROM simulator_action_outcomes AS outcome "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM simulator_action_telemetry_receipts AS receipt "
+                "WHERE receipt.action_id = outcome.action_id AND receipt.status = 'emitted'"
+                ") ORDER BY outcome.action_id LIMIT ?",
+                (limit,),
+            ).fetchall()
+            outcomes: list[dict[str, Any]] = []
+            for row in rows:
+                self._validate_history(connection, cast(str, row["action_id"]))
+                outcomes.append(self.decode(row["document"]))
+            return outcomes
 
     def audit_history(self, identity: DispatchIdentity) -> list[dict[str, Any]]:
         action_id = stable_action_id(identity)

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import PyOpenColorIO as ocio  # type: ignore[import-untyped]
-from colortrace_fixture.fixture import (  # type: ignore[import-untyped]
+from colortrace_fixture.fixture import (
     CHANNELS,
     HEIGHT,
     OCIO_VERSION,
@@ -339,8 +339,10 @@ class OcioRenderer:
             raise RendererError("render-transform-prohibited")
         if sha256_bytes(request.source_png) != request.source_png_sha256:
             raise RendererError("source-png-digest-mismatch")
-        if len(request.trace_id) != 32 or any(
-            character not in "0123456789abcdef" for character in request.trace_id
+        if (
+            len(request.trace_id) != 32
+            or request.trace_id == "0" * 32
+            or any(character not in "0123456789abcdef" for character in request.trace_id)
         ):
             raise RendererError("render-trace-id-invalid")
         samples = decode_generated_source_png(request.source_png)

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import multiprocessing
 import os
 import shutil
 import stat
+import threading
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -214,12 +216,85 @@ def test_crash_recovery_reconciles_exact_sealed_candidate(
     assert observed.state == expected_state
     result = recovered.compare_and_swap(prepared)
     assert result.state in {"promoted", "already-promoted"}
+    if result.state == "already-promoted":
+        assert result.promoted_at == result.observed_at
+        assert result.promoted_at is not None
+        assert result.promoted_at >= prepared.prepared_at
     final = recovered.inspect_operation(action.identity.operation_id)
     assert final.state == "promoted"
     assert final.prepared is not None
     assert final.prepared.publication_id == prepared.publication_id
     assert final.prepared.candidate_seal_sha256 == prepared.candidate_seal_sha256
     assert final.prepared.candidate_pointer_sha256 == prepared.candidate_pointer_sha256
+
+
+def test_abrupt_process_death_reclaims_partial_stage_under_operation_lock(
+    tmp_path: Path,
+    canonical_bundle: Path,
+) -> None:
+    workspace = tmp_path / "workspace-abrupt"
+    port = LocalPublicationPort.bootstrap(root=workspace, fixture_bundle=canonical_bundle)
+    plan = port.canonical_plan_inputs()
+    action = _action(plan, "operation-abrupt")
+    traces = _traces(action)
+
+    def killed_writer() -> None:
+        def kill(point: str) -> None:
+            if point == "candidate-copied":
+                os._exit(17)
+
+        child_port = LocalPublicationPort(workspace, fault_hook=kill)
+        child_port.prepare(child_port.snapshot_for_action(action), traces)
+
+    process = multiprocessing.get_context("fork").Process(target=killed_writer)
+    process.start()
+    process.join(timeout=30)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=5)
+        pytest.fail("abrupt writer did not terminate")
+    assert process.exitcode == 17
+    token = hashlib.sha256(action.identity.operation_id.encode()).hexdigest()
+    partial = workspace / "staging" / f"prep-{token}"
+    assert partial.is_dir()
+    assert not (partial / "manifests/candidate-seal.json").exists()
+
+    recovered = LocalPublicationPort(workspace)
+    prepared = recovered.prepare(recovered.snapshot_for_action(action), traces)
+    assert prepared.operation_id == action.identity.operation_id
+    assert recovered.inspect_operation(action.identity.operation_id).state == "staged"
+
+
+def test_prepare_operation_lock_does_not_invert_publication_cas_lock(
+    tmp_path: Path,
+    canonical_bundle: Path,
+) -> None:
+    port = _port(tmp_path, canonical_bundle)
+    plan = port.canonical_plan_inputs()
+    action = _action(plan, "operation-lock-order")
+    snapshot = port.snapshot_for_action(action)
+    publication_locked = threading.Event()
+    prepare_pulsed = threading.Event()
+    observed: list[bool] = []
+
+    def hold_publication_lock() -> None:
+        with port._publication_lock():
+            publication_locked.set()
+            observed.append(prepare_pulsed.wait(timeout=2))
+
+    holder = threading.Thread(target=hold_publication_lock, daemon=True)
+    holder.start()
+    assert publication_locked.wait(timeout=2)
+
+    def pulse() -> None:
+        prepare_pulsed.set()
+        raise SimulatorBundleError("lock-order-probe")
+
+    with pytest.raises(SimulatorBundleError, match="lock-order-probe"):
+        port.prepare(snapshot, _traces(action), heartbeat=pulse)
+    holder.join(timeout=2)
+    assert not holder.is_alive()
+    assert observed == [True]
 
 
 def test_active_candidate_rejects_leaf_tamper_and_missing_control(
@@ -286,6 +361,22 @@ def test_trace_ids_are_fresh_across_every_persisted_action_record(
         port.prepare(snapshot, traces)
 
 
+def test_all_zero_trace_id_is_rejected_before_candidate_creation(
+    tmp_path: Path,
+    canonical_bundle: Path,
+) -> None:
+    port = _port(tmp_path, canonical_bundle)
+    plan = port.canonical_plan_inputs()
+    action = _action(plan, "operation-zero-trace")
+    snapshot = port.snapshot_for_action(action)
+    traces = _traces(action)
+    traces[next(iter(traces))] = "0" * 32
+
+    with pytest.raises(SimulatorBundleError, match="trace-id-invalid"):
+        port.prepare(snapshot, traces)
+    assert list((tmp_path / "workspace/staging").iterdir()) == []
+
+
 def test_stale_action_envelope_changes_no_publication_state(
     tmp_path: Path,
     canonical_bundle: Path,
@@ -321,6 +412,9 @@ def test_competing_sealed_candidate_loses_compare_and_swap_without_pointer_chang
     assert loser.before_pointer_sha256 == winner.after_pointer_sha256
     assert loser.before_pointer_sha256 == loser.after_pointer_sha256
     assert port.inspect_operation(second.identity.operation_id).state == "conflict"
+    port.discard(second_prepared)
+    assert port.inspect_operation(second.identity.operation_id).state == "not-found"
+    assert list((tmp_path / "workspace/staging").iterdir()) == []
 
 
 def test_cleanup_unlinks_injected_symlink_without_touching_target(

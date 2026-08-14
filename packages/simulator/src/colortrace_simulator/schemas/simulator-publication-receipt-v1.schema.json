@@ -21,7 +21,10 @@
     "after_generation": {"type": "integer", "minimum": 1},
     "pointer_changed": {"type": "boolean"},
     "recovered": {"type": "boolean"},
-    "promoted_at": {"oneOf": [{"type": "null"}, {"type": "string", "format": "date-time"}]},
+    "promoted_at": {
+      "description": "The CAS time, or the first durable observation time when a completed CAS is recovered.",
+      "oneOf": [{"type": "null"}, {"type": "string", "format": "date-time"}]
+    },
     "observed_at": {"type": "string", "format": "date-time"},
     "receipt_sha256": {"$ref": "#/$defs/digest"}
   },

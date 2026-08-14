@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cache
@@ -315,6 +316,17 @@ class SimulatorAuthorityBoundary:
             command.get("namespace") != SIMULATOR_NAMESPACE for command in commands
         ):
             raise SimulatorAuthorityError("dispatch-namespace-invalid")
+        targets = cast(list[dict[str, Any]], authorization["targets"])
+        exclusions = cast(list[dict[str, Any]], authorization["exclusions"])
+        target_profile = Counter(str(target.get("kind")) for target in targets)
+        if (
+            len(commands) != 5
+            or len(targets) != 5
+            or target_profile != {"color-resource": 1, "frame": 3, "derivative": 1}
+            or not exclusions
+            or any(target.get("kind") != "frame" for target in exclusions)
+        ):
+            raise SimulatorAuthorityError("dispatch-profile-invalid")
 
         plan_events = [
             event for event in events if event.get("event_type") in {"plan.created", "plan.edited"}
@@ -351,8 +363,6 @@ class SimulatorAuthorityBoundary:
         ):
             raise SimulatorAuthorityError("dispatch-source-order-invalid")
 
-        targets = cast(list[dict[str, Any]], authorization["targets"])
-        exclusions = cast(list[dict[str, Any]], authorization["exclusions"])
         command_envelopes = {
             canonical_json_bytes(cast(Mapping[str, Any], command["action_envelope"]))
             for command in commands

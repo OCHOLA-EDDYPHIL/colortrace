@@ -16,7 +16,7 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
-from colortrace_fixture.fixture import OCIO_VERSION  # type: ignore[import-untyped]
+from colortrace_fixture.fixture import OCIO_VERSION
 from jsonschema import (  # type: ignore[import-untyped]
     Draft202012Validator,
     FormatChecker,
@@ -640,6 +640,35 @@ class LocalPublicationPort:
             yield
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    @contextmanager
+    def _operation_lock(self, operation_id: str) -> Any:
+        operation = _identifier(operation_id, code="operation-id-invalid")
+        token = hashlib.sha256(operation.encode("utf-8")).hexdigest()
+        path = self.root / "state" / f"operation-{token}.lock"
+        try:
+            fd = os.open(
+                path,
+                os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o600,
+            )
+        except OSError as error:
+            raise SimulatorBundleError("operation-lock-invalid") from error
+        try:
+            metadata = os.fstat(fd)
+            workspace = self.root.lstat()
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_uid != workspace.st_uid
+                or metadata.st_dev != workspace.st_dev
+                or metadata.st_mode & 0o077
+            ):
+                raise SimulatorBundleError("operation-lock-invalid")
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
             os.close(fd)
 
     def _batch_root(self, source_batch_id: str) -> Path:
@@ -1873,6 +1902,8 @@ class LocalPublicationPort:
         _validate_document(safe)
         safe_sha256 = _document_digest(safe)
         command_intent = self._command_intent(commands)
+        ordered_targets = sorted(targets, key=self._target_identity)
+        ordered_exclusions = sorted(exclusions, key=self._target_identity)
         preservation = {
             "schema": "simulator-preservation-manifest/v1",
             "fixture_id": context.runtime["fixture_id"],
@@ -1882,8 +1913,8 @@ class LocalPublicationPort:
             "runtime_manifest_sha256": context.pointer["runtime_manifest_sha256"],
             "lineage_manifest_sha256": context.pointer["lineage_manifest_sha256"],
             "command_intent_sha256": sha256_bytes(canonical_json_bytes(command_intent)),
-            "targets_sha256": sha256_bytes(canonical_json_bytes(list(targets))),
-            "exclusions_sha256": sha256_bytes(canonical_json_bytes(list(exclusions))),
+            "targets_sha256": sha256_bytes(canonical_json_bytes(ordered_targets)),
+            "exclusions_sha256": sha256_bytes(canonical_json_bytes(ordered_exclusions)),
             "mutable_entries": list(resolved.mutable_entries),
             "metadata_reseal_paths": [
                 "manifests/fixture.json",
@@ -2234,7 +2265,21 @@ class LocalPublicationPort:
         self,
         snapshot: ActionSnapshot,
         trace_ids: Mapping[str, str],
+        *,
+        heartbeat: Callable[[], None] | None = None,
     ) -> PreparedPublication:
+        with self._operation_lock(snapshot.action.identity.operation_id):
+            return self._prepare_locked(snapshot, trace_ids, heartbeat=heartbeat)
+
+    def _prepare_locked(
+        self,
+        snapshot: ActionSnapshot,
+        trace_ids: Mapping[str, str],
+        *,
+        heartbeat: Callable[[], None] | None,
+    ) -> PreparedPublication:
+        pulse = heartbeat if heartbeat is not None else lambda: None
+        pulse()
         operation_id = _identifier(
             snapshot.action.identity.operation_id,
             code="operation-id-invalid",
@@ -2244,11 +2289,41 @@ class LocalPublicationPort:
             raise SimulatorBundleError("trace-id-command-binding-mismatch")
         trace_values = list(trace_ids.values())
         if len(set(trace_values)) != 5 or any(
-            _TRACE_ID.fullmatch(value) is None for value in trace_values
+            _TRACE_ID.fullmatch(value) is None or value == "0" * 32 for value in trace_values
         ):
             raise SimulatorBundleError("trace-id-invalid")
+        candidate_token = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()
+        candidate_ref = f"staging/prep-{candidate_token}"
+        stage = self.root / candidate_ref
+        if stage.exists():
+            stage_metadata = stage.lstat()
+            if stage.is_symlink() or not stat.S_ISDIR(stage_metadata.st_mode):
+                _remove_tree(stage)
+        if stage.exists():
+            required_controls = (
+                stage / "manifests/candidate-seal.json",
+                stage / "manifests/candidate-pointer.json",
+            )
+            controls_complete = True
+            for path in required_controls:
+                try:
+                    metadata = path.lstat()
+                except FileNotFoundError:
+                    controls_complete = False
+                    break
+                if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
+                    controls_complete = False
+                    break
+            if not controls_complete:
+                _remove_tree(stage)
+            else:
+                # A killed writer may have completed the hash DAG but died before
+                # freezing it. Validate first, then restore the immutable boundary.
+                self._prepared_from_root(stage, candidate_ref)
+                _freeze_tree(stage)
         existing = self.inspect_operation(operation_id)
         if existing.prepared is not None:
+            pulse()
             return existing.prepared
         context = self._load_active_context()
         if (
@@ -2281,9 +2356,6 @@ class LocalPublicationPort:
         if old_trace_ids & set(trace_values):
             raise SimulatorBundleError("trace-id-not-fresh")
 
-        candidate_token = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()
-        candidate_ref = f"staging/prep-{candidate_token}"
-        stage = self.root / candidate_ref
         if stage.exists():
             raise SimulatorBundleError("candidate-ref-conflict")
         stage.mkdir(parents=True, mode=0o700)
@@ -2293,6 +2365,7 @@ class LocalPublicationPort:
                 relative = _relative_path(item["path"])
                 _copy_relative(context.publication_root, relative, stage, relative)
             self.fault_hook("candidate-copied")
+            pulse()
 
             candidate_runtime = copy.deepcopy(context.runtime)
             candidate_runtime["generation"] = snapshot.predecessor_generation + 1
@@ -2342,6 +2415,7 @@ class LocalPublicationPort:
             ]
             resource_record["last_operation_id"] = operation_id
             self.fault_hook("candidate-resource-replaced")
+            pulse()
 
             config_root_path = (stage / resource_path).parent.parent
             verified_config = VerifiedPrivateConfigRoot.verify(
@@ -2434,6 +2508,7 @@ class LocalPublicationPort:
                     }
                 )
                 self.fault_hook(f"candidate-frame-rendered:{frame['frame_id']}")
+                pulse()
 
             candidate_derivative = cast(dict[str, Any], candidate_runtime["derivatives"][0])
             parent = next(
@@ -2490,6 +2565,7 @@ class LocalPublicationPort:
                 }
             )
             self.fault_hook("candidate-derivative-built")
+            pulse()
 
             candidate_lineage = copy.deepcopy(context.lineage)
             lineage_derivative = next(
@@ -2655,6 +2731,7 @@ class LocalPublicationPort:
             _audit_tree(stage)
             _freeze_tree(stage)
             self.fault_hook("candidate-sealed")
+            pulse()
             return PreparedPublication(
                 operation_id=operation_id,
                 publication_id=publication_id,
@@ -2859,6 +2936,7 @@ class LocalPublicationPort:
                 context.pointer_sha256 == prepared.candidate_pointer_sha256
                 and context.pointer.get("operation_id") == prepared.operation_id
             ):
+                observed_at = _timestamp(self.clock())
                 return PromotionResult(
                     state="already-promoted",
                     before_pointer_sha256=context.pointer_sha256,
@@ -2867,8 +2945,8 @@ class LocalPublicationPort:
                     after_generation=cast(int, context.pointer["generation"]),
                     pointer_changed=False,
                     recovered=True,
-                    promoted_at=cast(str, context.pointer["prepared_at"]),
-                    observed_at=_timestamp(self.clock()),
+                    promoted_at=observed_at,
+                    observed_at=observed_at,
                 )
             if (
                 context.pointer_sha256 != prepared.predecessor_pointer_sha256
@@ -2933,6 +3011,7 @@ class LocalPublicationPort:
                 publication,
                 f"publications/{publication.name}",
             )
+            observed_at = _timestamp(self.clock())
             promotion = PromotionResult(
                 state="already-promoted",
                 before_pointer_sha256=context.pointer_sha256,
@@ -2941,8 +3020,8 @@ class LocalPublicationPort:
                 after_generation=cast(int, context.pointer["generation"]),
                 pointer_changed=False,
                 recovered=True,
-                promoted_at=cast(str, context.pointer["prepared_at"]),
-                observed_at=_timestamp(self.clock()),
+                promoted_at=observed_at,
+                observed_at=observed_at,
             )
             return PublicationOperationState(
                 state="promoted",

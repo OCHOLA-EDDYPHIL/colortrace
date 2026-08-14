@@ -10,6 +10,7 @@ from colortrace_vertical_slice import SliceContractError
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.types import Lifespan
 
 from .auth import Principal, TokenVerifier
 from .response_plans import ResponsePlanApi
@@ -99,6 +100,7 @@ def create_app(
     token_verifier: TokenVerifier | None = None,
     response_plans: ResponsePlanApi | None = None,
     simulator_actions: SimulatorActionApi | None = None,
+    lifespan: Lifespan[FastAPI] | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="ColorTrace Incident API",
@@ -106,6 +108,7 @@ def create_app(
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=lifespan,
     )
 
     @app.exception_handler(SliceContractError)

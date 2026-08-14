@@ -12,6 +12,7 @@ from .models import (
     StoredDispatchProof,
     StoredDispatchSource,
 )
+from .service import SimulatorActionService
 
 __all__ = [
     "ActionClaim",
@@ -24,4 +25,5 @@ __all__ = [
     "PublicationPort",
     "StoredDispatchProof",
     "StoredDispatchSource",
+    "SimulatorActionService",
 ]

@@ -83,6 +83,7 @@ class AdmissionService:
     def __init__(self) -> None:
         self.calls: list[tuple[DispatchIdentity, ExecutorAuthorization]] = []
         self.failure: str | None = None
+        self.invalid_response = False
 
     def admit(
         self,
@@ -93,12 +94,35 @@ class AdmissionService:
         self.calls.append((identity, executor))
         if self.failure is not None:
             raise SimulatorRepositoryError(self.failure)
+        if self.invalid_response:
+            return {"schema": "simulator-action-admission/v1"}
         return {
             "schema": "simulator-action-admission/v1",
+            "admission_id": f"simulator-admission:{'5' * 64}",
             "action_id": f"simulator-action:{'4' * 64}",
             "task_key": identity.task_key,
             "operation_id": identity.operation_id,
             "payload_sha256": identity.payload_sha256,
+            "dispatch_bundle_sha256": f"sha256:{'6' * 64}",
+            "incident_id": INCIDENT_ID,
+            "incident_version": 7,
+            "plan_id": f"response-plan:{'7' * 64}",
+            "plan_version": 3,
+            "plan_sha256": f"sha256:{'8' * 64}",
+            "approval_id": f"plan-decision:{'9' * 64}",
+            "approval_sha256": f"sha256:{'a' * 64}",
+            "authorization_id": f"dispatch-authorization:{'b' * 64}",
+            "authorization_sha256": f"sha256:{'c' * 64}",
+            "consumption_id": f"dispatch-consumption:{'d' * 64}",
+            "consumption_sha256": f"sha256:{'e' * 64}",
+            "executor_actor": {
+                "issuer": "https://identity.example.test",
+                "subject": "executor@example.test",
+                "audience": "colortrace-api",
+                "kind": "service",
+            },
+            "admitted_at": "2026-08-13T21:00:00.000Z",
+            "admission_sha256": f"sha256:{'f' * 64}",
         }
 
 
@@ -199,3 +223,9 @@ def test_request_shape_and_repository_conflict_fail_closed() -> None:
     conflict = client.post(path, json=request_body(), headers=headers("executor"))
     assert conflict.status_code == 409
     assert conflict.json() == {"code": "idempotency-conflict"}
+
+    admission.failure = None
+    admission.invalid_response = True
+    invalid_response = client.post(path, json=request_body(), headers=headers("executor"))
+    assert invalid_response.status_code == 409
+    assert invalid_response.json() == {"code": "admission-response-invalid"}

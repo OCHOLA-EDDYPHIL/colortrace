@@ -7,6 +7,7 @@ describe("canonical API contract", () => {
   it("exposes incident intake, workspace reads, and authenticated session projection", () => {
     expect(canonicalContract.openapi).toMatch(/^3\.1\./u);
     expect(Object.keys(canonicalContract.paths).sort()).toEqual([
+      "/internal/v1/incidents/{incidentId}/simulator-actions",
       "/v1/incidents",
       "/v1/incidents/{incidentId}",
       "/v1/incidents/{incidentId}/replay",
@@ -19,6 +20,10 @@ describe("canonical API contract", () => {
       "/v1/incidents/{incidentId}/workspace",
       "/v1/session",
     ]);
+    expect(
+      canonicalContract.paths["/internal/v1/incidents/{incidentId}/simulator-actions"].post
+        .operationId,
+    ).toBe("admitSimulatorAction");
     expect(canonicalContract.paths["/v1/incidents"].get.operationId).toBe("listIncidents");
     expect(canonicalContract.paths["/v1/incidents"].post.operationId).toBe("createIncident");
     expect(canonicalContract.paths["/v1/incidents/{incidentId}"].get.operationId).toBe(

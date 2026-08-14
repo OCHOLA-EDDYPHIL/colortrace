@@ -54,7 +54,10 @@
     "publication_intent_sha256": {"$ref": "#/$defs/nullableDigest"},
     "publication_receipt_id": {"$ref": "#/$defs/nullableId"},
     "publication_receipt_sha256": {"$ref": "#/$defs/nullableDigest"},
-    "publication_promoted_at": {"$ref": "#/$defs/nullableTime"},
+    "publication_promoted_at": {
+      "description": "The CAS time, or the first durable observation time when a completed CAS is recovered.",
+      "$ref": "#/$defs/nullableTime"
+    },
     "completed_at": {"type": "string", "format": "date-time"},
     "fixture_id": {"$ref": "#/$defs/nullableId"},
     "predecessor_publication_pointer_sha256": {"$ref": "#/$defs/nullableDigest"},
@@ -91,7 +94,7 @@
     },
     "new_trace_ids": {
       "type": "array", "maxItems": 5, "uniqueItems": true,
-      "items": {"type": "string", "pattern": "^[0-9a-f]{32}$"}
+      "items": {"type": "string", "pattern": "^(?!0{32}$)[0-9a-f]{32}$"}
     },
     "outcome_sha256": {"$ref": "#/$defs/digest"}
   },
@@ -212,7 +215,7 @@
         "command_id": {"$ref": "#/$defs/id"},
         "result_kind": {"enum": ["quarantine", "frame", "derivative"]},
         "target": {"$ref": "#/$defs/target"},
-        "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "trace_id": {"type": "string", "pattern": "^(?!0{32}$)[0-9a-f]{32}$"},
         "before": {"type": "object"},
         "after": {"type": "object"}
       },

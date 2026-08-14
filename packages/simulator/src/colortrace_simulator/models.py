@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -121,6 +121,8 @@ class PreparedPublication:
 
 @dataclass(frozen=True, slots=True)
 class PromotionResult:
+    """CAS evidence; recovered promotion time is the first durable observation time."""
+
     state: Literal["promoted", "already-promoted", "conflict"]
     before_pointer_sha256: str
     before_generation: int
@@ -152,6 +154,8 @@ class PublicationPort(Protocol):
         self,
         snapshot: ActionSnapshot,
         trace_ids: Mapping[str, str],
+        *,
+        heartbeat: Callable[[], None] | None = None,
     ) -> PreparedPublication: ...
 
     def compare_and_swap(self, prepared: PreparedPublication) -> PromotionResult: ...
