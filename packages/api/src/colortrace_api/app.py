@@ -3,12 +3,20 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Protocol
 
+from colortrace_recovery import RecoveryError
+from colortrace_response_plans import ResponsePlanError
+from colortrace_simulator.authority import SimulatorAuthorityError
+from colortrace_simulator.repository import SimulatorRepositoryError
 from colortrace_vertical_slice import SliceContractError
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.types import Lifespan
 
 from .auth import Principal, TokenVerifier
+from .recovery import RecoveryApi, RecoveryVerificationAdmissionApi
+from .response_plans import ResponsePlanApi
+from .simulator_actions import SimulatorActionApi
 
 
 class IncidentService(Protocol):
@@ -45,10 +53,92 @@ def _status_for_error(code: str) -> int:
     return 409
 
 
+def _status_for_plan_error(code: str) -> int:
+    if code in {"authentication-required", "principal-credential-expired"}:
+        return 401
+    if code in {
+        "human-approval-required",
+        "incident-access-denied",
+        "model-authority-forbidden",
+        "role-required",
+        "service-identity-required",
+    }:
+        return 403
+    if code in {
+        "dispatch-authorization-not-found",
+        "incident-not-found",
+        "plan-not-found",
+        "response-packet-not-found",
+    }:
+        return 404
+    if code.endswith("-invalid") or code.startswith("schema-validation"):
+        return 400
+    return 409
+
+
+def _status_for_simulator_error(code: str) -> int:
+    if code in {
+        "executor-authority-boundary-mismatch",
+        "executor-incident-denied",
+        "executor-role-required",
+        "executor-service-required",
+    }:
+        return 403
+    if code in {
+        "admission-request-invalid",
+        "dispatch-identity-invalid",
+        "dispatch-operation-id-invalid",
+        "dispatch-payload-invalid",
+        "dispatch-task-key-invalid",
+        "schema-validation",
+    }:
+        return 400
+    return 409
+
+
+def _status_for_recovery_error(code: str) -> int:
+    if code in {"authentication-required", "principal-credential-expired"}:
+        return 401
+    if code in {
+        "closure-human-required",
+        "closer-role-required",
+        "incident-access-denied",
+        "model-authority-forbidden",
+        "principal-audience-untrusted",
+        "principal-issuer-untrusted",
+        "principal-trust-boundary-mismatch",
+        "scheduler-role-required",
+        "scheduler-service-required",
+        "verifier-role-required",
+        "verifier-service-required",
+    }:
+        return 403
+    if code in {
+        "recovery-attempt-not-found",
+        "recovery-workflow-not-found",
+        "verification-task-not-found",
+    }:
+        return 404
+    if code in {
+        "recovery-closure-fence-unavailable",
+        "recovery-verification-dispatcher-unavailable",
+        "verification-dispatch-response-invalid",
+    }:
+        return 503
+    if code.endswith("-invalid") or code.startswith("schema-"):
+        return 400
+    return 409
+
+
 def create_app(
     service: IncidentService,
     *,
     token_verifier: TokenVerifier | None = None,
+    response_plans: ResponsePlanApi | None = None,
+    simulator_actions: SimulatorActionApi | None = None,
+    recovery: RecoveryApi | None = None,
+    recovery_verifications: RecoveryVerificationAdmissionApi | None = None,
+    lifespan: Lifespan[FastAPI] | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="ColorTrace Incident API",
@@ -56,12 +146,45 @@ def create_app(
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=lifespan,
     )
 
     @app.exception_handler(SliceContractError)
     async def handle_contract_error(_request: Any, error: SliceContractError) -> JSONResponse:
         return JSONResponse(
             status_code=_status_for_error(error.code),
+            content={"code": error.code},
+        )
+
+    @app.exception_handler(ResponsePlanError)
+    async def handle_plan_error(_request: Any, error: ResponsePlanError) -> JSONResponse:
+        return JSONResponse(
+            status_code=_status_for_plan_error(error.code),
+            content={"code": error.code},
+        )
+
+    @app.exception_handler(SimulatorAuthorityError)
+    async def handle_simulator_authority_error(
+        _request: Any, error: SimulatorAuthorityError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=_status_for_simulator_error(error.code),
+            content={"code": error.code},
+        )
+
+    @app.exception_handler(SimulatorRepositoryError)
+    async def handle_simulator_repository_error(
+        _request: Any, error: SimulatorRepositoryError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=_status_for_simulator_error(error.code),
+            content={"code": error.code},
+        )
+
+    @app.exception_handler(RecoveryError)
+    async def handle_recovery_error(_request: Any, error: RecoveryError) -> JSONResponse:
+        return JSONResponse(
+            status_code=_status_for_recovery_error(error.code),
             content={"code": error.code},
         )
 
@@ -92,6 +215,26 @@ def create_app(
 
     principal_dependency = Depends(current_principal)
 
+    def plan_api() -> ResponsePlanApi:
+        if response_plans is None:
+            raise _problem(404, "response-plan-unavailable")
+        return response_plans
+
+    def simulator_api() -> SimulatorActionApi:
+        if simulator_actions is None:
+            raise _problem(404, "simulator-actions-unavailable")
+        return simulator_actions
+
+    def recovery_api() -> RecoveryApi:
+        if recovery is None:
+            raise _problem(404, "recovery-unavailable")
+        return recovery
+
+    def recovery_verification_api() -> RecoveryVerificationAdmissionApi:
+        if recovery_verifications is None:
+            raise _problem(503, "recovery-verification-dispatcher-unavailable")
+        return recovery_verifications
+
     @app.post("/v1/incidents", status_code=202)
     def create_incident(
         alert: dict[str, Any],
@@ -117,6 +260,90 @@ def create_app(
     @app.get("/v1/incidents/{incident_id}/workspace")
     def get_workspace(incident_id: str) -> dict[str, Any]:
         return service.workspace(incident_id)
+
+    @app.get("/v1/incidents/{incident_id}/response-plan/draft")
+    def get_response_plan_draft(incident_id: str) -> dict[str, Any]:
+        return plan_api().draft(incident_id)
+
+    @app.get("/v1/incidents/{incident_id}/response-plan")
+    def get_response_plan(incident_id: str) -> dict[str, Any]:
+        return plan_api().review(incident_id)
+
+    @app.post("/v1/incidents/{incident_id}/response-plan", status_code=201)
+    def create_response_plan(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return plan_api().create(principal, incident_id, body)
+
+    @app.put("/v1/incidents/{incident_id}/response-plan")
+    def edit_response_plan(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return plan_api().edit(principal, incident_id, body)
+
+    @app.post("/v1/incidents/{incident_id}/response-plan/approve")
+    def approve_response_plan(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return plan_api().approve(principal, incident_id, body)
+
+    @app.post("/v1/incidents/{incident_id}/response-plan/reject")
+    def reject_response_plan(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return plan_api().reject(principal, incident_id, body)
+
+    @app.post("/v1/incidents/{incident_id}/response-plan/dispatch-authorizations")
+    def authorize_response_plan_dispatch(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return plan_api().authorize_dispatch(principal, incident_id, body)
+
+    @app.post("/v1/incidents/{incident_id}/response-plan/dispatch-consumptions")
+    def consume_response_plan_dispatch(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return plan_api().consume_dispatch(principal, incident_id, body)
+
+    @app.post("/internal/v1/incidents/{incident_id}/simulator-actions", status_code=202)
+    def admit_simulator_action(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return simulator_api().admit(principal, incident_id, body)
+
+    @app.get("/v1/incidents/{incident_id}/recovery")
+    def get_recovery(incident_id: str) -> dict[str, Any]:
+        return recovery_api().review(incident_id)
+
+    @app.post("/internal/v1/incidents/{incident_id}/recovery/verifications", status_code=202)
+    def admit_recovery_verification(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return recovery_verification_api().admit_verification(principal, incident_id, body)
+
+    @app.post("/v1/incidents/{incident_id}/recovery/close")
+    def close_recovery(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return recovery_api().close(principal, incident_id, body)
 
     @app.get("/v1/session")
     def get_session(principal: Principal = principal_dependency) -> dict[str, Any]:

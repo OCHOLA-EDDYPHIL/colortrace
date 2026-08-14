@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/response-plan-audit-event-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "event_id",
+    "sequence",
+    "event_type",
+    "incident_id",
+    "plan_id",
+    "plan_version",
+    "plan_sha256",
+    "record_sha256",
+    "actor",
+    "idempotency_key",
+    "predecessor_event_sha256",
+    "occurred_at",
+    "event_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "response-plan-audit-event/v1"},
+    "event_id": {"type": "string", "pattern": "^plan-audit-event:[0-9a-f]{64}$"},
+    "sequence": {"type": "integer", "minimum": 1, "maximum": 4096},
+    "event_type": {
+      "enum": ["plan.created", "plan.edited", "plan.approved", "plan.rejected", "dispatch.authorized", "dispatch.consumed"]
+    },
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "plan_id": {"type": "string", "pattern": "^response-plan:[0-9a-f]{64}$"},
+    "plan_version": {"type": "integer", "minimum": 1},
+    "plan_sha256": {"$ref": "#/$defs/digest"},
+    "record_sha256": {"$ref": "#/$defs/digest"},
+    "actor": {"$ref": "#/$defs/actor"},
+    "idempotency_key": {"$ref": "#/$defs/idempotency"},
+    "predecessor_event_sha256": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]
+    },
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "event_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "idempotency": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "subject", "audience", "kind"],
+      "properties": {
+        "issuer": {"type": "string", "minLength": 1, "maxLength": 512},
+        "subject": {"type": "string", "minLength": 1, "maxLength": 255},
+        "audience": {"type": "string", "minLength": 1, "maxLength": 255},
+        "kind": {"enum": ["human", "service"]}
+      }
+    }
+  }
+}

@@ -11,6 +11,10 @@
     "allowed_non_ai_runtime_packages": [
       "colortrace-fixture",
       "colortrace-grafana-mcp",
+      "colortrace-recovery",
+      "colortrace-response-plans",
+      "colortrace-simulator",
+      "colortrace-telemetry",
       "colortrace-vertical-slice",
       "colortrace-validator",
       "fastapi",

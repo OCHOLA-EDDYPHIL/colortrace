@@ -1,0 +1,157 @@
+{
+  "schema": "colortrace-recovery-closure-proof/v1",
+  "issue": 24,
+  "verified_at": "2026-08-14T07:53:18Z",
+  "candidate_base": "b5445451220bf6036498f98edc62167fb6fe65fa",
+  "result": "pass",
+  "test_runs": [
+    {
+      "command": "uv run --offline pytest",
+      "passed": 441,
+      "failed": 0,
+      "skipped": 1
+    },
+    {
+      "command": "pnpm --recursive --if-present test",
+      "passed": 110,
+      "failed": 0
+    },
+    {
+      "command": "pnpm --filter @colortrace/web run test:browser",
+      "passed": 20,
+      "failed": 0
+    }
+  ],
+  "static_checks": [
+    {
+      "command": "ruff format --check . && ruff check .",
+      "result": "pass"
+    },
+    {
+      "command": "uv run --offline mypy",
+      "result": "pass",
+      "source_files": 70
+    },
+    {
+      "command": "pnpm run format:check && pnpm run lint && pnpm run typecheck",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check",
+      "result": "pass"
+    }
+  ],
+  "repository_checks": [
+    {
+      "command": "colortrace-repo contracts",
+      "result": "pass"
+    },
+    {
+      "command": "pnpm run generate:check && colortrace-repo generated",
+      "result": "pass"
+    },
+    {
+      "command": "colortrace-repo dependencies",
+      "result": "pass"
+    },
+    {
+      "command": "colortrace-repo ai-policy && colortrace-repo actions && colortrace-repo binary-assets",
+      "result": "pass"
+    },
+    {
+      "command": "make check-secret-fixture",
+      "result": "pass"
+    },
+    {
+      "command": "make check-telemetry",
+      "result": "pass"
+    },
+    {
+      "command": "make check-secret",
+      "result": "pass"
+    }
+  ],
+  "visual_evidence": [
+    {
+      "path": "packages/web/evidence/issue-24/recovery-verified-1440x900.png",
+      "sha256": "50a2fd0fe92377ef6e2c1824c07707f85b1f3245516eed1103f2080b64ad2261",
+      "result": "pass"
+    },
+    {
+      "path": "packages/web/evidence/issue-24/recovery-unresolved-390x844.png",
+      "sha256": "d6fbdad7ccdab9603fb8f6699165733763c66a8ae9eb44a78cb8ecf0ec1dd2af",
+      "result": "pass"
+    },
+    {
+      "path": "packages/web/evidence/issue-24/accessibility-summary.json",
+      "sha256": "623fde8849eb68f244867dab99b4cc2d6c42d789f0682441def218f0f06c661b",
+      "violations": 0,
+      "passes": 29,
+      "result": "pass"
+    }
+  ],
+  "controls": [
+    {
+      "id": "post-action-freshness",
+      "control": "Recovery verification accepts only evidence bound to the exact simulator outcome and active publication with observations, telemetry, and artifacts newer than action start; pre-action and stale provider data remain unresolved.",
+      "evidence": [
+        "packages/recovery/tests/test_recovery.py::test_missing_and_pre_action_evidence_are_unresolved",
+        "packages/grafana-mcp/tests/test_adapter.py::test_simulator_action_pre_action_provider_data_is_not_accepted",
+        "packages/api/tests/test_recovery_composed.py::test_canonical_action_evidence_worker_review_and_human_closure_compose"
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "seven-deterministic-rechecks",
+      "control": "The fixed verification workflow rechecks active resource state, output and declared references, lineage, affected scope, safe-complement preservation, and post-action telemetry with digest-bound artifacts.",
+      "evidence": [
+        "packages/recovery/tests/test_verifier.py::test_deterministic_workflow_verifies_and_replays",
+        "packages/recovery/tests/test_verifier.py::test_artifact_mutation_classification",
+        "packages/api/tests/test_recovery_composed.py::test_canonical_action_evidence_worker_review_and_human_closure_compose"
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "failed-missing-late-evidence",
+      "control": "Failed checks dominate packet status, missing or late evidence remains unresolved, setup and worker failures complete durably, and neither failed nor unresolved packets are closure eligible.",
+      "evidence": [
+        "packages/recovery/tests/test_recovery.py::test_packet_status_precedence",
+        "packages/recovery/tests/test_verifier.py::test_batch_setup_and_late_collection_complete_durable_unresolved",
+        "packages/recovery/tests/test_verifier.py::test_missing_provider_data_is_unresolved_and_correlation_lie_fails",
+        "packages/api/tests/test_recovery_api.py::test_worker_failure_is_a_bounded_durable_unresolved_replay"
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "human-only-verified-closure",
+      "control": "Closure requires an authenticated incident-authorized human, an exact recovery_verified packet, canonical incident version, current simulator admission sequence and publication snapshot, and a fresh recheck inside the closure fence; service and model principals cannot close.",
+      "evidence": [
+        "packages/recovery/tests/test_recovery.py::test_closure_rejects_service_model_missing_role_and_stale_version",
+        "packages/api/tests/test_recovery_api.py::test_unauthorized_closure_never_enters_currentness_fence",
+        "packages/simulator/tests/test_authority_repository.py::test_current_recovery_outcome_guard_uses_admission_order_when_clock_regresses",
+        "packages/simulator/tests/test_bundle.py::test_recovery_closure_guard_rejects_snapshot_after_newer_publication"
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "closure-audit",
+      "control": "Human closure persists actor, authorized role, normalized time, reason, packet and outcome bindings, and a chained append-only recovery.closed audit event; exact idempotent replay returns the stored result.",
+      "evidence": [
+        "packages/recovery/tests/test_recovery.py::test_verified_packet_persists_resolvable_aggregate_and_human_closes",
+        "packages/recovery/tests/test_recovery.py::test_append_only_evidence_and_audit_tables_reject_tamper",
+        "packages/api/tests/test_recovery_composed.py::test_canonical_action_evidence_worker_review_and_human_closure_compose"
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "safe-work-preservation",
+      "control": "The targeted simulator action preserves the safe-complement digest, verification recomputes it from frozen manifests and artifacts, and closure binds the unchanged digest through public review and durable audit evidence.",
+      "evidence": [
+        "packages/simulator/tests/test_bundle.py::test_canonical_targeted_recovery_promotes_once_and_preserves_safe_work",
+        "packages/recovery/tests/test_verifier.py::test_deterministic_workflow_verifies_and_replays",
+        "packages/api/tests/test_recovery_composed.py::test_canonical_action_evidence_worker_review_and_human_closure_compose"
+      ],
+      "result": "pass"
+    }
+  ]
+}

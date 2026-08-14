@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/recovery-audit-event-v1.schema.json",
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"},
+    "nullableId": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]},
+    "nullableDigest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]}
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "event_id", "event_sha256", "incident_id", "workflow_id", "sequence", "event_type", "actor", "snapshot_id", "snapshot_sha256", "outcome_id", "outcome_sha256", "packet_id", "packet_sha256", "idempotency_key", "predecessor_event_sha256", "occurred_at", "details"],
+  "properties": {
+    "schema": {"const": "recovery-audit-event/v1"},
+    "event_id": {"type": "string", "pattern": "^recovery-audit-event:[0-9a-f]{64}$"},
+    "event_sha256": {"$ref": "#/$defs/digest"},
+    "incident_id": {"$ref": "#/$defs/id"},
+    "workflow_id": {"$ref": "#/$defs/id"},
+    "sequence": {"type": "integer", "minimum": 1, "maximum": 4096},
+    "event_type": {"enum": ["verification.requested", "verification.claimed", "verification.reclaimed", "verification.completed", "recovery.closed"]},
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "subject", "audience", "display_name", "kind", "authorized_role"],
+      "properties": {
+        "issuer": {"type": "string", "minLength": 1, "maxLength": 512},
+        "subject": {"type": "string", "minLength": 1, "maxLength": 255},
+        "audience": {"type": "string", "minLength": 1, "maxLength": 255},
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "kind": {"enum": ["human", "service"]},
+        "authorized_role": {"enum": ["recovery.verifier", "recovery.closer"]}
+      }
+    },
+    "snapshot_id": {"$ref": "#/$defs/id"},
+    "snapshot_sha256": {"$ref": "#/$defs/digest"},
+    "outcome_id": {"$ref": "#/$defs/id"},
+    "outcome_sha256": {"$ref": "#/$defs/digest"},
+    "packet_id": {"$ref": "#/$defs/nullableId"},
+    "packet_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "idempotency_key": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "predecessor_event_sha256": {"$ref": "#/$defs/nullableDigest"},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "details": {"type": "object", "maxProperties": 32}
+  }
+}

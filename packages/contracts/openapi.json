@@ -234,6 +234,489 @@
         }
       }
     },
+    "/v1/incidents/{incidentId}/recovery": {
+      "get": {
+        "operationId": "getRecoveryReview",
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current recovery workflow, immutable verification evidence, closure, and audit history.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/RecoveryReview" } }
+            }
+          },
+          "404": {
+            "description": "No recovery workflow exists for this incident.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          },
+          "409": {
+            "description": "The persisted recovery aggregate failed integrity verification.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    },
+    "/v1/incidents/{incidentId}/recovery/close": {
+      "post": {
+        "operationId": "closeRecovery",
+        "security": [{ "operatorOidc": [] }],
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RecoveryClosureRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The exact verified recovery was closed by an authorized human.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RecoveryClosureResult" }
+              }
+            }
+          },
+          "400": {
+            "description": "The closure request is malformed.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/AuthenticationError" },
+          "403": { "$ref": "#/components/responses/AuthorityError" },
+          "409": { "$ref": "#/components/responses/ConflictError" },
+          "503": {
+            "description": "No authoritative simulator currentness fence is configured for closure.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    },
+    "/v1/incidents/{incidentId}/response-plan/draft": {
+      "get": {
+        "operationId": "getResponsePlanDraft",
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Canonical immutable scope available for a typed plan.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ResponsePlanDraft" } }
+            }
+          },
+          "409": {
+            "description": "The incident has no safe canonical plan scope.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    },
+    "/v1/incidents/{incidentId}/response-plan": {
+      "get": {
+        "operationId": "getResponsePlanReview",
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current immutable plan, decision, and verified audit history.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResponsePlanReview" }
+              }
+            }
+          },
+          "404": {
+            "description": "No response plan exists for this incident.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createResponsePlan",
+        "security": [{ "operatorOidc": [] }],
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateResponsePlanRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The first immutable plan version.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ResponsePlan" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/AuthenticationError" },
+          "403": { "$ref": "#/components/responses/AuthorityError" },
+          "409": { "$ref": "#/components/responses/ConflictError" }
+        }
+      },
+      "put": {
+        "operationId": "editResponsePlan",
+        "security": [{ "operatorOidc": [] }],
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/EditResponsePlanRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A new immutable plan version that invalidates prior approval.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ResponsePlan" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/AuthenticationError" },
+          "403": { "$ref": "#/components/responses/AuthorityError" },
+          "409": { "$ref": "#/components/responses/ConflictError" }
+        }
+      }
+    },
+    "/v1/incidents/{incidentId}/response-plan/approve": {
+      "post": {
+        "operationId": "approveResponsePlan",
+        "security": [{ "operatorOidc": [] }],
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DecideResponsePlanRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A hash-bound human approval.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResponsePlanDecision" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/AuthenticationError" },
+          "403": { "$ref": "#/components/responses/AuthorityError" },
+          "409": { "$ref": "#/components/responses/ConflictError" }
+        }
+      }
+    },
+    "/v1/incidents/{incidentId}/response-plan/reject": {
+      "post": {
+        "operationId": "rejectResponsePlan",
+        "security": [{ "operatorOidc": [] }],
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RejectResponsePlanRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A hash-bound human rejection.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResponsePlanDecision" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/AuthenticationError" },
+          "403": { "$ref": "#/components/responses/AuthorityError" },
+          "409": { "$ref": "#/components/responses/ConflictError" }
+        }
+      }
+    },
+    "/v1/incidents/{incidentId}/response-plan/dispatch-authorizations": {
+      "post": {
+        "operationId": "authorizeResponsePlanDispatch",
+        "security": [{ "operatorOidc": [] }],
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DecideResponsePlanRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A service-only authorization for one exact operation, task, and payload.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResponsePlanDispatchAuthorization" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/AuthenticationError" },
+          "403": { "$ref": "#/components/responses/AuthorityError" },
+          "409": { "$ref": "#/components/responses/ConflictError" }
+        }
+      }
+    },
+    "/v1/incidents/{incidentId}/response-plan/dispatch-consumptions": {
+      "post": {
+        "operationId": "consumeResponsePlanDispatch",
+        "security": [{ "operatorOidc": [] }],
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ConsumeResponsePlanDispatchRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The single-use capability redemption receipt.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResponsePlanDispatchConsumption" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/AuthenticationError" },
+          "403": { "$ref": "#/components/responses/AuthorityError" },
+          "409": { "$ref": "#/components/responses/ConflictError" }
+        }
+      }
+    },
+    "/internal/v1/incidents/{incidentId}/recovery/verifications": {
+      "post": {
+        "operationId": "admitRecoveryVerification",
+        "security": [{ "serviceOidc": [] }],
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryVerificationAdmissionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The exact digest-bound verification task is durably queued without executing verification in the API request.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RecoveryVerificationAdmission" }
+              }
+            }
+          },
+          "400": {
+            "description": "The verification admission request is malformed.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/AuthenticationError" },
+          "403": { "$ref": "#/components/responses/AuthorityError" },
+          "404": {
+            "description": "The incident does not exist.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          },
+          "409": { "$ref": "#/components/responses/ConflictError" },
+          "503": {
+            "description": "No durable verification task dispatcher is configured.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    },
+    "/private/v1/recovery-verification-tasks/{taskKey}": {
+      "post": {
+        "operationId": "executeRecoveryVerificationTask",
+        "security": [{ "serviceOidc": [] }],
+        "parameters": [
+          {
+            "name": "taskKey",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/RecoveryVerificationTaskKey" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RecoveryVerificationTask" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The private worker recorded the exact completed or terminal unresolved task result, or returned its idempotent replay.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RecoveryVerificationTaskResult" }
+              }
+            }
+          },
+          "400": {
+            "description": "The delivered task is malformed.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/AuthenticationError" },
+          "403": { "$ref": "#/components/responses/AuthorityError" },
+          "404": {
+            "description": "The exact durably admitted task does not exist.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          },
+          "409": { "$ref": "#/components/responses/ConflictError" }
+        }
+      }
+    },
+    "/internal/v1/incidents/{incidentId}/simulator-actions": {
+      "post": {
+        "operationId": "admitSimulatorAction",
+        "security": [{ "operatorOidc": [] }],
+        "parameters": [
+          {
+            "name": "incidentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/Identifier" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AdmitSimulatorActionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The exact consumed dispatch is durably admitted for local simulator execution.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SimulatorActionAdmission" }
+              }
+            }
+          },
+          "400": {
+            "description": "The opaque dispatch identity is malformed.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/AuthenticationError" },
+          "403": { "$ref": "#/components/responses/AuthorityError" },
+          "409": { "$ref": "#/components/responses/ConflictError" }
+        }
+      }
+    },
     "/v1/session": {
       "get": {
         "operationId": "getOperatorSession",
@@ -268,8 +751,27 @@
     }
   },
   "components": {
+    "responses": {
+      "AuthenticationError": {
+        "description": "The bearer token is absent, invalid, or expired.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "AuthorityError": {
+        "description": "The verified identity lacks the required incident, role, or principal kind.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "ConflictError": {
+        "description": "The immutable authority, version, hash, decision, or idempotency precondition failed.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
+    },
     "securitySchemes": {
       "operatorOidc": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "OIDC JWT"
+      },
+      "serviceOidc": {
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "OIDC JWT"
@@ -2998,6 +3500,1657 @@
           "sha256": {
             "$ref": "#/components/schemas/ValidatorDigest"
           }
+        }
+      },
+      "RecoveryVerificationTaskKey": {
+        "type": "string",
+        "pattern": "^recovery-verification-task:[0-9a-f]{64}$"
+      },
+      "RecoveryVerificationAdmissionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "expected_incident_version",
+          "expected_outcome_sha256",
+          "idempotency_key"
+        ],
+        "properties": {
+          "schema": { "const": "recovery-verification-admission-request/v1" },
+          "expected_incident_version": { "type": "integer", "minimum": 1 },
+          "expected_outcome_sha256": { "$ref": "#/components/schemas/Digest" },
+          "idempotency_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+          }
+        }
+      },
+      "RecoveryVerificationTask": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "task_key",
+          "incident_id",
+          "expected_incident_version",
+          "expected_outcome_sha256",
+          "payload_sha256",
+          "idempotency_key"
+        ],
+        "properties": {
+          "schema": { "const": "recovery-verification-task/v1" },
+          "task_key": { "$ref": "#/components/schemas/RecoveryVerificationTaskKey" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "expected_incident_version": { "type": "integer", "minimum": 1 },
+          "expected_outcome_sha256": { "$ref": "#/components/schemas/Digest" },
+          "payload_sha256": { "$ref": "#/components/schemas/Digest" },
+          "idempotency_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+          }
+        }
+      },
+      "RecoveryVerificationAdmission": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "task_key",
+          "incident_id",
+          "expected_incident_version",
+          "expected_outcome_sha256",
+          "payload_sha256",
+          "idempotency_key",
+          "duplicate",
+          "state"
+        ],
+        "properties": {
+          "schema": { "const": "recovery-verification-admission/v1" },
+          "task_key": { "$ref": "#/components/schemas/RecoveryVerificationTaskKey" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "expected_incident_version": { "type": "integer", "minimum": 1 },
+          "expected_outcome_sha256": { "$ref": "#/components/schemas/Digest" },
+          "payload_sha256": { "$ref": "#/components/schemas/Digest" },
+          "idempotency_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+          },
+          "duplicate": { "type": "boolean" },
+          "state": { "enum": ["queued", "running", "complete"] }
+        }
+      },
+      "RecoveryVerificationTaskResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "result_id",
+          "result_sha256",
+          "task_key",
+          "payload_sha256",
+          "incident_id",
+          "expected_incident_version",
+          "expected_outcome_sha256",
+          "status",
+          "packet_id",
+          "packet_sha256",
+          "reason_code"
+        ],
+        "properties": {
+          "schema": { "const": "recovery-verification-task-result/v1" },
+          "result_id": {
+            "type": "string",
+            "pattern": "^recovery-verification-task-result:[0-9a-f]{64}$"
+          },
+          "result_sha256": { "$ref": "#/components/schemas/Digest" },
+          "task_key": { "$ref": "#/components/schemas/RecoveryVerificationTaskKey" },
+          "payload_sha256": { "$ref": "#/components/schemas/Digest" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "expected_incident_version": { "type": "integer", "minimum": 1 },
+          "expected_outcome_sha256": { "$ref": "#/components/schemas/Digest" },
+          "status": { "enum": ["completed", "unresolved"] },
+          "packet_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^recovery-packet:[0-9a-f]{64}$"
+              },
+              { "type": "null" }
+            ]
+          },
+          "packet_sha256": {
+            "anyOf": [{ "$ref": "#/components/schemas/Digest" }, { "type": "null" }]
+          },
+          "reason_code": {
+            "anyOf": [{ "type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$" }, { "type": "null" }]
+          }
+        }
+      },
+      "RecoveryWorkflowState": {
+        "enum": [
+          "verification_pending",
+          "verification_running",
+          "recovery_verified",
+          "recovery_failed",
+          "recovery_unresolved",
+          "closed"
+        ]
+      },
+      "RecoveryCheckName": {
+        "enum": [
+          "active-publication",
+          "approved-resource-state",
+          "declared-reference-recovery",
+          "exact-typed-lineage",
+          "approved-recovery-scope",
+          "safe-complement-preservation",
+          "post-action-telemetry-correlation"
+        ]
+      },
+      "RecoveryCheckResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "result_id",
+          "result_sha256",
+          "check",
+          "policy",
+          "state",
+          "normalized_inputs_sha256",
+          "evidence_ids",
+          "artifact_ids",
+          "reason_codes"
+        ],
+        "properties": {
+          "schema": { "const": "recovery-check-result/v1" },
+          "result_id": {
+            "type": "string",
+            "pattern": "^recovery-check-result:[0-9a-f]{64}$"
+          },
+          "result_sha256": { "$ref": "#/components/schemas/Digest" },
+          "check": { "$ref": "#/components/schemas/RecoveryCheckName" },
+          "policy": {
+            "enum": [
+              "active-publication/v1",
+              "approved-resource-state/v1",
+              "declared-reference-recovery/v1",
+              "exact-typed-lineage/v1",
+              "approved-recovery-scope/v1",
+              "safe-complement-preservation/v1",
+              "post-action-telemetry-correlation/v1"
+            ]
+          },
+          "state": { "enum": ["passed", "failed", "unresolved"] },
+          "normalized_inputs_sha256": { "$ref": "#/components/schemas/Digest" },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 256,
+            "uniqueItems": true,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "artifact_ids": {
+            "type": "array",
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "reason_codes": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$" }
+          }
+        }
+      },
+      "RecoveryPacketItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check", "reason_codes"],
+        "properties": {
+          "check": { "$ref": "#/components/schemas/RecoveryCheckName" },
+          "reason_codes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$" }
+          }
+        }
+      },
+      "RecoveryPacket": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "packet_id",
+          "packet_sha256",
+          "incident_id",
+          "incident_version",
+          "workflow_id",
+          "workflow_version",
+          "attempt_id",
+          "attempt_number",
+          "snapshot_id",
+          "snapshot_sha256",
+          "outcome_id",
+          "outcome_sha256",
+          "action_id",
+          "action_started_at",
+          "evaluation_started_at",
+          "evaluation_completed_at",
+          "evidence_request_id",
+          "evidence_request_sha256",
+          "evidence_ids",
+          "check_results",
+          "status",
+          "failure_items",
+          "unresolved_items",
+          "eligible_for_closure",
+          "supersedes_packet_id",
+          "supersedes_packet_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "recovery-packet/v1" },
+          "packet_id": {
+            "type": "string",
+            "pattern": "^recovery-packet:[0-9a-f]{64}$"
+          },
+          "packet_sha256": { "$ref": "#/components/schemas/Digest" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "incident_version": { "type": "integer", "minimum": 1 },
+          "workflow_id": { "$ref": "#/components/schemas/Identifier" },
+          "workflow_version": { "type": "integer", "minimum": 1 },
+          "attempt_id": { "$ref": "#/components/schemas/Identifier" },
+          "attempt_number": { "type": "integer", "minimum": 1 },
+          "snapshot_id": { "$ref": "#/components/schemas/Identifier" },
+          "snapshot_sha256": { "$ref": "#/components/schemas/Digest" },
+          "outcome_id": { "$ref": "#/components/schemas/Identifier" },
+          "outcome_sha256": { "$ref": "#/components/schemas/Digest" },
+          "action_id": { "$ref": "#/components/schemas/Identifier" },
+          "action_started_at": { "type": "string", "format": "date-time" },
+          "evaluation_started_at": { "type": "string", "format": "date-time" },
+          "evaluation_completed_at": { "type": "string", "format": "date-time" },
+          "evidence_request_id": { "$ref": "#/components/schemas/Identifier" },
+          "evidence_request_sha256": { "$ref": "#/components/schemas/Digest" },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 256,
+            "uniqueItems": true,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "check_results": {
+            "type": "array",
+            "minItems": 7,
+            "maxItems": 7,
+            "items": { "$ref": "#/components/schemas/RecoveryCheckResult" }
+          },
+          "status": {
+            "enum": ["recovery_verified", "recovery_failed", "recovery_unresolved"]
+          },
+          "failure_items": {
+            "type": "array",
+            "maxItems": 7,
+            "items": { "$ref": "#/components/schemas/RecoveryPacketItem" }
+          },
+          "unresolved_items": {
+            "type": "array",
+            "maxItems": 7,
+            "items": { "$ref": "#/components/schemas/RecoveryPacketItem" }
+          },
+          "eligible_for_closure": { "type": "boolean" },
+          "supersedes_packet_id": {
+            "anyOf": [{ "$ref": "#/components/schemas/Identifier" }, { "type": "null" }]
+          },
+          "supersedes_packet_sha256": {
+            "anyOf": [{ "$ref": "#/components/schemas/Digest" }, { "type": "null" }]
+          }
+        }
+      },
+      "RecoveryActionCommandOutcome": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "command_id",
+          "result_kind",
+          "target",
+          "trace_id",
+          "before",
+          "after"
+        ],
+        "properties": {
+          "schema": { "const": "simulator-command-result/v1" },
+          "command_id": { "$ref": "#/components/schemas/Identifier" },
+          "result_kind": { "enum": ["quarantine", "frame", "derivative"] },
+          "target": { "$ref": "#/components/schemas/SimulatorTarget" },
+          "trace_id": { "$ref": "#/components/schemas/TraceId" },
+          "before": { "type": "object" },
+          "after": { "type": "object" }
+        }
+      },
+      "RecoveryActionOutcome": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "schema",
+          "outcome_id",
+          "outcome_sha256",
+          "action_id",
+          "status",
+          "reason_codes",
+          "incident_id",
+          "incident_version",
+          "plan_id",
+          "plan_version",
+          "plan_sha256",
+          "action_started_at",
+          "publication_promoted_at",
+          "completed_at",
+          "active_publication_pointer_sha256",
+          "active_runtime_manifest_sha256",
+          "preservation_manifest_sha256",
+          "safe_complement_before_sha256",
+          "safe_complement_after_sha256",
+          "safe_complement_proof_sha256",
+          "targets",
+          "exclusions",
+          "command_outcomes",
+          "new_trace_ids"
+        ],
+        "properties": {
+          "schema": { "const": "simulator-action-outcome/v1" },
+          "outcome_id": { "$ref": "#/components/schemas/Identifier" },
+          "outcome_sha256": { "$ref": "#/components/schemas/Digest" },
+          "action_id": { "$ref": "#/components/schemas/Identifier" },
+          "status": { "enum": ["succeeded", "failed"] },
+          "reason_codes": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$" }
+          },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "incident_version": { "type": "integer", "minimum": 1 },
+          "plan_id": { "$ref": "#/components/schemas/Identifier" },
+          "plan_version": { "type": "integer", "minimum": 1 },
+          "plan_sha256": { "$ref": "#/components/schemas/Digest" },
+          "action_started_at": { "type": "string", "format": "date-time" },
+          "publication_promoted_at": {
+            "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }]
+          },
+          "completed_at": { "type": "string", "format": "date-time" },
+          "active_publication_pointer_sha256": {
+            "anyOf": [{ "$ref": "#/components/schemas/Digest" }, { "type": "null" }]
+          },
+          "active_runtime_manifest_sha256": {
+            "anyOf": [{ "$ref": "#/components/schemas/Digest" }, { "type": "null" }]
+          },
+          "preservation_manifest_sha256": {
+            "anyOf": [{ "$ref": "#/components/schemas/Digest" }, { "type": "null" }]
+          },
+          "safe_complement_before_sha256": {
+            "anyOf": [{ "$ref": "#/components/schemas/Digest" }, { "type": "null" }]
+          },
+          "safe_complement_after_sha256": {
+            "anyOf": [{ "$ref": "#/components/schemas/Digest" }, { "type": "null" }]
+          },
+          "safe_complement_proof_sha256": {
+            "anyOf": [{ "$ref": "#/components/schemas/Digest" }, { "type": "null" }]
+          },
+          "targets": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SimulatorTarget" }
+          },
+          "exclusions": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SimulatorTarget" }
+          },
+          "command_outcomes": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/RecoveryActionCommandOutcome" }
+          },
+          "new_trace_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "$ref": "#/components/schemas/TraceId" }
+          }
+        }
+      },
+      "RecoveryActivePublication": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "publication_id",
+          "observed_at",
+          "generation",
+          "pointer_sha256",
+          "runtime_manifest_sha256",
+          "fixture_manifest_sha256",
+          "lineage_manifest_sha256",
+          "declared_resource_manifest_sha256",
+          "preservation_manifest_sha256",
+          "safe_complement_sha256",
+          "safe_complement_proof_sha256",
+          "candidate_seal_sha256",
+          "candidate_tree_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "recovery-active-publication/v1" },
+          "publication_id": { "$ref": "#/components/schemas/Identifier" },
+          "observed_at": { "type": "string", "format": "date-time" },
+          "generation": { "type": "integer", "minimum": 1 },
+          "pointer_sha256": { "$ref": "#/components/schemas/Digest" },
+          "runtime_manifest_sha256": { "$ref": "#/components/schemas/Digest" },
+          "fixture_manifest_sha256": { "$ref": "#/components/schemas/Digest" },
+          "lineage_manifest_sha256": { "$ref": "#/components/schemas/Digest" },
+          "declared_resource_manifest_sha256": { "$ref": "#/components/schemas/Digest" },
+          "preservation_manifest_sha256": { "$ref": "#/components/schemas/Digest" },
+          "safe_complement_sha256": { "$ref": "#/components/schemas/Digest" },
+          "safe_complement_proof_sha256": { "$ref": "#/components/schemas/Digest" },
+          "candidate_seal_sha256": { "$ref": "#/components/schemas/Digest" },
+          "candidate_tree_sha256": { "$ref": "#/components/schemas/Digest" }
+        }
+      },
+      "RecoveryVerificationArtifact": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "artifact_id",
+          "role",
+          "target",
+          "sha256",
+          "size",
+          "publication_pointer_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "recovery-verification-artifact/v1" },
+          "artifact_id": { "$ref": "#/components/schemas/Identifier" },
+          "role": {
+            "enum": [
+              "active-resource",
+              "affected-output",
+              "declared-reference",
+              "derivative-output",
+              "derivative-parent",
+              "lineage-manifest",
+              "runtime-manifest",
+              "fixture-manifest",
+              "preservation-manifest",
+              "safe-complement",
+              "safe-complement-proof"
+            ]
+          },
+          "target": {
+            "anyOf": [{ "$ref": "#/components/schemas/SimulatorTarget" }, { "type": "null" }]
+          },
+          "sha256": { "$ref": "#/components/schemas/Digest" },
+          "size": { "type": "integer", "minimum": 0 },
+          "publication_pointer_sha256": { "$ref": "#/components/schemas/Digest" }
+        }
+      },
+      "RecoveryVerificationSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "snapshot_id",
+          "snapshot_sha256",
+          "incident_id",
+          "incident_version",
+          "created_at",
+          "action_outcome",
+          "active_publication",
+          "verification_artifacts"
+        ],
+        "properties": {
+          "schema": { "const": "recovery-verification-snapshot/v1" },
+          "snapshot_id": {
+            "type": "string",
+            "pattern": "^recovery-snapshot:[0-9a-f]{64}$"
+          },
+          "snapshot_sha256": { "$ref": "#/components/schemas/Digest" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "incident_version": { "type": "integer", "minimum": 1 },
+          "created_at": { "type": "string", "format": "date-time" },
+          "action_outcome": { "$ref": "#/components/schemas/RecoveryActionOutcome" },
+          "active_publication": { "$ref": "#/components/schemas/RecoveryActivePublication" },
+          "verification_artifacts": {
+            "type": "array",
+            "minItems": 15,
+            "maxItems": 15,
+            "items": { "$ref": "#/components/schemas/RecoveryVerificationArtifact" }
+          }
+        }
+      },
+      "RecoveryEvidenceCorrelation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["incident_id", "action_id", "outcome_id", "outcome_sha256", "target"],
+        "properties": {
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "action_id": { "$ref": "#/components/schemas/Identifier" },
+          "outcome_id": { "$ref": "#/components/schemas/Identifier" },
+          "outcome_sha256": { "$ref": "#/components/schemas/Digest" },
+          "target": {
+            "anyOf": [{ "$ref": "#/components/schemas/SimulatorTarget" }, { "type": "null" }]
+          }
+        }
+      },
+      "RecoveryEvidenceRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "evidence_id",
+          "evidence_sha256",
+          "signal",
+          "event_id",
+          "subject_kind",
+          "subject_id",
+          "trace_id",
+          "observed_at",
+          "emitted_at",
+          "retrieved_at",
+          "freshness",
+          "correlation",
+          "source_label",
+          "display_excerpt"
+        ],
+        "properties": {
+          "schema": { "const": "recovery-evidence-record/v1" },
+          "evidence_id": {
+            "type": "string",
+            "pattern": "^recovery-evidence:[0-9a-f]{64}$"
+          },
+          "evidence_sha256": { "$ref": "#/components/schemas/Digest" },
+          "signal": { "enum": ["metric", "log", "trace"] },
+          "event_id": { "$ref": "#/components/schemas/Identifier" },
+          "subject_kind": { "enum": ["command", "safe"] },
+          "subject_id": { "$ref": "#/components/schemas/Identifier" },
+          "trace_id": {
+            "anyOf": [{ "$ref": "#/components/schemas/TraceId" }, { "type": "null" }]
+          },
+          "observed_at": { "type": "string", "format": "date-time" },
+          "emitted_at": { "type": "string", "format": "date-time" },
+          "retrieved_at": { "type": "string", "format": "date-time" },
+          "freshness": { "enum": ["post-action", "pre-action", "late", "ambiguous"] },
+          "correlation": { "$ref": "#/components/schemas/RecoveryEvidenceCorrelation" },
+          "source_label": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "display_excerpt": { "type": "string", "maxLength": 4096 }
+        }
+      },
+      "RecoveryAuditActor": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issuer", "subject", "audience", "display_name", "kind", "authorized_role"],
+        "properties": {
+          "issuer": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "subject": { "$ref": "#/components/schemas/OidcSubject" },
+          "audience": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "kind": { "enum": ["human", "service"] },
+          "authorized_role": { "enum": ["recovery.verifier", "recovery.closer"] }
+        }
+      },
+      "RecoveryAuditEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "event_id",
+          "event_sha256",
+          "incident_id",
+          "workflow_id",
+          "sequence",
+          "event_type",
+          "actor",
+          "snapshot_id",
+          "snapshot_sha256",
+          "outcome_id",
+          "outcome_sha256",
+          "packet_id",
+          "packet_sha256",
+          "idempotency_key",
+          "predecessor_event_sha256",
+          "occurred_at",
+          "details"
+        ],
+        "properties": {
+          "schema": { "const": "recovery-audit-event/v1" },
+          "event_id": {
+            "type": "string",
+            "pattern": "^recovery-audit-event:[0-9a-f]{64}$"
+          },
+          "event_sha256": { "$ref": "#/components/schemas/Digest" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "workflow_id": { "$ref": "#/components/schemas/Identifier" },
+          "sequence": { "type": "integer", "minimum": 1, "maximum": 4096 },
+          "event_type": {
+            "enum": [
+              "verification.requested",
+              "verification.claimed",
+              "verification.reclaimed",
+              "verification.completed",
+              "recovery.closed"
+            ]
+          },
+          "actor": { "$ref": "#/components/schemas/RecoveryAuditActor" },
+          "snapshot_id": { "$ref": "#/components/schemas/Identifier" },
+          "snapshot_sha256": { "$ref": "#/components/schemas/Digest" },
+          "outcome_id": { "$ref": "#/components/schemas/Identifier" },
+          "outcome_sha256": { "$ref": "#/components/schemas/Digest" },
+          "packet_id": {
+            "anyOf": [{ "$ref": "#/components/schemas/Identifier" }, { "type": "null" }]
+          },
+          "packet_sha256": {
+            "anyOf": [{ "$ref": "#/components/schemas/Digest" }, { "type": "null" }]
+          },
+          "idempotency_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+          },
+          "predecessor_event_sha256": {
+            "anyOf": [{ "$ref": "#/components/schemas/Digest" }, { "type": "null" }]
+          },
+          "occurred_at": { "type": "string", "format": "date-time" },
+          "details": { "type": "object", "maxProperties": 32 }
+        }
+      },
+      "RecoveryClosureActor": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issuer", "subject", "audience", "display_name", "kind"],
+        "properties": {
+          "issuer": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "subject": { "$ref": "#/components/schemas/OidcSubject" },
+          "audience": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "kind": { "const": "human" }
+        }
+      },
+      "RecoveryClosureResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "closure_id",
+          "closure_sha256",
+          "incident_id",
+          "workflow_id",
+          "workflow_version_before",
+          "workflow_version_after",
+          "packet_id",
+          "packet_sha256",
+          "outcome_id",
+          "outcome_sha256",
+          "actor",
+          "authorized_role",
+          "reason",
+          "closed_at",
+          "idempotency_key",
+          "audit_event_id",
+          "audit_event_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "recovery-closure-result/v1" },
+          "closure_id": {
+            "type": "string",
+            "pattern": "^recovery-closure:[0-9a-f]{64}$"
+          },
+          "closure_sha256": { "$ref": "#/components/schemas/Digest" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "workflow_id": { "$ref": "#/components/schemas/Identifier" },
+          "workflow_version_before": { "type": "integer", "minimum": 1 },
+          "workflow_version_after": { "type": "integer", "minimum": 2 },
+          "packet_id": { "$ref": "#/components/schemas/Identifier" },
+          "packet_sha256": { "$ref": "#/components/schemas/Digest" },
+          "outcome_id": { "$ref": "#/components/schemas/Identifier" },
+          "outcome_sha256": { "$ref": "#/components/schemas/Digest" },
+          "actor": { "$ref": "#/components/schemas/RecoveryClosureActor" },
+          "authorized_role": { "const": "recovery.closer" },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "closed_at": { "type": "string", "format": "date-time" },
+          "idempotency_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+          },
+          "audit_event_id": { "$ref": "#/components/schemas/Identifier" },
+          "audit_event_sha256": { "$ref": "#/components/schemas/Digest" }
+        }
+      },
+      "RecoveryClosureRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "expected_incident_version",
+          "expected_workflow_version",
+          "expected_packet_id",
+          "expected_packet_sha256",
+          "expected_outcome_id",
+          "expected_outcome_sha256",
+          "reason",
+          "idempotency_key"
+        ],
+        "properties": {
+          "schema": { "const": "recovery-closure-request/v1" },
+          "expected_incident_version": { "type": "integer", "minimum": 1 },
+          "expected_workflow_version": { "type": "integer", "minimum": 1 },
+          "expected_packet_id": { "$ref": "#/components/schemas/Identifier" },
+          "expected_packet_sha256": { "$ref": "#/components/schemas/Digest" },
+          "expected_outcome_id": { "$ref": "#/components/schemas/Identifier" },
+          "expected_outcome_sha256": { "$ref": "#/components/schemas/Digest" },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "idempotency_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+          }
+        }
+      },
+      "RecoveryReview": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "state",
+          "current_incident_version",
+          "workflow_version",
+          "snapshot",
+          "evidence_records",
+          "packet",
+          "closure",
+          "audit_events"
+        ],
+        "properties": {
+          "schema": { "const": "recovery-review/v1" },
+          "state": { "$ref": "#/components/schemas/RecoveryWorkflowState" },
+          "current_incident_version": { "type": "integer", "minimum": 1 },
+          "workflow_version": { "type": "integer", "minimum": 1 },
+          "snapshot": { "$ref": "#/components/schemas/RecoveryVerificationSnapshot" },
+          "evidence_records": {
+            "type": "array",
+            "maxItems": 256,
+            "items": { "$ref": "#/components/schemas/RecoveryEvidenceRecord" }
+          },
+          "packet": {
+            "anyOf": [{ "$ref": "#/components/schemas/RecoveryPacket" }, { "type": "null" }]
+          },
+          "closure": {
+            "anyOf": [{ "$ref": "#/components/schemas/RecoveryClosureResult" }, { "type": "null" }]
+          },
+          "audit_events": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": { "$ref": "#/components/schemas/RecoveryAuditEvent" }
+          }
+        }
+      },
+      "ResponsePlanActor": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issuer", "subject", "audience", "kind"],
+        "properties": {
+          "issuer": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "subject": { "$ref": "#/components/schemas/OidcSubject" },
+          "audience": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "kind": { "enum": ["human", "service"] }
+        }
+      },
+      "SimulatorTarget": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema", "namespace", "kind", "id"],
+        "properties": {
+          "schema": { "const": "simulator-target/v1" },
+          "namespace": { "const": "colortrace-simulator" },
+          "kind": { "enum": ["color-resource", "frame", "derivative"] },
+          "id": { "$ref": "#/components/schemas/Identifier" }
+        }
+      },
+      "SimulatorActionEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "fixture_id",
+          "fixture_manifest_sha256",
+          "fixture_generation",
+          "source_batch_id",
+          "source_batch_sha256",
+          "runtime_manifest_sha256",
+          "runtime_generation",
+          "expected_publication_pointer_sha256",
+          "expected_publication_generation",
+          "expected_resource_sha256",
+          "replacement_resource_logical_path",
+          "replacement_resource_sha256",
+          "declared_resource_manifest_sha256",
+          "ocio_version",
+          "preservation_manifest_sha256",
+          "safe_complement_sha256",
+          "lineage_manifest_sha256",
+          "lineage_generation"
+        ],
+        "properties": {
+          "schema": { "const": "simulator-action-envelope/v1" },
+          "fixture_id": { "$ref": "#/components/schemas/Identifier" },
+          "fixture_manifest_sha256": { "$ref": "#/components/schemas/Digest" },
+          "fixture_generation": { "type": "integer", "minimum": 1 },
+          "source_batch_id": { "$ref": "#/components/schemas/Identifier" },
+          "source_batch_sha256": { "$ref": "#/components/schemas/Digest" },
+          "runtime_manifest_sha256": { "$ref": "#/components/schemas/Digest" },
+          "runtime_generation": { "type": "integer", "minimum": 1 },
+          "expected_publication_pointer_sha256": { "$ref": "#/components/schemas/Digest" },
+          "expected_publication_generation": { "type": "integer", "minimum": 1 },
+          "expected_resource_sha256": { "$ref": "#/components/schemas/Digest" },
+          "replacement_resource_logical_path": { "const": "luts/show_look.cube" },
+          "replacement_resource_sha256": { "$ref": "#/components/schemas/Digest" },
+          "declared_resource_manifest_sha256": { "$ref": "#/components/schemas/Digest" },
+          "ocio_version": { "const": "2.5.2" },
+          "preservation_manifest_sha256": { "$ref": "#/components/schemas/Digest" },
+          "safe_complement_sha256": { "$ref": "#/components/schemas/Digest" },
+          "lineage_manifest_sha256": { "$ref": "#/components/schemas/Digest" },
+          "lineage_generation": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "SimulatorQuarantineCommand": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "command_id",
+          "namespace",
+          "target",
+          "action_envelope",
+          "expected_resource_sha256",
+          "mode"
+        ],
+        "properties": {
+          "schema": { "const": "simulator-quarantine-command/v1" },
+          "command_id": { "$ref": "#/components/schemas/Identifier" },
+          "namespace": { "const": "colortrace-simulator" },
+          "target": {
+            "allOf": [
+              { "$ref": "#/components/schemas/SimulatorTarget" },
+              { "type": "object", "properties": { "kind": { "const": "color-resource" } } }
+            ]
+          },
+          "action_envelope": { "$ref": "#/components/schemas/SimulatorActionEnvelope" },
+          "expected_resource_sha256": { "$ref": "#/components/schemas/Digest" },
+          "mode": { "const": "quarantine-and-install-approved-replacement" }
+        }
+      },
+      "SimulatorFrameRerenderCommand": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "command_id",
+          "namespace",
+          "target",
+          "action_envelope",
+          "job_id",
+          "transform_id",
+          "source_id",
+          "source_manifest_sha256",
+          "source_png_sha256",
+          "expected_config_sha256",
+          "expected_output_sha256",
+          "expected_display_sha256",
+          "lineage_parent_artifact_id"
+        ],
+        "properties": {
+          "schema": { "const": "simulator-targeted-rerender-command/v1" },
+          "command_id": { "$ref": "#/components/schemas/Identifier" },
+          "namespace": { "const": "colortrace-simulator" },
+          "target": {
+            "allOf": [
+              { "$ref": "#/components/schemas/SimulatorTarget" },
+              { "type": "object", "properties": { "kind": { "const": "frame" } } }
+            ]
+          },
+          "action_envelope": { "$ref": "#/components/schemas/SimulatorActionEnvelope" },
+          "job_id": { "$ref": "#/components/schemas/Identifier" },
+          "transform_id": { "enum": ["look/main/v1", "identity/v1"] },
+          "source_id": { "$ref": "#/components/schemas/Identifier" },
+          "source_manifest_sha256": { "$ref": "#/components/schemas/Digest" },
+          "source_png_sha256": { "$ref": "#/components/schemas/Digest" },
+          "expected_config_sha256": { "$ref": "#/components/schemas/Digest" },
+          "expected_output_sha256": { "$ref": "#/components/schemas/Digest" },
+          "expected_display_sha256": { "$ref": "#/components/schemas/Digest" },
+          "lineage_parent_artifact_id": { "$ref": "#/components/schemas/Identifier" }
+        }
+      },
+      "SimulatorDerivativeRerenderCommand": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "command_id",
+          "namespace",
+          "target",
+          "action_envelope",
+          "job_id",
+          "transform_id",
+          "source_id",
+          "source_manifest_sha256",
+          "source_png_sha256",
+          "expected_config_sha256",
+          "expected_derivative_sha256",
+          "expected_derivative_display_sha256",
+          "lineage_parent_artifact_id"
+        ],
+        "properties": {
+          "schema": { "const": "simulator-targeted-rerender-command/v1" },
+          "command_id": { "$ref": "#/components/schemas/Identifier" },
+          "namespace": { "const": "colortrace-simulator" },
+          "target": {
+            "allOf": [
+              { "$ref": "#/components/schemas/SimulatorTarget" },
+              { "type": "object", "properties": { "kind": { "const": "derivative" } } }
+            ]
+          },
+          "action_envelope": { "$ref": "#/components/schemas/SimulatorActionEnvelope" },
+          "job_id": { "$ref": "#/components/schemas/Identifier" },
+          "transform_id": { "enum": ["look/main/v1", "identity/v1"] },
+          "source_id": { "$ref": "#/components/schemas/Identifier" },
+          "source_manifest_sha256": { "$ref": "#/components/schemas/Digest" },
+          "source_png_sha256": { "$ref": "#/components/schemas/Digest" },
+          "expected_config_sha256": { "$ref": "#/components/schemas/Digest" },
+          "expected_derivative_sha256": { "$ref": "#/components/schemas/Digest" },
+          "expected_derivative_display_sha256": { "$ref": "#/components/schemas/Digest" },
+          "lineage_parent_artifact_id": { "$ref": "#/components/schemas/Identifier" }
+        }
+      },
+      "SimulatorCommand": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/SimulatorQuarantineCommand" },
+          { "$ref": "#/components/schemas/SimulatorFrameRerenderCommand" },
+          { "$ref": "#/components/schemas/SimulatorDerivativeRerenderCommand" }
+        ]
+      },
+      "ResponsePlan": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "plan_id",
+          "incident_id",
+          "incident_version",
+          "version",
+          "previous_plan_sha256",
+          "response_packet_id",
+          "response_packet_sha256",
+          "deterministic_scope_sha256",
+          "targets",
+          "exclusions",
+          "commands",
+          "unresolved_item_ids",
+          "blocking_unresolved_item_ids",
+          "unknown_target_ids",
+          "unresolved_acknowledged",
+          "created_by",
+          "created_at",
+          "plan_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "response-plan/v1" },
+          "plan_id": { "$ref": "#/components/schemas/Identifier" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "incident_version": { "type": "integer", "minimum": 1 },
+          "version": { "type": "integer", "minimum": 1 },
+          "previous_plan_sha256": {
+            "anyOf": [{ "$ref": "#/components/schemas/Digest" }, { "type": "null" }]
+          },
+          "response_packet_id": { "$ref": "#/components/schemas/Identifier" },
+          "response_packet_sha256": { "$ref": "#/components/schemas/Digest" },
+          "deterministic_scope_sha256": { "$ref": "#/components/schemas/Digest" },
+          "targets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": { "$ref": "#/components/schemas/SimulatorTarget" }
+          },
+          "exclusions": {
+            "type": "array",
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": { "$ref": "#/components/schemas/SimulatorTarget" }
+          },
+          "commands": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": { "$ref": "#/components/schemas/SimulatorCommand" }
+          },
+          "unresolved_item_ids": {
+            "type": "array",
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "blocking_unresolved_item_ids": {
+            "type": "array",
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "unknown_target_ids": {
+            "type": "array",
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "unresolved_acknowledged": { "type": "boolean" },
+          "created_by": { "$ref": "#/components/schemas/ResponsePlanActor" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "plan_sha256": { "$ref": "#/components/schemas/Digest" }
+        }
+      },
+      "ResponsePlanDecision": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "decision_id",
+          "outcome",
+          "incident_id",
+          "incident_version",
+          "plan_id",
+          "plan_version",
+          "plan_sha256",
+          "response_packet_id",
+          "response_packet_sha256",
+          "deterministic_scope_sha256",
+          "targets",
+          "exclusions",
+          "commands",
+          "targets_sha256",
+          "exclusions_sha256",
+          "commands_sha256",
+          "unresolved_item_ids",
+          "blocking_unresolved_item_ids",
+          "unknown_target_ids",
+          "unresolved_acknowledged",
+          "reason_code",
+          "actor",
+          "idempotency_key",
+          "decided_at",
+          "decision_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "response-plan-decision/v1" },
+          "decision_id": { "$ref": "#/components/schemas/Identifier" },
+          "outcome": { "enum": ["approved", "rejected"] },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "incident_version": { "type": "integer", "minimum": 1 },
+          "plan_id": { "$ref": "#/components/schemas/Identifier" },
+          "plan_version": { "type": "integer", "minimum": 1 },
+          "plan_sha256": { "$ref": "#/components/schemas/Digest" },
+          "response_packet_id": { "$ref": "#/components/schemas/Identifier" },
+          "response_packet_sha256": { "$ref": "#/components/schemas/Digest" },
+          "deterministic_scope_sha256": { "$ref": "#/components/schemas/Digest" },
+          "targets": {
+            "type": "array",
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/SimulatorTarget" }
+          },
+          "exclusions": {
+            "type": "array",
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/SimulatorTarget" }
+          },
+          "commands": {
+            "type": "array",
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/SimulatorCommand" }
+          },
+          "targets_sha256": { "$ref": "#/components/schemas/Digest" },
+          "exclusions_sha256": { "$ref": "#/components/schemas/Digest" },
+          "commands_sha256": { "$ref": "#/components/schemas/Digest" },
+          "unresolved_item_ids": {
+            "type": "array",
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "blocking_unresolved_item_ids": {
+            "type": "array",
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "unknown_target_ids": {
+            "type": "array",
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "unresolved_acknowledged": { "type": "boolean" },
+          "reason_code": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unsafe-scope",
+                  "insufficient-evidence",
+                  "incorrect-command",
+                  "unresolved-risk"
+                ]
+              },
+              { "type": "null" }
+            ]
+          },
+          "actor": { "$ref": "#/components/schemas/ResponsePlanActor" },
+          "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "decided_at": { "type": "string", "format": "date-time" },
+          "decision_sha256": { "$ref": "#/components/schemas/Digest" }
+        }
+      },
+      "ResponsePlanAuditEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "event_id",
+          "sequence",
+          "event_type",
+          "incident_id",
+          "plan_id",
+          "plan_version",
+          "plan_sha256",
+          "record_sha256",
+          "actor",
+          "idempotency_key",
+          "predecessor_event_sha256",
+          "occurred_at",
+          "event_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "response-plan-audit-event/v1" },
+          "event_id": { "$ref": "#/components/schemas/Identifier" },
+          "sequence": { "type": "integer", "minimum": 1 },
+          "event_type": {
+            "enum": [
+              "plan.created",
+              "plan.edited",
+              "plan.approved",
+              "plan.rejected",
+              "dispatch.authorized",
+              "dispatch.consumed"
+            ]
+          },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "plan_id": { "$ref": "#/components/schemas/Identifier" },
+          "plan_version": { "type": "integer", "minimum": 1 },
+          "plan_sha256": { "$ref": "#/components/schemas/Digest" },
+          "record_sha256": { "$ref": "#/components/schemas/Digest" },
+          "actor": { "$ref": "#/components/schemas/ResponsePlanActor" },
+          "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "predecessor_event_sha256": {
+            "anyOf": [{ "$ref": "#/components/schemas/Digest" }, { "type": "null" }]
+          },
+          "occurred_at": { "type": "string", "format": "date-time" },
+          "event_sha256": { "$ref": "#/components/schemas/Digest" }
+        }
+      },
+      "ResponsePlanDraft": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "incident_id",
+          "incident_version",
+          "response_packet_id",
+          "response_packet_sha256",
+          "deterministic_scope_sha256",
+          "targets",
+          "exclusions",
+          "unresolved_item_ids",
+          "blocking_unresolved_item_ids",
+          "unknown_target_ids"
+        ],
+        "properties": {
+          "schema": { "const": "response-plan-draft/v1" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "incident_version": { "type": "integer", "minimum": 1 },
+          "response_packet_id": { "$ref": "#/components/schemas/Identifier" },
+          "response_packet_sha256": { "$ref": "#/components/schemas/Digest" },
+          "deterministic_scope_sha256": { "$ref": "#/components/schemas/Digest" },
+          "targets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/SimulatorTarget" }
+          },
+          "exclusions": {
+            "type": "array",
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/SimulatorTarget" }
+          },
+          "unresolved_item_ids": {
+            "type": "array",
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "blocking_unresolved_item_ids": {
+            "type": "array",
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "unknown_target_ids": {
+            "type": "array",
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          }
+        }
+      },
+      "ResponsePlanReview": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "state",
+          "current_incident_version",
+          "plan",
+          "decision",
+          "audit_events"
+        ],
+        "properties": {
+          "schema": { "const": "response-plan-review/v1" },
+          "state": { "enum": ["pending", "approved", "rejected", "stale"] },
+          "current_incident_version": { "type": "integer", "minimum": 1 },
+          "plan": { "$ref": "#/components/schemas/ResponsePlan" },
+          "decision": {
+            "anyOf": [{ "$ref": "#/components/schemas/ResponsePlanDecision" }, { "type": "null" }]
+          },
+          "audit_events": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/components/schemas/ResponsePlanAuditEvent" }
+          }
+        }
+      },
+      "CreateResponsePlanRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_incident_version",
+          "expected_plan_version",
+          "response_packet_id",
+          "response_packet_sha256",
+          "deterministic_scope_sha256",
+          "targets",
+          "exclusions",
+          "commands",
+          "unresolved_acknowledged",
+          "idempotency_key"
+        ],
+        "properties": {
+          "expected_incident_version": { "type": "integer", "minimum": 1 },
+          "expected_plan_version": { "const": 0 },
+          "response_packet_id": { "$ref": "#/components/schemas/Identifier" },
+          "response_packet_sha256": { "$ref": "#/components/schemas/Digest" },
+          "deterministic_scope_sha256": { "$ref": "#/components/schemas/Digest" },
+          "targets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/SimulatorTarget" }
+          },
+          "exclusions": {
+            "type": "array",
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/SimulatorTarget" }
+          },
+          "commands": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/SimulatorCommand" }
+          },
+          "unresolved_acknowledged": { "type": "boolean" },
+          "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      },
+      "EditResponsePlanRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_incident_version",
+          "expected_plan_version",
+          "expected_plan_sha256",
+          "response_packet_id",
+          "response_packet_sha256",
+          "deterministic_scope_sha256",
+          "targets",
+          "exclusions",
+          "commands",
+          "unresolved_acknowledged",
+          "idempotency_key"
+        ],
+        "properties": {
+          "expected_incident_version": { "type": "integer", "minimum": 1 },
+          "expected_plan_version": { "type": "integer", "minimum": 1 },
+          "expected_plan_sha256": { "$ref": "#/components/schemas/Digest" },
+          "response_packet_id": { "$ref": "#/components/schemas/Identifier" },
+          "response_packet_sha256": { "$ref": "#/components/schemas/Digest" },
+          "deterministic_scope_sha256": { "$ref": "#/components/schemas/Digest" },
+          "targets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/SimulatorTarget" }
+          },
+          "exclusions": {
+            "type": "array",
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/SimulatorTarget" }
+          },
+          "commands": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": { "$ref": "#/components/schemas/SimulatorCommand" }
+          },
+          "unresolved_acknowledged": { "type": "boolean" },
+          "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      },
+      "DecideResponsePlanRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_incident_version",
+          "expected_plan_version",
+          "expected_plan_sha256",
+          "idempotency_key"
+        ],
+        "properties": {
+          "expected_incident_version": { "type": "integer", "minimum": 1 },
+          "expected_plan_version": { "type": "integer", "minimum": 1 },
+          "expected_plan_sha256": { "$ref": "#/components/schemas/Digest" },
+          "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      },
+      "RejectResponsePlanRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_incident_version",
+          "expected_plan_version",
+          "expected_plan_sha256",
+          "reason_code",
+          "idempotency_key"
+        ],
+        "properties": {
+          "expected_incident_version": { "type": "integer", "minimum": 1 },
+          "expected_plan_version": { "type": "integer", "minimum": 1 },
+          "expected_plan_sha256": { "$ref": "#/components/schemas/Digest" },
+          "reason_code": {
+            "enum": [
+              "unsafe-scope",
+              "insufficient-evidence",
+              "incorrect-command",
+              "unresolved-risk"
+            ]
+          },
+          "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      },
+      "ConsumeResponsePlanDispatchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "authorization_id",
+          "expected_incident_version",
+          "expected_plan_version",
+          "expected_plan_sha256",
+          "expected_task_key",
+          "expected_payload_sha256",
+          "idempotency_key"
+        ],
+        "properties": {
+          "authorization_id": { "$ref": "#/components/schemas/Identifier" },
+          "expected_incident_version": { "type": "integer", "minimum": 1 },
+          "expected_plan_version": { "type": "integer", "minimum": 1 },
+          "expected_plan_sha256": { "$ref": "#/components/schemas/Digest" },
+          "expected_task_key": { "$ref": "#/components/schemas/Identifier" },
+          "expected_payload_sha256": { "$ref": "#/components/schemas/Digest" },
+          "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      },
+      "AdmitSimulatorActionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema", "task_key", "operation_id", "payload_sha256"],
+        "properties": {
+          "schema": { "const": "simulator-action-admission-request/v1" },
+          "task_key": {
+            "type": "string",
+            "pattern": "^dispatch-task:[0-9a-f]{64}$"
+          },
+          "operation_id": {
+            "type": "string",
+            "pattern": "^dispatch-operation:[0-9a-f]{64}$"
+          },
+          "payload_sha256": { "$ref": "#/components/schemas/Digest" }
+        }
+      },
+      "SimulatorExecutorActor": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issuer", "subject", "audience", "kind"],
+        "properties": {
+          "issuer": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "subject": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "audience": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "kind": { "const": "service" }
+        }
+      },
+      "SimulatorActionAdmission": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "admission_id",
+          "action_id",
+          "task_key",
+          "operation_id",
+          "payload_sha256",
+          "dispatch_bundle_sha256",
+          "incident_id",
+          "incident_version",
+          "plan_id",
+          "plan_version",
+          "plan_sha256",
+          "approval_id",
+          "approval_sha256",
+          "authorization_id",
+          "authorization_sha256",
+          "consumption_id",
+          "consumption_sha256",
+          "executor_actor",
+          "admitted_at",
+          "admission_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "simulator-action-admission/v1" },
+          "admission_id": {
+            "type": "string",
+            "pattern": "^simulator-admission:[0-9a-f]{64}$"
+          },
+          "action_id": {
+            "type": "string",
+            "pattern": "^simulator-action:[0-9a-f]{64}$"
+          },
+          "task_key": {
+            "type": "string",
+            "pattern": "^dispatch-task:[0-9a-f]{64}$"
+          },
+          "operation_id": {
+            "type": "string",
+            "pattern": "^dispatch-operation:[0-9a-f]{64}$"
+          },
+          "payload_sha256": { "$ref": "#/components/schemas/Digest" },
+          "dispatch_bundle_sha256": { "$ref": "#/components/schemas/Digest" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "incident_version": { "type": "integer", "minimum": 1 },
+          "plan_id": {
+            "type": "string",
+            "pattern": "^response-plan:[0-9a-f]{64}$"
+          },
+          "plan_version": { "type": "integer", "minimum": 1 },
+          "plan_sha256": { "$ref": "#/components/schemas/Digest" },
+          "approval_id": {
+            "type": "string",
+            "pattern": "^plan-decision:[0-9a-f]{64}$"
+          },
+          "approval_sha256": { "$ref": "#/components/schemas/Digest" },
+          "authorization_id": {
+            "type": "string",
+            "pattern": "^dispatch-authorization:[0-9a-f]{64}$"
+          },
+          "authorization_sha256": { "$ref": "#/components/schemas/Digest" },
+          "consumption_id": {
+            "type": "string",
+            "pattern": "^dispatch-consumption:[0-9a-f]{64}$"
+          },
+          "consumption_sha256": { "$ref": "#/components/schemas/Digest" },
+          "executor_actor": { "$ref": "#/components/schemas/SimulatorExecutorActor" },
+          "admitted_at": { "type": "string", "format": "date-time" },
+          "admission_sha256": { "$ref": "#/components/schemas/Digest" }
+        }
+      },
+      "ResponsePlanDispatchAuthorization": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "authorization_id",
+          "authorization_policy",
+          "authorized_role",
+          "operation_id",
+          "task_key",
+          "payload_sha256",
+          "incident_id",
+          "incident_version",
+          "plan_id",
+          "plan_version",
+          "plan_sha256",
+          "response_packet_id",
+          "response_packet_sha256",
+          "deterministic_scope_sha256",
+          "approval_id",
+          "approval_sha256",
+          "targets",
+          "exclusions",
+          "commands",
+          "unresolved_item_ids",
+          "blocking_unresolved_item_ids",
+          "unknown_target_ids",
+          "unresolved_acknowledged",
+          "actor",
+          "idempotency_key",
+          "authorized_at",
+          "authorization_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "response-plan-dispatch-authorization/v1" },
+          "authorization_id": { "$ref": "#/components/schemas/Identifier" },
+          "authorization_policy": { "const": "response-plan-dispatch-policy/v1" },
+          "authorized_role": { "const": "response-plan.dispatcher" },
+          "operation_id": { "$ref": "#/components/schemas/Identifier" },
+          "task_key": { "$ref": "#/components/schemas/Identifier" },
+          "payload_sha256": { "$ref": "#/components/schemas/Digest" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "incident_version": { "type": "integer", "minimum": 1 },
+          "plan_id": { "$ref": "#/components/schemas/Identifier" },
+          "plan_version": { "type": "integer", "minimum": 1 },
+          "plan_sha256": { "$ref": "#/components/schemas/Digest" },
+          "response_packet_id": { "$ref": "#/components/schemas/Identifier" },
+          "response_packet_sha256": { "$ref": "#/components/schemas/Digest" },
+          "deterministic_scope_sha256": { "$ref": "#/components/schemas/Digest" },
+          "approval_id": { "$ref": "#/components/schemas/Identifier" },
+          "approval_sha256": { "$ref": "#/components/schemas/Digest" },
+          "targets": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SimulatorTarget" }
+          },
+          "exclusions": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SimulatorTarget" }
+          },
+          "commands": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SimulatorCommand" }
+          },
+          "unresolved_item_ids": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "blocking_unresolved_item_ids": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "unknown_target_ids": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Identifier" }
+          },
+          "unresolved_acknowledged": { "type": "boolean" },
+          "actor": { "$ref": "#/components/schemas/ResponsePlanActor" },
+          "idempotency_key": { "type": "string" },
+          "authorized_at": { "type": "string", "format": "date-time" },
+          "authorization_sha256": { "$ref": "#/components/schemas/Digest" }
+        }
+      },
+      "ResponsePlanDispatchConsumption": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "consumption_id",
+          "authorization_policy",
+          "authorized_role",
+          "authorization_id",
+          "authorization_sha256",
+          "operation_id",
+          "task_key",
+          "payload_sha256",
+          "incident_id",
+          "incident_version",
+          "plan_id",
+          "plan_version",
+          "plan_sha256",
+          "approval_id",
+          "approval_sha256",
+          "actor",
+          "idempotency_key",
+          "consumed_at",
+          "consumption_sha256"
+        ],
+        "properties": {
+          "schema": { "const": "response-plan-dispatch-consumption/v1" },
+          "consumption_id": { "$ref": "#/components/schemas/Identifier" },
+          "authorization_policy": { "const": "response-plan-dispatch-policy/v1" },
+          "authorized_role": { "const": "response-plan.dispatcher" },
+          "authorization_id": { "$ref": "#/components/schemas/Identifier" },
+          "authorization_sha256": { "$ref": "#/components/schemas/Digest" },
+          "operation_id": { "$ref": "#/components/schemas/Identifier" },
+          "task_key": { "$ref": "#/components/schemas/Identifier" },
+          "payload_sha256": { "$ref": "#/components/schemas/Digest" },
+          "incident_id": { "$ref": "#/components/schemas/Identifier" },
+          "incident_version": { "type": "integer", "minimum": 1 },
+          "plan_id": { "$ref": "#/components/schemas/Identifier" },
+          "plan_version": { "type": "integer", "minimum": 1 },
+          "plan_sha256": { "$ref": "#/components/schemas/Digest" },
+          "approval_id": { "$ref": "#/components/schemas/Identifier" },
+          "approval_sha256": { "$ref": "#/components/schemas/Digest" },
+          "actor": { "$ref": "#/components/schemas/ResponsePlanActor" },
+          "idempotency_key": { "type": "string" },
+          "consumed_at": { "type": "string", "format": "date-time" },
+          "consumption_sha256": { "$ref": "#/components/schemas/Digest" }
         }
       }
     }

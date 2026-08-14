@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/recovery-packet-v1.schema.json",
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"},
+    "nullableId": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]},
+    "nullableDigest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check", "reason_codes"],
+      "properties": {
+        "check": {"type": "string"},
+        "reason_codes": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"}}
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "packet_id", "packet_sha256", "incident_id", "incident_version", "workflow_id", "workflow_version", "attempt_id", "attempt_number", "snapshot_id", "snapshot_sha256", "outcome_id", "outcome_sha256", "action_id", "action_started_at", "evaluation_started_at", "evaluation_completed_at", "evidence_request_id", "evidence_request_sha256", "evidence_ids", "check_results", "status", "failure_items", "unresolved_items", "eligible_for_closure", "supersedes_packet_id", "supersedes_packet_sha256"],
+  "properties": {
+    "schema": {"const": "recovery-packet/v1"},
+    "packet_id": {"type": "string", "pattern": "^recovery-packet:[0-9a-f]{64}$"},
+    "packet_sha256": {"$ref": "#/$defs/digest"},
+    "incident_id": {"$ref": "#/$defs/id"},
+    "incident_version": {"type": "integer", "minimum": 1},
+    "workflow_id": {"$ref": "#/$defs/id"},
+    "workflow_version": {"type": "integer", "minimum": 1},
+    "attempt_id": {"$ref": "#/$defs/id"},
+    "attempt_number": {"type": "integer", "minimum": 1},
+    "snapshot_id": {"$ref": "#/$defs/id"},
+    "snapshot_sha256": {"$ref": "#/$defs/digest"},
+    "outcome_id": {"$ref": "#/$defs/id"},
+    "outcome_sha256": {"$ref": "#/$defs/digest"},
+    "action_id": {"$ref": "#/$defs/id"},
+    "action_started_at": {"type": "string", "format": "date-time"},
+    "evaluation_started_at": {"type": "string", "format": "date-time"},
+    "evaluation_completed_at": {"type": "string", "format": "date-time"},
+    "evidence_request_id": {"$ref": "#/$defs/id"},
+    "evidence_request_sha256": {"$ref": "#/$defs/digest"},
+    "evidence_ids": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "check_results": {"type": "array", "minItems": 7, "maxItems": 7, "items": {"$ref": "https://colortrace.dev/schemas/recovery-check-result-v1.schema.json"}},
+    "status": {"enum": ["recovery_verified", "recovery_failed", "recovery_unresolved"]},
+    "failure_items": {"type": "array", "maxItems": 7, "items": {"$ref": "#/$defs/item"}},
+    "unresolved_items": {"type": "array", "maxItems": 7, "items": {"$ref": "#/$defs/item"}},
+    "eligible_for_closure": {"type": "boolean"},
+    "supersedes_packet_id": {"$ref": "#/$defs/nullableId"},
+    "supersedes_packet_sha256": {"$ref": "#/$defs/nullableDigest"}
+  }
+}

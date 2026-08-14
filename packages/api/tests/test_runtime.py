@@ -11,6 +11,7 @@ import uvicorn
 from colortrace_api import (
     ApiRuntimeConfig,
     ApiRuntimeConfigurationError,
+    build_recovery_verification_task,
     create_application,
     create_runtime_app,
 )
@@ -72,6 +73,12 @@ class NeverResolver:
 def environment(database_path: Path) -> dict[str, str]:
     return {
         "COLORTRACE_DATABASE_PATH": str(database_path),
+        "COLORTRACE_RESPONSE_PLAN_DATABASE_PATH": str(
+            database_path.with_name(f"{database_path.stem}-response-plans.sqlite3")
+        ),
+        "COLORTRACE_RECOVERY_DATABASE_PATH": str(
+            database_path.with_name(f"{database_path.stem}-recovery.sqlite3")
+        ),
         "COLORTRACE_OIDC_ISSUER": "https://identity.example.test/tenant",
         "COLORTRACE_OIDC_AUDIENCE": "colortrace-api",
         "COLORTRACE_OIDC_JWKS_URI": "https://identity.example.test/jwks",
@@ -119,12 +126,43 @@ def test_environment_factory_composes_public_reads_without_auth_bypass(tmp_path:
     assert store.list_times == ["2026-08-13T12:00:00.000Z"]
     assert store_paths == [tmp_path / "incidents.sqlite3"]
     assert resolver_uris == ["https://identity.example.test/jwks"]
+    assert app.state.recovery_verification_task_store is None
+
+
+def test_explicit_recovery_task_database_composes_durable_admission(tmp_path: Path) -> None:
+    values = environment(tmp_path / "incidents.sqlite3")
+    task_path = tmp_path / "recovery-tasks.sqlite3"
+    values["COLORTRACE_RECOVERY_TASK_DATABASE_PATH"] = str(task_path)
+    config = ApiRuntimeConfig.from_environment(values)
+
+    app = create_runtime_app(
+        config,
+        store_factory=lambda _path: FactoryStore(),
+        resolver_factory=lambda _uri: NeverResolver(),
+        clock=fixed_clock,
+    )
+    task = build_recovery_verification_task(
+        incident_id="incident-runtime-recovery",
+        expected_incident_version=1,
+        expected_outcome_sha256=f"sha256:{'a' * 64}",
+        idempotency_key="runtime-recovery-task",
+    )
+
+    first = app.state.recovery_verification_task_store.dispatch(task)
+    duplicate = app.state.recovery_verification_task_store.dispatch(task)
+
+    assert config.recovery_task_database_path == task_path
+    assert task_path.is_file()
+    assert first["duplicate"] is False
+    assert duplicate == {**first, "duplicate": True}
 
 
 @pytest.mark.parametrize(
     "missing",
     [
         "COLORTRACE_DATABASE_PATH",
+        "COLORTRACE_RESPONSE_PLAN_DATABASE_PATH",
+        "COLORTRACE_RECOVERY_DATABASE_PATH",
         "COLORTRACE_OIDC_ISSUER",
         "COLORTRACE_OIDC_AUDIENCE",
         "COLORTRACE_OIDC_JWKS_URI",
@@ -146,6 +184,17 @@ def test_factory_fails_closed_when_required_environment_is_missing(
     ("field", "value", "expected_code"),
     [
         ("COLORTRACE_DATABASE_PATH", "relative.sqlite3", "database-path-invalid"),
+        (
+            "COLORTRACE_RESPONSE_PLAN_DATABASE_PATH",
+            "relative.sqlite3",
+            "database-path-invalid",
+        ),
+        ("COLORTRACE_RECOVERY_DATABASE_PATH", "relative.sqlite3", "database-path-invalid"),
+        (
+            "COLORTRACE_RECOVERY_TASK_DATABASE_PATH",
+            "relative.sqlite3",
+            "database-path-invalid",
+        ),
         (
             "COLORTRACE_OIDC_ISSUER",
             "http://identity.example.test/tenant",
@@ -181,6 +230,15 @@ def test_factory_rejects_store_without_authoritative_read_methods(tmp_path: Path
     with pytest.raises(ApiRuntimeConfigurationError) as error:
         create_runtime_app(config, store_factory=lambda _path: object())
     assert error.value.code == "incident-store-incompatible"
+
+
+def test_factory_rejects_overlapping_authority_databases(tmp_path: Path) -> None:
+    values = environment(tmp_path / "incidents.sqlite3")
+    values["COLORTRACE_RECOVERY_DATABASE_PATH"] = values["COLORTRACE_RESPONSE_PLAN_DATABASE_PATH"]
+
+    with pytest.raises(ApiRuntimeConfigurationError) as error:
+        ApiRuntimeConfig.from_environment(values)
+    assert error.value.code == "database-path-overlap"
 
 
 def test_default_sqlite_composition_when_read_methods_are_available(tmp_path: Path) -> None:

@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/response-plan-dispatch-authorization-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "authorization_id",
+    "authorization_policy",
+    "authorized_role",
+    "operation_id",
+    "task_key",
+    "payload_sha256",
+    "incident_id",
+    "incident_version",
+    "plan_id",
+    "plan_version",
+    "plan_sha256",
+    "response_packet_id",
+    "response_packet_sha256",
+    "deterministic_scope_sha256",
+    "approval_id",
+    "approval_sha256",
+    "targets",
+    "exclusions",
+    "commands",
+    "unresolved_item_ids",
+    "blocking_unresolved_item_ids",
+    "unknown_target_ids",
+    "unresolved_acknowledged",
+    "actor",
+    "idempotency_key",
+    "authorized_at",
+    "authorization_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "response-plan-dispatch-authorization/v1"},
+    "authorization_id": {"type": "string", "pattern": "^dispatch-authorization:[0-9a-f]{64}$"},
+    "authorization_policy": {"const": "response-plan-dispatch-policy/v1"},
+    "authorized_role": {"const": "response-plan.dispatcher"},
+    "operation_id": {"type": "string", "pattern": "^dispatch-operation:[0-9a-f]{64}$"},
+    "task_key": {"type": "string", "pattern": "^dispatch-task:[0-9a-f]{64}$"},
+    "payload_sha256": {"$ref": "#/$defs/digest"},
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "incident_version": {"type": "integer", "minimum": 1},
+    "plan_id": {"type": "string", "pattern": "^response-plan:[0-9a-f]{64}$"},
+    "plan_version": {"type": "integer", "minimum": 1},
+    "plan_sha256": {"$ref": "#/$defs/digest"},
+    "response_packet_id": {"type": "string", "pattern": "^response-packet:[0-9a-f]{64}$"},
+    "response_packet_sha256": {"$ref": "#/$defs/digest"},
+    "deterministic_scope_sha256": {"$ref": "#/$defs/digest"},
+    "approval_id": {"type": "string", "pattern": "^plan-decision:[0-9a-f]{64}$"},
+    "approval_sha256": {"$ref": "#/$defs/digest"},
+    "targets": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/target"}},
+    "exclusions": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/target"}},
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {"$ref": "simulator-command-v1.schema.json"}
+    },
+    "unresolved_item_ids": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/identifier"}
+    },
+    "blocking_unresolved_item_ids": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/identifier"}
+    },
+    "unknown_target_ids": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/identifier"}
+    },
+    "unresolved_acknowledged": {"type": "boolean"},
+    "actor": {"$ref": "#/$defs/actor"},
+    "idempotency_key": {"$ref": "#/$defs/idempotency"},
+    "authorized_at": {"type": "string", "format": "date-time"},
+    "authorization_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "idempotency": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "namespace", "kind", "id"],
+      "properties": {
+        "schema": {"const": "simulator-target/v1"},
+        "namespace": {"const": "colortrace-simulator"},
+        "kind": {"enum": ["color-resource", "frame", "derivative"]},
+        "id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "subject", "audience", "kind"],
+      "properties": {
+        "issuer": {"type": "string", "minLength": 1, "maxLength": 512},
+        "subject": {"type": "string", "minLength": 1, "maxLength": 255},
+        "audience": {"type": "string", "minLength": 1, "maxLength": 255},
+        "kind": {"const": "service"}
+      }
+    }
+  }
+}

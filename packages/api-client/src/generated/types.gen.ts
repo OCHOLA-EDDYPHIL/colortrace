@@ -711,6 +711,693 @@ export type ValidatorEvidence = {
   sha256: ValidatorDigest;
 };
 
+export type RecoveryVerificationTaskKey = string;
+
+export type RecoveryVerificationAdmissionRequest = {
+  schema: "recovery-verification-admission-request/v1";
+  expected_incident_version: number;
+  expected_outcome_sha256: Digest;
+  idempotency_key: string;
+};
+
+export type RecoveryVerificationTask = {
+  schema: "recovery-verification-task/v1";
+  task_key: RecoveryVerificationTaskKey;
+  incident_id: Identifier;
+  expected_incident_version: number;
+  expected_outcome_sha256: Digest;
+  payload_sha256: Digest;
+  idempotency_key: string;
+};
+
+export type RecoveryVerificationAdmission = {
+  schema: "recovery-verification-admission/v1";
+  task_key: RecoveryVerificationTaskKey;
+  incident_id: Identifier;
+  expected_incident_version: number;
+  expected_outcome_sha256: Digest;
+  payload_sha256: Digest;
+  idempotency_key: string;
+  duplicate: boolean;
+  state: "queued" | "running" | "complete";
+};
+
+export type RecoveryVerificationTaskResult = {
+  schema: "recovery-verification-task-result/v1";
+  result_id: string;
+  result_sha256: Digest;
+  task_key: RecoveryVerificationTaskKey;
+  payload_sha256: Digest;
+  incident_id: Identifier;
+  expected_incident_version: number;
+  expected_outcome_sha256: Digest;
+  status: "completed" | "unresolved";
+  packet_id: string | null;
+  packet_sha256: Digest | null;
+  reason_code: string | null;
+};
+
+export type RecoveryWorkflowState =
+  | "verification_pending"
+  | "verification_running"
+  | "recovery_verified"
+  | "recovery_failed"
+  | "recovery_unresolved"
+  | "closed";
+
+export type RecoveryCheckName =
+  | "active-publication"
+  | "approved-resource-state"
+  | "declared-reference-recovery"
+  | "exact-typed-lineage"
+  | "approved-recovery-scope"
+  | "safe-complement-preservation"
+  | "post-action-telemetry-correlation";
+
+export type RecoveryCheckResult = {
+  schema: "recovery-check-result/v1";
+  result_id: string;
+  result_sha256: Digest;
+  check: RecoveryCheckName;
+  policy:
+    | "active-publication/v1"
+    | "approved-resource-state/v1"
+    | "declared-reference-recovery/v1"
+    | "exact-typed-lineage/v1"
+    | "approved-recovery-scope/v1"
+    | "safe-complement-preservation/v1"
+    | "post-action-telemetry-correlation/v1";
+  state: "passed" | "failed" | "unresolved";
+  normalized_inputs_sha256: Digest;
+  evidence_ids: Array<Identifier>;
+  artifact_ids: Array<Identifier>;
+  reason_codes: Array<string>;
+};
+
+export type RecoveryPacketItem = {
+  check: RecoveryCheckName;
+  reason_codes: Array<string>;
+};
+
+export type RecoveryPacket = {
+  schema: "recovery-packet/v1";
+  packet_id: string;
+  packet_sha256: Digest;
+  incident_id: Identifier;
+  incident_version: number;
+  workflow_id: Identifier;
+  workflow_version: number;
+  attempt_id: Identifier;
+  attempt_number: number;
+  snapshot_id: Identifier;
+  snapshot_sha256: Digest;
+  outcome_id: Identifier;
+  outcome_sha256: Digest;
+  action_id: Identifier;
+  action_started_at: string;
+  evaluation_started_at: string;
+  evaluation_completed_at: string;
+  evidence_request_id: Identifier;
+  evidence_request_sha256: Digest;
+  evidence_ids: Array<Identifier>;
+  check_results: [
+    RecoveryCheckResult,
+    RecoveryCheckResult,
+    RecoveryCheckResult,
+    RecoveryCheckResult,
+    RecoveryCheckResult,
+    RecoveryCheckResult,
+    RecoveryCheckResult,
+  ];
+  status: "recovery_verified" | "recovery_failed" | "recovery_unresolved";
+  failure_items: Array<RecoveryPacketItem>;
+  unresolved_items: Array<RecoveryPacketItem>;
+  eligible_for_closure: boolean;
+  supersedes_packet_id: Identifier | null;
+  supersedes_packet_sha256: Digest | null;
+};
+
+export type RecoveryActionCommandOutcome = {
+  schema: "simulator-command-result/v1";
+  command_id: Identifier;
+  result_kind: "quarantine" | "frame" | "derivative";
+  target: SimulatorTarget;
+  trace_id: TraceId;
+  before: {
+    [key: string]: unknown;
+  };
+  after: {
+    [key: string]: unknown;
+  };
+};
+
+export type RecoveryActionOutcome = {
+  schema: "simulator-action-outcome/v1";
+  outcome_id: Identifier;
+  outcome_sha256: Digest;
+  action_id: Identifier;
+  status: "succeeded" | "failed";
+  reason_codes: Array<string>;
+  incident_id: Identifier;
+  incident_version: number;
+  plan_id: Identifier;
+  plan_version: number;
+  plan_sha256: Digest;
+  action_started_at: string;
+  publication_promoted_at: string | null;
+  completed_at: string;
+  active_publication_pointer_sha256: Digest | null;
+  active_runtime_manifest_sha256: Digest | null;
+  preservation_manifest_sha256: Digest | null;
+  safe_complement_before_sha256: Digest | null;
+  safe_complement_after_sha256: Digest | null;
+  safe_complement_proof_sha256: Digest | null;
+  targets: Array<SimulatorTarget>;
+  exclusions: Array<SimulatorTarget>;
+  command_outcomes: Array<RecoveryActionCommandOutcome>;
+  new_trace_ids: Array<TraceId>;
+  [key: string]: unknown;
+};
+
+export type RecoveryActivePublication = {
+  schema: "recovery-active-publication/v1";
+  publication_id: Identifier;
+  observed_at: string;
+  generation: number;
+  pointer_sha256: Digest;
+  runtime_manifest_sha256: Digest;
+  fixture_manifest_sha256: Digest;
+  lineage_manifest_sha256: Digest;
+  declared_resource_manifest_sha256: Digest;
+  preservation_manifest_sha256: Digest;
+  safe_complement_sha256: Digest;
+  safe_complement_proof_sha256: Digest;
+  candidate_seal_sha256: Digest;
+  candidate_tree_sha256: Digest;
+};
+
+export type RecoveryVerificationArtifact = {
+  schema: "recovery-verification-artifact/v1";
+  artifact_id: Identifier;
+  role:
+    | "active-resource"
+    | "affected-output"
+    | "declared-reference"
+    | "derivative-output"
+    | "derivative-parent"
+    | "lineage-manifest"
+    | "runtime-manifest"
+    | "fixture-manifest"
+    | "preservation-manifest"
+    | "safe-complement"
+    | "safe-complement-proof";
+  target: SimulatorTarget | null;
+  sha256: Digest;
+  size: number;
+  publication_pointer_sha256: Digest;
+};
+
+export type RecoveryVerificationSnapshot = {
+  schema: "recovery-verification-snapshot/v1";
+  snapshot_id: string;
+  snapshot_sha256: Digest;
+  incident_id: Identifier;
+  incident_version: number;
+  created_at: string;
+  action_outcome: RecoveryActionOutcome;
+  active_publication: RecoveryActivePublication;
+  verification_artifacts: [
+    RecoveryVerificationArtifact,
+    RecoveryVerificationArtifact,
+    RecoveryVerificationArtifact,
+    RecoveryVerificationArtifact,
+    RecoveryVerificationArtifact,
+    RecoveryVerificationArtifact,
+    RecoveryVerificationArtifact,
+    RecoveryVerificationArtifact,
+    RecoveryVerificationArtifact,
+    RecoveryVerificationArtifact,
+    RecoveryVerificationArtifact,
+    RecoveryVerificationArtifact,
+    RecoveryVerificationArtifact,
+    RecoveryVerificationArtifact,
+    RecoveryVerificationArtifact,
+  ];
+};
+
+export type RecoveryEvidenceCorrelation = {
+  incident_id: Identifier;
+  action_id: Identifier;
+  outcome_id: Identifier;
+  outcome_sha256: Digest;
+  target: SimulatorTarget | null;
+};
+
+export type RecoveryEvidenceRecord = {
+  schema: "recovery-evidence-record/v1";
+  evidence_id: string;
+  evidence_sha256: Digest;
+  signal: "metric" | "log" | "trace";
+  event_id: Identifier;
+  subject_kind: "command" | "safe";
+  subject_id: Identifier;
+  trace_id: TraceId | null;
+  observed_at: string;
+  emitted_at: string;
+  retrieved_at: string;
+  freshness: "post-action" | "pre-action" | "late" | "ambiguous";
+  correlation: RecoveryEvidenceCorrelation;
+  source_label: string;
+  display_excerpt: string;
+};
+
+export type RecoveryAuditActor = {
+  issuer: string;
+  subject: OidcSubject;
+  audience: string;
+  display_name: string;
+  kind: "human" | "service";
+  authorized_role: "recovery.verifier" | "recovery.closer";
+};
+
+export type RecoveryAuditEvent = {
+  schema: "recovery-audit-event/v1";
+  event_id: string;
+  event_sha256: Digest;
+  incident_id: Identifier;
+  workflow_id: Identifier;
+  sequence: number;
+  event_type:
+    | "verification.requested"
+    | "verification.claimed"
+    | "verification.reclaimed"
+    | "verification.completed"
+    | "recovery.closed";
+  actor: RecoveryAuditActor;
+  snapshot_id: Identifier;
+  snapshot_sha256: Digest;
+  outcome_id: Identifier;
+  outcome_sha256: Digest;
+  packet_id: Identifier | null;
+  packet_sha256: Digest | null;
+  idempotency_key: string;
+  predecessor_event_sha256: Digest | null;
+  occurred_at: string;
+  details: {
+    [key: string]: unknown;
+  };
+};
+
+export type RecoveryClosureActor = {
+  issuer: string;
+  subject: OidcSubject;
+  audience: string;
+  display_name: string;
+  kind: "human";
+};
+
+export type RecoveryClosureResult = {
+  schema: "recovery-closure-result/v1";
+  closure_id: string;
+  closure_sha256: Digest;
+  incident_id: Identifier;
+  workflow_id: Identifier;
+  workflow_version_before: number;
+  workflow_version_after: number;
+  packet_id: Identifier;
+  packet_sha256: Digest;
+  outcome_id: Identifier;
+  outcome_sha256: Digest;
+  actor: RecoveryClosureActor;
+  authorized_role: "recovery.closer";
+  reason: string;
+  closed_at: string;
+  idempotency_key: string;
+  audit_event_id: Identifier;
+  audit_event_sha256: Digest;
+};
+
+export type RecoveryClosureRequest = {
+  schema: "recovery-closure-request/v1";
+  expected_incident_version: number;
+  expected_workflow_version: number;
+  expected_packet_id: Identifier;
+  expected_packet_sha256: Digest;
+  expected_outcome_id: Identifier;
+  expected_outcome_sha256: Digest;
+  reason: string;
+  idempotency_key: string;
+};
+
+export type RecoveryReview = {
+  schema: "recovery-review/v1";
+  state: RecoveryWorkflowState;
+  current_incident_version: number;
+  workflow_version: number;
+  snapshot: RecoveryVerificationSnapshot;
+  evidence_records: Array<RecoveryEvidenceRecord>;
+  packet: RecoveryPacket | null;
+  closure: RecoveryClosureResult | null;
+  audit_events: Array<RecoveryAuditEvent>;
+};
+
+export type ResponsePlanActor = {
+  issuer: string;
+  subject: OidcSubject;
+  audience: string;
+  kind: "human" | "service";
+};
+
+export type SimulatorTarget = {
+  schema: "simulator-target/v1";
+  namespace: "colortrace-simulator";
+  kind: "color-resource" | "frame" | "derivative";
+  id: Identifier;
+};
+
+export type SimulatorActionEnvelope = {
+  schema: "simulator-action-envelope/v1";
+  fixture_id: Identifier;
+  fixture_manifest_sha256: Digest;
+  fixture_generation: number;
+  source_batch_id: Identifier;
+  source_batch_sha256: Digest;
+  runtime_manifest_sha256: Digest;
+  runtime_generation: number;
+  expected_publication_pointer_sha256: Digest;
+  expected_publication_generation: number;
+  expected_resource_sha256: Digest;
+  replacement_resource_logical_path: "luts/show_look.cube";
+  replacement_resource_sha256: Digest;
+  declared_resource_manifest_sha256: Digest;
+  ocio_version: "2.5.2";
+  preservation_manifest_sha256: Digest;
+  safe_complement_sha256: Digest;
+  lineage_manifest_sha256: Digest;
+  lineage_generation: number;
+};
+
+export type SimulatorQuarantineCommand = {
+  schema: "simulator-quarantine-command/v1";
+  command_id: Identifier;
+  namespace: "colortrace-simulator";
+  target: SimulatorTarget & {
+    kind?: "color-resource";
+  };
+  action_envelope: SimulatorActionEnvelope;
+  expected_resource_sha256: Digest;
+  mode: "quarantine-and-install-approved-replacement";
+};
+
+export type SimulatorFrameRerenderCommand = {
+  schema: "simulator-targeted-rerender-command/v1";
+  command_id: Identifier;
+  namespace: "colortrace-simulator";
+  target: SimulatorTarget & {
+    kind?: "frame";
+  };
+  action_envelope: SimulatorActionEnvelope;
+  job_id: Identifier;
+  transform_id: "look/main/v1" | "identity/v1";
+  source_id: Identifier;
+  source_manifest_sha256: Digest;
+  source_png_sha256: Digest;
+  expected_config_sha256: Digest;
+  expected_output_sha256: Digest;
+  expected_display_sha256: Digest;
+  lineage_parent_artifact_id: Identifier;
+};
+
+export type SimulatorDerivativeRerenderCommand = {
+  schema: "simulator-targeted-rerender-command/v1";
+  command_id: Identifier;
+  namespace: "colortrace-simulator";
+  target: SimulatorTarget & {
+    kind?: "derivative";
+  };
+  action_envelope: SimulatorActionEnvelope;
+  job_id: Identifier;
+  transform_id: "look/main/v1" | "identity/v1";
+  source_id: Identifier;
+  source_manifest_sha256: Digest;
+  source_png_sha256: Digest;
+  expected_config_sha256: Digest;
+  expected_derivative_sha256: Digest;
+  expected_derivative_display_sha256: Digest;
+  lineage_parent_artifact_id: Identifier;
+};
+
+export type SimulatorCommand =
+  | SimulatorQuarantineCommand
+  | SimulatorFrameRerenderCommand
+  | SimulatorDerivativeRerenderCommand;
+
+export type ResponsePlan = {
+  schema: "response-plan/v1";
+  plan_id: Identifier;
+  incident_id: Identifier;
+  incident_version: number;
+  version: number;
+  previous_plan_sha256: Digest | null;
+  response_packet_id: Identifier;
+  response_packet_sha256: Digest;
+  deterministic_scope_sha256: Digest;
+  targets: Array<SimulatorTarget>;
+  exclusions: Array<SimulatorTarget>;
+  commands: Array<SimulatorCommand>;
+  unresolved_item_ids: Array<Identifier>;
+  blocking_unresolved_item_ids: Array<Identifier>;
+  unknown_target_ids: Array<Identifier>;
+  unresolved_acknowledged: boolean;
+  created_by: ResponsePlanActor;
+  created_at: string;
+  plan_sha256: Digest;
+};
+
+export type ResponsePlanDecision = {
+  schema: "response-plan-decision/v1";
+  decision_id: Identifier;
+  outcome: "approved" | "rejected";
+  incident_id: Identifier;
+  incident_version: number;
+  plan_id: Identifier;
+  plan_version: number;
+  plan_sha256: Digest;
+  response_packet_id: Identifier;
+  response_packet_sha256: Digest;
+  deterministic_scope_sha256: Digest;
+  targets: Array<SimulatorTarget>;
+  exclusions: Array<SimulatorTarget>;
+  commands: Array<SimulatorCommand>;
+  targets_sha256: Digest;
+  exclusions_sha256: Digest;
+  commands_sha256: Digest;
+  unresolved_item_ids: Array<Identifier>;
+  blocking_unresolved_item_ids: Array<Identifier>;
+  unknown_target_ids: Array<Identifier>;
+  unresolved_acknowledged: boolean;
+  reason_code:
+    | "unsafe-scope"
+    | "insufficient-evidence"
+    | "incorrect-command"
+    | "unresolved-risk"
+    | null;
+  actor: ResponsePlanActor;
+  idempotency_key: string;
+  decided_at: string;
+  decision_sha256: Digest;
+};
+
+export type ResponsePlanAuditEvent = {
+  schema: "response-plan-audit-event/v1";
+  event_id: Identifier;
+  sequence: number;
+  event_type:
+    | "plan.created"
+    | "plan.edited"
+    | "plan.approved"
+    | "plan.rejected"
+    | "dispatch.authorized"
+    | "dispatch.consumed";
+  incident_id: Identifier;
+  plan_id: Identifier;
+  plan_version: number;
+  plan_sha256: Digest;
+  record_sha256: Digest;
+  actor: ResponsePlanActor;
+  idempotency_key: string;
+  predecessor_event_sha256: Digest | null;
+  occurred_at: string;
+  event_sha256: Digest;
+};
+
+export type ResponsePlanDraft = {
+  schema: "response-plan-draft/v1";
+  incident_id: Identifier;
+  incident_version: number;
+  response_packet_id: Identifier;
+  response_packet_sha256: Digest;
+  deterministic_scope_sha256: Digest;
+  targets: Array<SimulatorTarget>;
+  exclusions: Array<SimulatorTarget>;
+  unresolved_item_ids: Array<Identifier>;
+  blocking_unresolved_item_ids: Array<Identifier>;
+  unknown_target_ids: Array<Identifier>;
+};
+
+export type ResponsePlanReview = {
+  schema: "response-plan-review/v1";
+  state: "pending" | "approved" | "rejected" | "stale";
+  current_incident_version: number;
+  plan: ResponsePlan;
+  decision: ResponsePlanDecision | null;
+  audit_events: Array<ResponsePlanAuditEvent>;
+};
+
+export type CreateResponsePlanRequest = {
+  expected_incident_version: number;
+  expected_plan_version: 0;
+  response_packet_id: Identifier;
+  response_packet_sha256: Digest;
+  deterministic_scope_sha256: Digest;
+  targets: Array<SimulatorTarget>;
+  exclusions: Array<SimulatorTarget>;
+  commands: Array<SimulatorCommand>;
+  unresolved_acknowledged: boolean;
+  idempotency_key: string;
+};
+
+export type EditResponsePlanRequest = {
+  expected_incident_version: number;
+  expected_plan_version: number;
+  expected_plan_sha256: Digest;
+  response_packet_id: Identifier;
+  response_packet_sha256: Digest;
+  deterministic_scope_sha256: Digest;
+  targets: Array<SimulatorTarget>;
+  exclusions: Array<SimulatorTarget>;
+  commands: Array<SimulatorCommand>;
+  unresolved_acknowledged: boolean;
+  idempotency_key: string;
+};
+
+export type DecideResponsePlanRequest = {
+  expected_incident_version: number;
+  expected_plan_version: number;
+  expected_plan_sha256: Digest;
+  idempotency_key: string;
+};
+
+export type RejectResponsePlanRequest = {
+  expected_incident_version: number;
+  expected_plan_version: number;
+  expected_plan_sha256: Digest;
+  reason_code: "unsafe-scope" | "insufficient-evidence" | "incorrect-command" | "unresolved-risk";
+  idempotency_key: string;
+};
+
+export type ConsumeResponsePlanDispatchRequest = {
+  authorization_id: Identifier;
+  expected_incident_version: number;
+  expected_plan_version: number;
+  expected_plan_sha256: Digest;
+  expected_task_key: Identifier;
+  expected_payload_sha256: Digest;
+  idempotency_key: string;
+};
+
+export type AdmitSimulatorActionRequest = {
+  schema: "simulator-action-admission-request/v1";
+  task_key: string;
+  operation_id: string;
+  payload_sha256: Digest;
+};
+
+export type SimulatorExecutorActor = {
+  issuer: string;
+  subject: string;
+  audience: string;
+  kind: "service";
+};
+
+export type SimulatorActionAdmission = {
+  schema: "simulator-action-admission/v1";
+  admission_id: string;
+  action_id: string;
+  task_key: string;
+  operation_id: string;
+  payload_sha256: Digest;
+  dispatch_bundle_sha256: Digest;
+  incident_id: Identifier;
+  incident_version: number;
+  plan_id: string;
+  plan_version: number;
+  plan_sha256: Digest;
+  approval_id: string;
+  approval_sha256: Digest;
+  authorization_id: string;
+  authorization_sha256: Digest;
+  consumption_id: string;
+  consumption_sha256: Digest;
+  executor_actor: SimulatorExecutorActor;
+  admitted_at: string;
+  admission_sha256: Digest;
+};
+
+export type ResponsePlanDispatchAuthorization = {
+  schema: "response-plan-dispatch-authorization/v1";
+  authorization_id: Identifier;
+  authorization_policy: "response-plan-dispatch-policy/v1";
+  authorized_role: "response-plan.dispatcher";
+  operation_id: Identifier;
+  task_key: Identifier;
+  payload_sha256: Digest;
+  incident_id: Identifier;
+  incident_version: number;
+  plan_id: Identifier;
+  plan_version: number;
+  plan_sha256: Digest;
+  response_packet_id: Identifier;
+  response_packet_sha256: Digest;
+  deterministic_scope_sha256: Digest;
+  approval_id: Identifier;
+  approval_sha256: Digest;
+  targets: Array<SimulatorTarget>;
+  exclusions: Array<SimulatorTarget>;
+  commands: Array<SimulatorCommand>;
+  unresolved_item_ids: Array<Identifier>;
+  blocking_unresolved_item_ids: Array<Identifier>;
+  unknown_target_ids: Array<Identifier>;
+  unresolved_acknowledged: boolean;
+  actor: ResponsePlanActor;
+  idempotency_key: string;
+  authorized_at: string;
+  authorization_sha256: Digest;
+};
+
+export type ResponsePlanDispatchConsumption = {
+  schema: "response-plan-dispatch-consumption/v1";
+  consumption_id: Identifier;
+  authorization_policy: "response-plan-dispatch-policy/v1";
+  authorized_role: "response-plan.dispatcher";
+  authorization_id: Identifier;
+  authorization_sha256: Digest;
+  operation_id: Identifier;
+  task_key: Identifier;
+  payload_sha256: Digest;
+  incident_id: Identifier;
+  incident_version: number;
+  plan_id: Identifier;
+  plan_version: number;
+  plan_sha256: Digest;
+  approval_id: Identifier;
+  approval_sha256: Digest;
+  actor: ResponsePlanActor;
+  idempotency_key: string;
+  consumed_at: string;
+  consumption_sha256: Digest;
+};
+
 export type ListIncidentsData = {
   body?: never;
   path?: never;
@@ -858,6 +1545,491 @@ export type GetIncidentWorkspaceResponses = {
 
 export type GetIncidentWorkspaceResponse =
   GetIncidentWorkspaceResponses[keyof GetIncidentWorkspaceResponses];
+
+export type GetRecoveryReviewData = {
+  body?: never;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/recovery";
+};
+
+export type GetRecoveryReviewErrors = {
+  /**
+   * No recovery workflow exists for this incident.
+   */
+  404: Error;
+  /**
+   * The persisted recovery aggregate failed integrity verification.
+   */
+  409: Error;
+};
+
+export type GetRecoveryReviewError = GetRecoveryReviewErrors[keyof GetRecoveryReviewErrors];
+
+export type GetRecoveryReviewResponses = {
+  /**
+   * The current recovery workflow, immutable verification evidence, closure, and audit history.
+   */
+  200: RecoveryReview;
+};
+
+export type GetRecoveryReviewResponse =
+  GetRecoveryReviewResponses[keyof GetRecoveryReviewResponses];
+
+export type CloseRecoveryData = {
+  body: RecoveryClosureRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/recovery/close";
+};
+
+export type CloseRecoveryErrors = {
+  /**
+   * The closure request is malformed.
+   */
+  400: Error;
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+  /**
+   * No authoritative simulator currentness fence is configured for closure.
+   */
+  503: Error;
+};
+
+export type CloseRecoveryError = CloseRecoveryErrors[keyof CloseRecoveryErrors];
+
+export type CloseRecoveryResponses = {
+  /**
+   * The exact verified recovery was closed by an authorized human.
+   */
+  200: RecoveryClosureResult;
+};
+
+export type CloseRecoveryResponse = CloseRecoveryResponses[keyof CloseRecoveryResponses];
+
+export type GetResponsePlanDraftData = {
+  body?: never;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan/draft";
+};
+
+export type GetResponsePlanDraftErrors = {
+  /**
+   * The incident has no safe canonical plan scope.
+   */
+  409: Error;
+};
+
+export type GetResponsePlanDraftError =
+  GetResponsePlanDraftErrors[keyof GetResponsePlanDraftErrors];
+
+export type GetResponsePlanDraftResponses = {
+  /**
+   * Canonical immutable scope available for a typed plan.
+   */
+  200: ResponsePlanDraft;
+};
+
+export type GetResponsePlanDraftResponse =
+  GetResponsePlanDraftResponses[keyof GetResponsePlanDraftResponses];
+
+export type GetResponsePlanReviewData = {
+  body?: never;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan";
+};
+
+export type GetResponsePlanReviewErrors = {
+  /**
+   * No response plan exists for this incident.
+   */
+  404: Error;
+};
+
+export type GetResponsePlanReviewError =
+  GetResponsePlanReviewErrors[keyof GetResponsePlanReviewErrors];
+
+export type GetResponsePlanReviewResponses = {
+  /**
+   * The current immutable plan, decision, and verified audit history.
+   */
+  200: ResponsePlanReview;
+};
+
+export type GetResponsePlanReviewResponse =
+  GetResponsePlanReviewResponses[keyof GetResponsePlanReviewResponses];
+
+export type CreateResponsePlanData = {
+  body: CreateResponsePlanRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan";
+};
+
+export type CreateResponsePlanErrors = {
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type CreateResponsePlanError = CreateResponsePlanErrors[keyof CreateResponsePlanErrors];
+
+export type CreateResponsePlanResponses = {
+  /**
+   * The first immutable plan version.
+   */
+  201: ResponsePlan;
+};
+
+export type CreateResponsePlanResponse =
+  CreateResponsePlanResponses[keyof CreateResponsePlanResponses];
+
+export type EditResponsePlanData = {
+  body: EditResponsePlanRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan";
+};
+
+export type EditResponsePlanErrors = {
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type EditResponsePlanError = EditResponsePlanErrors[keyof EditResponsePlanErrors];
+
+export type EditResponsePlanResponses = {
+  /**
+   * A new immutable plan version that invalidates prior approval.
+   */
+  200: ResponsePlan;
+};
+
+export type EditResponsePlanResponse = EditResponsePlanResponses[keyof EditResponsePlanResponses];
+
+export type ApproveResponsePlanData = {
+  body: DecideResponsePlanRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan/approve";
+};
+
+export type ApproveResponsePlanErrors = {
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type ApproveResponsePlanError = ApproveResponsePlanErrors[keyof ApproveResponsePlanErrors];
+
+export type ApproveResponsePlanResponses = {
+  /**
+   * A hash-bound human approval.
+   */
+  200: ResponsePlanDecision;
+};
+
+export type ApproveResponsePlanResponse =
+  ApproveResponsePlanResponses[keyof ApproveResponsePlanResponses];
+
+export type RejectResponsePlanData = {
+  body: RejectResponsePlanRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan/reject";
+};
+
+export type RejectResponsePlanErrors = {
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type RejectResponsePlanError = RejectResponsePlanErrors[keyof RejectResponsePlanErrors];
+
+export type RejectResponsePlanResponses = {
+  /**
+   * A hash-bound human rejection.
+   */
+  200: ResponsePlanDecision;
+};
+
+export type RejectResponsePlanResponse =
+  RejectResponsePlanResponses[keyof RejectResponsePlanResponses];
+
+export type AuthorizeResponsePlanDispatchData = {
+  body: DecideResponsePlanRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan/dispatch-authorizations";
+};
+
+export type AuthorizeResponsePlanDispatchErrors = {
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type AuthorizeResponsePlanDispatchError =
+  AuthorizeResponsePlanDispatchErrors[keyof AuthorizeResponsePlanDispatchErrors];
+
+export type AuthorizeResponsePlanDispatchResponses = {
+  /**
+   * A service-only authorization for one exact operation, task, and payload.
+   */
+  200: ResponsePlanDispatchAuthorization;
+};
+
+export type AuthorizeResponsePlanDispatchResponse =
+  AuthorizeResponsePlanDispatchResponses[keyof AuthorizeResponsePlanDispatchResponses];
+
+export type ConsumeResponsePlanDispatchData = {
+  body: ConsumeResponsePlanDispatchRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/v1/incidents/{incidentId}/response-plan/dispatch-consumptions";
+};
+
+export type ConsumeResponsePlanDispatchErrors = {
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type ConsumeResponsePlanDispatchError =
+  ConsumeResponsePlanDispatchErrors[keyof ConsumeResponsePlanDispatchErrors];
+
+export type ConsumeResponsePlanDispatchResponses = {
+  /**
+   * The single-use capability redemption receipt.
+   */
+  200: ResponsePlanDispatchConsumption;
+};
+
+export type ConsumeResponsePlanDispatchResponse =
+  ConsumeResponsePlanDispatchResponses[keyof ConsumeResponsePlanDispatchResponses];
+
+export type AdmitRecoveryVerificationData = {
+  body: RecoveryVerificationAdmissionRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/internal/v1/incidents/{incidentId}/recovery/verifications";
+};
+
+export type AdmitRecoveryVerificationErrors = {
+  /**
+   * The verification admission request is malformed.
+   */
+  400: Error;
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The incident does not exist.
+   */
+  404: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+  /**
+   * No durable verification task dispatcher is configured.
+   */
+  503: Error;
+};
+
+export type AdmitRecoveryVerificationError =
+  AdmitRecoveryVerificationErrors[keyof AdmitRecoveryVerificationErrors];
+
+export type AdmitRecoveryVerificationResponses = {
+  /**
+   * The exact digest-bound verification task is durably queued without executing verification in the API request.
+   */
+  202: RecoveryVerificationAdmission;
+};
+
+export type AdmitRecoveryVerificationResponse =
+  AdmitRecoveryVerificationResponses[keyof AdmitRecoveryVerificationResponses];
+
+export type ExecuteRecoveryVerificationTaskData = {
+  body: RecoveryVerificationTask;
+  path: {
+    taskKey: RecoveryVerificationTaskKey;
+  };
+  query?: never;
+  url: "/private/v1/recovery-verification-tasks/{taskKey}";
+};
+
+export type ExecuteRecoveryVerificationTaskErrors = {
+  /**
+   * The delivered task is malformed.
+   */
+  400: Error;
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The exact durably admitted task does not exist.
+   */
+  404: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type ExecuteRecoveryVerificationTaskError =
+  ExecuteRecoveryVerificationTaskErrors[keyof ExecuteRecoveryVerificationTaskErrors];
+
+export type ExecuteRecoveryVerificationTaskResponses = {
+  /**
+   * The private worker recorded the exact completed or terminal unresolved task result, or returned its idempotent replay.
+   */
+  200: RecoveryVerificationTaskResult;
+};
+
+export type ExecuteRecoveryVerificationTaskResponse =
+  ExecuteRecoveryVerificationTaskResponses[keyof ExecuteRecoveryVerificationTaskResponses];
+
+export type AdmitSimulatorActionData = {
+  body: AdmitSimulatorActionRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/internal/v1/incidents/{incidentId}/simulator-actions";
+};
+
+export type AdmitSimulatorActionErrors = {
+  /**
+   * The opaque dispatch identity is malformed.
+   */
+  400: Error;
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type AdmitSimulatorActionError =
+  AdmitSimulatorActionErrors[keyof AdmitSimulatorActionErrors];
+
+export type AdmitSimulatorActionResponses = {
+  /**
+   * The exact consumed dispatch is durably admitted for local simulator execution.
+   */
+  202: SimulatorActionAdmission;
+};
+
+export type AdmitSimulatorActionResponse =
+  AdmitSimulatorActionResponses[keyof AdmitSimulatorActionResponses];
 
 export type GetOperatorSessionData = {
   body?: never;

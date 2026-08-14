@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-action-failure-observation-v1.schema.json",
+  "title": "A terminal simulator action failure without promoted evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "scope", "status", "reason_codes", "publication_promoted"],
+  "properties": {
+    "schema": {"const": "simulator-action-failure-observation/v1"},
+    "scope": {"const": "action"},
+    "status": {"const": "failed"},
+    "reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"}
+    },
+    "publication_promoted": {"const": false}
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-action-admission-v1.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": [
+    "schema", "admission_id", "action_id", "task_key", "operation_id",
+    "payload_sha256", "dispatch_bundle_sha256", "incident_id", "incident_version", "plan_id",
+    "plan_version", "plan_sha256", "approval_id", "approval_sha256",
+    "authorization_id", "authorization_sha256", "consumption_id",
+    "consumption_sha256", "executor_actor", "admitted_at", "admission_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "simulator-action-admission/v1"},
+    "admission_id": {"type": "string", "pattern": "^simulator-admission:[0-9a-f]{64}$"},
+    "action_id": {"type": "string", "pattern": "^simulator-action:[0-9a-f]{64}$"},
+    "task_key": {"type": "string", "pattern": "^dispatch-task:[0-9a-f]{64}$"},
+    "operation_id": {"type": "string", "pattern": "^dispatch-operation:[0-9a-f]{64}$"},
+    "payload_sha256": {"$ref": "#/$defs/digest"},
+    "dispatch_bundle_sha256": {"$ref": "#/$defs/digest"},
+    "incident_id": {"$ref": "#/$defs/id"},
+    "incident_version": {"type": "integer", "minimum": 1},
+    "plan_id": {"type": "string", "pattern": "^response-plan:[0-9a-f]{64}$"},
+    "plan_version": {"type": "integer", "minimum": 1},
+    "plan_sha256": {"$ref": "#/$defs/digest"},
+    "approval_id": {"type": "string", "pattern": "^plan-decision:[0-9a-f]{64}$"},
+    "approval_sha256": {"$ref": "#/$defs/digest"},
+    "authorization_id": {"type": "string", "pattern": "^dispatch-authorization:[0-9a-f]{64}$"},
+    "authorization_sha256": {"$ref": "#/$defs/digest"},
+    "consumption_id": {"type": "string", "pattern": "^dispatch-consumption:[0-9a-f]{64}$"},
+    "consumption_sha256": {"$ref": "#/$defs/digest"},
+    "executor_actor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["issuer", "subject", "audience", "kind"],
+      "properties": {
+        "issuer": {"type": "string", "minLength": 1, "maxLength": 512},
+        "subject": {"type": "string", "minLength": 1, "maxLength": 255},
+        "audience": {"type": "string", "minLength": 1, "maxLength": 255},
+        "kind": {"const": "service"}
+      }
+    },
+    "admitted_at": {"type": "string", "format": "date-time"},
+    "admission_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"}
+  }
+}

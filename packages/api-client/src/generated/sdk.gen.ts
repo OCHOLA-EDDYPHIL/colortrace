@@ -10,18 +10,54 @@ import {
 } from "./client";
 import { client } from "./client.gen";
 import type {
+  AdmitRecoveryVerificationErrors,
+  AdmitRecoveryVerificationResponses,
+  AdmitSimulatorActionErrors,
+  AdmitSimulatorActionRequest,
+  AdmitSimulatorActionResponses,
   AlertIntake,
+  ApproveResponsePlanErrors,
+  ApproveResponsePlanResponses,
+  AuthorizeResponsePlanDispatchErrors,
+  AuthorizeResponsePlanDispatchResponses,
+  CloseRecoveryErrors,
+  CloseRecoveryResponses,
+  ConsumeResponsePlanDispatchErrors,
+  ConsumeResponsePlanDispatchRequest,
+  ConsumeResponsePlanDispatchResponses,
   CreateIncidentErrors,
   CreateIncidentResponses,
+  CreateResponsePlanErrors,
+  CreateResponsePlanRequest,
+  CreateResponsePlanResponses,
+  DecideResponsePlanRequest,
+  EditResponsePlanErrors,
+  EditResponsePlanRequest,
+  EditResponsePlanResponses,
+  ExecuteRecoveryVerificationTaskErrors,
+  ExecuteRecoveryVerificationTaskResponses,
   GetIncidentErrors,
   GetIncidentResponses,
   GetIncidentWorkspaceErrors,
   GetIncidentWorkspaceResponses,
   GetOperatorSessionErrors,
   GetOperatorSessionResponses,
+  GetRecoveryReviewErrors,
+  GetRecoveryReviewResponses,
+  GetResponsePlanDraftErrors,
+  GetResponsePlanDraftResponses,
+  GetResponsePlanReviewErrors,
+  GetResponsePlanReviewResponses,
   Identifier,
   ListIncidentsErrors,
   ListIncidentsResponses,
+  RecoveryClosureRequest,
+  RecoveryVerificationAdmissionRequest,
+  RecoveryVerificationTask,
+  RecoveryVerificationTaskKey,
+  RejectResponsePlanErrors,
+  RejectResponsePlanRequest,
+  RejectResponsePlanResponses,
   ReplayIncidentErrors,
   ReplayIncidentResponses,
 } from "./types.gen";
@@ -89,7 +125,13 @@ export const createIncident = <ThrowOnError extends boolean = false>(
     "data"
   >({
     responseStyle: "data",
-    security: [{ scheme: "bearer", type: "http" }],
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
     url: "/v1/incidents",
     ...options,
     ...params,
@@ -166,6 +208,531 @@ export const getIncidentWorkspace = <ThrowOnError extends boolean = false>(
   });
 };
 
+export const getRecoveryReview = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<GetRecoveryReviewResponses, GetRecoveryReviewErrors, ThrowOnError, "data"> => {
+  const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "incidentId" }] }]);
+  return (options?.client ?? client).get<
+    GetRecoveryReviewResponses,
+    GetRecoveryReviewErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    url: "/v1/incidents/{incidentId}/recovery",
+    ...options,
+    ...params,
+  });
+};
+
+export const closeRecovery = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+    recoveryClosureRequest: RecoveryClosureRequest;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<CloseRecoveryResponses, CloseRecoveryErrors, ThrowOnError, "data"> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "path", key: "incidentId" },
+          { key: "recoveryClosureRequest", map: "body" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).post<
+    CloseRecoveryResponses,
+    CloseRecoveryErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
+    url: "/v1/incidents/{incidentId}/recovery/close",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
+  });
+};
+
+export const getResponsePlanDraft = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<
+  GetResponsePlanDraftResponses,
+  GetResponsePlanDraftErrors,
+  ThrowOnError,
+  "data"
+> => {
+  const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "incidentId" }] }]);
+  return (options?.client ?? client).get<
+    GetResponsePlanDraftResponses,
+    GetResponsePlanDraftErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    url: "/v1/incidents/{incidentId}/response-plan/draft",
+    ...options,
+    ...params,
+  });
+};
+
+export const getResponsePlanReview = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<
+  GetResponsePlanReviewResponses,
+  GetResponsePlanReviewErrors,
+  ThrowOnError,
+  "data"
+> => {
+  const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "incidentId" }] }]);
+  return (options?.client ?? client).get<
+    GetResponsePlanReviewResponses,
+    GetResponsePlanReviewErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    url: "/v1/incidents/{incidentId}/response-plan",
+    ...options,
+    ...params,
+  });
+};
+
+export const createResponsePlan = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+    createResponsePlanRequest: CreateResponsePlanRequest;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<CreateResponsePlanResponses, CreateResponsePlanErrors, ThrowOnError, "data"> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "path", key: "incidentId" },
+          { key: "createResponsePlanRequest", map: "body" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).post<
+    CreateResponsePlanResponses,
+    CreateResponsePlanErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
+    url: "/v1/incidents/{incidentId}/response-plan",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
+  });
+};
+
+export const editResponsePlan = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+    editResponsePlanRequest: EditResponsePlanRequest;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<EditResponsePlanResponses, EditResponsePlanErrors, ThrowOnError, "data"> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "path", key: "incidentId" },
+          { key: "editResponsePlanRequest", map: "body" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).put<
+    EditResponsePlanResponses,
+    EditResponsePlanErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
+    url: "/v1/incidents/{incidentId}/response-plan",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
+  });
+};
+
+export const approveResponsePlan = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+    decideResponsePlanRequest: DecideResponsePlanRequest;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<ApproveResponsePlanResponses, ApproveResponsePlanErrors, ThrowOnError, "data"> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "path", key: "incidentId" },
+          { key: "decideResponsePlanRequest", map: "body" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).post<
+    ApproveResponsePlanResponses,
+    ApproveResponsePlanErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
+    url: "/v1/incidents/{incidentId}/response-plan/approve",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
+  });
+};
+
+export const rejectResponsePlan = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+    rejectResponsePlanRequest: RejectResponsePlanRequest;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<RejectResponsePlanResponses, RejectResponsePlanErrors, ThrowOnError, "data"> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "path", key: "incidentId" },
+          { key: "rejectResponsePlanRequest", map: "body" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).post<
+    RejectResponsePlanResponses,
+    RejectResponsePlanErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
+    url: "/v1/incidents/{incidentId}/response-plan/reject",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
+  });
+};
+
+export const authorizeResponsePlanDispatch = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+    decideResponsePlanRequest: DecideResponsePlanRequest;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<
+  AuthorizeResponsePlanDispatchResponses,
+  AuthorizeResponsePlanDispatchErrors,
+  ThrowOnError,
+  "data"
+> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "path", key: "incidentId" },
+          { key: "decideResponsePlanRequest", map: "body" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).post<
+    AuthorizeResponsePlanDispatchResponses,
+    AuthorizeResponsePlanDispatchErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
+    url: "/v1/incidents/{incidentId}/response-plan/dispatch-authorizations",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
+  });
+};
+
+export const consumeResponsePlanDispatch = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+    consumeResponsePlanDispatchRequest: ConsumeResponsePlanDispatchRequest;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<
+  ConsumeResponsePlanDispatchResponses,
+  ConsumeResponsePlanDispatchErrors,
+  ThrowOnError,
+  "data"
+> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "path", key: "incidentId" },
+          { key: "consumeResponsePlanDispatchRequest", map: "body" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).post<
+    ConsumeResponsePlanDispatchResponses,
+    ConsumeResponsePlanDispatchErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
+    url: "/v1/incidents/{incidentId}/response-plan/dispatch-consumptions",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
+  });
+};
+
+export const admitRecoveryVerification = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+    recoveryVerificationAdmissionRequest: RecoveryVerificationAdmissionRequest;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<
+  AdmitRecoveryVerificationResponses,
+  AdmitRecoveryVerificationErrors,
+  ThrowOnError,
+  "data"
+> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "path", key: "incidentId" },
+          { key: "recoveryVerificationAdmissionRequest", map: "body" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).post<
+    AdmitRecoveryVerificationResponses,
+    AdmitRecoveryVerificationErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [
+      {
+        key: "serviceOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
+    url: "/internal/v1/incidents/{incidentId}/recovery/verifications",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
+  });
+};
+
+export const executeRecoveryVerificationTask = <ThrowOnError extends boolean = false>(
+  parameters: {
+    taskKey: RecoveryVerificationTaskKey;
+    recoveryVerificationTask: RecoveryVerificationTask;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<
+  ExecuteRecoveryVerificationTaskResponses,
+  ExecuteRecoveryVerificationTaskErrors,
+  ThrowOnError,
+  "data"
+> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "path", key: "taskKey" },
+          { key: "recoveryVerificationTask", map: "body" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).post<
+    ExecuteRecoveryVerificationTaskResponses,
+    ExecuteRecoveryVerificationTaskErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [
+      {
+        key: "serviceOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
+    url: "/private/v1/recovery-verification-tasks/{taskKey}",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
+  });
+};
+
+export const admitSimulatorAction = <ThrowOnError extends boolean = false>(
+  parameters: {
+    incidentId: Identifier;
+    admitSimulatorActionRequest: AdmitSimulatorActionRequest;
+  },
+  options?: Options<never, ThrowOnError>,
+): RequestResult<
+  AdmitSimulatorActionResponses,
+  AdmitSimulatorActionErrors,
+  ThrowOnError,
+  "data"
+> => {
+  const params = buildClientParams(
+    [parameters],
+    [
+      {
+        args: [
+          { in: "path", key: "incidentId" },
+          { key: "admitSimulatorActionRequest", map: "body" },
+        ],
+      },
+    ],
+  );
+  return (options?.client ?? client).post<
+    AdmitSimulatorActionResponses,
+    AdmitSimulatorActionErrors,
+    ThrowOnError,
+    "data"
+  >({
+    responseStyle: "data",
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
+    url: "/internal/v1/incidents/{incidentId}/simulator-actions",
+    ...options,
+    ...params,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+      ...params.headers,
+    },
+  });
+};
+
 export const getOperatorSession = <ThrowOnError extends boolean = false>(
   options?: Options<never, ThrowOnError>,
 ): RequestResult<GetOperatorSessionResponses, GetOperatorSessionErrors, ThrowOnError, "data"> =>
@@ -176,7 +743,13 @@ export const getOperatorSession = <ThrowOnError extends boolean = false>(
     "data"
   >({
     responseStyle: "data",
-    security: [{ scheme: "bearer", type: "http" }],
+    security: [
+      {
+        key: "operatorOidc",
+        scheme: "bearer",
+        type: "http",
+      },
+    ],
     url: "/v1/session",
     ...options,
   });
