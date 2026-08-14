@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-action-telemetry-event-v1.schema.json",
+  "title": "One immutable projection of terminal simulator action evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "event_id",
+    "signal",
+    "event_name",
+    "phase",
+    "action_started_at",
+    "action_completed_at",
+    "publication_promoted_at",
+    "observed_at",
+    "emitted_at",
+    "correlation",
+    "publication",
+    "observation"
+  ],
+  "properties": {
+    "schema": {"const": "simulator-action-telemetry-event/v1"},
+    "event_id": {
+      "type": "string",
+      "pattern": "^simulator-action-event:[0-9a-f]{64}$"
+    },
+    "signal": {"enum": ["metric", "log", "trace"]},
+    "event_name": {
+      "enum": [
+        "colortrace.simulator.action.quarantined",
+        "colortrace.simulator.action.rerendered",
+        "colortrace.simulator.action.failed",
+        "colortrace.simulator.safe.preserved"
+      ]
+    },
+    "phase": {"const": "execution"},
+    "action_started_at": {"type": "string", "format": "date-time"},
+    "action_completed_at": {"type": "string", "format": "date-time"},
+    "publication_promoted_at": {
+      "oneOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]
+    },
+    "observed_at": {"type": "string", "format": "date-time"},
+    "emitted_at": {"type": "string", "format": "date-time"},
+    "correlation": {"$ref": "simulator-action-correlation-v1.schema.json"},
+    "publication": {
+      "oneOf": [
+        {"$ref": "simulator-action-publication-binding-v1.schema.json"},
+        {"type": "null"}
+      ]
+    },
+    "observation": {
+      "oneOf": [
+        {"$ref": "simulator-command-observation-v1.schema.json"},
+        {"$ref": "simulator-safe-preservation-observation-v1.schema.json"},
+        {"$ref": "simulator-action-failure-observation-v1.schema.json"}
+      ]
+    }
+  }
+}

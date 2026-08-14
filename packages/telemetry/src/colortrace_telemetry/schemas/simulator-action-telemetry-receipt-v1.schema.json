@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-action-telemetry-receipt-v1.schema.json",
+  "title": "One at-least-once simulator action telemetry attempt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "outcome_id",
+    "outcome_sha256",
+    "action_id",
+    "attempted_at",
+    "event_ids",
+    "emitted_event_ids",
+    "status",
+    "error_code",
+    "receipt_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "simulator-action-telemetry-receipt/v1"},
+    "outcome_id": {"$ref": "#/$defs/identifier"},
+    "outcome_sha256": {"$ref": "#/$defs/digest"},
+    "action_id": {"$ref": "#/$defs/identifier"},
+    "attempted_at": {"type": "string", "format": "date-time"},
+    "event_ids": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 192,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/eventId"}
+    },
+    "emitted_event_ids": {
+      "type": "array",
+      "maxItems": 192,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/eventId"}
+    },
+    "status": {"enum": ["emitted", "failed"]},
+    "error_code": {
+      "oneOf": [
+        {"enum": ["sink-emit-failed", "sink-flush-failed"]},
+        {"type": "null"}
+      ]
+    },
+    "receipt_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "eventId": {
+      "type": "string",
+      "pattern": "^simulator-action-event:[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-command-observation-v1.schema.json",
+  "title": "One persisted simulator command result projected as telemetry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "scope", "result"],
+  "properties": {
+    "schema": {"const": "simulator-command-observation/v1"},
+    "scope": {"const": "affected"},
+    "result": {"$ref": "#/$defs/result"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "resourceState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resource_sha256"],
+      "properties": {"resource_sha256": {"$ref": "#/$defs/digest"}}
+    },
+    "frameState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output_sha256", "display_sha256"],
+      "properties": {
+        "output_sha256": {"$ref": "#/$defs/digest"},
+        "display_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "derivativeState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["derivative_sha256", "derivative_display_sha256"],
+      "properties": {
+        "derivative_sha256": {"$ref": "#/$defs/digest"},
+        "derivative_display_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "command_id",
+        "result_kind",
+        "target",
+        "trace_id",
+        "before",
+        "after"
+      ],
+      "properties": {
+        "schema": {"const": "simulator-command-result/v1"},
+        "command_id": {"$ref": "#/$defs/identifier"},
+        "result_kind": {"enum": ["quarantine", "frame", "derivative"]},
+        "target": {"$ref": "simulator-action-target-v1.schema.json"},
+        "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "before": {"type": "object"},
+        "after": {"type": "object"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"result_kind": {"const": "quarantine"}}},
+          "then": {
+            "properties": {
+              "target": {"properties": {"kind": {"const": "color-resource"}}},
+              "before": {"$ref": "#/$defs/resourceState"},
+              "after": {"$ref": "#/$defs/resourceState"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"result_kind": {"const": "frame"}}},
+          "then": {
+            "properties": {
+              "target": {"properties": {"kind": {"const": "frame"}}},
+              "before": {"$ref": "#/$defs/frameState"},
+              "after": {"$ref": "#/$defs/frameState"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"result_kind": {"const": "derivative"}}},
+          "then": {
+            "properties": {
+              "target": {"properties": {"kind": {"const": "derivative"}}},
+              "before": {"$ref": "#/$defs/derivativeState"},
+              "after": {"$ref": "#/$defs/derivativeState"}
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-action-correlation-v1.schema.json",
+  "title": "Authority correlation for one terminal simulator action",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "outcome_id",
+    "outcome_sha256",
+    "admission_id",
+    "admission_sha256",
+    "action_id",
+    "task_key",
+    "operation_id",
+    "payload_sha256",
+    "fixture_id",
+    "incident_id",
+    "incident_version",
+    "plan_id",
+    "plan_version",
+    "plan_sha256",
+    "approval_id",
+    "approval_sha256",
+    "authorization_id",
+    "authorization_sha256",
+    "consumption_id",
+    "consumption_sha256",
+    "dispatch_bundle_sha256",
+    "action_envelope_sha256",
+    "publication_intent_id",
+    "publication_intent_sha256",
+    "publication_receipt_id",
+    "publication_receipt_sha256",
+    "trace_id"
+  ],
+  "properties": {
+    "schema": {"const": "simulator-action-correlation/v1"},
+    "outcome_id": {"$ref": "#/$defs/identifier"},
+    "outcome_sha256": {"$ref": "#/$defs/digest"},
+    "admission_id": {"$ref": "#/$defs/identifier"},
+    "admission_sha256": {"$ref": "#/$defs/digest"},
+    "action_id": {"$ref": "#/$defs/identifier"},
+    "task_key": {"type": "string", "pattern": "^dispatch-task:[0-9a-f]{64}$"},
+    "operation_id": {
+      "type": "string",
+      "pattern": "^dispatch-operation:[0-9a-f]{64}$"
+    },
+    "payload_sha256": {"$ref": "#/$defs/digest"},
+    "fixture_id": {
+      "oneOf": [{"$ref": "#/$defs/identifier"}, {"type": "null"}]
+    },
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "incident_version": {"type": "integer", "minimum": 1},
+    "plan_id": {"$ref": "#/$defs/identifier"},
+    "plan_version": {"type": "integer", "minimum": 1},
+    "plan_sha256": {"$ref": "#/$defs/digest"},
+    "approval_id": {"$ref": "#/$defs/identifier"},
+    "approval_sha256": {"$ref": "#/$defs/digest"},
+    "authorization_id": {"$ref": "#/$defs/identifier"},
+    "authorization_sha256": {"$ref": "#/$defs/digest"},
+    "consumption_id": {"$ref": "#/$defs/identifier"},
+    "consumption_sha256": {"$ref": "#/$defs/digest"},
+    "dispatch_bundle_sha256": {"$ref": "#/$defs/digest"},
+    "action_envelope_sha256": {"$ref": "#/$defs/digest"},
+    "publication_intent_id": {
+      "oneOf": [{"$ref": "#/$defs/identifier"}, {"type": "null"}]
+    },
+    "publication_intent_sha256": {
+      "oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]
+    },
+    "publication_receipt_id": {
+      "oneOf": [{"$ref": "#/$defs/identifier"}, {"type": "null"}]
+    },
+    "publication_receipt_sha256": {
+      "oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]
+    },
+    "trace_id": {
+      "oneOf": [
+        {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        {"type": "null"}
+      ]
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

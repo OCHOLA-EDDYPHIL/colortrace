@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-dispatch-bundle-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "action_id", "identity", "plan", "approval", "authorization",
+    "consumption", "source_dispatch_consumed_event", "source_audit_head_sha256",
+    "action_envelope_sha256", "commands_sha256", "targets_sha256",
+    "exclusions_sha256", "bundle_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "simulator-dispatch-bundle/v1"},
+    "action_id": {"type": "string", "pattern": "^simulator-action:[0-9a-f]{64}$"},
+    "identity": {"$ref": "#/$defs/identity"},
+    "plan": {"type": "object"},
+    "approval": {"type": "object"},
+    "authorization": {"type": "object"},
+    "consumption": {"type": "object"},
+    "source_dispatch_consumed_event": {"type": "object"},
+    "source_audit_head_sha256": {"$ref": "#/$defs/digest"},
+    "action_envelope_sha256": {"$ref": "#/$defs/digest"},
+    "commands_sha256": {"$ref": "#/$defs/digest"},
+    "targets_sha256": {"$ref": "#/$defs/digest"},
+    "exclusions_sha256": {"$ref": "#/$defs/digest"},
+    "bundle_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["task_key", "operation_id", "payload_sha256"],
+      "properties": {
+        "task_key": {"type": "string", "pattern": "^dispatch-task:[0-9a-f]{64}$"},
+        "operation_id": {"type": "string", "pattern": "^dispatch-operation:[0-9a-f]{64}$"},
+        "payload_sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}
