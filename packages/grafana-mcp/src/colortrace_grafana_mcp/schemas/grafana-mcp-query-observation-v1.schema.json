@@ -19,8 +19,11 @@
       "enum": [
         "alert.rule",
         "log.correlated-events",
+        "log.simulator-action-events",
         "metric.correlated-observations",
-        "trace.by-id"
+        "metric.simulator-action-observations",
+        "trace.by-id",
+        "trace.simulator-action-command"
       ]
     },
     "catalog_version": {"const": "grafana-evidence-query-catalog/v1"},

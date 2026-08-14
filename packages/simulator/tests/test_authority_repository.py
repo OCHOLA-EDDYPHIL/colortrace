@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import copy
 import sqlite3
+from collections import Counter
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -28,7 +30,12 @@ from colortrace_simulator.authority import (
     SimulatorAuthorityError,
     SimulatorExecutorBoundary,
 )
-from colortrace_simulator.bundle import LocalPublicationPort, SimulatorBundleError
+from colortrace_simulator.bundle import (
+    ARTIFACT_ROLE_COUNTS,
+    LocalPublicationPort,
+    RecoverySnapshotError,
+    SimulatorBundleError,
+)
 from colortrace_simulator.models import (
     DispatchIdentity,
     PreparedPublication,
@@ -993,6 +1000,139 @@ def test_service_precondition_and_replay_authority_fail_without_publication(
     assert source.calls == 2
 
 
+def test_current_recovery_outcome_guard_rejects_newer_failed_action_without_publication(
+    tmp_path: Path,
+) -> None:
+    first_identity, first_proof = dispatch_proof()
+    repository = SQLiteSimulatorRepository(tmp_path / "simulator.db")
+    executor_boundary = SimulatorExecutorBoundary()
+    first_service = SimulatorActionService(
+        repository=repository,
+        dispatch_source=DispatchSource(first_proof),
+        authority_boundary=SimulatorAuthorityBoundary(),
+        executor_boundary=executor_boundary,
+        publication=Publication(),
+        clock=SequenceClock(
+            NOW + timedelta(seconds=4),
+            NOW + timedelta(seconds=5),
+            NOW + timedelta(seconds=6),
+            NOW + timedelta(seconds=7),
+            NOW + timedelta(seconds=8),
+            NOW + timedelta(seconds=9),
+        ),
+        trace_id_factory=iter(f"{index:032x}" for index in range(1, 6)).__next__,
+    )
+    first_service.admit(
+        first_identity,
+        executor=executor_authorization(executor_boundary),
+    )
+    first_outcome = first_service.execute(first_identity, owner="worker-first")
+    assert first_outcome["status"] == "succeeded"
+    with repository.guard_current_recovery_outcome(
+        "incident-simulator",
+        first_outcome["outcome_sha256"],
+    ) as guarded:
+        assert guarded == first_outcome
+
+    targets, exclusions, commands = plan_inputs()
+    second_commands = copy.deepcopy(commands)
+    second_commands[1]["job_id"] = "job-newer-failed-action"
+    second_identity, second_proof = dispatch_proof((targets, exclusions, second_commands))
+    assert second_identity != first_identity
+    failed_publication = Publication()
+    failed_publication.snapshot_failure = "action-envelope-stale"
+    second_service = SimulatorActionService(
+        repository=repository,
+        dispatch_source=DispatchSource(second_proof),
+        authority_boundary=SimulatorAuthorityBoundary(),
+        executor_boundary=executor_boundary,
+        publication=failed_publication,
+        clock=SequenceClock(
+            NOW + timedelta(seconds=10),
+            NOW + timedelta(seconds=11),
+            NOW + timedelta(seconds=12),
+        ),
+    )
+    second_service.admit(
+        second_identity,
+        executor=executor_authorization(executor_boundary),
+    )
+    second_outcome = second_service.execute(second_identity, owner="worker-second")
+    assert second_outcome["status"] == "failed"
+    assert second_outcome["publication_intent_id"] is None
+    assert failed_publication.prepare_calls == failed_publication.promotion_calls == 0
+
+    with pytest.raises(SimulatorRepositoryError, match="incident-outcome-not-current"):
+        with repository.guard_current_recovery_outcome(
+            "incident-simulator",
+            first_outcome["outcome_sha256"],
+        ):
+            pytest.fail("superseded outcome entered the current-outcome guard")
+
+
+def test_current_recovery_outcome_guard_uses_admission_order_when_clock_regresses(
+    tmp_path: Path,
+) -> None:
+    first_identity, first_proof = dispatch_proof()
+    repository = SQLiteSimulatorRepository(tmp_path / "simulator.db")
+    executor_boundary = SimulatorExecutorBoundary()
+    first_service = SimulatorActionService(
+        repository=repository,
+        dispatch_source=DispatchSource(first_proof),
+        authority_boundary=SimulatorAuthorityBoundary(),
+        executor_boundary=executor_boundary,
+        publication=Publication(),
+        clock=SequenceClock(
+            NOW + timedelta(seconds=4),
+            NOW + timedelta(seconds=5),
+            NOW + timedelta(seconds=6),
+            NOW + timedelta(seconds=7),
+            NOW + timedelta(seconds=8),
+            NOW + timedelta(seconds=9),
+        ),
+        trace_id_factory=iter(f"{index:032x}" for index in range(1, 6)).__next__,
+    )
+    first_service.admit(
+        first_identity,
+        executor=executor_authorization(executor_boundary),
+    )
+    first_outcome = first_service.execute(first_identity, owner="worker-first")
+    assert first_outcome["status"] == "succeeded"
+
+    targets, exclusions, commands = plan_inputs()
+    second_commands = copy.deepcopy(commands)
+    second_commands[1]["job_id"] = "job-later-admission-regressed-clock"
+    second_identity, second_proof = dispatch_proof((targets, exclusions, second_commands))
+    failed_publication = Publication()
+    failed_publication.snapshot_failure = "action-envelope-stale"
+    second_service = SimulatorActionService(
+        repository=repository,
+        dispatch_source=DispatchSource(second_proof),
+        authority_boundary=SimulatorAuthorityBoundary(),
+        executor_boundary=executor_boundary,
+        publication=failed_publication,
+        clock=SequenceClock(
+            NOW + timedelta(milliseconds=3100),
+            NOW + timedelta(milliseconds=3200),
+            NOW + timedelta(milliseconds=3300),
+        ),
+    )
+    second_service.admit(
+        second_identity,
+        executor=executor_authorization(executor_boundary),
+    )
+    second_outcome = second_service.execute(second_identity, owner="worker-second")
+    assert second_outcome["status"] == "failed"
+    assert second_outcome["publication_intent_id"] is None
+
+    with pytest.raises(SimulatorRepositoryError, match="incident-outcome-not-current"):
+        with repository.guard_current_recovery_outcome(
+            "incident-simulator",
+            first_outcome["outcome_sha256"],
+        ):
+            pytest.fail("later admission bypassed the current-outcome guard")
+
+
 def test_plan_edit_invalidation_blocks_admitted_action_before_publication(tmp_path: Path) -> None:
     identity, proof = dispatch_proof()
     source = DispatchSource(proof)
@@ -1332,6 +1472,58 @@ def test_service_real_canonical_loop_preserves_safe_scope_and_emits_new_traces(
     assert outcome["safe_complement_before_sha256"] == outcome["safe_complement_after_sha256"]
     assert receipts[0]["status"] == "emitted"
     assert len(telemetry.events) == 21
+
+    replayed_outcome = repository.outcome_for_incident(
+        "incident-simulator",
+        expected_outcome_sha256=outcome["outcome_sha256"],
+    )
+    assert replayed_outcome == outcome
+    assert repository.outcome_for_incident("incident-simulator") == outcome
+    with pytest.raises(SimulatorRepositoryError, match="incident-outcome-digest-conflict"):
+        repository.outcome_for_incident(
+            "incident-simulator",
+            expected_outcome_sha256=digest("f"),
+        )
+
+    recovery = publication.snapshot_for_recovery(outcome)
+    recovery_document = recovery.to_dict()
+    assert recovery_document["outcome_sha256"] == outcome["outcome_sha256"]
+    assert (
+        recovery_document["active_publication"]["pointer_sha256"]
+        == outcome["active_publication_pointer_sha256"]
+    )
+    assert (
+        recovery_document["recomputed_safe_complement_sha256"]
+        == outcome["safe_complement_after_sha256"]
+    )
+    assert recovery_document["observed_at"] > outcome["action_started_at"]
+    artifact_order = tuple(
+        (item.role, item.target_kind, item.target_id, item.root, item.logical_path)
+        for item in recovery.artifacts
+    )
+    assert artifact_order == tuple(sorted(artifact_order))
+    for artifact in recovery.artifacts:
+        assert len(publication.read_recovery_artifact(recovery, artifact)) == artifact.size
+    assert Counter(item.role for item in recovery.artifacts) == ARTIFACT_ROLE_COUNTS
+    references = [item for item in recovery.artifacts if item.role == "declared-reference"]
+    assert len(references) == 3
+    assert all(item.root == "source-batch" for item in references)
+    assert all(publication.read_recovery_artifact(recovery, item) for item in references)
+    forged = replace(references[0], logical_path="../outside")
+    with pytest.raises(RecoverySnapshotError, match="recovery-artifact-not-allowlisted") as denied:
+        publication.read_recovery_artifact(recovery, forged)
+    assert denied.value.classification == "failed"
+    publication.assert_recovery_snapshot_current(recovery)
+    with pytest.raises(TypeError):
+        recovery.document["incident_id"] = "forged"  # type: ignore[index]
+
+    stale_clock_port = LocalPublicationPort(
+        tmp_path / "workspace",
+        clock=lambda: NOW,
+    )
+    with pytest.raises(RecoverySnapshotError, match="recovery-observation-not-new") as stale:
+        stale_clock_port.snapshot_for_recovery(outcome)
+    assert stale.value.classification == "unresolved"
 
     assert service.execute(identity, owner="retry-worker") == outcome
     assert len(telemetry.events) == 21

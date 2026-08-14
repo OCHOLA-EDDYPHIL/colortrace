@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/recovery-check-result-v1.schema.json",
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"}
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "result_id", "result_sha256", "check", "policy", "state", "normalized_inputs_sha256", "evidence_ids", "artifact_ids", "reason_codes"],
+  "properties": {
+    "schema": {"const": "recovery-check-result/v1"},
+    "result_id": {"type": "string", "pattern": "^recovery-check-result:[0-9a-f]{64}$"},
+    "result_sha256": {"$ref": "#/$defs/digest"},
+    "check": {"enum": ["active-publication", "approved-resource-state", "declared-reference-recovery", "exact-typed-lineage", "approved-recovery-scope", "safe-complement-preservation", "post-action-telemetry-correlation"]},
+    "policy": {"enum": ["active-publication/v1", "approved-resource-state/v1", "declared-reference-recovery/v1", "exact-typed-lineage/v1", "approved-recovery-scope/v1", "safe-complement-preservation/v1", "post-action-telemetry-correlation/v1"]},
+    "state": {"enum": ["passed", "failed", "unresolved"]},
+    "normalized_inputs_sha256": {"$ref": "#/$defs/digest"},
+    "evidence_ids": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "artifact_ids": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "reason_codes": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"}}
+  }
+}
