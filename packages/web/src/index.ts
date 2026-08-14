@@ -23,6 +23,7 @@ export {
   IncidentWorkspaceApp,
   type IncidentWorkspaceAppProps,
   projectWorkspaceSource,
+  projectRecoverySource,
 } from "./incident-workspace-app.tsx";
 export { IncidentOverview, type IncidentOverviewProps } from "./incident-overview.tsx";
 export {
@@ -36,6 +37,19 @@ export {
   InvestigationTimeline,
   type InvestigationTimelineProps,
 } from "./investigation-timeline.tsx";
+export {
+  type RecoveryActionRecovery,
+  type RecoveryCapabilities,
+  type RecoveryPanelState,
+  RecoveryVerification,
+  type RecoveryVerificationProps,
+} from "./recovery-verification.tsx";
+export {
+  type ResponsePlanCapabilities,
+  type ResponsePlanPanelState,
+  ResponsePlanReview,
+  type ResponsePlanReviewProps,
+} from "./response-plan-review.tsx";
 export {
   type IncidentLifecycleStatus,
   StatusBadge,

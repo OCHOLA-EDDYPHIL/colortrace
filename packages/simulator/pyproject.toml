@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "colortrace-simulator"
+version = "0.1.0"
+description = "Fenced local simulator action execution and publication"
+requires-python = ">=3.12"
+dependencies = [
+    "colortrace-fixture",
+    "colortrace-response-plans",
+    "jsonschema==4.25.1",
+]
+
+[tool.uv.sources]
+colortrace-fixture = { workspace = true }
+colortrace-response-plans = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/colortrace_simulator"]

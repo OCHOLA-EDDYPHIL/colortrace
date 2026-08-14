@@ -56,6 +56,7 @@ def claims() -> dict[str, object]:
         "name": "Pipeline TD",
         "roles": ["pipeline_td", "response-plan.approver"],
         "principal_kind": "human",
+        "incident_ids": ["incident-demo"],
     }
 
 
@@ -103,6 +104,9 @@ def test_valid_token_projects_typed_identity(key_material: KeyMaterial) -> None:
         issuer=ISSUER,
         audience=AUDIENCE,
         principal_kind="human",
+        incident_ids=frozenset({"incident-demo"}),
+        credential_sha256=principal.credential_sha256,
+        expires_at=principal.expires_at,
     )
 
 
@@ -159,7 +163,9 @@ def test_rejects_not_yet_valid_token(
     )
 
 
-@pytest.mark.parametrize("missing", ["exp", "iat", "sub", "roles", "principal_kind"])
+@pytest.mark.parametrize(
+    "missing", ["exp", "iat", "sub", "roles", "principal_kind", "incident_ids"]
+)
 def test_rejects_missing_required_claim(key_material: KeyMaterial, missing: str) -> None:
     assert_rejected(verifier(key_material), token(key_material, remove=(missing,)))
 
@@ -178,6 +184,18 @@ def test_rejects_missing_required_claim(key_material: KeyMaterial, missing: str)
 )
 def test_rejects_invalid_roles(key_material: KeyMaterial, roles: object) -> None:
     assert_rejected(verifier(key_material), token(key_material, updates={"roles": roles}))
+
+
+@pytest.mark.parametrize(
+    "incident_ids",
+    [[], "incident-demo", ["incident-demo", "incident-demo"], ["bad incident"], [7]],
+)
+def test_rejects_invalid_incident_authority(
+    key_material: KeyMaterial, incident_ids: object
+) -> None:
+    assert_rejected(
+        verifier(key_material), token(key_material, updates={"incident_ids": incident_ids})
+    )
 
 
 @pytest.mark.parametrize("subject", [None, 7, "", " operator-1", "s" * 257])

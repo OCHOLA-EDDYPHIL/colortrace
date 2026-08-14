@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/recovery-verification-snapshot-v1.schema.json",
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "namespace", "kind", "id"],
+      "properties": {
+        "schema": {"const": "simulator-target/v1"},
+        "namespace": {"const": "colortrace-simulator"},
+        "kind": {"enum": ["color-resource", "frame", "derivative"]},
+        "id": {"$ref": "#/$defs/id"}
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "snapshot_id", "snapshot_sha256", "incident_id", "incident_version", "created_at", "action_outcome", "active_publication", "verification_artifacts"],
+  "properties": {
+    "schema": {"const": "recovery-verification-snapshot/v1"},
+    "snapshot_id": {"type": "string", "pattern": "^recovery-snapshot:[0-9a-f]{64}$"},
+    "snapshot_sha256": {"$ref": "#/$defs/digest"},
+    "incident_id": {"$ref": "#/$defs/id"},
+    "incident_version": {"type": "integer", "minimum": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "action_outcome": {"type": "object", "minProperties": 40},
+    "active_publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "publication_id", "observed_at", "generation", "pointer_sha256", "runtime_manifest_sha256", "fixture_manifest_sha256", "lineage_manifest_sha256", "declared_resource_manifest_sha256", "preservation_manifest_sha256", "safe_complement_sha256", "safe_complement_proof_sha256", "candidate_seal_sha256", "candidate_tree_sha256"],
+      "properties": {
+        "schema": {"const": "recovery-active-publication/v1"},
+        "publication_id": {"$ref": "#/$defs/id"},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "generation": {"type": "integer", "minimum": 1},
+        "pointer_sha256": {"$ref": "#/$defs/digest"},
+        "runtime_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "fixture_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "lineage_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "declared_resource_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "preservation_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "safe_complement_sha256": {"$ref": "#/$defs/digest"},
+        "safe_complement_proof_sha256": {"$ref": "#/$defs/digest"},
+        "candidate_seal_sha256": {"$ref": "#/$defs/digest"},
+        "candidate_tree_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "verification_artifacts": {
+      "type": "array",
+      "minItems": 15,
+      "maxItems": 15,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema", "artifact_id", "role", "target", "sha256", "size", "publication_pointer_sha256"],
+        "properties": {
+          "schema": {"const": "recovery-verification-artifact/v1"},
+          "artifact_id": {"$ref": "#/$defs/id"},
+          "role": {"enum": ["active-resource", "affected-output", "declared-reference", "derivative-output", "derivative-parent", "lineage-manifest", "runtime-manifest", "fixture-manifest", "preservation-manifest", "safe-complement", "safe-complement-proof"]},
+          "target": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/target"}]},
+          "sha256": {"$ref": "#/$defs/digest"},
+          "size": {"type": "integer", "minimum": 0},
+          "publication_pointer_sha256": {"$ref": "#/$defs/digest"}
+        }
+      }
+    }
+  }
+}

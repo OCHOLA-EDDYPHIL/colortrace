@@ -4,6 +4,8 @@ import { EvidenceView } from "./evidence-view.tsx";
 import { IncidentInbox } from "./incident-inbox.tsx";
 import { IncidentOverview } from "./incident-overview.tsx";
 import { InvestigationTimeline } from "./investigation-timeline.tsx";
+import { RecoveryVerification, type RecoveryVerificationProps } from "./recovery-verification.tsx";
+import { ResponsePlanReview, type ResponsePlanReviewProps } from "./response-plan-review.tsx";
 import { ScopeView } from "./scope-view.tsx";
 import { StatusBadge } from "./status-badge.tsx";
 import { Timestamp } from "./time.tsx";
@@ -12,11 +14,14 @@ import type { IncidentInboxItem, IncidentWorkspaceViewState } from "./view-state
 export type AuthenticatedViewer = {
   readonly displayName: string;
   readonly kind: "authenticated";
+  readonly principalKind: "human" | "service";
+  readonly roles: readonly string[];
 };
 
 export type WorkspaceViewer =
   | AuthenticatedViewer
   | { readonly kind: "loading" }
+  | { readonly kind: "expired"; readonly message: string }
   | { readonly kind: "unauthenticated"; readonly message: string }
   | { readonly kind: "error"; readonly message: string };
 
@@ -28,11 +33,13 @@ export type IncidentWorkspaceShellProps = {
   readonly selectedIncidentId: string | null;
   readonly state: IncidentWorkspaceViewState;
   readonly viewer: WorkspaceViewer;
+  readonly responsePlan: ResponsePlanReviewProps;
+  readonly recovery?: RecoveryVerificationProps;
 };
 
 function SessionStatus({ viewer }: { readonly viewer: WorkspaceViewer }) {
   if (viewer.kind === "authenticated" || viewer.kind === "loading") return null;
-  const error = viewer.kind === "error";
+  const error = viewer.kind === "error" || viewer.kind === "expired";
   return (
     <section
       aria-labelledby="session-status-title"
@@ -41,7 +48,11 @@ function SessionStatus({ viewer }: { readonly viewer: WorkspaceViewer }) {
     >
       <p className="eyebrow">Operator session</p>
       <h2 id="session-status-title">
-        {error ? "Session check unavailable" : "Unauthenticated read-only session"}
+        {viewer.kind === "expired"
+          ? "Operator session expired or invalid"
+          : error
+            ? "Session check unavailable"
+            : "Unauthenticated read-only session"}
       </h2>
       <p>{viewer.message}</p>
       <p>
@@ -57,17 +68,21 @@ function SessionChip({ viewer }: { readonly viewer: WorkspaceViewer }) {
       ? "Authenticated"
       : viewer.kind === "loading"
         ? "Checking session"
-        : viewer.kind === "unauthenticated"
-          ? "Unauthenticated"
-          : "Session unavailable";
+        : viewer.kind === "expired"
+          ? "Credential rejected"
+          : viewer.kind === "unauthenticated"
+            ? "Unauthenticated"
+            : "Session unavailable";
   const detail =
     viewer.kind === "authenticated"
       ? viewer.displayName
       : viewer.kind === "loading"
         ? "Waiting for identity"
-        : viewer.kind === "unauthenticated"
-          ? "No verified operator"
-          : "Identity unavailable";
+        : viewer.kind === "expired"
+          ? "Expired or invalid"
+          : viewer.kind === "unauthenticated"
+            ? "No verified operator"
+            : "Identity unavailable";
 
   return (
     <div className="session-chip" data-session-kind={viewer.kind}>
@@ -196,9 +211,13 @@ function WorkspaceWarnings({
 
 function WorkspaceContent({
   onRetry,
+  recovery,
+  responsePlan,
   state,
 }: {
   readonly onRetry?: () => void;
+  readonly recovery?: RecoveryVerificationProps;
+  readonly responsePlan: ResponsePlanReviewProps;
   readonly state: IncidentWorkspaceViewState;
 }) {
   switch (state.kind) {
@@ -273,6 +292,24 @@ function WorkspaceContent({
               missingReferences={workspace.evidence.missing_references}
             />
           </div>
+          <ResponsePlanReview
+            {...responsePlan}
+            key={
+              responsePlan.state.kind === "ready"
+                ? `plan:${responsePlan.state.review.plan.plan_sha256}:${responsePlan.state.review.state}`
+                : `plan:${responsePlan.state.kind}`
+            }
+          />
+          {recovery === undefined ? null : (
+            <RecoveryVerification
+              {...recovery}
+              key={
+                recovery.state.kind === "ready"
+                  ? `recovery:${recovery.state.workspace.review.packet?.packet_sha256 ?? "pending"}:${recovery.state.workspace.review.state}`
+                  : `recovery:${recovery.state.kind}`
+              }
+            />
+          )}
         </div>
       );
     }
@@ -297,6 +334,8 @@ export function IncidentWorkspaceShell({
   focusRequest = 0,
   incidents,
   onRetry,
+  recovery,
+  responsePlan,
   onSelectIncident,
   selectedIncidentId,
   state,
@@ -329,7 +368,12 @@ export function IncidentWorkspaceShell({
           {...(onSelectIncident === undefined ? {} : { onSelectIncident })}
         />
         <main id="incident-content" ref={mainRef} tabIndex={-1}>
-          <WorkspaceContent state={state} {...(onRetry === undefined ? {} : { onRetry })} />
+          <WorkspaceContent
+            recovery={recovery}
+            responsePlan={responsePlan}
+            state={state}
+            {...(onRetry === undefined ? {} : { onRetry })}
+          />
         </main>
       </div>
     </div>

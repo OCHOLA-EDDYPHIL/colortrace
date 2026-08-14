@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-action-audit-event-v1.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": [
+    "schema", "event_id", "action_id", "sequence", "event_type", "record_sha256",
+    "actor_id", "claim_generation", "predecessor_event_sha256", "occurred_at", "event_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "simulator-action-audit-event/v1"},
+    "event_id": {"type": "string", "pattern": "^simulator-audit-event:[0-9a-f]{64}$"},
+    "action_id": {"type": "string", "pattern": "^simulator-action:[0-9a-f]{64}$"},
+    "sequence": {"type": "integer", "minimum": 1, "maximum": 8192},
+    "event_type": {"enum": ["dispatch.admitted", "claim.acquired", "claim.reclaimed", "claim.renewed", "claim.cancelled", "publication.prepared", "publication.promoted", "publication.conflicted", "action.succeeded", "action.failed", "claim.completed"]},
+    "record_sha256": {"$ref": "#/$defs/digest"},
+    "actor_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"},
+    "claim_generation": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1}]},
+    "predecessor_event_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "event_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-fixture-manifest-v1.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "fixture_id", "fixture_version", "generation", "source_batch_id", "source_batch_sha256", "source_fixture_manifest_sha256", "runtime_manifest_sha256", "lineage_manifest_sha256", "declared_resource_manifest_sha256", "ocio_version"],
+  "properties": {
+    "schema": {"const": "simulator-fixture-manifest/v1"},
+    "fixture_id": {"type": "string"}, "fixture_version": {"const": "colortrace-fixture/v1"}, "generation": {"type": "integer", "minimum": 1},
+    "source_batch_id": {"type": "string"}, "source_batch_sha256": {"$ref": "#/$defs/digest"}, "source_fixture_manifest_sha256": {"$ref": "#/$defs/digest"},
+    "runtime_manifest_sha256": {"$ref": "#/$defs/digest"}, "lineage_manifest_sha256": {"$ref": "#/$defs/digest"}, "declared_resource_manifest_sha256": {"$ref": "#/$defs/digest"}, "ocio_version": {"const": "2.5.2"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

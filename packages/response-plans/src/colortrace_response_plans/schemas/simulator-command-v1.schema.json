@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-command-v1.schema.json",
+  "oneOf": [
+    {"$ref": "#/$defs/quarantine"},
+    {"$ref": "#/$defs/rerender"}
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "positiveGeneration": {"type": "integer", "minimum": 1},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "namespace", "kind", "id"],
+      "properties": {
+        "schema": {"const": "simulator-target/v1"},
+        "namespace": {"const": "colortrace-simulator"},
+        "kind": {"enum": ["color-resource", "frame", "derivative"]},
+        "id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "actionEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "fixture_id",
+        "fixture_manifest_sha256",
+        "fixture_generation",
+        "source_batch_id",
+        "source_batch_sha256",
+        "runtime_manifest_sha256",
+        "runtime_generation",
+        "expected_publication_pointer_sha256",
+        "expected_publication_generation",
+        "expected_resource_sha256",
+        "replacement_resource_logical_path",
+        "replacement_resource_sha256",
+        "declared_resource_manifest_sha256",
+        "ocio_version",
+        "preservation_manifest_sha256",
+        "safe_complement_sha256",
+        "lineage_manifest_sha256",
+        "lineage_generation"
+      ],
+      "properties": {
+        "schema": {"const": "simulator-action-envelope/v1"},
+        "fixture_id": {"$ref": "#/$defs/identifier"},
+        "fixture_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "fixture_generation": {"$ref": "#/$defs/positiveGeneration"},
+        "source_batch_id": {"$ref": "#/$defs/identifier"},
+        "source_batch_sha256": {"$ref": "#/$defs/digest"},
+        "runtime_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "runtime_generation": {"$ref": "#/$defs/positiveGeneration"},
+        "expected_publication_pointer_sha256": {"$ref": "#/$defs/digest"},
+        "expected_publication_generation": {"$ref": "#/$defs/positiveGeneration"},
+        "expected_resource_sha256": {"$ref": "#/$defs/digest"},
+        "replacement_resource_logical_path": {"const": "luts/show_look.cube"},
+        "replacement_resource_sha256": {"$ref": "#/$defs/digest"},
+        "declared_resource_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "ocio_version": {"const": "2.5.2"},
+        "preservation_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "safe_complement_sha256": {"$ref": "#/$defs/digest"},
+        "lineage_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "lineage_generation": {"$ref": "#/$defs/positiveGeneration"}
+      }
+    },
+    "quarantine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "command_id",
+        "namespace",
+        "target",
+        "action_envelope",
+        "expected_resource_sha256",
+        "mode"
+      ],
+      "properties": {
+        "schema": {"const": "simulator-quarantine-command/v1"},
+        "command_id": {"$ref": "#/$defs/identifier"},
+        "namespace": {"const": "colortrace-simulator"},
+        "target": {
+          "allOf": [
+            {"$ref": "#/$defs/target"},
+            {"properties": {"kind": {"const": "color-resource"}}}
+          ]
+        },
+        "action_envelope": {"$ref": "#/$defs/actionEnvelope"},
+        "expected_resource_sha256": {"$ref": "#/$defs/digest"},
+        "mode": {"const": "quarantine-and-install-approved-replacement"}
+      }
+    },
+    "rerender": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "command_id",
+        "namespace",
+        "target",
+        "action_envelope",
+        "job_id",
+        "transform_id",
+        "source_id",
+        "source_manifest_sha256",
+        "source_png_sha256",
+        "expected_config_sha256",
+        "lineage_parent_artifact_id"
+      ],
+      "properties": {
+        "schema": {"const": "simulator-targeted-rerender-command/v1"},
+        "command_id": {"$ref": "#/$defs/identifier"},
+        "namespace": {"const": "colortrace-simulator"},
+        "target": {
+          "allOf": [
+            {"$ref": "#/$defs/target"},
+            {"properties": {"kind": {"enum": ["frame", "derivative"]}}}
+          ]
+        },
+        "action_envelope": {"$ref": "#/$defs/actionEnvelope"},
+        "job_id": {"$ref": "#/$defs/identifier"},
+        "transform_id": {"enum": ["look/main/v1", "identity/v1"]},
+        "source_id": {"$ref": "#/$defs/identifier"},
+        "source_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "source_png_sha256": {"$ref": "#/$defs/digest"},
+        "expected_config_sha256": {"$ref": "#/$defs/digest"},
+        "expected_output_sha256": {"$ref": "#/$defs/digest"},
+        "expected_display_sha256": {"$ref": "#/$defs/digest"},
+        "expected_derivative_sha256": {"$ref": "#/$defs/digest"},
+        "expected_derivative_display_sha256": {"$ref": "#/$defs/digest"},
+        "lineage_parent_artifact_id": {"$ref": "#/$defs/identifier"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"target": {"properties": {"kind": {"const": "frame"}}}}
+          },
+          "then": {"required": ["expected_output_sha256", "expected_display_sha256"]},
+          "else": {
+            "required": [
+              "expected_derivative_sha256",
+              "expected_derivative_display_sha256"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-publication-receipt-v1.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": [
+    "schema", "receipt_id", "action_id", "intent_id", "intent_sha256", "state",
+    "before_pointer_sha256", "before_generation", "after_pointer_sha256",
+    "after_generation", "pointer_changed", "recovered", "promoted_at", "observed_at",
+    "receipt_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "simulator-publication-receipt/v1"},
+    "receipt_id": {"type": "string", "pattern": "^simulator-publication-receipt:[0-9a-f]{64}$"},
+    "action_id": {"type": "string", "pattern": "^simulator-action:[0-9a-f]{64}$"},
+    "intent_id": {"type": "string", "pattern": "^simulator-publication-intent:[0-9a-f]{64}$"},
+    "intent_sha256": {"$ref": "#/$defs/digest"},
+    "state": {"enum": ["promoted", "conflict"]},
+    "before_pointer_sha256": {"$ref": "#/$defs/digest"},
+    "before_generation": {"type": "integer", "minimum": 1},
+    "after_pointer_sha256": {"$ref": "#/$defs/digest"},
+    "after_generation": {"type": "integer", "minimum": 1},
+    "pointer_changed": {"type": "boolean"},
+    "recovered": {"type": "boolean"},
+    "promoted_at": {
+      "description": "The CAS time, or the first durable observation time when a completed CAS is recovered.",
+      "oneOf": [{"type": "null"}, {"type": "string", "format": "date-time"}]
+    },
+    "observed_at": {"type": "string", "format": "date-time"},
+    "receipt_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/response-plan-dispatch-consumption-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "consumption_id",
+    "authorization_policy",
+    "authorized_role",
+    "authorization_id",
+    "authorization_sha256",
+    "operation_id",
+    "task_key",
+    "payload_sha256",
+    "incident_id",
+    "incident_version",
+    "plan_id",
+    "plan_version",
+    "plan_sha256",
+    "approval_id",
+    "approval_sha256",
+    "actor",
+    "idempotency_key",
+    "consumed_at",
+    "consumption_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "response-plan-dispatch-consumption/v1"},
+    "consumption_id": {"type": "string", "pattern": "^dispatch-consumption:[0-9a-f]{64}$"},
+    "authorization_policy": {"const": "response-plan-dispatch-policy/v1"},
+    "authorized_role": {"const": "response-plan.dispatcher"},
+    "authorization_id": {"type": "string", "pattern": "^dispatch-authorization:[0-9a-f]{64}$"},
+    "authorization_sha256": {"$ref": "#/$defs/digest"},
+    "operation_id": {"type": "string", "pattern": "^dispatch-operation:[0-9a-f]{64}$"},
+    "task_key": {"type": "string", "pattern": "^dispatch-task:[0-9a-f]{64}$"},
+    "payload_sha256": {"$ref": "#/$defs/digest"},
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "incident_version": {"type": "integer", "minimum": 1},
+    "plan_id": {"type": "string", "pattern": "^response-plan:[0-9a-f]{64}$"},
+    "plan_version": {"type": "integer", "minimum": 1},
+    "plan_sha256": {"$ref": "#/$defs/digest"},
+    "approval_id": {"type": "string", "pattern": "^plan-decision:[0-9a-f]{64}$"},
+    "approval_sha256": {"$ref": "#/$defs/digest"},
+    "actor": {"$ref": "#/$defs/actor"},
+    "idempotency_key": {"$ref": "#/$defs/idempotency"},
+    "consumed_at": {"type": "string", "format": "date-time"},
+    "consumption_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "idempotency": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "subject", "audience", "kind"],
+      "properties": {
+        "issuer": {"type": "string", "minLength": 1, "maxLength": 512},
+        "subject": {"type": "string", "minLength": 1, "maxLength": 255},
+        "audience": {"type": "string", "minLength": 1, "maxLength": 255},
+        "kind": {"const": "service"}
+      }
+    }
+  }
+}

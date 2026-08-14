@@ -17,7 +17,7 @@ from decimal import Decimal
 from functools import cache
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 from urllib.parse import urlsplit
 
 from jsonschema import (  # type: ignore[import-untyped]
@@ -64,6 +64,11 @@ QUERY_KEYS = (
     "metric.correlated-observations",
     "trace.by-id",
 )
+SIMULATOR_ACTION_QUERY_KEYS = (
+    "metric.simulator-action-observations",
+    "log.simulator-action-events",
+    "trace.simulator-action-command",
+)
 MCP_ENABLED_CATEGORIES = ("alerting", "prometheus", "loki", "datasource", "proxied")
 MCP_GRAFANA_TIMEOUT_SECONDS = 15
 MCP_CLIENT_TIMEOUT_SECONDS = 20
@@ -79,6 +84,7 @@ _AUTH_SCHEME_START = re.compile(r"(?i)\b(?:bearer|basic)\s+")
 _TEXT_ASSIGNMENT = re.compile(r"(?i)\b(?P<key>[a-z0-9][a-z0-9._-]{0,255})[\"']?\s*[=:]\s*")
 _MAX_EMBEDDED_JSON_BYTES = 65_536
 _MAX_REDACTION_DEPTH = 64
+_SIMULATOR_ACTION_BATCH_VERIFICATION = object()
 
 
 def _normalized_key(value: str) -> str:
@@ -567,6 +573,29 @@ _EXPECTED_SPECS = {
         "retry_policy": "never",
     },
 }
+_EXPECTED_SIMULATOR_ACTION_SPECS = {
+    "log.simulator-action-events": {
+        "tool": "query_loki_logs",
+        "result_kind": "log",
+        "maximum_bytes": 262_144,
+        "maximum_items": 200,
+        "retry_policy": "one-trusted-transient",
+    },
+    "metric.simulator-action-observations": {
+        "tool": "query_prometheus",
+        "result_kind": "metric",
+        "maximum_bytes": 262_144,
+        "maximum_items": 500,
+        "retry_policy": "one-trusted-transient",
+    },
+    "trace.simulator-action-command": {
+        "tool": "tempo_get-trace",
+        "result_kind": "trace",
+        "maximum_bytes": 2_097_152,
+        "maximum_items": 1,
+        "retry_policy": "never",
+    },
+}
 _EXPECTED_LIMITS = {
     "maximum_calls": 8,
     "maximum_calls_in_flight": 2,
@@ -604,6 +633,7 @@ class QueryCatalog:
     version: str
     digest: str
     specs: Mapping[str, QuerySpec]
+    simulator_action_specs: Mapping[str, QuerySpec]
     redacted_keys: frozenset[str]
     redacted_label_prefixes: tuple[str, ...]
 
@@ -613,6 +643,7 @@ class QueryCatalog:
         if set(document) != {
             "schema",
             "templates",
+            "simulator_action_templates",
             "limits",
             "redacted_keys",
             "redacted_label_prefixes",
@@ -621,6 +652,7 @@ class QueryCatalog:
         if (
             document.get("schema") != QUERY_CATALOG_VERSION
             or document.get("templates") != _EXPECTED_SPECS
+            or document.get("simulator_action_templates") != _EXPECTED_SIMULATOR_ACTION_SPECS
             or document.get("limits") != _EXPECTED_LIMITS
             or document.get("redacted_keys") != list(_EXPECTED_REDACTED_KEYS)
             or document.get("redacted_label_prefixes") != list(_EXPECTED_REDACTED_LABEL_PREFIXES)
@@ -641,10 +673,15 @@ class QueryCatalog:
             key: QuerySpec(key=key, **cast(dict[str, Any], value))
             for key, value in _EXPECTED_SPECS.items()
         }
+        simulator_action_specs = {
+            key: QuerySpec(key=key, **cast(dict[str, Any], value))
+            for key, value in _EXPECTED_SIMULATOR_ACTION_SPECS.items()
+        }
         return cls(
             QUERY_CATALOG_VERSION,
             _prefixed_sha256(canonical_json_bytes(document)),
             MappingProxyType(specs),
+            MappingProxyType(simulator_action_specs),
             frozenset(_normalized_key(item) for item in redacted_keys),
             tuple(_normalized_prefix(item) for item in redacted_prefixes),
         )
@@ -706,6 +743,221 @@ class EvidenceBatch:
         return cls.from_mapping(strict_json_file(path.resolve(strict=True)))
 
 
+@dataclass(frozen=True, slots=True)
+class SimulatorActionEvidenceBatch:
+    request_id: str
+    evidence_request_id: str
+    evidence_request_sha256: str
+    catalog_sha256: str
+    incident_id: str
+    outcome_id: str
+    outcome_sha256: str
+    snapshot_id: str
+    snapshot_sha256: str
+    action_id: str
+    operation_id: str
+    action_started_at: datetime
+    action_completed_at: datetime
+    snapshot_observed_at: datetime
+    binding: Mapping[str, str]
+    trace_ids: tuple[str, ...]
+    predecessor_event_sha256: str | None
+    _verification: object = field(repr=False, compare=False)
+    _outcome: Mapping[str, Any] = field(repr=False, compare=False)
+    _snapshot: Mapping[str, Any] = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        try:
+            binding = _plain_json(self.binding)
+            outcome = _plain_json(self._outcome)
+            snapshot = _plain_json(self._snapshot)
+            if (
+                not isinstance(binding, dict)
+                or not isinstance(outcome, dict)
+                or not isinstance(snapshot, dict)
+            ):
+                raise TypeError("batch authority must contain objects")
+            object.__setattr__(self, "binding", _freeze_json(binding))
+            object.__setattr__(self, "trace_ids", tuple(self.trace_ids))
+            object.__setattr__(self, "_outcome", _freeze_json(outcome))
+            object.__setattr__(self, "_snapshot", _freeze_json(snapshot))
+        except Exception:
+            raise AdapterError("action_request_invalid") from None
+
+    @property
+    def window_start(self) -> datetime:
+        return self.action_started_at
+
+    @property
+    def window_end(self) -> datetime:
+        return self.snapshot_observed_at
+
+    @property
+    def correlation_keys(self) -> Mapping[str, str]:
+        return MappingProxyType(
+            {
+                "action_id": self.action_id,
+                "incident_id": self.incident_id,
+                "operation_id": self.operation_id,
+                "outcome_id": self.outcome_id,
+                "outcome_sha256": self.outcome_sha256,
+                "snapshot_id": self.snapshot_id,
+                "snapshot_sha256": self.snapshot_sha256,
+            }
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": "simulator-action-evidence-request/v1",
+            "request_id": self.request_id,
+            "evidence_request_id": self.evidence_request_id,
+            "evidence_request_sha256": self.evidence_request_sha256,
+            "catalog_sha256": self.catalog_sha256,
+            "incident_id": self.incident_id,
+            "outcome_id": self.outcome_id,
+            "outcome_sha256": self.outcome_sha256,
+            "snapshot_id": self.snapshot_id,
+            "snapshot_sha256": self.snapshot_sha256,
+            "action_id": self.action_id,
+            "operation_id": self.operation_id,
+            "action_started_at": _timestamp(self.action_started_at),
+            "action_completed_at": _timestamp(self.action_completed_at),
+            "snapshot_observed_at": _timestamp(self.snapshot_observed_at),
+            "binding": dict(self.binding),
+            "trace_ids": list(self.trace_ids),
+            "predecessor_event_sha256": self.predecessor_event_sha256,
+        }
+
+    @classmethod
+    def from_documents(
+        cls,
+        *,
+        outcome: Mapping[str, Any],
+        snapshot: Mapping[str, Any],
+        binding: Mapping[str, str],
+        evidence_request_id: str,
+        evidence_request_sha256: str,
+        catalog_sha256: str,
+        predecessor_event_sha256: str | None = None,
+    ) -> SimulatorActionEvidenceBatch:
+        try:
+            outcome_value = _plain_json(outcome)
+            snapshot_value = _plain_json(snapshot)
+            if not isinstance(outcome_value, dict) or not isinstance(snapshot_value, dict):
+                raise TypeError("authority documents must be objects")
+            outcome_body = {
+                key: child
+                for key, child in outcome_value.items()
+                if key not in {"outcome_id", "outcome_sha256"}
+            }
+            outcome_sha256 = _prefixed_sha256(canonical_json_bytes(outcome_body))
+            snapshot_body = {
+                key: child
+                for key, child in snapshot_value.items()
+                if key not in {"snapshot_id", "snapshot_sha256"}
+            }
+            snapshot_sha256 = _prefixed_sha256(canonical_json_bytes(snapshot_body))
+            if (
+                outcome_value.get("schema") != "simulator-action-outcome/v1"
+                or outcome_value.get("status") != "succeeded"
+                or outcome_value.get("reason_codes") != []
+                or outcome_value.get("outcome_sha256") != outcome_sha256
+                or outcome_value.get("outcome_id")
+                != f"simulator-action-outcome:{outcome_sha256.removeprefix('sha256:')}"
+                or snapshot_value.get("schema") != "simulator-recovery-snapshot/v1"
+                or snapshot_value.get("snapshot_sha256") != snapshot_sha256
+                or snapshot_value.get("snapshot_id")
+                != f"simulator-recovery-snapshot:{snapshot_sha256.removeprefix('sha256:')}"
+            ):
+                raise ValueError("authority digest invalid")
+            for name in (
+                "outcome_id",
+                "outcome_sha256",
+                "action_id",
+                "incident_id",
+                "operation_id",
+            ):
+                if snapshot_value.get(name) != outcome_value.get(name):
+                    raise ValueError("snapshot outcome binding invalid")
+            if (
+                snapshot_value.get("action_started_at") != outcome_value.get("action_started_at")
+                or snapshot_value.get("action_completed_at") != outcome_value.get("completed_at")
+                or snapshot_value.get("targets") != outcome_value.get("targets")
+                or snapshot_value.get("exclusions") != outcome_value.get("exclusions")
+                or snapshot_value.get("command_outcomes") != outcome_value.get("command_outcomes")
+                or snapshot_value.get("recomputed_safe_complement_sha256")
+                != outcome_value.get("safe_complement_after_sha256")
+            ):
+                raise ValueError("snapshot outcome projection invalid")
+            active = snapshot_value.get("active_publication")
+            if not isinstance(active, dict) or (
+                active.get("pointer_sha256")
+                != outcome_value.get("active_publication_pointer_sha256")
+                or active.get("runtime_manifest_sha256")
+                != outcome_value.get("active_runtime_manifest_sha256")
+                or active.get("candidate_tree_sha256") != outcome_value.get("candidate_tree_sha256")
+            ):
+                raise ValueError("active publication binding invalid")
+            traces = outcome_value.get("new_trace_ids")
+            if (
+                not isinstance(traces, list)
+                or len(traces) != 5
+                or traces != sorted(set(traces))
+                or any(
+                    not isinstance(value, str) or _TRACE_ID.fullmatch(value) is None
+                    for value in traces
+                )
+            ):
+                raise ValueError("trace authority invalid")
+            started = _parse_timestamp(cast(str, outcome_value["action_started_at"]))
+            completed = _parse_timestamp(cast(str, outcome_value["completed_at"]))
+            promoted = _parse_timestamp(cast(str, outcome_value["publication_promoted_at"]))
+            observed = _parse_timestamp(cast(str, snapshot_value["observed_at"]))
+            if (
+                not started < promoted <= completed <= observed
+                or observed <= started
+                or observed - started > timedelta(seconds=600)
+            ):
+                raise ValueError("action evidence timing invalid")
+            identity = {
+                "schema": "simulator-action-evidence-request-identity/v1",
+                "evidence_request_id": evidence_request_id,
+                "evidence_request_sha256": evidence_request_sha256,
+                "catalog_sha256": catalog_sha256,
+                "outcome_sha256": outcome_sha256,
+                "snapshot_sha256": snapshot_sha256,
+            }
+            request_sha256 = _prefixed_sha256(canonical_json_bytes(identity))
+            batch = cls(
+                request_id=f"simulator-action-evidence:{request_sha256.removeprefix('sha256:')}",
+                evidence_request_id=evidence_request_id,
+                evidence_request_sha256=evidence_request_sha256,
+                catalog_sha256=catalog_sha256,
+                incident_id=cast(str, outcome_value["incident_id"]),
+                outcome_id=cast(str, outcome_value["outcome_id"]),
+                outcome_sha256=outcome_sha256,
+                snapshot_id=cast(str, snapshot_value["snapshot_id"]),
+                snapshot_sha256=snapshot_sha256,
+                action_id=cast(str, outcome_value["action_id"]),
+                operation_id=cast(str, outcome_value["operation_id"]),
+                action_started_at=started,
+                action_completed_at=completed,
+                snapshot_observed_at=observed,
+                binding=binding,
+                trace_ids=tuple(cast(list[str], traces)),
+                predecessor_event_sha256=predecessor_event_sha256,
+                _verification=_SIMULATOR_ACTION_BATCH_VERIFICATION,
+                _outcome=outcome_value,
+                _snapshot=snapshot_value,
+            )
+            _validate_simulator_action_batch(batch)
+            return batch
+        except AdapterError:
+            raise
+        except Exception:
+            raise AdapterError("action_request_invalid") from None
+
+
 def _snapshot_batch(batch: EvidenceBatch) -> EvidenceBatch:
     try:
         snapshot = EvidenceBatch(
@@ -731,6 +983,7 @@ class BoundCall:
     spec: QuerySpec
     arguments: Mapping[str, Any]
     model_visible_arguments: tuple[str, ...] = ()
+    correlation_keys: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -838,6 +1091,109 @@ def _validate_batch(batch: EvidenceBatch) -> None:
         raise AdapterError("request_invalid")
 
 
+def _validate_simulator_action_batch(batch: SimulatorActionEvidenceBatch) -> None:
+    if batch._verification is not _SIMULATOR_ACTION_BATCH_VERIFICATION:
+        raise AdapterError("action_request_unverified")
+    _validate_schema("simulator-action-evidence-request-v1.schema.json", batch.to_dict())
+    identity = {
+        "schema": "simulator-action-evidence-request-identity/v1",
+        "evidence_request_id": batch.evidence_request_id,
+        "evidence_request_sha256": batch.evidence_request_sha256,
+        "catalog_sha256": batch.catalog_sha256,
+        "outcome_sha256": batch.outcome_sha256,
+        "snapshot_sha256": batch.snapshot_sha256,
+    }
+    request_sha256 = _prefixed_sha256(canonical_json_bytes(identity))
+    if (
+        batch.request_id != f"simulator-action-evidence:{request_sha256.removeprefix('sha256:')}"
+        or batch.evidence_request_id
+        != (f"recovery-evidence-request:{batch.evidence_request_sha256.removeprefix('sha256:')}")
+        or batch.trace_ids != tuple(sorted(set(batch.trace_ids)))
+        or len(batch.trace_ids) != 5
+        or batch.action_completed_at < batch.action_started_at
+        or batch.snapshot_observed_at < batch.action_completed_at
+        or batch.snapshot_observed_at <= batch.action_started_at
+        or batch.snapshot_observed_at - batch.action_started_at > timedelta(seconds=600)
+    ):
+        raise AdapterError("action_request_invalid")
+    expected_binding = {
+        "prometheus_datasource_uid",
+        "loki_datasource_uid",
+        "tempo_datasource_uid",
+    }
+    if set(batch.binding) != expected_binding or any(
+        not isinstance(value, str) or _UID.fullmatch(value) is None
+        for value in batch.binding.values()
+    ):
+        raise AdapterError("binding_invalid")
+    if batch.predecessor_event_sha256 is not None and (
+        not isinstance(batch.predecessor_event_sha256, str)
+        or _PREFIXED_DIGEST.fullmatch(batch.predecessor_event_sha256) is None
+    ):
+        raise AdapterError("action_request_invalid")
+    outcome = _plain_json(batch._outcome)
+    snapshot = _plain_json(batch._snapshot)
+    if not isinstance(outcome, dict) or not isinstance(snapshot, dict):
+        raise AdapterError("action_request_invalid")
+    outcome_body = {
+        key: child for key, child in outcome.items() if key not in {"outcome_id", "outcome_sha256"}
+    }
+    snapshot_body = {
+        key: child
+        for key, child in snapshot.items()
+        if key not in {"snapshot_id", "snapshot_sha256"}
+    }
+    if (
+        _prefixed_sha256(canonical_json_bytes(outcome_body)) != batch.outcome_sha256
+        or _prefixed_sha256(canonical_json_bytes(snapshot_body)) != batch.snapshot_sha256
+        or outcome.get("outcome_id") != batch.outcome_id
+        or snapshot.get("snapshot_id") != batch.snapshot_id
+        or outcome.get("action_id") != batch.action_id
+        or outcome.get("operation_id") != batch.operation_id
+        or outcome.get("incident_id") != batch.incident_id
+    ):
+        raise AdapterError("action_request_invalid")
+    commands = outcome.get("command_outcomes")
+    exclusions = outcome.get("exclusions")
+    targets = outcome.get("targets")
+    if (
+        not isinstance(commands, list)
+        or len(commands) != 5
+        or not isinstance(exclusions, list)
+        or len(exclusions) != 3
+        or not isinstance(targets, list)
+        or len(targets) != 5
+    ):
+        raise AdapterError("action_request_invalid")
+    command_ids: list[str] = []
+    command_traces: list[str] = []
+    for command in commands:
+        if not isinstance(command, dict) or not isinstance(command.get("target"), dict):
+            raise AdapterError("action_request_invalid")
+        command_id = command.get("command_id")
+        trace_id = command.get("trace_id")
+        if (
+            not isinstance(command_id, str)
+            or _IDENTIFIER.fullmatch(command_id) is None
+            or not isinstance(trace_id, str)
+            or _TRACE_ID.fullmatch(trace_id) is None
+        ):
+            raise AdapterError("action_request_invalid")
+        command_ids.append(command_id)
+        command_traces.append(trace_id)
+    exclusion_ids = [child.get("id") if isinstance(child, dict) else None for child in exclusions]
+    if (
+        command_ids != sorted(set(command_ids))
+        or sorted(command_traces) != list(batch.trace_ids)
+        or any(
+            not isinstance(child, str) or _IDENTIFIER.fullmatch(child) is None
+            for child in exclusion_ids
+        )
+        or len(set(cast(list[str], exclusion_ids))) != 3
+    ):
+        raise AdapterError("action_request_invalid")
+
+
 def _label_selector(correlation: Mapping[str, str]) -> str:
     values: list[str] = []
     for name in CORRELATION_FIELDS:
@@ -896,6 +1252,82 @@ def _bind_call(catalog: QueryCatalog, batch: EvidenceBatch, key: str) -> BoundCa
     else:  # pragma: no cover
         raise AdapterError("query_not_allowed")
     return BoundCall(spec, cast(Mapping[str, Any], _freeze_json(arguments)))
+
+
+def _bind_simulator_action_calls(
+    catalog: QueryCatalog, batch: SimulatorActionEvidenceBatch
+) -> tuple[BoundCall, ...]:
+    """Bind the fixed recovery evidence query set without caller-supplied query text."""
+
+    _validate_simulator_action_batch(batch)
+    started = _timestamp(batch.action_started_at)
+    observed = _timestamp(batch.snapshot_observed_at)
+    labels = {
+        "action_action_id": batch.action_id,
+        "action_incident_id": batch.incident_id,
+        "action_operation_id": batch.operation_id,
+        "action_outcome_sha256": batch.outcome_sha256,
+    }
+    selector = ",".join(f'{name}="{value}"' for name, value in labels.items())
+    base_correlation = dict(batch.correlation_keys)
+
+    metric = BoundCall(
+        catalog.simulator_action_specs["metric.simulator-action-observations"],
+        cast(
+            Mapping[str, Any],
+            _freeze_json(
+                {
+                    "datasourceUid": batch.binding["prometheus_datasource_uid"],
+                    "expr": f"colortrace_simulator_action_observations_total{{{selector}}}",
+                    "queryType": "instant",
+                    "endTime": observed,
+                }
+            ),
+        ),
+        correlation_keys=cast(Mapping[str, str], _freeze_json(base_correlation)),
+    )
+    log_filters = " ".join(f'| {name}="{value}"' for name, value in labels.items())
+    log = BoundCall(
+        catalog.simulator_action_specs["log.simulator-action-events"],
+        cast(
+            Mapping[str, Any],
+            _freeze_json(
+                {
+                    "datasourceUid": batch.binding["loki_datasource_uid"],
+                    "logql": f'{{service_name="colortrace-simulator"}} {log_filters}',
+                    "queryType": "range",
+                    "startRfc3339": started,
+                    "endRfc3339": observed,
+                    "direction": "forward",
+                    "limit": 200,
+                }
+            ),
+        ),
+        correlation_keys=cast(Mapping[str, str], _freeze_json(base_correlation)),
+    )
+    traces = tuple(
+        BoundCall(
+            catalog.simulator_action_specs["trace.simulator-action-command"],
+            cast(
+                Mapping[str, Any],
+                _freeze_json(
+                    {
+                        "trace_id": trace_id,
+                        "datasourceUid": batch.binding["tempo_datasource_uid"],
+                    }
+                ),
+            ),
+            correlation_keys=cast(
+                Mapping[str, str],
+                _freeze_json({**base_correlation, "trace_id": trace_id}),
+            ),
+        )
+        for trace_id in batch.trace_ids
+    )
+    bound = (metric, log, *traces)
+    if len(bound) != 7:
+        raise AdapterError("action_query_set_invalid")
+    return bound
 
 
 class McpSession(Protocol):
@@ -1033,6 +1465,20 @@ class _CallBudget:
     async def exited(self) -> None:
         async with self.lock:
             self.in_flight -= 1
+
+
+@dataclass(slots=True)
+class _RetryBudget:
+    maximum_retries: int = 1
+    retries_used: int = 0
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    async def reserve(self) -> bool:
+        async with self.lock:
+            if self.retries_used >= self.maximum_retries:
+                return False
+            self.retries_used += 1
+            return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -1347,6 +1793,7 @@ async def _collect_one(
     controls: ExecutionControls,
     budget: _CallBudget,
     clock: Callable[[], datetime],
+    retry_budget: _RetryBudget | None = None,
 ) -> _RawCollection:
     attempts = 0
     retries = 0
@@ -1470,6 +1917,16 @@ async def _collect_one(
                 )
             )
             if bound.spec.retry_policy == "one-trusted-transient" and retries == 0:
+                if retry_budget is not None and not await retry_budget.reserve():
+                    return _RawCollection(
+                        bound,
+                        completed_at,
+                        attempts,
+                        retries,
+                        None,
+                        "budget_exhausted",
+                        tuple(attempt_records),
+                    )
                 retries += 1
                 continue
             return _RawCollection(
@@ -1516,6 +1973,16 @@ async def _collect_one(
                 and bound.spec.retry_policy == "one-trusted-transient"
                 and retries == 0
             ):
+                if retry_budget is not None and not await retry_budget.reserve():
+                    return _RawCollection(
+                        bound,
+                        completed_at,
+                        attempts,
+                        retries,
+                        None,
+                        "budget_exhausted",
+                        tuple(attempt_records),
+                    )
                 retries += 1
                 continue
             return _RawCollection(
@@ -1551,10 +2018,141 @@ async def _collect_one(
         )
 
 
+_ACTION_METRIC_LABELS = MappingProxyType(
+    {
+        "action.action_id": "action_action_id",
+        "action.incident_id": "action_incident_id",
+        "action.operation_id": "action_operation_id",
+        "action.outcome_sha256": "action_outcome_sha256",
+    }
+)
+
+
+def _action_expected_values(batch: SimulatorActionEvidenceBatch) -> Mapping[str, str]:
+    return MappingProxyType(
+        {
+            "action.action_id": batch.action_id,
+            "action.incident_id": batch.incident_id,
+            "action.operation_id": batch.operation_id,
+            "action.outcome_sha256": batch.outcome_sha256,
+        }
+    )
+
+
+def _validate_action_observation_time(value: Any, batch: SimulatorActionEvidenceBatch) -> None:
+    if not isinstance(value, str):
+        raise AdapterError("malformed_result")
+    try:
+        observed = _parse_timestamp(value)
+    except AdapterError:
+        raise AdapterError("malformed_result") from None
+    if observed <= batch.action_started_at or observed > batch.snapshot_observed_at:
+        raise AdapterError("pre_action_evidence")
+
+
+def _validate_simulator_action_collection(
+    raw: _RawCollection, batch: SimulatorActionEvidenceBatch
+) -> None:
+    if raw.error_code is not None:
+        return
+    payload = raw.content
+    if not isinstance(payload, dict):  # already structurally checked; fail closed on drift
+        raise AdapterError("malformed_result")
+    expected = _action_expected_values(batch)
+    if raw.bound.spec.result_kind == "metric":
+        rows = payload.get("data")
+        if not isinstance(rows, list) or not rows:
+            raise AdapterError("incomplete_result")
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("metric"), dict):
+                raise AdapterError("malformed_result")
+            labels = cast(dict[str, Any], row["metric"])
+            if any(
+                labels.get(metric_name) != expected[attribute_name]
+                for attribute_name, metric_name in _ACTION_METRIC_LABELS.items()
+            ):
+                raise AdapterError("incomplete_result")
+            _validate_action_observation_time(labels.get("telemetry_observed_at"), batch)
+        return
+    if raw.bound.spec.result_kind == "log":
+        rows = payload.get("data")
+        if not isinstance(rows, list) or not rows:
+            raise AdapterError("incomplete_result")
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("structuredMetadata"), dict):
+                raise AdapterError("malformed_result")
+            metadata = cast(dict[str, Any], row["structuredMetadata"])
+            if any(
+                metadata.get(metric_name) != expected[attribute_name]
+                for attribute_name, metric_name in _ACTION_METRIC_LABELS.items()
+            ):
+                raise AdapterError("incomplete_result")
+            _validate_action_observation_time(metadata.get("telemetry_observed_at"), batch)
+            _validate_action_observation_time(row.get("timestamp"), batch)
+        return
+    if raw.bound.spec.result_kind == "trace":
+        trace = payload.get("trace")
+        if not isinstance(trace, dict):
+            raise AdapterError("malformed_result")
+        matched = 0
+        correlation_names = {*expected, "telemetry.observed_at"}
+        services = trace.get("services")
+        if not isinstance(services, list):
+            raise AdapterError("malformed_result")
+        for service in services:
+            if not isinstance(service, dict) or not isinstance(service.get("scopes"), list):
+                raise AdapterError("malformed_result")
+            for scope in service["scopes"]:
+                if not isinstance(scope, dict) or not isinstance(scope.get("spans"), list):
+                    raise AdapterError("malformed_result")
+                for span in scope["spans"]:
+                    if not isinstance(span, dict) or not isinstance(span.get("attributes"), dict):
+                        raise AdapterError("malformed_result")
+                    attributes = cast(dict[str, Any], span["attributes"])
+                    if correlation_names.isdisjoint(attributes):
+                        continue
+                    if any(attributes.get(name) != value for name, value in expected.items()):
+                        raise AdapterError("incomplete_result")
+                    _validate_action_observation_time(
+                        attributes.get("telemetry.observed_at"), batch
+                    )
+                    matched += 1
+        if matched == 0:
+            raise AdapterError("incomplete_result")
+        return
+    raise AdapterError("malformed_result")
+
+
+def _with_collection_error(raw: _RawCollection, code: str) -> _RawCollection:
+    records = list(raw.attempt_records)
+    if records:
+        last = records[-1]
+        records[-1] = AttemptRecord(
+            query_key=last.query_key,
+            tool=last.tool,
+            attempt=last.attempt,
+            retry=last.retry,
+            normalized_arguments=last.normalized_arguments,
+            arguments_sha256=last.arguments_sha256,
+            started_at=last.started_at,
+            completed_at=last.completed_at,
+            outcome=code,
+        )
+    return _RawCollection(
+        bound=raw.bound,
+        retrieved_at=raw.retrieved_at,
+        attempts=raw.attempts,
+        retries=raw.retries,
+        content=None,
+        error_code=code,
+        attempt_records=tuple(records),
+    )
+
+
 def _build_envelope(
     raw: _RawCollection,
     *,
-    batch: EvidenceBatch,
+    batch: EvidenceBatch | SimulatorActionEvidenceBatch,
     catalog: QueryCatalog,
     inventory: FrozenInventory,
     predecessor: str | None,
@@ -1603,7 +2201,7 @@ def _build_envelope(
         "content_sha256": _prefixed_sha256(content_bytes),
         "content": content,
         "display_excerpt": display,
-        "correlation_keys": dict(batch.correlation_keys),
+        "correlation_keys": dict(raw.bound.correlation_keys or batch.correlation_keys),
         "collection": {
             "outcome": "error" if raw.error_code is not None else "collected",
             "attempts": raw.attempts,
@@ -1658,6 +2256,474 @@ class BatchResult:
         }
 
 
+_ACTION_CORRELATION_ATTRIBUTES = (
+    "outcome_id",
+    "outcome_sha256",
+    "admission_id",
+    "admission_sha256",
+    "action_id",
+    "task_key",
+    "operation_id",
+    "payload_sha256",
+    "fixture_id",
+    "incident_id",
+    "incident_version",
+    "plan_id",
+    "plan_version",
+    "plan_sha256",
+    "approval_id",
+    "approval_sha256",
+    "consumption_id",
+    "consumption_sha256",
+    "dispatch_bundle_sha256",
+    "action_envelope_sha256",
+    "publication_intent_id",
+    "publication_intent_sha256",
+    "publication_receipt_id",
+    "publication_receipt_sha256",
+)
+_ACTION_PUBLICATION_ATTRIBUTES = (
+    "publication_intent_id",
+    "publication_intent_sha256",
+    "publication_receipt_id",
+    "publication_receipt_sha256",
+    "predecessor_publication_pointer_sha256",
+    "predecessor_publication_generation",
+    "candidate_publication_pointer_sha256",
+    "candidate_publication_generation",
+    "source_generation",
+    "candidate_generation",
+    "source_batch_id",
+    "source_batch_sha256",
+    "candidate_fixture_manifest_sha256",
+    "candidate_runtime_manifest_sha256",
+    "candidate_lineage_manifest_sha256",
+    "declared_resource_manifest_sha256",
+    "active_publication_pointer_sha256",
+    "active_runtime_manifest_sha256",
+    "preservation_manifest_sha256",
+    "safe_complement_before_sha256",
+    "safe_complement_after_sha256",
+    "safe_complement_proof_sha256",
+    "candidate_seal_sha256",
+    "candidate_tree_sha256",
+    "publication_promoted_at",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedActionObservation(Mapping[str, Any]):
+    event_id: str
+    signal: Literal["metric", "log", "trace"]
+    subject_kind: Literal["command", "safe"]
+    subject_id: str
+    trace_id: str | None
+    outcome_id: str
+    outcome_sha256: str
+    action_id: str
+    operation_id: str
+    observed_at: str
+    emitted_at: str
+    retrieved_at: str
+    clock_provenance: str
+    clock_skew_milliseconds: int
+    truncated: bool
+    source_label: str
+    source_envelope: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        envelope = _plain_json(self.source_envelope)
+        if not isinstance(envelope, dict):
+            raise AdapterError("action_observation_malformed")
+        object.__setattr__(self, "source_envelope", _freeze_json(envelope))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "event_id": self.event_id,
+            "signal": self.signal,
+            "subject_kind": self.subject_kind,
+            "subject_id": self.subject_id,
+            "trace_id": self.trace_id,
+            "outcome_id": self.outcome_id,
+            "outcome_sha256": self.outcome_sha256,
+            "action_id": self.action_id,
+            "operation_id": self.operation_id,
+            "observed_at": self.observed_at,
+            "emitted_at": self.emitted_at,
+            "retrieved_at": self.retrieved_at,
+            "clock_provenance": self.clock_provenance,
+            "clock_skew_milliseconds": self.clock_skew_milliseconds,
+            "truncated": self.truncated,
+            "source_label": self.source_label,
+            "source_envelope": _plain_json(self.source_envelope),
+        }
+
+    def __getitem__(self, key: str) -> Any:
+        try:
+            return self.to_dict()[key]
+        except KeyError:
+            raise KeyError(key) from None
+
+    def __iter__(self) -> Any:
+        return iter(self.to_dict())
+
+    def __len__(self) -> int:
+        return 17
+
+
+@dataclass(frozen=True, slots=True)
+class SimulatorActionEvidenceProjection:
+    request_id: str
+    evidence_request_id: str
+    evidence_request_sha256: str
+    catalog_sha256: str
+    incident_id: str
+    outcome_id: str
+    outcome_sha256: str
+    snapshot_id: str
+    snapshot_sha256: str
+    action_id: str
+    operation_id: str
+    completed_at: datetime
+    observations: tuple[NormalizedActionObservation, ...]
+
+    def __post_init__(self) -> None:
+        if self.completed_at.tzinfo is None:
+            raise AdapterError("action_collection_clock_invalid")
+        object.__setattr__(self, "completed_at", self.completed_at.astimezone(UTC))
+        object.__setattr__(self, "observations", tuple(self.observations))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "evidence_request_id": self.evidence_request_id,
+            "evidence_request_sha256": self.evidence_request_sha256,
+            "catalog_sha256": self.catalog_sha256,
+            "incident_id": self.incident_id,
+            "outcome_id": self.outcome_id,
+            "outcome_sha256": self.outcome_sha256,
+            "snapshot_id": self.snapshot_id,
+            "snapshot_sha256": self.snapshot_sha256,
+            "action_id": self.action_id,
+            "operation_id": self.operation_id,
+            "completed_at": _timestamp(self.completed_at),
+            "observations": [value.to_dict() for value in self.observations],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class _ExpectedActionEvent:
+    signal: str
+    event_id: str
+    subject_kind: str
+    subject_id: str
+    trace_id: str | None
+    attributes: Mapping[str, Any]
+
+
+def _stable_action_event_id(*, outcome_sha256: str, signal: str, subject: Mapping[str, Any]) -> str:
+    identity = {
+        "schema": "simulator-action-telemetry-event-identity/v1",
+        "outcome_sha256": outcome_sha256,
+        "signal": signal,
+        "subject": dict(subject),
+    }
+    return f"simulator-action-event:{_sha256(canonical_json_bytes(identity))}"
+
+
+def _expected_action_events(
+    batch: SimulatorActionEvidenceBatch,
+) -> Mapping[tuple[str, str], _ExpectedActionEvent]:
+    outcome = batch._outcome
+    common: dict[str, Any] = {
+        "telemetry.contract": "simulator-action-telemetry-event/v1",
+        "telemetry.phase": "execution",
+        "telemetry.observed_at": outcome["completed_at"],
+        "action.started_at": outcome["action_started_at"],
+        "action.completed_at": outcome["completed_at"],
+    }
+    for name in _ACTION_CORRELATION_ATTRIBUTES:
+        value = outcome[name]
+        if value is not None:
+            common[f"action.{name}"] = value
+    for name in _ACTION_PUBLICATION_ATTRIBUTES:
+        common[f"publication.{name}"] = outcome[name]
+
+    expected: dict[tuple[str, str], _ExpectedActionEvent] = {}
+    commands = cast(tuple[Mapping[str, Any], ...], outcome["command_outcomes"])
+    for command in commands:
+        command_id = cast(str, command["command_id"])
+        trace_id = cast(str, command["trace_id"])
+        target = cast(Mapping[str, Any], command["target"])
+        for signal in ("metric", "log", "trace"):
+            event_id = _stable_action_event_id(
+                outcome_sha256=batch.outcome_sha256,
+                signal=signal,
+                subject={"command_id": command_id},
+            )
+            attributes = {
+                **common,
+                "telemetry.event_id": event_id,
+                "action.trace_id": trace_id,
+                "observation.contract": "simulator-command-observation/v1",
+                "observation.scope": "affected",
+                "command.id": command_id,
+                "command.result_kind": command["result_kind"],
+                **{f"target.{name}": target[name] for name in ("namespace", "kind", "id")},
+            }
+            for prefix in ("before", "after"):
+                state = cast(Mapping[str, Any], command[prefix])
+                attributes.update({f"{prefix}.{name}": value for name, value in state.items()})
+            expected[(signal, event_id)] = _ExpectedActionEvent(
+                signal,
+                event_id,
+                "command",
+                command_id,
+                trace_id,
+                cast(Mapping[str, Any], _freeze_json(attributes)),
+            )
+
+    exclusions = cast(tuple[Mapping[str, Any], ...], outcome["exclusions"])
+    for target in exclusions:
+        target_id = cast(str, target["id"])
+        for signal in ("metric", "log"):
+            event_id = _stable_action_event_id(
+                outcome_sha256=batch.outcome_sha256,
+                signal=signal,
+                subject={"target": _plain_json(target)},
+            )
+            attributes = {
+                **common,
+                "telemetry.event_id": event_id,
+                "observation.contract": "simulator-safe-preservation-observation/v1",
+                "observation.scope": "safe",
+                **{f"target.{name}": target[name] for name in ("namespace", "kind", "id")},
+                "safe.unchanged": True,
+                "safe.preservation_manifest_sha256": outcome["preservation_manifest_sha256"],
+                "safe.complement_before_sha256": outcome["safe_complement_before_sha256"],
+                "safe.complement_after_sha256": outcome["safe_complement_after_sha256"],
+                "safe.complement_proof_sha256": outcome["safe_complement_proof_sha256"],
+            }
+            expected[(signal, event_id)] = _ExpectedActionEvent(
+                signal,
+                event_id,
+                "safe",
+                target_id,
+                None,
+                cast(Mapping[str, Any], _freeze_json(attributes)),
+            )
+    if len(expected) != 21:
+        raise AdapterError("action_observation_authority_invalid")
+    return MappingProxyType(expected)
+
+
+def _action_attribute_text(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return value
+    raise AdapterError("action_observation_malformed")
+
+
+def _action_attribute(attributes: Mapping[str, Any], name: str, *, normalized: bool) -> str:
+    provider_name = name.replace(".", "_") if normalized else name
+    if provider_name not in attributes:
+        raise AdapterError("action_observation_incomplete")
+    return _action_attribute_text(attributes[provider_name])
+
+
+def _project_action_attributes(
+    *,
+    signal: str,
+    attributes: Mapping[str, Any],
+    envelope: Mapping[str, Any],
+    batch: SimulatorActionEvidenceBatch,
+    expected: Mapping[tuple[str, str], _ExpectedActionEvent],
+) -> NormalizedActionObservation:
+    normalized = signal != "trace"
+    event_id = _action_attribute(attributes, "telemetry.event_id", normalized=normalized)
+    authority = expected.get((signal, event_id))
+    if authority is None:
+        raise AdapterError("action_observation_correlation_mismatch")
+    for name, value in authority.attributes.items():
+        if _action_attribute(attributes, name, normalized=normalized) != _action_attribute_text(
+            value
+        ):
+            raise AdapterError("action_observation_correlation_mismatch")
+    emitted_at = _action_attribute(attributes, "telemetry.emitted_at", normalized=normalized)
+    try:
+        observed = _parse_timestamp(
+            _action_attribute(attributes, "telemetry.observed_at", normalized=normalized)
+        )
+        emitted = _parse_timestamp(emitted_at)
+        retrieved = _parse_timestamp(cast(str, envelope["timing"]["retrieved_at"]))
+    except (AdapterError, KeyError, TypeError):
+        raise AdapterError("action_observation_malformed") from None
+    if (
+        observed <= batch.action_started_at
+        or emitted < observed
+        or emitted > batch.snapshot_observed_at
+    ):
+        raise AdapterError("pre_action_evidence")
+    source_envelope = _plain_json(envelope)
+    if not isinstance(source_envelope, dict):  # pragma: no cover - Mapping input guarantees this
+        raise AdapterError("action_observation_malformed")
+    return NormalizedActionObservation(
+        event_id=authority.event_id,
+        signal=cast(Literal["metric", "log", "trace"], authority.signal),
+        subject_kind=cast(Literal["command", "safe"], authority.subject_kind),
+        subject_id=authority.subject_id,
+        trace_id=authority.trace_id,
+        outcome_id=batch.outcome_id,
+        outcome_sha256=batch.outcome_sha256,
+        action_id=batch.action_id,
+        operation_id=batch.operation_id,
+        observed_at=_timestamp(observed),
+        emitted_at=_timestamp(emitted),
+        retrieved_at=_timestamp(retrieved),
+        clock_provenance="local-host-utc",
+        clock_skew_milliseconds=0,
+        truncated=False,
+        source_label=f"grafana.{signal}",
+        source_envelope=source_envelope,
+    )
+
+
+def normalize_simulator_action_observations(
+    batch: SimulatorActionEvidenceBatch,
+    envelopes: Sequence[Mapping[str, Any]],
+    *,
+    catalog: QueryCatalog,
+) -> tuple[NormalizedActionObservation, ...]:
+    """Project exactly 21 canonical recovery observations from the fixed seven envelopes."""
+
+    _validate_simulator_action_batch(batch)
+    if len(envelopes) != 7:
+        raise AdapterError("action_evidence_set_incomplete")
+    bound_calls = _bind_simulator_action_calls(catalog, batch)
+    expected = _expected_action_events(batch)
+    accepted: dict[str, tuple[bytes, NormalizedActionObservation]] = {}
+    predecessor = batch.predecessor_event_sha256
+
+    for envelope, bound in zip(envelopes, bound_calls, strict=True):
+        validate_evidence_envelope(envelope)
+        try:
+            observation = cast(Mapping[str, Any], envelope["observation"])
+            collection = cast(Mapping[str, Any], envelope["collection"])
+            if collection["outcome"] != "collected" or collection["error"] is not None:
+                raise AdapterError("action_evidence_unresolved")
+            if (
+                envelope["incident_id"] != batch.incident_id
+                or envelope["request_id"] != batch.request_id
+                or envelope["predecessor_event_sha256"] != predecessor
+                or envelope["correlation_keys"]
+                != dict(bound.correlation_keys or batch.correlation_keys)
+                or observation["query_key"] != bound.spec.key
+                or observation["normalized_arguments"] != dict(bound.arguments)
+            ):
+                raise AdapterError("action_evidence_binding_invalid")
+            content = envelope["content"]
+            if not isinstance(content, Mapping):
+                raise AdapterError("action_evidence_unresolved")
+            retrieved_at = envelope["timing"]["retrieved_at"]
+            if not isinstance(retrieved_at, str):
+                raise AdapterError("action_evidence_binding_invalid")
+        except KeyError:
+            raise AdapterError("action_evidence_binding_invalid") from None
+        predecessor = cast(str, envelope["event_sha256"])
+
+        candidates: list[tuple[str, Mapping[str, Any]]] = []
+        if bound.spec.result_kind == "metric":
+            rows = content.get("data")
+            if not isinstance(rows, list):
+                raise AdapterError("action_observation_malformed")
+            for row in rows:
+                if not isinstance(row, Mapping) or not isinstance(row.get("metric"), Mapping):
+                    raise AdapterError("action_observation_malformed")
+                candidates.append(("metric", cast(Mapping[str, Any], row["metric"])))
+        elif bound.spec.result_kind == "log":
+            rows = content.get("data")
+            metadata = content.get("metadata")
+            if (
+                not isinstance(rows, list)
+                or not isinstance(metadata, Mapping)
+                or metadata.get("resultsTruncated") is not False
+            ):
+                raise AdapterError("action_observation_malformed")
+            for row in rows:
+                if not isinstance(row, Mapping) or not isinstance(
+                    row.get("structuredMetadata"), Mapping
+                ):
+                    raise AdapterError("action_observation_malformed")
+                candidates.append(("log", cast(Mapping[str, Any], row["structuredMetadata"])))
+        elif bound.spec.result_kind == "trace":
+            trace = content.get("trace")
+            if (
+                not isinstance(trace, Mapping)
+                or trace.get("traceId") != bound.arguments["trace_id"]
+            ):
+                raise AdapterError("action_observation_malformed")
+            services = trace.get("services")
+            if not isinstance(services, list):
+                raise AdapterError("action_observation_malformed")
+            for service in services:
+                if not isinstance(service, Mapping) or not isinstance(service.get("scopes"), list):
+                    raise AdapterError("action_observation_malformed")
+                for scope in service["scopes"]:
+                    if not isinstance(scope, Mapping) or not isinstance(scope.get("spans"), list):
+                        raise AdapterError("action_observation_malformed")
+                    for span in scope["spans"]:
+                        if not isinstance(span, Mapping) or not isinstance(
+                            span.get("attributes"), Mapping
+                        ):
+                            raise AdapterError("action_observation_malformed")
+                        attributes = cast(Mapping[str, Any], span["attributes"])
+                        if "telemetry.event_id" in attributes:
+                            candidates.append(("trace", attributes))
+        else:  # pragma: no cover - action catalog has only these kinds
+            raise AdapterError("action_evidence_binding_invalid")
+
+        if not candidates:
+            raise AdapterError("action_observation_incomplete")
+        for signal, attributes in candidates:
+            projected = _project_action_attributes(
+                signal=signal,
+                attributes=attributes,
+                envelope=envelope,
+                batch=batch,
+                expected=expected,
+            )
+            if signal == "trace" and projected["trace_id"] != bound.arguments["trace_id"]:
+                raise AdapterError("action_observation_correlation_mismatch")
+            event_id = cast(str, projected["event_id"])
+            encoded = canonical_json_bytes(projected)
+            previous = accepted.get(event_id)
+            if previous is None:
+                accepted[event_id] = (encoded, projected)
+            elif not hmac.compare_digest(previous[0], encoded):
+                raise AdapterError("action_observation_event_conflict")
+
+    values = tuple(
+        child[1]
+        for child in sorted(
+            accepted.values(),
+            key=lambda child: (
+                {"metric": 0, "log": 1, "trace": 2}[cast(str, child[1]["signal"])],
+                cast(str, child[1]["event_id"]),
+            ),
+        )
+    )
+    counts = {
+        signal: sum(1 for child in values if child["signal"] == signal)
+        for signal in ("metric", "log", "trace")
+    }
+    if len(values) != 21 or counts != {"metric": 8, "log": 8, "trace": 5}:
+        raise AdapterError("action_observation_set_incomplete")
+    return values
+
+
 class EvidenceAdapter:
     def __init__(
         self,
@@ -1674,6 +2740,12 @@ class EvidenceAdapter:
         self._session_factory = session_factory
         self._clock = clock or (lambda: datetime.now(UTC))
 
+    @property
+    def simulator_action_catalog_sha256(self) -> str:
+        """Exact immutable catalog authorized for simulator-action collection."""
+
+        return self._catalog.digest
+
     async def verify_inventory(self) -> FrozenInventory:
         try:
             async with self._session_factory(self._runtime) as session:
@@ -1684,6 +2756,17 @@ class EvidenceAdapter:
             raise
         except Exception:
             raise AdapterError("mcp_session_failure") from None
+
+    def normalize_simulator_action_observations(
+        self,
+        batch: SimulatorActionEvidenceBatch,
+        envelopes: Sequence[Mapping[str, Any]],
+    ) -> tuple[NormalizedActionObservation, ...]:
+        return normalize_simulator_action_observations(
+            batch,
+            envelopes,
+            catalog=self._catalog,
+        )
 
     async def collect(
         self,
@@ -1743,4 +2826,113 @@ class EvidenceAdapter:
             budget.calls_used,
             budget.maximum_observed_in_flight,
             tuple(attempt for raw in raw_results for attempt in raw.attempt_records),
+        )
+
+    async def collect_simulator_action(
+        self,
+        batch: SimulatorActionEvidenceBatch,
+        *,
+        controls: ExecutionControls | None = None,
+    ) -> BatchResult:
+        """Collect the fixed seven-query evidence set for one validated simulator action."""
+
+        _validate_simulator_action_batch(batch)
+        if batch.catalog_sha256 != self._catalog.digest:
+            raise AdapterError("action_catalog_binding_invalid")
+        current = self._clock().astimezone(UTC)
+        if batch.snapshot_observed_at > current + timedelta(seconds=5):
+            raise AdapterError("invalid_time_range")
+        bound_calls = _bind_simulator_action_calls(self._catalog, batch)
+        budget = _CallBudget(maximum_calls=8, maximum_in_flight=2)
+        retry_budget = _RetryBudget(maximum_retries=1)
+        local_limiter = asyncio.Semaphore(2)
+        execution_controls = controls or ExecutionControls()
+        try:
+            async with self._session_factory(self._runtime) as session:
+                inventory = await _load_inventory(session)
+                collected = await asyncio.gather(
+                    *(
+                        _collect_one(
+                            session,
+                            bound,
+                            runtime=self._runtime,
+                            catalog=self._catalog,
+                            local_limiter=local_limiter,
+                            controls=execution_controls,
+                            budget=budget,
+                            clock=self._clock,
+                            retry_budget=retry_budget,
+                        )
+                        for bound in bound_calls
+                    )
+                )
+        except asyncio.CancelledError:
+            raise
+        except AdapterError:
+            raise
+        except Exception:
+            raise AdapterError("mcp_session_failure") from None
+
+        raw_results: list[_RawCollection] = []
+        for raw in collected:
+            try:
+                _validate_simulator_action_collection(raw, batch)
+            except AdapterError as error:
+                if error.code not in {
+                    "incomplete_result",
+                    "malformed_result",
+                    "pre_action_evidence",
+                }:
+                    raise
+                raw = _with_collection_error(raw, error.code)
+            raw_results.append(raw)
+
+        envelopes: list[Mapping[str, Any]] = []
+        predecessor = batch.predecessor_event_sha256
+        for raw in raw_results:
+            envelope = _build_envelope(
+                raw,
+                batch=batch,
+                catalog=self._catalog,
+                inventory=inventory,
+                predecessor=predecessor,
+            )
+            envelopes.append(envelope)
+            predecessor = cast(str, envelope["event_sha256"])
+        return BatchResult(
+            inventory,
+            tuple(envelopes),
+            budget.calls_used,
+            budget.maximum_observed_in_flight,
+            tuple(attempt for raw in raw_results for attempt in raw.attempt_records),
+        )
+
+    async def collect_simulator_action_projection(
+        self,
+        batch: SimulatorActionEvidenceBatch,
+        *,
+        controls: ExecutionControls | None = None,
+    ) -> SimulatorActionEvidenceProjection:
+        result = await self.collect_simulator_action(batch, controls=controls)
+        observations = self.normalize_simulator_action_observations(batch, result.envelopes)
+        completed_at = self._clock()
+        if completed_at.tzinfo is None:
+            raise AdapterError("action_collection_clock_invalid")
+        completed_at = completed_at.astimezone(UTC)
+        if any(_parse_timestamp(value.retrieved_at) > completed_at for value in observations):
+            raise AdapterError("action_collection_clock_invalid")
+        return SimulatorActionEvidenceProjection(
+            request_id=batch.request_id,
+            evidence_request_id=batch.evidence_request_id,
+            evidence_request_sha256=batch.evidence_request_sha256,
+            catalog_sha256=batch.catalog_sha256,
+            incident_id=batch.incident_id,
+            outcome_id=batch.outcome_id,
+            outcome_sha256=batch.outcome_sha256,
+            snapshot_id=batch.snapshot_id,
+            snapshot_sha256=batch.snapshot_sha256,
+            action_id=batch.action_id,
+            operation_id=batch.operation_id,
+            completed_at=completed_at,
+            observations=observations,
         )

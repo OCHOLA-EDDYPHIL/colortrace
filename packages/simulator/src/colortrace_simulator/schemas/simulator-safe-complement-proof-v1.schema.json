@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-safe-complement-proof-v1.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "preservation_manifest_sha256", "before_sha256", "after_sha256", "byte_identical"],
+  "properties": {"schema": {"const": "simulator-safe-complement-proof/v1"}, "preservation_manifest_sha256": {"$ref": "#/$defs/digest"}, "before_sha256": {"$ref": "#/$defs/digest"}, "after_sha256": {"$ref": "#/$defs/digest"}, "byte_identical": {"const": true}},
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from colortrace_api import Principal, StoredIncidentService, create_app
@@ -226,6 +226,9 @@ def test_accept_alert_uses_the_same_normalized_utc_clock() -> None:
         "https://identity.example.test/tenant",
         "colortrace-api",
         "human",
+        frozenset({"incident-new"}),
+        f"sha256:{'a' * 64}",
+        datetime.now(UTC) + timedelta(minutes=5),
     )
     assert service.accept_alert({"incident_id": "incident-new"}, principal) == {
         "schema": "incident-accepted/v1",
@@ -253,6 +256,9 @@ def test_service_admission_does_not_fabricate_a_human_actor() -> None:
         "https://identity.example.test/tenant",
         "colortrace-api",
         "service",
+        frozenset({"incident-service"}),
+        f"sha256:{'a' * 64}",
+        datetime.now(UTC) + timedelta(minutes=5),
     )
 
     service.accept_alert({"incident_id": "incident-service"}, principal)

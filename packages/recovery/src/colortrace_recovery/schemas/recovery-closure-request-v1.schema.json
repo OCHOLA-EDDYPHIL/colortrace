@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/recovery-closure-request-v1.schema.json",
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"}},
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "expected_incident_version", "expected_workflow_version", "expected_packet_id", "expected_packet_sha256", "expected_outcome_id", "expected_outcome_sha256", "reason", "idempotency_key"],
+  "properties": {
+    "schema": {"const": "recovery-closure-request/v1"},
+    "expected_incident_version": {"type": "integer", "minimum": 1},
+    "expected_workflow_version": {"type": "integer", "minimum": 1},
+    "expected_packet_id": {"$ref": "#/$defs/id"},
+    "expected_packet_sha256": {"$ref": "#/$defs/digest"},
+    "expected_outcome_id": {"$ref": "#/$defs/id"},
+    "expected_outcome_sha256": {"$ref": "#/$defs/digest"},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 512},
+    "idempotency_key": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"}
+  }
+}

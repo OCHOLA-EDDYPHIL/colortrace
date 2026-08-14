@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from colortrace_api import OidcVerificationError, Principal, StoredIncidentService, create_app
+from colortrace_recovery import RecoveryError
 from colortrace_vertical_slice import SliceContractError, SqliteIncidentStore
 from fastapi.testclient import TestClient
 
@@ -55,7 +56,39 @@ class FakeVerifier:
             "https://identity.example.test/tenant",
             "colortrace-api",
             "human",
+            frozenset({"incident-new", "incident-api-human"}),
+            f"sha256:{'a' * 64}",
+            datetime.now(UTC) + timedelta(minutes=5),
         )
+
+
+class FakeRecovery:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, Mapping[str, Any], Principal | None]] = []
+
+    def review(self, incident_id: str) -> dict[str, Any]:
+        self.calls.append(("review", incident_id, {}, None))
+        return {"schema": "recovery-review/v1", "incident_id": incident_id}
+
+    def close(
+        self,
+        principal: Principal,
+        incident_id: str,
+        body: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        self.calls.append(("close", incident_id, body, principal))
+        return {"schema": "recovery-closure-result/v1", "incident_id": incident_id}
+
+
+class UnavailableClosureRecovery(FakeRecovery):
+    def close(
+        self,
+        principal: Principal,
+        incident_id: str,
+        body: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        del principal, incident_id, body
+        raise RecoveryError("recovery-closure-fence-unavailable")
 
 
 def client() -> TestClient:
@@ -103,6 +136,70 @@ def test_public_incident_reads_and_bounded_list() -> None:
     assert service.last_page == (10, None)
     assert api_client.get("/v1/incidents/example").status_code == 200
     assert api_client.get("/v1/incidents/example/workspace").status_code == 200
+
+
+def test_recovery_read_and_closure_are_separate_from_unconfigured_task_admission() -> None:
+    recovery = FakeRecovery()
+    api_client = TestClient(
+        create_app(FakeService(), token_verifier=FakeVerifier(), recovery=recovery)
+    )
+    trigger = {
+        "schema": "recovery-verification-admission-request/v1",
+        "expected_incident_version": 4,
+        "expected_outcome_sha256": f"sha256:{'a' * 64}",
+        "idempotency_key": "verify-1",
+    }
+    closure = {"schema": "recovery-closure-request/v1"}
+
+    assert api_client.get("/v1/incidents/incident-api-human/recovery").status_code == 200
+    assert (
+        api_client.post(
+            "/internal/v1/incidents/incident-api-human/recovery/verifications",
+            json=trigger,
+        ).status_code
+        == 401
+    )
+    assert (
+        api_client.post("/v1/incidents/incident-api-human/recovery/close", json=closure).status_code
+        == 401
+    )
+    headers = {"Authorization": "Bearer valid-token"}
+    assert (
+        api_client.post(
+            "/internal/v1/incidents/incident-api-human/recovery/verifications",
+            json=trigger,
+            headers=headers,
+        ).status_code
+        == 503
+    )
+    assert (
+        api_client.post(
+            "/v1/incidents/incident-api-human/recovery/close",
+            json=closure,
+            headers=headers,
+        ).status_code
+        == 200
+    )
+    assert [call[0] for call in recovery.calls] == ["review", "close"]
+
+
+def test_recovery_closure_without_authoritative_fence_is_service_unavailable() -> None:
+    api_client = TestClient(
+        create_app(
+            FakeService(),
+            token_verifier=FakeVerifier(),
+            recovery=UnavailableClosureRecovery(),
+        )
+    )
+
+    response = api_client.post(
+        "/v1/incidents/incident-api-human/recovery/close",
+        json={"schema": "recovery-closure-request/v1"},
+        headers={"Authorization": "Bearer valid-token"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"code": "recovery-closure-fence-unavailable"}
 
 
 def test_incident_mutation_requires_a_verified_operator() -> None:

@@ -3,9 +3,14 @@ import type {
   IncidentReplay,
   IncidentSummary,
   IncidentWorkspaceSource,
+  RecoveryReview,
   TaskRecord,
 } from "@colortrace/api-client";
 import { cloneReplayFixture } from "@colortrace/workspace-model/test-fixtures";
+import {
+  cloneRecoveryReview,
+  recoveryReviewFixture,
+} from "@colortrace/workspace-model/recovery-test-fixture";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -14,7 +19,12 @@ import {
   captureHostOidcTokenProvider,
   HOST_OIDC_TOKEN_PROVIDER_CONTRACT,
 } from "../src/host-auth.ts";
-import { IncidentWorkspaceApp, projectWorkspaceSource } from "../src/incident-workspace-app.tsx";
+import {
+  IncidentWorkspaceApp,
+  projectRecoverySource,
+  projectWorkspaceSource,
+} from "../src/incident-workspace-app.tsx";
+import { responsePlanReviewFixture } from "./response-plan-fixture.ts";
 
 type Mutable<T> = T extends readonly (infer Item)[]
   ? Mutable<Item>[]
@@ -164,11 +174,49 @@ function sessionResponse(): Response {
   });
 }
 
+function planSessionResponse(): Response {
+  return jsonResponse({
+    schema: "operator-session/v1",
+    subject: "operator-1",
+    display_name: "Pipeline operator",
+    roles: ["operator", "response-plan.editor", "response-plan.approver"],
+    issuer: "https://identity.example.test/tenant",
+    audience: "colortrace-api",
+    principal_kind: "human",
+  });
+}
+
+function recoverySessionResponse(): Response {
+  return jsonResponse({
+    schema: "operator-session/v1",
+    subject: "operator-24",
+    display_name: "Pipeline operator",
+    roles: ["operator", "recovery.closer"],
+    issuer: "https://identity.example.test/tenant",
+    audience: "colortrace-api",
+    principal_kind: "human",
+  });
+}
+
+function apiRecoveryReview(
+  state:
+    | "closed"
+    | "recovery_failed"
+    | "recovery_unresolved"
+    | "recovery_verified" = "recovery_verified",
+  options: { readonly closureIdempotencyKey?: string; readonly closureReason?: string } = {},
+): RecoveryReview {
+  return recoveryReviewFixture(state, options) as unknown as RecoveryReview;
+}
+
 function incidentListResponse(items: readonly IncidentSummary[]): Response {
   return jsonResponse({ schema: "incident-list/v1", items, next_cursor: null });
 }
 
-function routedFetch(route: (request: Request) => Promise<Response> | Response): {
+function routedFetch(
+  route: (request: Request) => Promise<Response> | Response,
+  options: { readonly recovery?: boolean } = {},
+): {
   readonly fetch: typeof fetch;
   readonly requests: Request[];
 } {
@@ -176,6 +224,13 @@ function routedFetch(route: (request: Request) => Promise<Response> | Response):
   const fetchImplementation: typeof fetch = async (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
     requests.push(request);
+    if (
+      options.recovery !== true &&
+      request.method === "GET" &&
+      new URL(request.url).pathname.endsWith("/recovery")
+    ) {
+      return jsonResponse({ code: "recovery-not-found" }, 404);
+    }
     return route(request);
   };
   return { fetch: fetchImplementation, requests };
@@ -183,6 +238,12 @@ function routedFetch(route: (request: Request) => Promise<Response> | Response):
 
 function routePath(request: Request): string {
   return new URL(request.url).pathname;
+}
+
+function absentResponsePlan(request: Request): Response | null {
+  return routePath(request).endsWith("/response-plan")
+    ? jsonResponse({ code: "plan-not-found" }, 404)
+    : null;
 }
 
 afterEach(cleanup);
@@ -252,9 +313,130 @@ describe("incident read adapter", () => {
       status: 401,
     });
   });
+
+  it("binds authenticated plan mutations to exact immutable preconditions", async () => {
+    const review = responsePlanReviewFixture();
+    const { fetch, requests } = routedFetch((request) => {
+      if (request.method === "PUT") return jsonResponse(review.plan);
+      return jsonResponse(
+        review.decision ?? {
+          schema: "response-plan-decision/v1",
+          outcome: "approved",
+        },
+      );
+    });
+    const adapter = createIncidentReadAdapter({
+      baseUrl: "https://web.test",
+      fetch,
+      tokenProvider: () => "ephemeral-plan-token",
+    });
+
+    await adapter.approveResponsePlan(review.plan.incident_id, review.plan, "approve-key");
+    const replacement = `sha256:${"4".repeat(64)}`;
+    const revision = {
+      commands: review.plan.commands.map((command) => ({
+        ...command,
+        action_envelope: {
+          ...command.action_envelope,
+          replacement_resource_sha256: replacement,
+        },
+      })),
+      unresolved_acknowledged: true,
+    };
+    await adapter.editResponsePlan(review.plan.incident_id, review.plan, revision, "edit-key");
+    await adapter.rejectResponsePlan(
+      review.plan.incident_id,
+      review.plan,
+      "unsafe-scope",
+      "reject-key",
+    );
+
+    expect(requests.map((request) => request.method)).toEqual(["POST", "PUT", "POST"]);
+    expect(
+      requests.every(
+        (request) => request.headers.get("Authorization") === "Bearer ephemeral-plan-token",
+      ),
+    ).toBe(true);
+    expect(await requests[0]?.clone().json()).toEqual({
+      expected_incident_version: review.plan.incident_version,
+      expected_plan_version: review.plan.version,
+      expected_plan_sha256: review.plan.plan_sha256,
+      idempotency_key: "approve-key",
+    });
+    expect(await requests[1]?.clone().json()).toEqual({
+      expected_incident_version: review.plan.incident_version,
+      expected_plan_version: review.plan.version,
+      expected_plan_sha256: review.plan.plan_sha256,
+      response_packet_id: review.plan.response_packet_id,
+      response_packet_sha256: review.plan.response_packet_sha256,
+      deterministic_scope_sha256: review.plan.deterministic_scope_sha256,
+      targets: review.plan.targets,
+      exclusions: review.plan.exclusions,
+      commands: revision.commands,
+      unresolved_acknowledged: revision.unresolved_acknowledged,
+      idempotency_key: "edit-key",
+    });
+    expect(await requests[2]?.clone().json()).toEqual({
+      expected_incident_version: review.plan.incident_version,
+      expected_plan_version: review.plan.version,
+      expected_plan_sha256: review.plan.plan_sha256,
+      reason_code: "unsafe-scope",
+      idempotency_key: "reject-key",
+    });
+  });
+
+  it("binds human closure to the exact current packet, outcome, versions, and idempotency key", async () => {
+    const review = apiRecoveryReview();
+    const closed = apiRecoveryReview("closed");
+    if (review.packet === null || closed.closure === null) {
+      throw new Error("recovery fixtures must contain packet and closure records");
+    }
+    const { fetch, requests } = routedFetch(() => jsonResponse(closed.closure), { recovery: true });
+    const adapter = createIncidentReadAdapter({
+      baseUrl: "https://web.test",
+      fetch,
+      tokenProvider: () => "ephemeral-recovery-token",
+    });
+
+    await adapter.closeRecovery(
+      review.snapshot.incident_id,
+      review,
+      "Reviewed exact post-action evidence.",
+      "close-key-24",
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.method).toBe("POST");
+    expect(routePath(requests[0] as Request)).toBe(
+      `/v1/incidents/${review.snapshot.incident_id}/recovery/close`,
+    );
+    expect(requests[0]?.headers.get("Authorization")).toBe("Bearer ephemeral-recovery-token");
+    expect(await requests[0]?.clone().json()).toEqual({
+      schema: "recovery-closure-request/v1",
+      expected_incident_version: review.current_incident_version,
+      expected_workflow_version: review.workflow_version,
+      expected_packet_id: review.packet.packet_id,
+      expected_packet_sha256: review.packet.packet_sha256,
+      expected_outcome_id: review.packet.outcome_id,
+      expected_outcome_sha256: review.packet.outcome_sha256,
+      reason: "Reviewed exact post-action evidence.",
+      idempotency_key: "close-key-24",
+    });
+  });
 });
 
 describe("IncidentWorkspaceApp", () => {
+  it("fails closed when a recovery aggregate does not match the selected incident", () => {
+    const review = cloneRecoveryReview();
+
+    expect(
+      projectRecoverySource(review as unknown as RecoveryReview, "incident-other"),
+    ).toMatchObject({
+      kind: "integrity-error",
+      message: expect.stringContaining("identity-binding"),
+    });
+  });
+
   it("fails closed when a ready view packet is absent or differs from its replay", () => {
     const item = summary("incident-packet-binding");
     const source = readySource(item);
@@ -281,6 +463,8 @@ describe("IncidentWorkspaceApp", () => {
     const { fetch } = routedFetch((request) => {
       if (routePath(request) === "/v1/session") return sessionResponse();
       if (routePath(request) === "/v1/incidents") return incidentListResponse([item]);
+      const absent = absentResponsePlan(request);
+      if (absent !== null) return absent;
       return jsonResponse(readySource(item));
     });
 
@@ -295,6 +479,409 @@ describe("IncidentWorkspaceApp", () => {
     expect(screen.getAllByText(item.incident_id).length).toBeGreaterThan(0);
   });
 
+  it("retries an ambiguous approval with the retained logical-action idempotency key", async () => {
+    const review = responsePlanReviewFixture({ incidentId: "incident-ambiguous-approval" });
+    const item = summary(review.plan.incident_id);
+    let currentReview = review;
+    let approvalAttempts = 0;
+    const { fetch, requests } = routedFetch((request) => {
+      const path = routePath(request);
+      if (path === "/v1/session") return planSessionResponse();
+      if (path === "/v1/incidents") return incidentListResponse([item]);
+      if (path.endsWith("/workspace")) return jsonResponse(readySource(item));
+      if (path.endsWith("/response-plan") && request.method === "GET") {
+        return jsonResponse(currentReview);
+      }
+      if (path.endsWith("/response-plan/approve") && request.method === "POST") {
+        approvalAttempts += 1;
+        if (approvalAttempts === 1) throw new TypeError("connection reset after request");
+        currentReview = responsePlanReviewFixture({
+          incidentId: item.incident_id,
+          state: "approved",
+        });
+        return jsonResponse(currentReview.decision);
+      }
+      return jsonResponse({ code: "unexpected" }, 500);
+    });
+
+    render(
+      <IncidentWorkspaceApp
+        adapter={createIncidentReadAdapter({
+          baseUrl: "https://web.test",
+          fetch,
+          tokenProvider: () => "ephemeral-plan-token",
+        })}
+      />,
+    );
+
+    const approve = await screen.findByRole("button", { name: "Approve exact plan" });
+    fireEvent.click(approve);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm approve" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/mutation did not complete/i);
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry exact action" }));
+    expect(await screen.findByText(/Approved by/i)).toBeVisible();
+
+    const approvalRequests = requests.filter((request) =>
+      routePath(request).endsWith("/response-plan/approve"),
+    );
+    expect(approvalRequests).toHaveLength(2);
+    const first = (await approvalRequests[0]?.clone().json()) as { idempotency_key: string };
+    const second = (await approvalRequests[1]?.clone().json()) as { idempotency_key: string };
+    expect(second.idempotency_key).toBe(first.idempotency_key);
+  });
+
+  it("reports post-commit refresh failure separately and reconciles without replay", async () => {
+    const review = responsePlanReviewFixture({ incidentId: "incident-reconcile-approval" });
+    const item = summary(review.plan.incident_id);
+    let currentReview = review;
+    let failNextPlanRead = false;
+    const { fetch, requests } = routedFetch((request) => {
+      const path = routePath(request);
+      if (path === "/v1/session") return planSessionResponse();
+      if (path === "/v1/incidents") return incidentListResponse([item]);
+      if (path.endsWith("/workspace")) return jsonResponse(readySource(item));
+      if (path.endsWith("/response-plan") && request.method === "GET") {
+        if (failNextPlanRead) {
+          failNextPlanRead = false;
+          return jsonResponse({ code: "temporary-read-failure" }, 503);
+        }
+        return jsonResponse(currentReview);
+      }
+      if (path.endsWith("/response-plan/approve") && request.method === "POST") {
+        currentReview = responsePlanReviewFixture({
+          incidentId: item.incident_id,
+          state: "approved",
+        });
+        failNextPlanRead = true;
+        return jsonResponse(currentReview.decision);
+      }
+      return jsonResponse({ code: "unexpected" }, 500);
+    });
+
+    render(
+      <IncidentWorkspaceApp
+        adapter={createIncidentReadAdapter({
+          baseUrl: "https://web.test",
+          fetch,
+          tokenProvider: () => "ephemeral-plan-token",
+        })}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve exact plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm approve" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/mutation was accepted/i);
+    expect(screen.queryByRole("button", { name: "Retry exact action" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile plan state" }));
+    expect(await screen.findByText(/Approved by/i)).toBeVisible();
+    expect(
+      requests.filter((request) => routePath(request).endsWith("/response-plan/approve")),
+    ).toHaveLength(1);
+  });
+
+  it("retries only an ambiguous closure with the retained exact idempotency key", async () => {
+    const initial = apiRecoveryReview();
+    const item = summary(initial.snapshot.incident_id);
+    let currentReview = initial;
+    let closeAttempts = 0;
+    const { fetch, requests } = routedFetch(
+      async (request) => {
+        const path = routePath(request);
+        if (path === "/v1/session") return recoverySessionResponse();
+        if (path === "/v1/incidents") return incidentListResponse([item]);
+        if (path.endsWith("/workspace")) return jsonResponse(readySource(item));
+        if (path.endsWith("/response-plan")) {
+          return jsonResponse({ code: "plan-not-found" }, 404);
+        }
+        if (path.endsWith("/recovery") && request.method === "GET") {
+          return jsonResponse(currentReview);
+        }
+        if (path.endsWith("/recovery/close") && request.method === "POST") {
+          closeAttempts += 1;
+          if (closeAttempts === 1) throw new TypeError("connection reset after closure request");
+          const body = (await request.clone().json()) as {
+            idempotency_key: string;
+            reason: string;
+          };
+          const completed = apiRecoveryReview("closed", {
+            closureIdempotencyKey: body.idempotency_key,
+            closureReason: body.reason,
+          });
+          currentReview = completed;
+          return jsonResponse(completed.closure);
+        }
+        return jsonResponse({ code: "unexpected" }, 500);
+      },
+      { recovery: true },
+    );
+
+    render(
+      <IncidentWorkspaceApp
+        adapter={createIncidentReadAdapter({
+          baseUrl: "https://web.test",
+          fetch,
+          tokenProvider: () => "ephemeral-recovery-token",
+        })}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Recovery verification and closure" }),
+    ).toBeVisible();
+    fireEvent.change(screen.getByRole("textbox", { name: "Closure reason" }), {
+      target: { value: "Reviewed exact post-action evidence." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Close verified recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm closure" }));
+    expect(await screen.findByText(/closure response was ambiguous/i)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry exact closure" }));
+    expect(await screen.findByText(/one immutable human closure record/i)).toBeVisible();
+
+    const closeRequests = requests.filter((request) =>
+      routePath(request).endsWith("/recovery/close"),
+    );
+    expect(closeRequests).toHaveLength(2);
+    const first = (await closeRequests[0]?.clone().json()) as { idempotency_key: string };
+    const second = (await closeRequests[1]?.clone().json()) as { idempotency_key: string };
+    expect(second.idempotency_key).toBe(first.idempotency_key);
+  });
+
+  it("retains the closure attempt after a 200 response until the exact closed state is visible", async () => {
+    const initial = apiRecoveryReview();
+    const item = summary(initial.snapshot.incident_id);
+    let completed: RecoveryReview | null = null;
+    let recoveryReads = 0;
+    const { fetch, requests } = routedFetch(
+      async (request) => {
+        const path = routePath(request);
+        if (path === "/v1/session") return recoverySessionResponse();
+        if (path === "/v1/incidents") return incidentListResponse([item]);
+        if (path.endsWith("/workspace")) return jsonResponse(readySource(item));
+        if (path.endsWith("/response-plan")) {
+          return jsonResponse({ code: "plan-not-found" }, 404);
+        }
+        if (path.endsWith("/recovery") && request.method === "GET") {
+          recoveryReads += 1;
+          return jsonResponse(completed !== null && recoveryReads >= 3 ? completed : initial);
+        }
+        if (path.endsWith("/recovery/close") && request.method === "POST") {
+          const body = (await request.clone().json()) as {
+            idempotency_key: string;
+            reason: string;
+          };
+          completed = apiRecoveryReview("closed", {
+            closureIdempotencyKey: body.idempotency_key,
+            closureReason: body.reason,
+          });
+          return jsonResponse(completed.closure);
+        }
+        return jsonResponse({ code: "unexpected" }, 500);
+      },
+      { recovery: true },
+    );
+
+    render(
+      <IncidentWorkspaceApp
+        adapter={createIncidentReadAdapter({
+          baseUrl: "https://web.test",
+          fetch,
+          tokenProvider: () => "ephemeral-recovery-token",
+        })}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Recovery verification and closure" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Closure reason" }), {
+      target: { value: "Reviewed exact post-action evidence." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Close verified recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm closure" }));
+
+    expect(await screen.findByText(/did not contain the exact bound closure/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Close verified recovery" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Retry exact closure" })).toBeNull();
+    expect(
+      requests.filter((request) => routePath(request).endsWith("/recovery/close")),
+    ).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile recovery state" }));
+    expect(await screen.findByText(/one immutable human closure record/i)).toBeVisible();
+    expect(
+      requests.filter((request) => routePath(request).endsWith("/recovery/close")),
+    ).toHaveLength(1);
+  });
+
+  it("reconciles an ambiguous attempt to an exact concurrent closure without replay", async () => {
+    const initial = apiRecoveryReview();
+    const concurrent = apiRecoveryReview("closed", {
+      closureIdempotencyKey: "concurrent-closure-key",
+      closureReason: "A concurrent authorized operator closed the exact recovery packet.",
+    });
+    const item = summary(initial.snapshot.incident_id);
+    let currentReview = initial;
+    const { fetch, requests } = routedFetch(
+      async (request) => {
+        const path = routePath(request);
+        if (path === "/v1/session") return recoverySessionResponse();
+        if (path === "/v1/incidents") return incidentListResponse([item]);
+        if (path.endsWith("/workspace")) return jsonResponse(readySource(item));
+        if (path.endsWith("/response-plan")) {
+          return jsonResponse({ code: "plan-not-found" }, 404);
+        }
+        if (path.endsWith("/recovery") && request.method === "GET") {
+          return jsonResponse(currentReview);
+        }
+        if (path.endsWith("/recovery/close") && request.method === "POST") {
+          currentReview = concurrent;
+          throw new TypeError("connection reset while a concurrent closure committed");
+        }
+        return jsonResponse({ code: "unexpected" }, 500);
+      },
+      { recovery: true },
+    );
+
+    render(
+      <IncidentWorkspaceApp
+        adapter={createIncidentReadAdapter({
+          baseUrl: "https://web.test",
+          fetch,
+          tokenProvider: () => "ephemeral-recovery-token",
+        })}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Recovery verification and closure" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Closure reason" }), {
+      target: { value: "Reviewed exact post-action evidence." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Close verified recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm closure" }));
+    expect(await screen.findByText(/closure response was ambiguous/i)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile recovery state" }));
+    expect(await screen.findByText(/one immutable human closure record/i)).toBeVisible();
+    expect(
+      requests.filter((request) => routePath(request).endsWith("/recovery/close")),
+    ).toHaveLength(1);
+  });
+
+  it("unlocks a definitively rejected closure only after authoritative reconciliation", async () => {
+    const initial = apiRecoveryReview();
+    const item = summary(initial.snapshot.incident_id);
+    const { fetch, requests } = routedFetch(
+      (request) => {
+        const path = routePath(request);
+        if (path === "/v1/session") return recoverySessionResponse();
+        if (path === "/v1/incidents") return incidentListResponse([item]);
+        if (path.endsWith("/workspace")) return jsonResponse(readySource(item));
+        if (path.endsWith("/response-plan")) {
+          return jsonResponse({ code: "plan-not-found" }, 404);
+        }
+        if (path.endsWith("/recovery") && request.method === "GET") {
+          return jsonResponse(initial);
+        }
+        if (path.endsWith("/recovery/close") && request.method === "POST") {
+          return jsonResponse({ code: "recovery-closure-forbidden" }, 403);
+        }
+        return jsonResponse({ code: "unexpected" }, 500);
+      },
+      { recovery: true },
+    );
+
+    render(
+      <IncidentWorkspaceApp
+        adapter={createIncidentReadAdapter({
+          baseUrl: "https://web.test",
+          fetch,
+          tokenProvider: () => "ephemeral-recovery-token",
+        })}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Recovery verification and closure" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Closure reason" }), {
+      target: { value: "Reviewed exact post-action evidence." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Close verified recovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm closure" }));
+
+    expect(await screen.findByText(/closure was not accepted/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Close verified recovery" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile recovery state" }));
+    expect(await screen.findByRole("button", { name: "Close verified recovery" })).toBeEnabled();
+    expect(
+      requests.filter((request) => routePath(request).endsWith("/recovery/close")),
+    ).toHaveLength(1);
+  });
+
+  it("cannot project an old incident mutation completion into a newly selected plan", async () => {
+    const first = summary("incident-mutation-slow");
+    const second = summary("incident-mutation-fast");
+    const firstReview = responsePlanReviewFixture({
+      commandId: "quarantine-first-incident",
+      incidentId: first.incident_id,
+    });
+    const secondReview = responsePlanReviewFixture({
+      commandId: "quarantine-second-incident",
+      incidentId: second.incident_id,
+    });
+    const approvalResponse = deferred<Response>();
+    const { fetch, requests } = routedFetch((request) => {
+      const path = routePath(request);
+      if (path === "/v1/session") return planSessionResponse();
+      if (path === "/v1/incidents") return incidentListResponse([first, second]);
+      if (path.endsWith("/workspace")) {
+        return jsonResponse(readySource(path.includes(second.incident_id) ? second : first));
+      }
+      if (path.endsWith("/response-plan") && request.method === "GET") {
+        return jsonResponse(path.includes(second.incident_id) ? secondReview : firstReview);
+      }
+      if (path.endsWith("/response-plan/approve") && request.method === "POST") {
+        return approvalResponse.promise;
+      }
+      return jsonResponse({ code: "unexpected" }, 500);
+    });
+
+    render(
+      <IncidentWorkspaceApp
+        adapter={createIncidentReadAdapter({
+          baseUrl: "https://web.test",
+          fetch,
+          tokenProvider: () => "ephemeral-plan-token",
+        })}
+      />,
+    );
+
+    expect(await screen.findByText("quarantine-first-incident")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Approve exact plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm approve" }));
+    const inbox = screen.getByRole("navigation", { name: "Incident inbox" });
+    fireEvent.click(within(inbox).getByRole("link", { name: new RegExp(second.incident_id) }));
+    expect(await screen.findByText("quarantine-second-incident")).toBeVisible();
+
+    const approvedFirst = responsePlanReviewFixture({
+      incidentId: first.incident_id,
+      state: "approved",
+    });
+    await act(async () => {
+      approvalResponse.resolve(jsonResponse(approvedFirst.decision));
+      await approvalResponse.promise;
+    });
+
+    expect(screen.getByText("quarantine-second-incident")).toBeVisible();
+    expect(screen.queryByText(/Approved by/i)).toBeNull();
+    expect(
+      requests.filter(
+        (request) =>
+          routePath(request) === `/v1/incidents/${first.incident_id}/response-plan` &&
+          request.method === "GET",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("keeps pending replay, delayed, and missing records explicit", async () => {
     const item = summary("incident-running", "running", {
       delayed: true,
@@ -303,6 +890,8 @@ describe("IncidentWorkspaceApp", () => {
     const { fetch } = routedFetch((request) => {
       if (routePath(request) === "/v1/session") return sessionResponse();
       if (routePath(request) === "/v1/incidents") return incidentListResponse([item]);
+      const absent = absentResponsePlan(request);
+      if (absent !== null) return absent;
       return jsonResponse(pendingSource(item));
     });
 
@@ -325,6 +914,8 @@ describe("IncidentWorkspaceApp", () => {
         return jsonResponse({ code: "operator-token-required" }, 401);
       }
       if (routePath(request) === "/v1/incidents") return incidentListResponse([item]);
+      const absent = absentResponsePlan(request);
+      if (absent !== null) return absent;
       return jsonResponse(readySource(item));
     });
 
@@ -368,6 +959,8 @@ describe("IncidentWorkspaceApp", () => {
       const path = routePath(request);
       if (path === "/v1/session") return sessionResponse();
       if (path === "/v1/incidents") return incidentListResponse([first, second]);
+      const absent = absentResponsePlan(request);
+      if (absent !== null) return absent;
       return jsonResponse(readySource(path.includes("second") ? second : first));
     });
 
@@ -430,6 +1023,8 @@ describe("IncidentWorkspaceApp", () => {
       const path = routePath(request);
       if (path === "/v1/session") return sessionResponse();
       if (path === "/v1/incidents") return incidentListResponse([first, second]);
+      const absent = absentResponsePlan(request);
+      if (absent !== null) return absent;
       if (path.includes(first.incident_id)) return slowResponse.promise;
       return jsonResponse(readySource(second));
     });
