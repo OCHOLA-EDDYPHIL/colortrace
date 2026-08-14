@@ -12,6 +12,8 @@
       "colortrace-fixture",
       "colortrace-grafana-mcp",
       "colortrace-response-plans",
+      "colortrace-simulator",
+      "colortrace-telemetry",
       "colortrace-vertical-slice",
       "colortrace-validator",
       "fastapi",

@@ -956,6 +956,44 @@ export type ConsumeResponsePlanDispatchRequest = {
   idempotency_key: string;
 };
 
+export type AdmitSimulatorActionRequest = {
+  schema: "simulator-action-admission-request/v1";
+  task_key: string;
+  operation_id: string;
+  payload_sha256: Digest;
+};
+
+export type SimulatorExecutorActor = {
+  issuer: string;
+  subject: string;
+  audience: string;
+  kind: "service";
+};
+
+export type SimulatorActionAdmission = {
+  schema: "simulator-action-admission/v1";
+  admission_id: string;
+  action_id: string;
+  task_key: string;
+  operation_id: string;
+  payload_sha256: Digest;
+  dispatch_bundle_sha256: Digest;
+  incident_id: Identifier;
+  incident_version: number;
+  plan_id: string;
+  plan_version: number;
+  plan_sha256: Digest;
+  approval_id: string;
+  approval_sha256: Digest;
+  authorization_id: string;
+  authorization_sha256: Digest;
+  consumption_id: string;
+  consumption_sha256: Digest;
+  executor_actor: SimulatorExecutorActor;
+  admitted_at: string;
+  admission_sha256: Digest;
+};
+
 export type ResponsePlanDispatchAuthorization = {
   schema: "response-plan-dispatch-authorization/v1";
   authorization_id: Identifier;
@@ -1432,6 +1470,47 @@ export type ConsumeResponsePlanDispatchResponses = {
 
 export type ConsumeResponsePlanDispatchResponse =
   ConsumeResponsePlanDispatchResponses[keyof ConsumeResponsePlanDispatchResponses];
+
+export type AdmitSimulatorActionData = {
+  body: AdmitSimulatorActionRequest;
+  path: {
+    incidentId: Identifier;
+  };
+  query?: never;
+  url: "/internal/v1/incidents/{incidentId}/simulator-actions";
+};
+
+export type AdmitSimulatorActionErrors = {
+  /**
+   * The opaque dispatch identity is malformed.
+   */
+  400: Error;
+  /**
+   * The bearer token is absent, invalid, or expired.
+   */
+  401: Error;
+  /**
+   * The verified identity lacks the required incident, role, or principal kind.
+   */
+  403: Error;
+  /**
+   * The immutable authority, version, hash, decision, or idempotency precondition failed.
+   */
+  409: Error;
+};
+
+export type AdmitSimulatorActionError =
+  AdmitSimulatorActionErrors[keyof AdmitSimulatorActionErrors];
+
+export type AdmitSimulatorActionResponses = {
+  /**
+   * The exact consumed dispatch is durably admitted for local simulator execution.
+   */
+  202: SimulatorActionAdmission;
+};
+
+export type AdmitSimulatorActionResponse =
+  AdmitSimulatorActionResponses[keyof AdmitSimulatorActionResponses];
 
 export type GetOperatorSessionData = {
   body?: never;

@@ -388,16 +388,26 @@ class ResponsePlanService:
         return cast(int, row["sequence"]), cast(str, row["event_sha256"])
 
     @classmethod
-    def _validate_history(cls, connection: sqlite3.Connection, incident_id: str) -> None:
+    def _validated_history_snapshot(
+        cls,
+        connection: sqlite3.Connection,
+        incident_id: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], str]:
         events = cls._events(connection, incident_id)
+        records = cls._records(connection, incident_id)
         head = cls._head(connection, incident_id)
         if not events or head is None or head[0] != len(events):
             raise ResponsePlanError("audit-head-mismatch")
         validate_audit_chain(
             events,
             trusted_head_sha256=head[1],
-            records=cls._records(connection, incident_id),
+            records=records,
         )
+        return events, records, head[1]
+
+    @classmethod
+    def _validate_history(cls, connection: sqlite3.Connection, incident_id: str) -> None:
+        cls._validated_history_snapshot(connection, incident_id)
 
     @classmethod
     def _build_audit(
@@ -1094,6 +1104,92 @@ class ResponsePlanService:
             self._append_audit(connection, incident_id=incident_id, event=audit)
             self._remember(connection, key, request_sha256, consumption)
             return cast(dict[str, Any], plain_json(consumption))
+
+    def current_consumed_dispatch(
+        self,
+        *,
+        task_key: str,
+        operation_id: str,
+        payload_sha256: str,
+    ) -> dict[str, Any]:
+        """Load one current consumed dispatch and its complete trusted audit view.
+
+        This is an internal execution boundary.  It deliberately accepts only the
+        opaque delivery identity, never commands or simulator paths.
+        """
+
+        task = require_idempotency_key(task_key)
+        operation = require_identifier(operation_id, code="dispatch-operation-id-invalid")
+        payload = require_digest(payload_sha256)
+        with self._repository.transaction(write=False) as connection:
+            row = connection.execute(
+                "SELECT incident_id, plan_version, status, document, consumption_document "
+                "FROM dispatch_authorizations WHERE operation_id = ?",
+                (operation,),
+            ).fetchone()
+            if row is None:
+                raise ResponsePlanError("dispatch-authorization-not-found")
+            if row["status"] != "consumed" or row["consumption_document"] is None:
+                raise ResponsePlanError("dispatch-authorization-not-consumed")
+
+            incident_id = cast(str, row["incident_id"])
+            plan_version = cast(int, row["plan_version"])
+            plan = self._current_plan(connection, incident_id)
+            if plan["version"] != plan_version:
+                raise ResponsePlanError("dispatch-authorization-stale")
+            approval = self._decision(connection, incident_id, plan_version)
+            if approval is None or approval.get("outcome") != "approved":
+                raise ResponsePlanError("plan-not-approved")
+            authorization = SQLiteResponsePlanRepository.decode(bytes(row["document"]))
+            consumption = SQLiteResponsePlanRepository.decode(bytes(row["consumption_document"]))
+            if authorization.get("task_key") != task:
+                raise ResponsePlanError("dispatch-task-key-conflict")
+            if authorization.get("payload_sha256") != payload:
+                raise ResponsePlanError("dispatch-payload-conflict")
+            validate_dispatch_authorization(authorization, plan=plan, approval=approval)
+            validate_dispatch_consumption(
+                consumption,
+                authorization=authorization,
+                plan=plan,
+                approval=approval,
+            )
+            if (
+                consumption.get("operation_id") != operation
+                or consumption.get("task_key") != task
+                or consumption.get("payload_sha256") != payload
+            ):
+                raise ResponsePlanError("dispatch-consumption-binding")
+
+            events, records, trusted_head_sha256 = self._validated_history_snapshot(
+                connection, incident_id
+            )
+            consumed_events = [
+                event
+                for event in events
+                if event["event_type"] == "dispatch.consumed"
+                and event["record_sha256"] == consumption["consumption_sha256"]
+            ]
+            if len(consumed_events) != 1:
+                raise ResponsePlanError("audit-record-binding")
+            proof = {
+                "plan": plan,
+                "approval": approval,
+                "authorization": authorization,
+                "consumption": consumption,
+                "audit_events": events,
+                "records": records,
+                "trusted_audit_head_sha256": trusted_head_sha256,
+                "dispatch_consumed_event_sha256": consumed_events[0]["event_sha256"],
+            }
+            return cast(
+                dict[str, Any],
+                plain_json(
+                    {
+                        **proof,
+                        "proof_sha256": prefixed_sha256(canonical_json_bytes(proof)),
+                    }
+                ),
+            )
 
     def current_plan(self, incident_id: str) -> dict[str, Any]:
         incident = require_identifier(incident_id)

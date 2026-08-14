@@ -4,13 +4,17 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 from colortrace_response_plans import ResponsePlanError
+from colortrace_simulator.authority import SimulatorAuthorityError
+from colortrace_simulator.repository import SimulatorRepositoryError
 from colortrace_vertical_slice import SliceContractError
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.types import Lifespan
 
 from .auth import Principal, TokenVerifier
 from .response_plans import ResponsePlanApi
+from .simulator_actions import SimulatorActionApi
 
 
 class IncidentService(Protocol):
@@ -70,11 +74,33 @@ def _status_for_plan_error(code: str) -> int:
     return 409
 
 
+def _status_for_simulator_error(code: str) -> int:
+    if code in {
+        "executor-authority-boundary-mismatch",
+        "executor-incident-denied",
+        "executor-role-required",
+        "executor-service-required",
+    }:
+        return 403
+    if code in {
+        "admission-request-invalid",
+        "dispatch-identity-invalid",
+        "dispatch-operation-id-invalid",
+        "dispatch-payload-invalid",
+        "dispatch-task-key-invalid",
+        "schema-validation",
+    }:
+        return 400
+    return 409
+
+
 def create_app(
     service: IncidentService,
     *,
     token_verifier: TokenVerifier | None = None,
     response_plans: ResponsePlanApi | None = None,
+    simulator_actions: SimulatorActionApi | None = None,
+    lifespan: Lifespan[FastAPI] | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="ColorTrace Incident API",
@@ -82,6 +108,7 @@ def create_app(
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=lifespan,
     )
 
     @app.exception_handler(SliceContractError)
@@ -95,6 +122,24 @@ def create_app(
     async def handle_plan_error(_request: Any, error: ResponsePlanError) -> JSONResponse:
         return JSONResponse(
             status_code=_status_for_plan_error(error.code),
+            content={"code": error.code},
+        )
+
+    @app.exception_handler(SimulatorAuthorityError)
+    async def handle_simulator_authority_error(
+        _request: Any, error: SimulatorAuthorityError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=_status_for_simulator_error(error.code),
+            content={"code": error.code},
+        )
+
+    @app.exception_handler(SimulatorRepositoryError)
+    async def handle_simulator_repository_error(
+        _request: Any, error: SimulatorRepositoryError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=_status_for_simulator_error(error.code),
             content={"code": error.code},
         )
 
@@ -129,6 +174,11 @@ def create_app(
         if response_plans is None:
             raise _problem(404, "response-plan-unavailable")
         return response_plans
+
+    def simulator_api() -> SimulatorActionApi:
+        if simulator_actions is None:
+            raise _problem(404, "simulator-actions-unavailable")
+        return simulator_actions
 
     @app.post("/v1/incidents", status_code=202)
     def create_incident(
@@ -211,6 +261,14 @@ def create_app(
         principal: Principal = principal_dependency,
     ) -> dict[str, Any]:
         return plan_api().consume_dispatch(principal, incident_id, body)
+
+    @app.post("/internal/v1/incidents/{incident_id}/simulator-actions", status_code=202)
+    def admit_simulator_action(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return simulator_api().admit(principal, incident_id, body)
 
     @app.get("/v1/session")
     def get_session(principal: Principal = principal_dependency) -> dict[str, Any]:

@@ -1291,6 +1291,58 @@ def test_dispatch_consumption_rechecks_current_authority_and_is_once_only(
         )
 
 
+def test_current_consumed_dispatch_is_one_transactional_current_authority_view(
+    service: ResponsePlanService,
+    editor: VerifiedPrincipal,
+    approver: VerifiedPrincipal,
+    dispatcher: VerifiedPrincipal,
+) -> None:
+    plan = create_plan(service, editor)
+    approval = approve_plan(service, approver, plan)
+    authorization = dispatch_plan(service, dispatcher, plan)
+    identity = {
+        "task_key": authorization["task_key"],
+        "operation_id": authorization["operation_id"],
+        "payload_sha256": authorization["payload_sha256"],
+    }
+    with pytest.raises(ResponsePlanError, match="dispatch-authorization-not-consumed"):
+        service.current_consumed_dispatch(**identity)
+
+    consumption = service.consume_dispatch_authorization(
+        dispatcher,
+        incident_id=INCIDENT_ID,
+        authorization_id=authorization["authorization_id"],
+        expected_incident_version=7,
+        expected_plan_version=1,
+        expected_plan_sha256=plan["plan_sha256"],
+        expected_task_key=authorization["task_key"],
+        expected_payload_sha256=authorization["payload_sha256"],
+        idempotency_key="consume-for-execution",
+    )
+    proof = service.current_consumed_dispatch(**identity)
+    assert proof["plan"] == plan
+    assert proof["approval"] == approval
+    assert proof["authorization"] == authorization
+    assert proof["consumption"] == consumption
+    assert proof["audit_events"][-1]["event_type"] == "dispatch.consumed"
+    assert proof["trusted_audit_head_sha256"] == proof["audit_events"][-1]["event_sha256"]
+    assert proof["dispatch_consumed_event_sha256"] == proof["audit_events"][-1]["event_sha256"]
+    proof_body = {key: value for key, value in proof.items() if key != "proof_sha256"}
+    assert proof["proof_sha256"] == prefixed_sha256(canonical_json_bytes(proof_body))
+    assert set(proof["records"]) == {
+        plan["plan_sha256"],
+        approval["decision_sha256"],
+        authorization["authorization_sha256"],
+        consumption["consumption_sha256"],
+    }
+
+    with pytest.raises(ResponsePlanError, match="dispatch-task-key-conflict"):
+        service.current_consumed_dispatch(**{**identity, "task_key": "different-task"})
+    edit_plan(service, editor, plan, idempotency_key="edit-after-execution-load")
+    with pytest.raises(ResponsePlanError, match="dispatch-authorization-stale"):
+        service.current_consumed_dispatch(**identity)
+
+
 def test_forged_consume_replay_cannot_report_an_unconsumed_authorization(
     service: ResponsePlanService,
     repository: SQLiteResponsePlanRepository,

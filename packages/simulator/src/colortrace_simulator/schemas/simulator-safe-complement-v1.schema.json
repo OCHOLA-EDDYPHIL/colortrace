@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/simulator-safe-complement-v1.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "fixture_id", "source_batch_id", "source_batch_sha256", "files", "records"],
+  "properties": {
+    "schema": {"const": "simulator-safe-complement/v1"}, "fixture_id": {"type": "string"}, "source_batch_id": {"type": "string"}, "source_batch_sha256": {"$ref": "#/$defs/digest"},
+    "files": {"type": "array", "maxItems": 128, "items": {"type": "object", "additionalProperties": false, "required": ["kind", "id", "path", "sha256", "size"], "properties": {"kind": {"type": "string"}, "id": {"type": "string"}, "path": {"type": "string"}, "sha256": {"$ref": "#/$defs/digest"}, "size": {"type": "integer", "minimum": 0}}}},
+    "records": {"type": "array", "maxItems": 64, "items": {"type": "object", "additionalProperties": false, "required": ["kind", "id", "record_sha256"], "properties": {"kind": {"type": "string"}, "id": {"type": "string"}, "record_sha256": {"$ref": "#/$defs/digest"}}}}
+  }, "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

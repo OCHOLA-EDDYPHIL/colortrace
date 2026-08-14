@@ -10,6 +10,7 @@ from .runtime import (
     create_application,
     create_runtime_app,
 )
+from .simulator_actions import SimulatorActionCoordinator
 from .stored_service import StoredIncidentService, StoredIncidentStore
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "PrincipalKind",
     "ResponsePlanApi",
     "ResponsePlanCoordinator",
+    "SimulatorActionCoordinator",
     "StoredIncidentService",
     "StoredIncidentStore",
     "TokenVerifier",

@@ -10,6 +10,7 @@ from colortrace_response_plans import (
     OIDCTrustBoundary,
     SQLiteResponsePlanRepository,
 )
+from colortrace_simulator import DispatchIdentity
 from fastapi.testclient import TestClient
 
 NOW = datetime(2026, 8, 13, 18, 0, tzinfo=UTC)
@@ -100,7 +101,7 @@ class Verifier:
         )
 
 
-def client_with_repository() -> tuple[TestClient, SQLiteResponsePlanRepository]:
+def client_with_plans() -> tuple[TestClient, SQLiteResponsePlanRepository, ResponsePlanCoordinator]:
     service = IncidentService()
     authority = CanonicalAuthorityBoundary()
     repository = SQLiteResponsePlanRepository(":memory:", authority_boundary=authority)
@@ -114,9 +115,16 @@ def client_with_repository() -> tuple[TestClient, SQLiteResponsePlanRepository]:
         ),
         clock=lambda: NOW,
     )
-    return TestClient(
-        create_app(service, token_verifier=Verifier(), response_plans=plans)
-    ), repository
+    return (
+        TestClient(create_app(service, token_verifier=Verifier(), response_plans=plans)),
+        repository,
+        plans,
+    )
+
+
+def client_with_repository() -> tuple[TestClient, SQLiteResponsePlanRepository]:
+    api_client, repository, _plans = client_with_plans()
+    return api_client, repository
 
 
 def client() -> TestClient:
@@ -430,6 +438,61 @@ def test_service_only_dispatch_is_single_use_and_authoritative_replay_is_exact()
     assert authorization_replay.json() == authorization
     history = api_client.get(f"/v1/incidents/{INCIDENT_ID}/response-plan").json()["audit_events"]
     assert [event["event_type"] for event in history].count("dispatch.consumed") == 1
+
+
+def test_simulator_source_loads_only_the_exact_current_consumed_dispatch() -> None:
+    api_client, _repository, plans = client_with_plans()
+    plan = api_client.post(
+        f"/v1/incidents/{INCIDENT_ID}/response-plan",
+        json=create_body(api_client),
+        headers=headers("editor"),
+    ).json()
+    approval = api_client.post(
+        f"/v1/incidents/{INCIDENT_ID}/response-plan/approve",
+        json={
+            "expected_incident_version": 7,
+            "expected_plan_version": 1,
+            "expected_plan_sha256": plan["plan_sha256"],
+            "idempotency_key": "approve-simulator-source",
+        },
+        headers=headers("approver"),
+    ).json()
+    authorization = api_client.post(
+        f"/v1/incidents/{INCIDENT_ID}/response-plan/dispatch-authorizations",
+        json={
+            "expected_incident_version": 7,
+            "expected_plan_version": 1,
+            "expected_plan_sha256": plan["plan_sha256"],
+            "idempotency_key": "authorize-simulator-source",
+        },
+        headers=headers("dispatcher"),
+    ).json()
+    consumption = api_client.post(
+        f"/v1/incidents/{INCIDENT_ID}/response-plan/dispatch-consumptions",
+        json={
+            "authorization_id": authorization["authorization_id"],
+            "expected_incident_version": 7,
+            "expected_plan_version": 1,
+            "expected_plan_sha256": plan["plan_sha256"],
+            "expected_task_key": authorization["task_key"],
+            "expected_payload_sha256": authorization["payload_sha256"],
+            "idempotency_key": "consume-simulator-source",
+        },
+        headers=headers("dispatcher"),
+    ).json()
+    proof = plans.load_current_consumed(
+        DispatchIdentity(
+            task_key=authorization["task_key"],
+            operation_id=authorization["operation_id"],
+            payload_sha256=authorization["payload_sha256"],
+        )
+    )
+    assert proof.plan == plan
+    assert proof.approval == approval
+    assert proof.authorization == authorization
+    assert proof.consumption == consumption
+    assert proof.audit_events[-1]["event_type"] == "dispatch.consumed"
+    assert proof.trusted_audit_head_sha256 == proof.audit_events[-1]["event_sha256"]
 
 
 def test_expired_credential_and_unexpected_request_fields_fail_closed() -> None:
