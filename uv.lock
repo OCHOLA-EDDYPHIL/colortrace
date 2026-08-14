@@ -8,6 +8,7 @@ members = [
     "colortrace-fixture",
     "colortrace-grafana-mcp",
     "colortrace-investigation",
+    "colortrace-recovery",
     "colortrace-repo",
     "colortrace-response-plans",
     "colortrace-simulator",
@@ -280,6 +281,7 @@ name = "colortrace-api"
 version = "0.1.0"
 source = { editable = "packages/api" }
 dependencies = [
+    { name = "colortrace-recovery" },
     { name = "colortrace-response-plans" },
     { name = "colortrace-simulator" },
     { name = "colortrace-telemetry" },
@@ -291,6 +293,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "colortrace-recovery", editable = "packages/recovery" },
     { name = "colortrace-response-plans", editable = "packages/response-plans" },
     { name = "colortrace-simulator", editable = "packages/simulator" },
     { name = "colortrace-telemetry", editable = "packages/telemetry" },
@@ -348,6 +351,27 @@ requires-dist = [
     { name = "colortrace-validator", editable = "packages/validators" },
     { name = "google-adk", specifier = "==2.6.3" },
     { name = "google-genai", specifier = "==2.17.0" },
+    { name = "jsonschema", specifier = "==4.25.1" },
+]
+
+[[package]]
+name = "colortrace-recovery"
+version = "0.1.0"
+source = { editable = "packages/recovery" }
+dependencies = [
+    { name = "colortrace-fixture" },
+    { name = "colortrace-grafana-mcp" },
+    { name = "colortrace-simulator" },
+    { name = "colortrace-telemetry" },
+    { name = "jsonschema" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "colortrace-fixture", editable = "packages/fixture-generator" },
+    { name = "colortrace-grafana-mcp", editable = "packages/grafana-mcp" },
+    { name = "colortrace-simulator", editable = "packages/simulator" },
+    { name = "colortrace-telemetry", editable = "packages/telemetry" },
     { name = "jsonschema", specifier = "==4.25.1" },
 ]
 

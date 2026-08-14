@@ -8,13 +8,14 @@ import os
 import re
 import secrets
 import stat
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import cache
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from types import MappingProxyType
+from typing import Any, Literal, cast
 
 from colortrace_fixture.fixture import OCIO_VERSION
 from jsonschema import (  # type: ignore[import-untyped]
@@ -23,12 +24,16 @@ from jsonschema import (  # type: ignore[import-untyped]
     ValidationError,
 )
 
+from .authority import SimulatorAuthorityError
+from .authority import validate_schema as validate_authority_schema
 from .models import (
     ActionSnapshot,
     BoundSimulatorAction,
     PreparedPublication,
     PromotionResult,
     PublicationOperationState,
+    RecoveryArtifact,
+    RecoverySnapshot,
 )
 from .renderer import (
     FrameRenderRequest,
@@ -47,6 +52,7 @@ SCHEMA_FILES = {
     "simulator-safe-complement-proof/v1": "simulator-safe-complement-proof-v1.schema.json",
     "simulator-candidate-seal/v1": "simulator-candidate-seal-v1.schema.json",
     "simulator-publication-pointer/v1": "simulator-publication-pointer-v1.schema.json",
+    "simulator-recovery-snapshot/v1": "simulator-recovery-snapshot-v1.schema.json",
 }
 
 _TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -55,10 +61,34 @@ _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
 _PUBLICATION = re.compile(r"^publication:[0-9a-f]{64}$")
 _SOURCE_BATCH = re.compile(r"^source-batch:[0-9a-f]{64}$")
 
+ARTIFACT_ROLE_COUNTS = MappingProxyType(
+    {
+        "active-resource": 1,
+        "affected-output": 3,
+        "declared-reference": 3,
+        "derivative-output": 1,
+        "derivative-parent": 1,
+        "fixture-manifest": 1,
+        "lineage-manifest": 1,
+        "preservation-manifest": 1,
+        "runtime-manifest": 1,
+        "safe-complement": 1,
+        "safe-complement-proof": 1,
+    }
+)
+
 
 class SimulatorBundleError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
+        super().__init__(code)
+
+
+class RecoverySnapshotError(SimulatorBundleError):
+    def __init__(self, code: str, classification: Literal["failed", "unresolved"]) -> None:
+        if classification not in {"failed", "unresolved"}:
+            raise ValueError("recovery snapshot classification is invalid")
+        self.classification = classification
         super().__init__(code)
 
 
@@ -190,6 +220,26 @@ def _timestamp(value: datetime) -> str:
 
 def _default_clock() -> datetime:
     return datetime.now(UTC)
+
+
+def _parse_timestamp(value: object, *, code: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z") or len(value) > 64:
+        raise SimulatorBundleError(code)
+    try:
+        selected = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        raise SimulatorBundleError(code) from None
+    if selected.tzinfo is None or selected.utcoffset() != timedelta(0):
+        raise SimulatorBundleError(code)
+    return selected.astimezone(UTC)
+
+
+def _freeze_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_json(child) for key, child in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_json(child) for child in value)
+    return value
 
 
 def _read_all(fd: int) -> bytes:
@@ -568,6 +618,7 @@ class LocalPublicationPort:
         self.renderer = renderer or OcioRenderer()
         self.clock = clock
         self.fault_hook = fault_hook or (lambda _point: None)
+        self._recovery_trust_token = object()
         for name in ("source-batches", "staging", "publications", "state"):
             path = self.root / name
             if not path.exists():
@@ -1554,6 +1605,740 @@ class LocalPublicationPort:
             source_batch_root=source_batch_root,
             source_batch=source_batch,
         )
+
+    @staticmethod
+    def _validated_recovery_outcome(value: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            outcome = _plain_document(value)
+            validate_authority_schema("simulator-action-outcome-v1.schema.json", outcome)
+        except (SimulatorAuthorityError, SimulatorBundleError, TypeError, ValueError) as error:
+            raise SimulatorBundleError("recovery-outcome-invalid") from error
+        if outcome["status"] != "succeeded" or outcome["reason_codes"] != []:
+            raise SimulatorBundleError("recovery-outcome-not-succeeded")
+        body = {
+            key: child
+            for key, child in outcome.items()
+            if key not in {"outcome_id", "outcome_sha256"}
+        }
+        expected_sha256 = _document_digest(body)
+        if (
+            outcome["outcome_sha256"] != expected_sha256
+            or outcome["outcome_id"]
+            != f"simulator-action-outcome:{expected_sha256.removeprefix('sha256:')}"
+        ):
+            raise SimulatorBundleError("recovery-outcome-digest-invalid")
+        started = _parse_timestamp(outcome["action_started_at"], code="recovery-time-invalid")
+        completed = _parse_timestamp(outcome["completed_at"], code="recovery-time-invalid")
+        promoted = _parse_timestamp(
+            outcome["publication_promoted_at"], code="recovery-time-invalid"
+        )
+        if completed < started or not started < promoted <= completed:
+            raise SimulatorBundleError("recovery-time-invalid")
+        return outcome
+
+    @staticmethod
+    def _recovery_result_bindings(
+        runtime: Mapping[str, Any],
+        outcome: Mapping[str, Any],
+        prepared: PreparedPublication,
+    ) -> None:
+        results = cast(list[dict[str, Any]], outcome["command_outcomes"])
+        if results != list(prepared.command_results):
+            raise SimulatorBundleError("recovery-command-outcome-mismatch")
+        traces = sorted(cast(str, result["trace_id"]) for result in results)
+        if traces != outcome["new_trace_ids"]:
+            raise SimulatorBundleError("recovery-trace-binding-mismatch")
+        result_targets = {
+            LocalPublicationPort._target_identity(cast(Mapping[str, Any], result["target"]))
+            for result in results
+        }
+        outcome_targets = {
+            LocalPublicationPort._target_identity(target)
+            for target in cast(list[Mapping[str, Any]], outcome["targets"])
+        }
+        if result_targets != outcome_targets:
+            raise SimulatorBundleError("recovery-target-binding-mismatch")
+
+        resources = {
+            cast(str, resource["worker_id"]): resource
+            for resource in cast(list[dict[str, Any]], runtime["resources"])
+        }
+        frames = {
+            cast(str, frame["frame_id"]): frame
+            for frame in cast(list[dict[str, Any]], runtime["frames"])
+        }
+        derivatives = {
+            cast(str, derivative["artifact_id"]): derivative
+            for derivative in cast(list[dict[str, Any]], runtime["derivatives"])
+        }
+        quarantine_results = [result for result in results if result["result_kind"] == "quarantine"]
+        if len(quarantine_results) != 1:
+            raise SimulatorBundleError("recovery-command-profile-invalid")
+        quarantine = quarantine_results[0]
+        target_resource = cast(Mapping[str, Any], quarantine["target"])
+        before_resource = cast(Mapping[str, Any], quarantine["before"])
+        after_resource = cast(Mapping[str, Any], quarantine["after"])
+        matching_resources = [
+            resource
+            for resource in resources.values()
+            if resource.get("resource_sha256") == after_resource.get("resource_sha256")
+            and resource.get("last_operation_id") == outcome["operation_id"]
+            and resource.get("trace_id") == quarantine["trace_id"]
+        ]
+        if (
+            target_resource.get("id") != before_resource.get("resource_sha256")
+            or before_resource.get("resource_sha256") != prepared.quarantine["resource_sha256"]
+            or after_resource.get("resource_sha256") != prepared.quarantine["replacement_sha256"]
+            or len(matching_resources) != 1
+        ):
+            raise SimulatorBundleError("recovery-resource-binding-mismatch")
+
+        for result in results:
+            kind = result["result_kind"]
+            if kind == "quarantine":
+                continue
+            target = cast(Mapping[str, Any], result["target"])
+            after = cast(Mapping[str, Any], result["after"])
+            if kind == "frame":
+                record = frames.get(cast(str, target["id"]))
+                expected = {
+                    "output_sha256": None if record is None else record["output_sha256"],
+                    "display_sha256": None if record is None else record["display_sha256"],
+                }
+            elif kind == "derivative":
+                record = derivatives.get(cast(str, target["id"]))
+                expected = {
+                    "derivative_sha256": None if record is None else record["buffer_sha256"],
+                    "derivative_display_sha256": (
+                        None if record is None else record["display_sha256"]
+                    ),
+                }
+            else:
+                raise SimulatorBundleError("recovery-command-profile-invalid")
+            if record is None or dict(after) != expected:
+                raise SimulatorBundleError("recovery-artifact-binding-mismatch")
+            if (
+                record.get("last_operation_id") != outcome["operation_id"]
+                or record.get("trace_id") != result["trace_id"]
+            ):
+                raise SimulatorBundleError("recovery-trace-binding-mismatch")
+
+    def _recomputed_recovery_safe_complement(
+        self,
+        context: _ActiveContext,
+        outcome: Mapping[str, Any],
+        prepared: PreparedPublication,
+        preservation: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        target_ids = {
+            (cast(str, target["kind"]), cast(str, target["id"]))
+            for target in cast(list[Mapping[str, Any]], outcome["targets"])
+        }
+        targeted_frames = {identifier for kind, identifier in target_ids if kind == "frame"}
+        targeted_derivatives = {
+            identifier for kind, identifier in target_ids if kind == "derivative"
+        }
+        if len(targeted_frames) != 3 or len(targeted_derivatives) != 1:
+            raise SimulatorBundleError("recovery-target-profile-invalid")
+        frames = cast(list[dict[str, Any]], context.runtime["frames"])
+        frame_by_id = {cast(str, frame["frame_id"]): frame for frame in frames}
+        if not targeted_frames.issubset(frame_by_id):
+            raise SimulatorBundleError("recovery-target-binding-mismatch")
+        targeted_workers = {cast(str, frame_by_id[value]["worker_id"]) for value in targeted_frames}
+        if len(targeted_workers) != 1:
+            raise SimulatorBundleError("recovery-target-binding-mismatch")
+        target_worker = next(iter(targeted_workers))
+        safe_frame_ids = set(frame_by_id) - targeted_frames
+        exclusion_ids = {
+            cast(str, target["id"])
+            for target in cast(list[Mapping[str, Any]], outcome["exclusions"])
+            if target.get("kind") == "frame"
+        }
+        if exclusion_ids != safe_frame_ids or len(exclusion_ids) != len(outcome["exclusions"]):
+            raise SimulatorBundleError("recovery-exclusion-binding-mismatch")
+
+        mutable_entries = cast(list[Mapping[str, Any]], preservation["mutable_entries"])
+        mutable_paths = {_relative_path(item["path"]) for item in mutable_entries}
+        if len(mutable_paths) != len(mutable_entries):
+            raise SimulatorBundleError("recovery-preservation-binding-mismatch")
+        quarantine_path = _relative_path(prepared.quarantine["quarantine_path"])
+        files = []
+        for item in cast(list[dict[str, Any]], context.runtime["files"]):
+            if (
+                item["path"] in mutable_paths
+                or item["path"] == "manifests/lineage.json"
+                or item["path"] == quarantine_path
+            ):
+                continue
+            files.append(
+                {
+                    "kind": item["kind"],
+                    "id": item["path"],
+                    "path": item["path"],
+                    "sha256": item["sha256"],
+                    "size": item["size"],
+                }
+            )
+        records = [
+            {
+                "kind": "resource",
+                "id": resource["worker_id"],
+                "record_sha256": sha256_bytes(canonical_json_bytes(resource)),
+            }
+            for resource in cast(list[dict[str, Any]], context.runtime["resources"])
+            if resource["worker_id"] != target_worker
+        ]
+        records.extend(
+            {
+                "kind": "frame",
+                "id": frame["frame_id"],
+                "record_sha256": sha256_bytes(canonical_json_bytes(frame)),
+            }
+            for frame in frames
+            if frame["frame_id"] not in targeted_frames
+        )
+        safe = {
+            "schema": "simulator-safe-complement/v1",
+            "fixture_id": context.runtime["fixture_id"],
+            "source_batch_id": context.runtime["source_batch_id"],
+            "source_batch_sha256": context.runtime["source_batch_sha256"],
+            "files": sorted(files, key=lambda item: cast(str, item["path"])),
+            "records": sorted(
+                records,
+                key=lambda item: (cast(str, item["kind"]), cast(str, item["id"])),
+            ),
+        }
+        _validate_document(safe)
+        return safe
+
+    @staticmethod
+    def _same_recovery_context(left: _ActiveContext, right: _ActiveContext) -> bool:
+        return (
+            all(
+                canonical_json_bytes(left_value) == canonical_json_bytes(right_value)
+                for left_value, right_value in (
+                    (left.pointer, right.pointer),
+                    (left.fixture, right.fixture),
+                    (left.runtime, right.runtime),
+                    (left.lineage, right.lineage),
+                    (left.source_batch, right.source_batch),
+                )
+            )
+            and left.pointer_sha256 == right.pointer_sha256
+        )
+
+    def _recovery_artifacts(
+        self,
+        context: _ActiveContext,
+        outcome: Mapping[str, Any],
+        prepared: PreparedPublication,
+    ) -> tuple[RecoveryArtifact, ...]:
+        frames = {
+            cast(str, frame["frame_id"]): frame
+            for frame in cast(list[dict[str, Any]], context.runtime["frames"])
+        }
+        derivatives = {
+            cast(str, derivative["artifact_id"]): derivative
+            for derivative in cast(list[dict[str, Any]], context.runtime["derivatives"])
+        }
+        targeted_frame_ids = sorted(
+            cast(str, target["id"])
+            for target in cast(list[Mapping[str, Any]], outcome["targets"])
+            if target.get("kind") == "frame"
+        )
+        derivative_ids = [
+            cast(str, target["id"])
+            for target in cast(list[Mapping[str, Any]], outcome["targets"])
+            if target.get("kind") == "derivative"
+        ]
+        resource_ids = [
+            cast(str, target["id"])
+            for target in cast(list[Mapping[str, Any]], outcome["targets"])
+            if target.get("kind") == "color-resource"
+        ]
+        if len(targeted_frame_ids) != 3 or len(derivative_ids) != 1 or len(resource_ids) != 1:
+            raise SimulatorBundleError("recovery-target-profile-invalid")
+        try:
+            targeted_frames = [frames[identifier] for identifier in targeted_frame_ids]
+            derivative = derivatives[derivative_ids[0]]
+        except KeyError as error:
+            raise SimulatorBundleError("recovery-target-binding-mismatch") from error
+        parent = next(
+            (
+                frame
+                for frame in targeted_frames
+                if frame["output_id"] == derivative["parent_artifact_id"]
+            ),
+            None,
+        )
+        if parent is None:
+            raise SimulatorBundleError("recovery-derivative-parent-mismatch")
+        target_workers = {frame["worker_id"] for frame in targeted_frames}
+        active_resources = [
+            resource
+            for resource in cast(list[dict[str, Any]], context.runtime["resources"])
+            if resource["worker_id"] in target_workers
+            and resource["resource_sha256"] == prepared.quarantine["replacement_sha256"]
+            and resource["last_operation_id"] == outcome["operation_id"]
+        ]
+        if len(target_workers) != 1 or len(active_resources) != 1:
+            raise SimulatorBundleError("recovery-resource-binding-mismatch")
+        active_resource = active_resources[0]
+        batch_files = {
+            cast(str, item["path"]): item
+            for item in cast(list[dict[str, Any]], context.source_batch["files"])
+        }
+        values: list[RecoveryArtifact] = [
+            RecoveryArtifact(
+                root="publication",
+                logical_path=cast(str, active_resource["resource_path"]),
+                sha256=cast(str, active_resource["resource_sha256"]),
+                size=cast(int, active_resource["resource_size"]),
+                kind="resource",
+                role="active-resource",
+                target_kind="color-resource",
+                target_id=resource_ids[0],
+            )
+        ]
+        for frame in targeted_frames:
+            frame_id = cast(str, frame["frame_id"])
+            values.append(
+                RecoveryArtifact(
+                    root="publication",
+                    logical_path=cast(str, frame["output_path"]),
+                    sha256=cast(str, frame["output_sha256"]),
+                    size=cast(int, frame["output_size"]),
+                    kind="frame-output",
+                    role="affected-output",
+                    target_kind="frame",
+                    target_id=frame_id,
+                )
+            )
+            reference_path = cast(str, frame["reference_buffer_path"])
+            reference = batch_files.get(reference_path)
+            if reference is None or reference["sha256"] != frame["reference_buffer_sha256"]:
+                raise SimulatorBundleError("recovery-reference-binding-mismatch")
+            values.append(
+                RecoveryArtifact(
+                    root="source-batch",
+                    logical_path=reference_path,
+                    sha256=cast(str, reference["sha256"]),
+                    size=cast(int, reference["size"]),
+                    kind="declared-reference",
+                    role="declared-reference",
+                    target_kind="frame",
+                    target_id=frame_id,
+                )
+            )
+        derivative_id = derivative_ids[0]
+        values.extend(
+            (
+                RecoveryArtifact(
+                    root="publication",
+                    logical_path=cast(str, derivative["buffer_path"]),
+                    sha256=cast(str, derivative["buffer_sha256"]),
+                    size=cast(int, derivative["buffer_size"]),
+                    kind="derivative-output",
+                    role="derivative-output",
+                    target_kind="derivative",
+                    target_id=derivative_id,
+                ),
+                RecoveryArtifact(
+                    root="publication",
+                    logical_path=cast(str, parent["output_path"]),
+                    sha256=cast(str, parent["output_sha256"]),
+                    size=cast(int, parent["output_size"]),
+                    kind="frame-output",
+                    role="derivative-parent",
+                    target_kind="frame",
+                    target_id=cast(str, parent["frame_id"]),
+                ),
+            )
+        )
+
+        controls = (
+            (
+                "fixture-manifest",
+                "manifests/fixture.json",
+                prepared.candidate_fixture_manifest_sha256,
+            ),
+            (
+                "runtime-manifest",
+                "manifests/runtime.json",
+                prepared.candidate_runtime_manifest_sha256,
+            ),
+            (
+                "lineage-manifest",
+                cast(str, context.runtime["lineage"]["path"]),
+                prepared.candidate_lineage_manifest_sha256,
+            ),
+            (
+                "preservation-manifest",
+                "manifests/preservation.json",
+                prepared.preservation_manifest_sha256,
+            ),
+            (
+                "safe-complement",
+                "manifests/safe-complement.json",
+                prepared.safe_complement_before_sha256,
+            ),
+            (
+                "safe-complement-proof",
+                "manifests/safe-complement-proof.json",
+                prepared.safe_complement_proof_sha256,
+            ),
+        )
+        for role, path, digest in controls:
+            raw = _read_relative(context.publication_root, path)
+            if sha256_bytes(raw) != digest:
+                raise SimulatorBundleError("recovery-control-binding-mismatch")
+            values.append(
+                RecoveryArtifact(
+                    root="publication",
+                    logical_path=path,
+                    sha256=digest,
+                    size=len(raw),
+                    kind="control",
+                    role=role,
+                    target_kind="publication",
+                    target_id=prepared.publication_id,
+                )
+            )
+        counts = {role: 0 for role in ARTIFACT_ROLE_COUNTS}
+        for artifact in values:
+            if artifact.role in counts:
+                counts[artifact.role] += 1
+        if counts != dict(ARTIFACT_ROLE_COUNTS):
+            raise SimulatorBundleError("recovery-artifact-role-profile-invalid")
+        return tuple(
+            sorted(
+                values,
+                key=lambda item: (
+                    item.role,
+                    item.target_kind,
+                    item.target_id,
+                    item.root,
+                    item.logical_path,
+                ),
+            )
+        )
+
+    def _snapshot_for_recovery(self, value: Mapping[str, Any]) -> RecoverySnapshot:
+        outcome = self._validated_recovery_outcome(value)
+        with self._publication_lock():
+            before = self._load_active_context()
+            prepared = self._prepared_from_root(
+                before.publication_root,
+                f"publications/{before.publication_root.name}",
+            )
+            expected = {
+                "operation_id": outcome["operation_id"],
+                "candidate_pointer_sha256": outcome["candidate_publication_pointer_sha256"],
+                "candidate_generation": outcome["candidate_publication_generation"],
+                "candidate_fixture_manifest_sha256": outcome["candidate_fixture_manifest_sha256"],
+                "candidate_runtime_manifest_sha256": outcome["candidate_runtime_manifest_sha256"],
+                "candidate_lineage_manifest_sha256": outcome["candidate_lineage_manifest_sha256"],
+                "declared_resource_manifest_sha256": outcome["declared_resource_manifest_sha256"],
+                "preservation_manifest_sha256": outcome["preservation_manifest_sha256"],
+                "safe_complement_before_sha256": outcome["safe_complement_before_sha256"],
+                "safe_complement_after_sha256": outcome["safe_complement_after_sha256"],
+                "safe_complement_proof_sha256": outcome["safe_complement_proof_sha256"],
+                "candidate_seal_sha256": outcome["candidate_seal_sha256"],
+                "candidate_tree_sha256": outcome["candidate_tree_sha256"],
+            }
+            if any(getattr(prepared, key) != child for key, child in expected.items()):
+                raise SimulatorBundleError("recovery-publication-binding-mismatch")
+            if (
+                before.pointer_sha256 != outcome["active_publication_pointer_sha256"]
+                or before.pointer_sha256 != outcome["candidate_publication_pointer_sha256"]
+                or before.pointer["publication_id"] != prepared.publication_id
+                or before.pointer["operation_id"] != outcome["operation_id"]
+                or before.pointer["generation"] != outcome["candidate_generation"]
+                or before.pointer["runtime_manifest_sha256"]
+                != outcome["active_runtime_manifest_sha256"]
+            ):
+                raise SimulatorBundleError("recovery-active-publication-mismatch")
+            self._recovery_result_bindings(before.runtime, outcome, prepared)
+            preservation = _read_document(
+                before.publication_root,
+                "manifests/preservation.json",
+                schema="simulator-preservation-manifest/v1",
+            )
+            stored_safe = _read_document(
+                before.publication_root,
+                "manifests/safe-complement.json",
+                schema="simulator-safe-complement/v1",
+            )
+            safe_proof = _read_document(
+                before.publication_root,
+                "manifests/safe-complement-proof.json",
+                schema="simulator-safe-complement-proof/v1",
+            )
+            candidate_seal = _read_document(
+                before.publication_root,
+                "manifests/candidate-seal.json",
+                schema="simulator-candidate-seal/v1",
+            )
+            recomputed_safe = self._recomputed_recovery_safe_complement(
+                before,
+                outcome,
+                prepared,
+                preservation,
+            )
+            recomputed_safe_sha256 = _document_digest(recomputed_safe)
+            if (
+                recomputed_safe != stored_safe
+                or recomputed_safe_sha256 != outcome["safe_complement_before_sha256"]
+                or recomputed_safe_sha256 != outcome["safe_complement_after_sha256"]
+                or safe_proof["before_sha256"] != recomputed_safe_sha256
+                or safe_proof["after_sha256"] != recomputed_safe_sha256
+                or safe_proof["byte_identical"] is not True
+            ):
+                raise SimulatorBundleError("recovery-safe-complement-mismatch")
+            artifacts = self._recovery_artifacts(before, outcome, prepared)
+            after = self._load_active_context()
+            if not self._same_recovery_context(before, after):
+                raise SimulatorBundleError("recovery-active-publication-changed")
+            observed = self.clock()
+            observed_at = _timestamp(observed)
+            action_started = _parse_timestamp(
+                outcome["action_started_at"], code="recovery-time-invalid"
+            )
+            action_completed = _parse_timestamp(
+                outcome["completed_at"], code="recovery-time-invalid"
+            )
+            if (
+                observed.astimezone(UTC) <= action_started
+                or observed.astimezone(UTC) < action_completed
+            ):
+                raise SimulatorBundleError("recovery-observation-not-new")
+            body = {
+                "schema": "simulator-recovery-snapshot/v1",
+                "outcome_id": outcome["outcome_id"],
+                "outcome_sha256": outcome["outcome_sha256"],
+                "action_id": outcome["action_id"],
+                "incident_id": outcome["incident_id"],
+                "incident_version": outcome["incident_version"],
+                "operation_id": outcome["operation_id"],
+                "action_started_at": outcome["action_started_at"],
+                "action_completed_at": outcome["completed_at"],
+                "observed_at": observed_at,
+                "active_publication": {
+                    "publication_id": prepared.publication_id,
+                    "pointer_sha256": before.pointer_sha256,
+                    "generation": before.pointer["generation"],
+                    "operation_id": before.pointer["operation_id"],
+                    "fixture_manifest_sha256": before.pointer["fixture_manifest_sha256"],
+                    "runtime_manifest_sha256": before.pointer["runtime_manifest_sha256"],
+                    "lineage_manifest_sha256": before.pointer["lineage_manifest_sha256"],
+                    "declared_resource_manifest_sha256": before.pointer[
+                        "declared_resource_manifest_sha256"
+                    ],
+                    "candidate_seal_sha256": prepared.candidate_seal_sha256,
+                    "candidate_tree_sha256": prepared.candidate_tree_sha256,
+                    "preservation_manifest_sha256": prepared.preservation_manifest_sha256,
+                    "safe_complement_before_sha256": prepared.safe_complement_before_sha256,
+                    "safe_complement_after_sha256": prepared.safe_complement_after_sha256,
+                    "safe_complement_proof_sha256": prepared.safe_complement_proof_sha256,
+                },
+                "documents": {
+                    "publication_pointer": before.pointer,
+                    "fixture_manifest": before.fixture,
+                    "runtime_manifest": before.runtime,
+                    "lineage_manifest": before.lineage,
+                    "source_batch_manifest": before.source_batch,
+                    "preservation_manifest": preservation,
+                    "safe_complement_manifest": stored_safe,
+                    "safe_complement_proof": safe_proof,
+                    "candidate_seal": candidate_seal,
+                },
+                "artifacts": [
+                    {
+                        "root": artifact.root,
+                        "logical_path": artifact.logical_path,
+                        "sha256": artifact.sha256,
+                        "size": artifact.size,
+                        "kind": artifact.kind,
+                        "role": artifact.role,
+                        "target_kind": artifact.target_kind,
+                        "target_id": artifact.target_id,
+                    }
+                    for artifact in artifacts
+                ],
+                "targets": outcome["targets"],
+                "exclusions": outcome["exclusions"],
+                "command_outcomes": outcome["command_outcomes"],
+                "recomputed_safe_complement": recomputed_safe,
+                "recomputed_safe_complement_sha256": recomputed_safe_sha256,
+            }
+            snapshot_sha256 = _document_digest(body)
+            document = {
+                **body,
+                "snapshot_id": (
+                    f"simulator-recovery-snapshot:{snapshot_sha256.removeprefix('sha256:')}"
+                ),
+                "snapshot_sha256": snapshot_sha256,
+            }
+            _validate_document(document)
+            return RecoverySnapshot(
+                document=cast(Mapping[str, Any], _freeze_json(document)),
+                artifacts=artifacts,
+                _publication_id=prepared.publication_id,
+                _active_pointer_sha256=before.pointer_sha256,
+                _trust_token=self._recovery_trust_token,
+            )
+
+    def snapshot_for_recovery(self, value: Mapping[str, Any]) -> RecoverySnapshot:
+        try:
+            return self._snapshot_for_recovery(value)
+        except RecoverySnapshotError:
+            raise
+        except SimulatorBundleError as error:
+            unresolved_codes = {
+                "malformed-json",
+                "file-changed-during-read",
+                "file-unavailable",
+                "path-invalid",
+                "recovery-observation-not-new",
+                "recovery-time-invalid",
+                "unsafe-read",
+                "tree-unavailable",
+                "workspace-unavailable",
+            }
+            classification: Literal["failed", "unresolved"] = (
+                "unresolved" if error.code in unresolved_codes else "failed"
+            )
+            raise RecoverySnapshotError(error.code, classification) from error
+        except OSError as error:
+            raise RecoverySnapshotError("recovery-artifact-unreadable", "unresolved") from error
+
+    def _assert_recovery_snapshot(self, snapshot: RecoverySnapshot) -> _ActiveContext:
+        if (
+            not isinstance(snapshot, RecoverySnapshot)
+            or snapshot._trust_token is not self._recovery_trust_token
+        ):
+            raise SimulatorBundleError("recovery-snapshot-untrusted")
+        context = self._load_active_context()
+        if (
+            context.pointer_sha256 != snapshot._active_pointer_sha256
+            or context.pointer["publication_id"] != snapshot._publication_id
+        ):
+            raise SimulatorBundleError("recovery-snapshot-stale")
+        return context
+
+    def assert_recovery_snapshot_current(self, snapshot: RecoverySnapshot) -> None:
+        with self._publication_lock():
+            self._assert_recovery_snapshot(snapshot)
+
+    @contextmanager
+    def guard_recovery_closure(
+        self,
+        snapshot: RecoverySnapshot,
+        outcome: Mapping[str, Any],
+    ) -> Iterator[None]:
+        """Hold the publication fence while an exact verified outcome is closed."""
+
+        validated_outcome = self._validated_recovery_outcome(outcome)
+        with self._publication_lock():
+            context = self._assert_recovery_snapshot(snapshot)
+            document = snapshot.to_dict()
+            try:
+                _validate_document(document)
+                body = {
+                    key: child
+                    for key, child in document.items()
+                    if key not in {"snapshot_id", "snapshot_sha256"}
+                }
+                snapshot_sha256 = _document_digest(body)
+                if (
+                    document["snapshot_sha256"] != snapshot_sha256
+                    or document["snapshot_id"]
+                    != f"simulator-recovery-snapshot:{snapshot_sha256.removeprefix('sha256:')}"
+                ):
+                    raise SimulatorBundleError("recovery-snapshot-digest-invalid")
+                for snapshot_key, outcome_key in (
+                    ("outcome_id", "outcome_id"),
+                    ("outcome_sha256", "outcome_sha256"),
+                    ("action_id", "action_id"),
+                    ("incident_id", "incident_id"),
+                    ("incident_version", "incident_version"),
+                    ("operation_id", "operation_id"),
+                    ("action_started_at", "action_started_at"),
+                    ("action_completed_at", "completed_at"),
+                    ("targets", "targets"),
+                    ("exclusions", "exclusions"),
+                    ("command_outcomes", "command_outcomes"),
+                ):
+                    if document[snapshot_key] != validated_outcome[outcome_key]:
+                        raise SimulatorBundleError("recovery-closure-outcome-mismatch")
+                active = cast(Mapping[str, Any], document["active_publication"])
+                if (
+                    active["publication_id"] != snapshot._publication_id
+                    or active["pointer_sha256"] != snapshot._active_pointer_sha256
+                    or active["pointer_sha256"]
+                    != validated_outcome["active_publication_pointer_sha256"]
+                    or active["pointer_sha256"]
+                    != validated_outcome["candidate_publication_pointer_sha256"]
+                    or active["operation_id"] != validated_outcome["operation_id"]
+                    or active["runtime_manifest_sha256"]
+                    != validated_outcome["active_runtime_manifest_sha256"]
+                    or active["runtime_manifest_sha256"]
+                    != validated_outcome["candidate_runtime_manifest_sha256"]
+                ):
+                    raise SimulatorBundleError("recovery-closure-publication-mismatch")
+                generation = validated_outcome["candidate_publication_generation"]
+                if (
+                    not isinstance(generation, int)
+                    or isinstance(generation, bool)
+                    or active["generation"] != generation
+                    or validated_outcome["candidate_generation"] != generation
+                    or context.pointer["generation"] != generation
+                ):
+                    raise SimulatorBundleError("recovery-closure-generation-stale")
+                if (
+                    context.pointer_sha256 != active["pointer_sha256"]
+                    or context.pointer["publication_id"] != active["publication_id"]
+                    or context.pointer["operation_id"] != active["operation_id"]
+                    or context.pointer["runtime_manifest_sha256"]
+                    != active["runtime_manifest_sha256"]
+                ):
+                    raise SimulatorBundleError("recovery-snapshot-stale")
+            except KeyError as error:
+                raise SimulatorBundleError("recovery-closure-binding-invalid") from error
+            yield
+
+    def read_recovery_artifact(
+        self,
+        snapshot: RecoverySnapshot,
+        artifact: RecoveryArtifact,
+    ) -> bytes:
+        if not isinstance(artifact, RecoveryArtifact) or artifact not in snapshot.artifacts:
+            raise RecoverySnapshotError("recovery-artifact-not-allowlisted", "failed")
+        try:
+            with self._publication_lock():
+                context = self._assert_recovery_snapshot(snapshot)
+                root = (
+                    context.publication_root
+                    if artifact.root == "publication"
+                    else context.source_batch_root
+                )
+                value = _read_relative(root, artifact.logical_path)
+                if len(value) != artifact.size or sha256_bytes(value) != artifact.sha256:
+                    raise RecoverySnapshotError(
+                        "recovery-artifact-binding-mismatch",
+                        "failed",
+                    )
+                return value
+        except RecoverySnapshotError:
+            raise
+        except SimulatorBundleError as error:
+            classification: Literal["failed", "unresolved"] = (
+                "unresolved"
+                if error.code
+                in {"file-changed-during-read", "file-unavailable", "tree-unavailable"}
+                else "failed"
+            )
+            raise RecoverySnapshotError(error.code, classification) from error
 
     @staticmethod
     def _command_intent(commands: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -3103,7 +3888,9 @@ class LocalPublicationPort:
 
 
 __all__ = [
+    "ARTIFACT_ROLE_COUNTS",
     "LocalPublicationPort",
+    "RecoverySnapshotError",
     "SimulatorBundleError",
     "canonical_json_bytes",
 ]

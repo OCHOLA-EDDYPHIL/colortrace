@@ -4,6 +4,7 @@ import { EvidenceView } from "./evidence-view.tsx";
 import { IncidentInbox } from "./incident-inbox.tsx";
 import { IncidentOverview } from "./incident-overview.tsx";
 import { InvestigationTimeline } from "./investigation-timeline.tsx";
+import { RecoveryVerification, type RecoveryVerificationProps } from "./recovery-verification.tsx";
 import { ResponsePlanReview, type ResponsePlanReviewProps } from "./response-plan-review.tsx";
 import { ScopeView } from "./scope-view.tsx";
 import { StatusBadge } from "./status-badge.tsx";
@@ -33,6 +34,7 @@ export type IncidentWorkspaceShellProps = {
   readonly state: IncidentWorkspaceViewState;
   readonly viewer: WorkspaceViewer;
   readonly responsePlan: ResponsePlanReviewProps;
+  readonly recovery?: RecoveryVerificationProps;
 };
 
 function SessionStatus({ viewer }: { readonly viewer: WorkspaceViewer }) {
@@ -209,10 +211,12 @@ function WorkspaceWarnings({
 
 function WorkspaceContent({
   onRetry,
+  recovery,
   responsePlan,
   state,
 }: {
   readonly onRetry?: () => void;
+  readonly recovery?: RecoveryVerificationProps;
   readonly responsePlan: ResponsePlanReviewProps;
   readonly state: IncidentWorkspaceViewState;
 }) {
@@ -292,10 +296,20 @@ function WorkspaceContent({
             {...responsePlan}
             key={
               responsePlan.state.kind === "ready"
-                ? `${responsePlan.state.review.plan.plan_sha256}:${responsePlan.state.review.state}`
-                : responsePlan.state.kind
+                ? `plan:${responsePlan.state.review.plan.plan_sha256}:${responsePlan.state.review.state}`
+                : `plan:${responsePlan.state.kind}`
             }
           />
+          {recovery === undefined ? null : (
+            <RecoveryVerification
+              {...recovery}
+              key={
+                recovery.state.kind === "ready"
+                  ? `recovery:${recovery.state.workspace.review.packet?.packet_sha256 ?? "pending"}:${recovery.state.workspace.review.state}`
+                  : `recovery:${recovery.state.kind}`
+              }
+            />
+          )}
         </div>
       );
     }
@@ -320,6 +334,7 @@ export function IncidentWorkspaceShell({
   focusRequest = 0,
   incidents,
   onRetry,
+  recovery,
   responsePlan,
   onSelectIncident,
   selectedIncidentId,
@@ -354,6 +369,7 @@ export function IncidentWorkspaceShell({
         />
         <main id="incident-content" ref={mainRef} tabIndex={-1}>
           <WorkspaceContent
+            recovery={recovery}
             responsePlan={responsePlan}
             state={state}
             {...(onRetry === undefined ? {} : { onRetry })}

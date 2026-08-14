@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Protocol
 
+from colortrace_recovery import RecoveryError
 from colortrace_response_plans import ResponsePlanError
 from colortrace_simulator.authority import SimulatorAuthorityError
 from colortrace_simulator.repository import SimulatorRepositoryError
@@ -13,6 +14,7 @@ from fastapi.responses import JSONResponse
 from starlette.types import Lifespan
 
 from .auth import Principal, TokenVerifier
+from .recovery import RecoveryApi, RecoveryVerificationAdmissionApi
 from .response_plans import ResponsePlanApi
 from .simulator_actions import SimulatorActionApi
 
@@ -94,12 +96,48 @@ def _status_for_simulator_error(code: str) -> int:
     return 409
 
 
+def _status_for_recovery_error(code: str) -> int:
+    if code in {"authentication-required", "principal-credential-expired"}:
+        return 401
+    if code in {
+        "closure-human-required",
+        "closer-role-required",
+        "incident-access-denied",
+        "model-authority-forbidden",
+        "principal-audience-untrusted",
+        "principal-issuer-untrusted",
+        "principal-trust-boundary-mismatch",
+        "scheduler-role-required",
+        "scheduler-service-required",
+        "verifier-role-required",
+        "verifier-service-required",
+    }:
+        return 403
+    if code in {
+        "recovery-attempt-not-found",
+        "recovery-workflow-not-found",
+        "verification-task-not-found",
+    }:
+        return 404
+    if code in {
+        "recovery-closure-fence-unavailable",
+        "recovery-verification-dispatcher-unavailable",
+        "verification-dispatch-response-invalid",
+    }:
+        return 503
+    if code.endswith("-invalid") or code.startswith("schema-"):
+        return 400
+    return 409
+
+
 def create_app(
     service: IncidentService,
     *,
     token_verifier: TokenVerifier | None = None,
     response_plans: ResponsePlanApi | None = None,
     simulator_actions: SimulatorActionApi | None = None,
+    recovery: RecoveryApi | None = None,
+    recovery_verifications: RecoveryVerificationAdmissionApi | None = None,
     lifespan: Lifespan[FastAPI] | None = None,
 ) -> FastAPI:
     app = FastAPI(
@@ -143,6 +181,13 @@ def create_app(
             content={"code": error.code},
         )
 
+    @app.exception_handler(RecoveryError)
+    async def handle_recovery_error(_request: Any, error: RecoveryError) -> JSONResponse:
+        return JSONResponse(
+            status_code=_status_for_recovery_error(error.code),
+            content={"code": error.code},
+        )
+
     @app.exception_handler(HTTPException)
     async def handle_http_error(_request: Any, error: HTTPException) -> JSONResponse:
         detail = error.detail
@@ -179,6 +224,16 @@ def create_app(
         if simulator_actions is None:
             raise _problem(404, "simulator-actions-unavailable")
         return simulator_actions
+
+    def recovery_api() -> RecoveryApi:
+        if recovery is None:
+            raise _problem(404, "recovery-unavailable")
+        return recovery
+
+    def recovery_verification_api() -> RecoveryVerificationAdmissionApi:
+        if recovery_verifications is None:
+            raise _problem(503, "recovery-verification-dispatcher-unavailable")
+        return recovery_verifications
 
     @app.post("/v1/incidents", status_code=202)
     def create_incident(
@@ -269,6 +324,26 @@ def create_app(
         principal: Principal = principal_dependency,
     ) -> dict[str, Any]:
         return simulator_api().admit(principal, incident_id, body)
+
+    @app.get("/v1/incidents/{incident_id}/recovery")
+    def get_recovery(incident_id: str) -> dict[str, Any]:
+        return recovery_api().review(incident_id)
+
+    @app.post("/internal/v1/incidents/{incident_id}/recovery/verifications", status_code=202)
+    def admit_recovery_verification(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return recovery_verification_api().admit_verification(principal, incident_id, body)
+
+    @app.post("/v1/incidents/{incident_id}/recovery/close")
+    def close_recovery(
+        incident_id: str,
+        body: dict[str, Any],
+        principal: Principal = principal_dependency,
+    ) -> dict[str, Any]:
+        return recovery_api().close(principal, incident_id, body)
 
     @app.get("/v1/session")
     def get_session(principal: Principal = principal_dependency) -> dict[str, Any]:

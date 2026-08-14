@@ -516,6 +516,7 @@ def runtime_environment(tmp_path: Path) -> dict[str, str]:
     return {
         "COLORTRACE_DATABASE_PATH": str(tmp_path / "incidents.sqlite3"),
         "COLORTRACE_RESPONSE_PLAN_DATABASE_PATH": str(tmp_path / "plans.sqlite3"),
+        "COLORTRACE_RECOVERY_DATABASE_PATH": str(tmp_path / "recovery.sqlite3"),
         "COLORTRACE_OIDC_ISSUER": "https://identity.example.test",
         "COLORTRACE_OIDC_AUDIENCE": "colortrace-api",
         "COLORTRACE_OIDC_JWKS_URI": "https://identity.example.test/jwks",
@@ -591,6 +592,7 @@ def test_application_factory_requires_complete_explicit_local_configuration(
         {
             "COLORTRACE_DATABASE_PATH": str(tmp_path / "disabled-incidents.sqlite3"),
             "COLORTRACE_RESPONSE_PLAN_DATABASE_PATH": str(tmp_path / "disabled-plans.sqlite3"),
+            "COLORTRACE_RECOVERY_DATABASE_PATH": str(tmp_path / "disabled-recovery.sqlite3"),
         }
     )
     default_app = create_application(

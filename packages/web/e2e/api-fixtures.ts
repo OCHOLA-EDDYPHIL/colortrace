@@ -4,11 +4,13 @@ import type {
   IncidentSummary,
   IncidentWorkspaceSource,
   HumanAuditEvent,
+  RecoveryReview,
   ResponsePlanReview,
   TaskRecord,
 } from "@colortrace/api-client";
 import { canonicalJsonSha256 } from "@colortrace/workspace-model";
 import { cloneReplayFixture } from "@colortrace/workspace-model/test-fixtures";
+import { recoveryReviewFixture } from "@colortrace/workspace-model/recovery-test-fixture";
 import type { Page } from "@playwright/test";
 
 import { responsePlanReviewFixture } from "../test/response-plan-fixture.ts";
@@ -29,12 +31,28 @@ export type CapturedApiRequest = {
 export type PreparedApi = {
   readonly incident: IncidentSummary;
   readonly replay: IncidentReplay;
+  readonly recovery: RecoveryReview | null;
   readonly responsePlan: ResponsePlanReview;
   readonly source: IncidentWorkspaceSource;
 };
 
-function preparedApi(providerExcerpt?: string, removedValidatorEvidenceId?: string): PreparedApi {
+function preparedApi(
+  providerExcerpt?: string,
+  removedValidatorEvidenceId?: string,
+  recovery: RecoveryReview | null = null,
+): PreparedApi {
   const replay = cloneReplayFixture() as Mutable<ReturnType<typeof cloneReplayFixture>>;
+  if (recovery !== null) {
+    const incidentId = recovery.snapshot.incident_id;
+    replay.incident.incident_id = incidentId;
+    replay.task.incident_id = incidentId;
+    replay.alert.incident_id = incidentId;
+    replay.packet.incident_id = incidentId;
+    for (const evidence of replay.evidence) evidence.incident_id = incidentId;
+    for (const result of replay.validator_results) result.incident_id = incidentId;
+    for (const invocation of replay.invocations) invocation.incident_id = incidentId;
+    for (const event of replay.trace_events) event.incident_id = incidentId;
+  }
   if (providerExcerpt !== undefined) {
     if (replay.evidence.length === 0) throw new Error("Canonical replay has no provider evidence");
     for (const evidence of replay.evidence) evidence.display_excerpt = providerExcerpt;
@@ -100,6 +118,7 @@ function preparedApi(providerExcerpt?: string, removedValidatorEvidenceId?: stri
   return {
     incident,
     replay: typedReplay,
+    recovery,
     responsePlan: responsePlanReviewFixture({ incidentId: incident.incident_id }),
     source,
   };
@@ -111,6 +130,12 @@ export async function installPreparedApi(
     readonly providerExcerpt?: string;
     readonly removedValidatorEvidenceId?: string;
     readonly approvalMode?: "ambiguous-once" | "normal" | "refresh-fails-once";
+    readonly closureMode?: "ambiguous-once" | "normal";
+    readonly recoveryState?:
+      | "closed"
+      | "recovery_failed"
+      | "recovery_unresolved"
+      | "recovery_verified";
     readonly responsePlanCommandId?: string;
     readonly responsePlanState?: ResponsePlanReview["state"];
     readonly responsePlanUncertainty?: boolean;
@@ -123,7 +148,15 @@ export async function installPreparedApi(
   readonly data: PreparedApi;
   readonly oidcToken: string | null;
 }> {
-  const data = preparedApi(options.providerExcerpt, options.removedValidatorEvidenceId);
+  const initialRecovery =
+    options.recoveryState === undefined
+      ? null
+      : (recoveryReviewFixture(options.recoveryState) as unknown as RecoveryReview);
+  const data = preparedApi(
+    options.providerExcerpt,
+    options.removedValidatorEvidenceId,
+    initialRecovery,
+  );
   let responsePlan = responsePlanReviewFixture({
     commandId: options.responsePlanCommandId,
     incidentId: data.incident.incident_id,
@@ -137,6 +170,7 @@ export async function installPreparedApi(
         }
       : {}),
   });
+  let recovery = initialRecovery;
   const oidcToken =
     options.oidcToken === undefined
       ? `acceptance-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
@@ -166,6 +200,7 @@ export async function installPreparedApi(
   };
   const captured: CapturedApiRequest[] = [];
   let approvalAttempts = 0;
+  let closureAttempts = 0;
   let failNextPlanRead = false;
 
   await page.route("**/v1/**", async (route) => {
@@ -192,7 +227,7 @@ export async function installPreparedApi(
           schema: "operator-session/v1",
           subject: "operator@example.test",
           display_name: "Pipeline operator",
-          roles: ["operator", "response-plan.editor", "response-plan.approver"],
+          roles: ["operator", "response-plan.editor", "response-plan.approver", "recovery.closer"],
           issuer: "https://identity.example.test/tenant",
           audience: "colortrace-api",
           principal_kind: "human",
@@ -286,6 +321,43 @@ export async function installPreparedApi(
         state: "rejected",
       });
       await route.fulfill({ json: responsePlan.decision });
+      return;
+    }
+    if (url.pathname === `/v1/incidents/${data.incident.incident_id}/recovery`) {
+      if (request.method() !== "GET") {
+        await route.fulfill({ json: { code: "method-not-allowed" }, status: 405 });
+        return;
+      }
+      if (recovery === null) {
+        await route.fulfill({ json: { code: "recovery-not-found" }, status: 404 });
+        return;
+      }
+      await route.fulfill({ json: recovery });
+      return;
+    }
+    if (
+      url.pathname === `/v1/incidents/${data.incident.incident_id}/recovery/close` &&
+      request.method() === "POST"
+    ) {
+      if (oidcToken === null || request.headers().authorization !== `Bearer ${oidcToken}`) {
+        await route.fulfill({ json: { code: "authentication-required" }, status: 401 });
+        return;
+      }
+      if (recovery === null || recovery.packet === null) {
+        await route.fulfill({ json: { code: "recovery-not-found" }, status: 404 });
+        return;
+      }
+      closureAttempts += 1;
+      const body = request.postDataJSON() as { idempotency_key: string; reason: string };
+      recovery = recoveryReviewFixture("closed", {
+        closureIdempotencyKey: body.idempotency_key,
+        closureReason: body.reason,
+      }) as unknown as RecoveryReview;
+      if (options.closureMode === "ambiguous-once" && closureAttempts === 1) {
+        await route.abort("connectionreset");
+        return;
+      }
+      await route.fulfill({ json: recovery.closure });
       return;
     }
     if (request.method() !== "GET") {

@@ -2195,6 +2195,111 @@ class SQLiteSimulatorRepository:
             ).fetchone()
             return None if outcome is None else self.decode(outcome["document"])
 
+    def outcome_for_incident(
+        self,
+        incident_id: str,
+        *,
+        expected_outcome_sha256: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Replay one exact terminal outcome without selecting by recency."""
+
+        incident = _require_identifier(incident_id, code="incident-id-invalid")
+        if expected_outcome_sha256 is not None:
+            try:
+                expected = require_digest(
+                    expected_outcome_sha256,
+                    code="expected-outcome-digest-invalid",
+                )
+            except SimulatorAuthorityError as error:
+                raise SimulatorRepositoryError(error.code) from error
+        else:
+            expected = None
+        with self.transaction(write=False) as connection:
+            rows = connection.execute(
+                "SELECT action.action_id, action.outcome_sha256, outcome.document "
+                "FROM simulator_actions AS action "
+                "JOIN simulator_action_outcomes AS outcome ON outcome.action_id = action.action_id "
+                "WHERE action.incident_id = ? ORDER BY action.action_id",
+                (incident,),
+            ).fetchall()
+            if expected is not None:
+                selected = [row for row in rows if row["outcome_sha256"] == expected]
+                if not selected:
+                    if rows:
+                        raise SimulatorRepositoryError("incident-outcome-digest-conflict")
+                    return None
+            else:
+                selected = list(rows)
+            if not selected:
+                return None
+            if len(selected) != 1:
+                raise SimulatorRepositoryError("incident-outcome-ambiguous")
+            row = selected[0]
+            self._validate_history(connection, cast(str, row["action_id"]))
+            document = self.decode(row["document"])
+            if (
+                document.get("incident_id") != incident
+                or document.get("outcome_sha256") != row["outcome_sha256"]
+                or (expected is not None and document.get("outcome_sha256") != expected)
+            ):
+                raise SimulatorRepositoryError("incident-outcome-binding-invalid")
+            return document
+
+    @contextmanager
+    def guard_current_recovery_outcome(
+        self,
+        incident_id: str,
+        expected_outcome_sha256: str,
+    ) -> Iterator[dict[str, Any]]:
+        """Fence action mutations while one exact successful outcome is closed."""
+
+        incident = _require_identifier(incident_id, code="incident-id-invalid")
+        try:
+            expected = require_digest(
+                expected_outcome_sha256,
+                code="expected-outcome-digest-invalid",
+            )
+        except SimulatorAuthorityError as error:
+            raise SimulatorRepositoryError(error.code) from error
+        # BEGIN IMMEDIATE is intentional: it waits for an earlier writer and prevents
+        # a later action admission/completion from committing until closure exits.
+        with self.transaction(write=True) as connection:
+            rows = connection.execute(
+                "SELECT action.rowid AS admission_sequence, action.action_id, "
+                "action.status, action.outcome_sha256, outcome.document "
+                "FROM simulator_actions AS action "
+                "LEFT JOIN simulator_action_outcomes AS outcome "
+                "ON outcome.action_id = action.action_id "
+                "WHERE action.incident_id = ? ORDER BY admission_sequence",
+                (incident,),
+            ).fetchall()
+            if not rows:
+                raise SimulatorRepositoryError("incident-outcome-not-found")
+            selected = [row for row in rows if row["outcome_sha256"] == expected]
+            if len(selected) != 1:
+                raise SimulatorRepositoryError("incident-outcome-not-current")
+            current = selected[0]
+            if current["status"] != "succeeded" or current["document"] is None:
+                raise SimulatorRepositoryError("incident-outcome-not-current")
+            admission_sequence = cast(int, current["admission_sequence"])
+            for row in rows:
+                self._validate_history(connection, cast(str, row["action_id"]))
+                if row["action_id"] == current["action_id"]:
+                    continue
+                if (
+                    row["status"] not in {"succeeded", "failed"}
+                    or cast(int, row["admission_sequence"]) > admission_sequence
+                ):
+                    raise SimulatorRepositoryError("incident-outcome-not-current")
+            document = self.decode(current["document"])
+            if (
+                document.get("status") != "succeeded"
+                or document.get("incident_id") != incident
+                or document.get("outcome_sha256") != expected
+            ):
+                raise SimulatorRepositoryError("incident-outcome-binding-invalid")
+            yield document
+
     @staticmethod
     def _validate_telemetry_receipt(
         receipt: Mapping[str, Any],

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/recovery-closure-result-v1.schema.json",
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"}},
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "closure_id", "closure_sha256", "incident_id", "workflow_id", "workflow_version_before", "workflow_version_after", "packet_id", "packet_sha256", "outcome_id", "outcome_sha256", "actor", "authorized_role", "reason", "closed_at", "idempotency_key", "audit_event_id", "audit_event_sha256"],
+  "properties": {
+    "schema": {"const": "recovery-closure-result/v1"},
+    "closure_id": {"type": "string", "pattern": "^recovery-closure:[0-9a-f]{64}$"},
+    "closure_sha256": {"$ref": "#/$defs/digest"},
+    "incident_id": {"$ref": "#/$defs/id"},
+    "workflow_id": {"$ref": "#/$defs/id"},
+    "workflow_version_before": {"type": "integer", "minimum": 1},
+    "workflow_version_after": {"type": "integer", "minimum": 2},
+    "packet_id": {"$ref": "#/$defs/id"},
+    "packet_sha256": {"$ref": "#/$defs/digest"},
+    "outcome_id": {"$ref": "#/$defs/id"},
+    "outcome_sha256": {"$ref": "#/$defs/digest"},
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "subject", "audience", "display_name", "kind"],
+      "properties": {
+        "issuer": {"type": "string", "minLength": 1, "maxLength": 512},
+        "subject": {"type": "string", "minLength": 1, "maxLength": 255},
+        "audience": {"type": "string", "minLength": 1, "maxLength": 255},
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "kind": {"const": "human"}
+      }
+    },
+    "authorized_role": {"const": "recovery.closer"},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 512},
+    "closed_at": {"type": "string", "format": "date-time"},
+    "idempotency_key": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "audit_event_id": {"$ref": "#/$defs/id"},
+    "audit_event_sha256": {"$ref": "#/$defs/digest"}
+  }
+}

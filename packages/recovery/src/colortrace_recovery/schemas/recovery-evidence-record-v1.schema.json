@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/recovery-evidence-record-v1.schema.json",
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"}
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "evidence_id", "evidence_sha256", "event_id", "signal", "subject_kind", "subject_id", "trace_id", "outcome_id", "outcome_sha256", "action_id", "operation_id", "observed_at", "emitted_at", "retrieved_at", "clock_provenance", "clock_skew_milliseconds", "truncated", "source_label", "source_envelope_sha256", "source_envelope"],
+  "properties": {
+    "schema": {"const": "recovery-evidence-record/v1"},
+    "evidence_id": {"type": "string", "pattern": "^recovery-evidence:[0-9a-f]{64}$"},
+    "evidence_sha256": {"$ref": "#/$defs/digest"},
+    "event_id": {"$ref": "#/$defs/id"},
+    "signal": {"enum": ["metric", "log", "trace"]},
+    "subject_kind": {"enum": ["command", "safe"]},
+    "subject_id": {"$ref": "#/$defs/id"},
+    "trace_id": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^(?!0{32}$)[0-9a-f]{32}$"}]},
+    "outcome_id": {"$ref": "#/$defs/id"},
+    "outcome_sha256": {"$ref": "#/$defs/digest"},
+    "action_id": {"$ref": "#/$defs/id"},
+    "operation_id": {"$ref": "#/$defs/id"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "emitted_at": {"type": "string", "format": "date-time"},
+    "retrieved_at": {"type": "string", "format": "date-time"},
+    "clock_provenance": {"$ref": "#/$defs/id"},
+    "clock_skew_milliseconds": {"type": "integer", "minimum": -86400000, "maximum": 86400000},
+    "truncated": {"type": "boolean"},
+    "source_label": {"$ref": "#/$defs/id"},
+    "source_envelope_sha256": {"$ref": "#/$defs/digest"},
+    "source_envelope": {"type": "object", "maxProperties": 128}
+  }
+}

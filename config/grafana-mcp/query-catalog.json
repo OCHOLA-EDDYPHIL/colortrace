@@ -30,6 +30,29 @@
       "retry_policy": "never"
     }
   },
+  "simulator_action_templates": {
+    "log.simulator-action-events": {
+      "tool": "query_loki_logs",
+      "result_kind": "log",
+      "maximum_bytes": 262144,
+      "maximum_items": 200,
+      "retry_policy": "one-trusted-transient"
+    },
+    "metric.simulator-action-observations": {
+      "tool": "query_prometheus",
+      "result_kind": "metric",
+      "maximum_bytes": 262144,
+      "maximum_items": 500,
+      "retry_policy": "one-trusted-transient"
+    },
+    "trace.simulator-action-command": {
+      "tool": "tempo_get-trace",
+      "result_kind": "trace",
+      "maximum_bytes": 2097152,
+      "maximum_items": 1,
+      "retry_policy": "never"
+    }
+  },
   "limits": {
     "maximum_calls": 8,
     "maximum_calls_in_flight": 2,

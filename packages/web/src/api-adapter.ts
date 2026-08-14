@@ -1,14 +1,18 @@
 import {
   approveResponsePlan,
+  closeRecovery as closeRecoveryRequest,
   createClient,
   editResponsePlan,
   getIncidentWorkspace,
   getOperatorSession,
+  getRecoveryReview,
   getResponsePlanReview,
   type IncidentSummary,
   type IncidentWorkspaceSource,
   listIncidents,
   type OperatorSession,
+  type RecoveryClosureResult,
+  type RecoveryReview,
   type ResponsePlan,
   type ResponsePlanDecision,
   type ResponsePlanReview,
@@ -26,6 +30,12 @@ export type IncidentReadAdapter = {
     plan: ResponsePlan,
     idempotencyKey: string,
   ) => Promise<ResponsePlanDecision>;
+  readonly closeRecovery: (
+    incidentId: string,
+    review: RecoveryReview,
+    reason: string,
+    idempotencyKey: string,
+  ) => Promise<RecoveryClosureResult>;
   readonly editResponsePlan: (
     incidentId: string,
     plan: ResponsePlan,
@@ -36,6 +46,10 @@ export type IncidentReadAdapter = {
     incidentId: string,
     signal?: AbortSignal,
   ) => Promise<ResponsePlanReview | null>;
+  readonly getRecoveryReview: (
+    incidentId: string,
+    signal?: AbortSignal,
+  ) => Promise<RecoveryReview | null>;
   readonly getSession: (signal?: AbortSignal) => Promise<OperatorSession>;
   readonly getWorkspace: (
     incidentId: string,
@@ -121,6 +135,31 @@ export function createIncidentReadAdapter({
         },
         { client, throwOnError: true },
       ),
+    closeRecovery: (incidentId, review, reason, idempotencyKey) => {
+      const packet = review.packet;
+      if (packet === null) {
+        return Promise.reject(
+          new IncidentApiError(null, "recovery-packet-missing", new Error("packet missing")),
+        );
+      }
+      return closeRecoveryRequest(
+        {
+          incidentId,
+          recoveryClosureRequest: {
+            schema: "recovery-closure-request/v1",
+            expected_incident_version: review.current_incident_version,
+            expected_workflow_version: review.workflow_version,
+            expected_packet_id: packet.packet_id,
+            expected_packet_sha256: packet.packet_sha256,
+            expected_outcome_id: packet.outcome_id,
+            expected_outcome_sha256: packet.outcome_sha256,
+            reason,
+            idempotency_key: idempotencyKey,
+          },
+        },
+        { client, throwOnError: true },
+      );
+    },
     editResponsePlan: (incidentId, plan, revision, idempotencyKey) =>
       editResponsePlan(
         {
@@ -159,6 +198,21 @@ export function createIncidentReadAdapter({
     getResponsePlan: async (incidentId, signal) => {
       try {
         return await getResponsePlanReview(
+          { incidentId },
+          {
+            client,
+            throwOnError: true,
+            ...(signal === undefined ? {} : { signal }),
+          },
+        );
+      } catch (error) {
+        if (error instanceof IncidentApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    getRecoveryReview: async (incidentId, signal) => {
+      try {
+        return await getRecoveryReview(
           { incidentId },
           {
             client,

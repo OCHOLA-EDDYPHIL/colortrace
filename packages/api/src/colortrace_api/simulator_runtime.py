@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
 
-from colortrace_simulator import DispatchIdentity
+from colortrace_simulator import DispatchIdentity, RecoveryPublicationPort
 from colortrace_simulator.authority import ExecutorAuthorization
 from colortrace_simulator.repository import SimulatorRepositoryError
 from fastapi import FastAPI
@@ -264,12 +264,14 @@ class LocalSimulatorRuntime:
         repository: PendingActionRepository,
         service: RuntimeSimulatorService,
         telemetry_sink: object,
+        recovery_publication: RecoveryPublicationPort | None = None,
         poll_seconds: float = 1.0,
         join_timeout_seconds: float = 120.0,
     ) -> None:
         self.repository = repository
         self.service = service
         self.telemetry_sink = telemetry_sink
+        self.recovery_publication = recovery_publication
         self.runner = SimulatorSerialRunner(
             repository=repository,
             service=service,

@@ -7,9 +7,13 @@ describe("canonical API contract", () => {
   it("exposes incident intake, workspace reads, and authenticated session projection", () => {
     expect(canonicalContract.openapi).toMatch(/^3\.1\./u);
     expect(Object.keys(canonicalContract.paths).sort()).toEqual([
+      "/internal/v1/incidents/{incidentId}/recovery/verifications",
       "/internal/v1/incidents/{incidentId}/simulator-actions",
+      "/private/v1/recovery-verification-tasks/{taskKey}",
       "/v1/incidents",
       "/v1/incidents/{incidentId}",
+      "/v1/incidents/{incidentId}/recovery",
+      "/v1/incidents/{incidentId}/recovery/close",
       "/v1/incidents/{incidentId}/replay",
       "/v1/incidents/{incidentId}/response-plan",
       "/v1/incidents/{incidentId}/response-plan/approve",
@@ -20,6 +24,13 @@ describe("canonical API contract", () => {
       "/v1/incidents/{incidentId}/workspace",
       "/v1/session",
     ]);
+    expect(
+      canonicalContract.paths["/internal/v1/incidents/{incidentId}/recovery/verifications"].post
+        .operationId,
+    ).toBe("admitRecoveryVerification");
+    expect(
+      canonicalContract.paths["/private/v1/recovery-verification-tasks/{taskKey}"].post.operationId,
+    ).toBe("executeRecoveryVerificationTask");
     expect(
       canonicalContract.paths["/internal/v1/incidents/{incidentId}/simulator-actions"].post
         .operationId,
@@ -32,6 +43,12 @@ describe("canonical API contract", () => {
     expect(canonicalContract.paths["/v1/incidents/{incidentId}/replay"].get.operationId).toBe(
       "replayIncident",
     );
+    expect(canonicalContract.paths["/v1/incidents/{incidentId}/recovery"].get.operationId).toBe(
+      "getRecoveryReview",
+    );
+    expect(
+      canonicalContract.paths["/v1/incidents/{incidentId}/recovery/close"].post.operationId,
+    ).toBe("closeRecovery");
     expect(canonicalContract.paths["/v1/incidents/{incidentId}/workspace"].get.operationId).toBe(
       "getIncidentWorkspace",
     );

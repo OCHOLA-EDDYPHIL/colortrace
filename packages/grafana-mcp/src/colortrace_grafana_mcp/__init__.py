@@ -7,8 +7,12 @@ from .adapter import (
     EvidenceAdapter,
     EvidenceBatch,
     ExecutionControls,
+    NormalizedActionObservation,
     OfficialMcpRuntime,
     QueryCatalog,
+    SimulatorActionEvidenceBatch,
+    SimulatorActionEvidenceProjection,
+    normalize_simulator_action_observations,
     validate_evidence_envelope,
 )
 
@@ -19,7 +23,11 @@ __all__ = [
     "EvidenceAdapter",
     "EvidenceBatch",
     "ExecutionControls",
+    "NormalizedActionObservation",
     "OfficialMcpRuntime",
     "QueryCatalog",
+    "SimulatorActionEvidenceBatch",
+    "SimulatorActionEvidenceProjection",
+    "normalize_simulator_action_observations",
     "validate_evidence_envelope",
 ]

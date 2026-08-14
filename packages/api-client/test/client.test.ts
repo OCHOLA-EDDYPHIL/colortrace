@@ -1,6 +1,7 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
+  admitRecoveryVerification,
   type AdmitSimulatorActionRequest,
   admitSimulatorAction,
   type AlertIntake,
@@ -9,10 +10,15 @@ import {
   createIncident,
   type DeterministicResult,
   type EvidenceEnvelope,
+  executeRecoveryVerificationTask,
   getIncident,
   type IncidentReplay,
   type ModelInvocation,
   replayIncident,
+  type RecoveryVerificationAdmission,
+  type RecoveryVerificationAdmissionRequest,
+  type RecoveryVerificationTask,
+  type RecoveryVerificationTaskResult,
   type ResponsePacket,
   type SimulatorActionAdmission,
   type TraceEvent,
@@ -182,5 +188,83 @@ describe("generated incident client", () => {
       "https://example.invalid/internal/v1/incidents/incident%2F001/simulator-actions",
     );
     await expect(requests[0]?.json()).resolves.toEqual(body);
+  });
+
+  it("keeps verification admission separate from private task execution", async () => {
+    const requests: Request[] = [];
+    const taskKey = `recovery-verification-task:${"1".repeat(64)}`;
+    const admissionRequest: RecoveryVerificationAdmissionRequest = {
+      schema: "recovery-verification-admission-request/v1",
+      expected_incident_version: 4,
+      expected_outcome_sha256: `sha256:${"2".repeat(64)}`,
+      idempotency_key: "test-test-test",
+    };
+    const admission: RecoveryVerificationAdmission = {
+      ...admissionRequest,
+      schema: "recovery-verification-admission/v1",
+      task_key: taskKey,
+      incident_id: "incident/001",
+      payload_sha256: `sha256:${"3".repeat(64)}`,
+      duplicate: false,
+      state: "queued",
+    };
+    const task: RecoveryVerificationTask = {
+      schema: "recovery-verification-task/v1",
+      task_key: admission.task_key,
+      incident_id: admission.incident_id,
+      expected_incident_version: admission.expected_incident_version,
+      expected_outcome_sha256: admission.expected_outcome_sha256,
+      payload_sha256: admission.payload_sha256,
+      idempotency_key: admission.idempotency_key,
+    };
+    const result: RecoveryVerificationTaskResult = {
+      schema: "recovery-verification-task-result/v1",
+      result_id: `recovery-verification-task-result:${"4".repeat(64)}`,
+      result_sha256: `sha256:${"4".repeat(64)}`,
+      task_key: task.task_key,
+      payload_sha256: task.payload_sha256,
+      incident_id: task.incident_id,
+      expected_incident_version: task.expected_incident_version,
+      expected_outcome_sha256: task.expected_outcome_sha256,
+      status: "unresolved",
+      packet_id: null,
+      packet_sha256: null,
+      reason_code: "recovery-verification-worker-failed",
+    };
+    const generatedClient = createClient({
+      baseUrl: "https://example.invalid",
+      fetch: async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        requests.push(request);
+        const response = request.url.includes("/private/") ? result : admission;
+        return new Response(JSON.stringify(response), {
+          headers: { "Content-Type": "application/json" },
+          status: request.url.includes("/private/") ? 200 : 202,
+        });
+      },
+    });
+
+    await expect(
+      admitRecoveryVerification(
+        {
+          incidentId: "incident/001",
+          recoveryVerificationAdmissionRequest: admissionRequest,
+        },
+        { client: generatedClient, throwOnError: true },
+      ),
+    ).resolves.toEqual(admission);
+    await expect(
+      executeRecoveryVerificationTask(
+        { taskKey, recoveryVerificationTask: task },
+        { client: generatedClient, throwOnError: true },
+      ),
+    ).resolves.toEqual(result);
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://example.invalid/internal/v1/incidents/incident%2F001/recovery/verifications",
+      `https://example.invalid/private/v1/recovery-verification-tasks/${encodeURIComponent(taskKey)}`,
+    ]);
+    await expect(requests[0]?.json()).resolves.toEqual(admissionRequest);
+    await expect(requests[1]?.json()).resolves.toEqual(task);
   });
 });
