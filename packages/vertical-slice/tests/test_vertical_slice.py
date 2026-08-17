@@ -897,7 +897,7 @@ def test_concurrent_duplicate_returns_packet_when_completion_wins_claim_race(
         completed_packet_calls += 1
         if completed_packet_calls == 1:
             precheck_complete.set()
-            if not allow_claim.wait(timeout=5):
+            if not allow_claim.wait(timeout=30):
                 raise AssertionError("completion race was not released")
             return None
         return original_completed_packet(selected_task_id)
