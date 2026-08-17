@@ -16,7 +16,7 @@ concurrency:
 jobs:
   secret-scan:
     name: Secret scan
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, colortrace-secret]
     timeout-minutes: 10
     steps:
       - name: Check out repository history
@@ -31,7 +31,7 @@ jobs:
 
   quality:
     name: Quality
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, colortrace-docker]
     timeout-minutes: 45
     steps:
       - name: Check out repository
