@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -137,8 +138,12 @@ class ResponsePlanCoordinator:
         if len(causal_values) != 1:
             raise ResponsePlanError("canonical-scope-invalid")
         causal_resource = next(iter(causal_values))
-        if not isinstance(causal_resource, str):
+        if (
+            not isinstance(causal_resource, str)
+            or re.fullmatch(r"[0-9a-f]{64}", causal_resource) is None
+        ):
             raise ResponsePlanError("canonical-scope-invalid")
+        causal_resource_target = f"sha256:{causal_resource}"
 
         def scoped_target(value: Mapping[str, Any]) -> dict[str, str]:
             kind = value.get("kind")
@@ -148,7 +153,7 @@ class ResponsePlanCoordinator:
             return _target(cast(str, kind), identifier)
 
         targets = (
-            _target("color-resource", causal_resource),
+            _target("color-resource", causal_resource_target),
             *(scoped_target(item) for item in affected),
         )
         exclusions = tuple(scoped_target(item) for item in safe)
