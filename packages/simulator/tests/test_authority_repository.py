@@ -4,6 +4,7 @@ import copy
 import sqlite3
 from collections import Counter
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -768,12 +769,29 @@ class DispatchSource:
         self.proof = proof
         self.calls = 0
         self.failure: str | None = None
+        self.guard_failure: str | None = None
+        self.guard_calls = 0
+        self.guard_active = False
+        self.guard_exit_probe: Any = None
 
     def load_current_consumed(self, _identity: DispatchIdentity) -> StoredDispatchProof:
         self.calls += 1
         if self.failure is not None:
             raise ResponsePlanError(self.failure)
         return self.proof
+
+    @contextmanager
+    def guard_current_consumed(self, _identity: DispatchIdentity) -> Any:
+        self.guard_calls += 1
+        if self.guard_failure is not None:
+            raise ResponsePlanError(self.guard_failure)
+        self.guard_active = True
+        try:
+            yield self.proof
+        finally:
+            if self.guard_exit_probe is not None:
+                self.guard_exit_probe()
+            self.guard_active = False
 
 
 class SequenceClock:
@@ -801,12 +819,16 @@ class Publication:
         self.prepare_calls = 0
         self.promotion_calls = 0
         self.snapshot_failure: str | None = None
+        self.crash_before_swap = False
         self.crash_after_swap = False
         self.promoted = False
         self.conflict = False
         self.prepared: PreparedPublication | None = None
         self.discard_calls = 0
         self.heartbeat_probe: Any = None
+        self.cas_probe: Any = None
+        self.inspect_probe: Any = None
+        self.inspect_observed_at = "2026-08-13T21:00:38.000Z"
         self.prepare_failure_after_heartbeat: str | None = None
 
     def snapshot_for_action(self, action: Any) -> Any:
@@ -836,6 +858,10 @@ class Publication:
 
     def compare_and_swap(self, value: PreparedPublication) -> PromotionResult:
         self.promotion_calls += 1
+        if self.cas_probe is not None:
+            self.cas_probe()
+        if self.crash_before_swap:
+            raise RuntimeError("worker died before pointer swap")
         if self.conflict:
             return PromotionResult(
                 state="conflict",
@@ -877,11 +903,33 @@ class Publication:
         )
 
     def inspect_operation(self, operation_id: str) -> PublicationOperationState:
-        if not self.conflict:
-            raise AssertionError("only conflicted candidates require service cleanup")
         if self.prepared is None:
             return PublicationOperationState(state="not-found", prepared=None, promotion=None)
         assert operation_id == self.prepared.operation_id
+        if not self.conflict:
+            promotion = (
+                PromotionResult(
+                    state="already-promoted",
+                    before_pointer_sha256=self.prepared.candidate_pointer_sha256,
+                    before_generation=self.prepared.candidate_generation,
+                    after_pointer_sha256=self.prepared.candidate_pointer_sha256,
+                    after_generation=self.prepared.candidate_generation,
+                    pointer_changed=False,
+                    recovered=True,
+                    promoted_at=self.inspect_observed_at,
+                    observed_at=self.inspect_observed_at,
+                )
+                if self.promoted
+                else None
+            )
+            operation = PublicationOperationState(
+                state="promoted" if promotion is not None else "sealed",
+                prepared=self.prepared,
+                promotion=promotion,
+            )
+            if self.inspect_probe is not None:
+                self.inspect_probe()
+            return operation
         return PublicationOperationState(
             state="conflict",
             prepared=self.prepared,
@@ -1159,6 +1207,143 @@ def test_plan_edit_invalidation_blocks_admitted_action_before_publication(tmp_pa
     assert outcome["reason_codes"] == ["dispatch-authority-stale"]
     assert outcome["publication_intent_id"] is None
     assert publication.snapshot_calls == publication.prepare_calls == 0
+
+
+def test_dispatch_revoked_during_prepare_fails_before_intent_or_publication(
+    tmp_path: Path,
+) -> None:
+    identity, proof = dispatch_proof()
+    source = DispatchSource(proof)
+    repository = SQLiteSimulatorRepository(tmp_path / "simulator.db")
+    executor_boundary = SimulatorExecutorBoundary()
+    publication = Publication()
+    publication.heartbeat_probe = lambda: setattr(
+        source, "guard_failure", "dispatch-current-plan-invalid"
+    )
+    service = SimulatorActionService(
+        repository=repository,
+        dispatch_source=source,
+        authority_boundary=SimulatorAuthorityBoundary(),
+        executor_boundary=executor_boundary,
+        publication=publication,
+        clock=StepClock(NOW + timedelta(seconds=4)),
+        trace_id_factory=iter(f"{index:032x}" for index in range(1, 6)).__next__,
+    )
+    service.admit(identity, executor=executor_authorization(executor_boundary))
+
+    outcome = service.execute(identity, owner="worker-a")
+
+    assert outcome["status"] == "failed"
+    assert outcome["reason_codes"] == ["dispatch-authority-stale"]
+    assert outcome["publication_intent_id"] is None
+    assert publication.promotion_calls == 0
+    assert publication.discard_calls == 1
+    assert source.guard_calls == 1
+
+
+def test_dispatch_guard_spans_publication_cas_and_terminal_commit(tmp_path: Path) -> None:
+    identity, proof = dispatch_proof()
+    source = DispatchSource(proof)
+    repository = SQLiteSimulatorRepository(tmp_path / "simulator.db")
+    executor_boundary = SimulatorExecutorBoundary()
+    publication = Publication()
+
+    def assert_guard_active() -> None:
+        assert source.guard_active
+
+    def assert_terminal_committed() -> None:
+        assert repository.outcome(identity) is not None
+
+    publication.cas_probe = assert_guard_active
+    source.guard_exit_probe = assert_terminal_committed
+    service = SimulatorActionService(
+        repository=repository,
+        dispatch_source=source,
+        authority_boundary=SimulatorAuthorityBoundary(),
+        executor_boundary=executor_boundary,
+        publication=publication,
+        clock=StepClock(NOW + timedelta(seconds=4)),
+        trace_id_factory=iter(f"{index:032x}" for index in range(1, 6)).__next__,
+    )
+    service.admit(identity, executor=executor_authorization(executor_boundary))
+
+    outcome = service.execute(identity, owner="worker-a")
+
+    assert outcome["status"] == "succeeded"
+    assert source.guard_calls == 1
+    assert source.guard_active is False
+
+
+def test_stale_crash_reconciliation_discards_intent_without_second_cas(
+    tmp_path: Path,
+) -> None:
+    identity, proof = dispatch_proof()
+    source = DispatchSource(proof)
+    repository = SQLiteSimulatorRepository(tmp_path / "simulator.db")
+    executor_boundary = SimulatorExecutorBoundary()
+    publication = Publication()
+    publication.crash_before_swap = True
+    clock = StepClock(NOW + timedelta(seconds=4))
+    service = SimulatorActionService(
+        repository=repository,
+        dispatch_source=source,
+        authority_boundary=SimulatorAuthorityBoundary(),
+        executor_boundary=executor_boundary,
+        publication=publication,
+        clock=clock,
+        trace_id_factory=iter(f"{index:032x}" for index in range(1, 6)).__next__,
+    )
+    service.admit(identity, executor=executor_authorization(executor_boundary))
+    with pytest.raises(RuntimeError, match="before pointer swap"):
+        service.execute(identity, owner="worker-a")
+
+    publication.crash_before_swap = False
+    source.guard_failure = "dispatch-current-plan-invalid"
+    clock.value = NOW + timedelta(seconds=40)
+    outcome = service.execute(identity, owner="worker-b")
+
+    assert outcome["status"] == "failed"
+    assert outcome["reason_codes"] == ["dispatch-authority-stale"]
+    assert outcome["publication_intent_id"] is not None
+    assert outcome["publication_receipt_id"] is None
+    assert publication.promotion_calls == 1
+    assert publication.discard_calls == 1
+
+
+def test_stale_reconciliation_records_prior_guarded_cas_without_repeating_action(
+    tmp_path: Path,
+) -> None:
+    identity, proof = dispatch_proof()
+    source = DispatchSource(proof)
+    repository = SQLiteSimulatorRepository(tmp_path / "simulator.db")
+    executor_boundary = SimulatorExecutorBoundary()
+    publication = Publication()
+    publication.crash_after_swap = True
+    clock = StepClock(NOW + timedelta(seconds=4))
+    service = SimulatorActionService(
+        repository=repository,
+        dispatch_source=source,
+        authority_boundary=SimulatorAuthorityBoundary(),
+        executor_boundary=executor_boundary,
+        publication=publication,
+        clock=clock,
+        trace_id_factory=iter(f"{index:032x}" for index in range(1, 6)).__next__,
+    )
+    service.admit(identity, executor=executor_authorization(executor_boundary))
+    with pytest.raises(RuntimeError, match="after pointer swap"):
+        service.execute(identity, owner="worker-a")
+
+    publication.crash_after_swap = False
+    source.guard_failure = "dispatch-current-plan-invalid"
+    publication.inspect_observed_at = "2026-08-13T21:00:41.000Z"
+    publication.inspect_probe = lambda: setattr(publication, "conflict", True)
+    clock.value = NOW + timedelta(seconds=40)
+    outcome = service.execute(identity, owner="worker-b")
+
+    assert outcome["status"] == "succeeded"
+    assert publication.conflict is True
+    assert publication.promotion_calls == 1
+    assert publication.discard_calls == 0
 
 
 def test_render_heartbeat_fences_duplicate_past_original_lease(tmp_path: Path) -> None:

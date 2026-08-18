@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
@@ -235,6 +236,33 @@ class ResponsePlanCoordinator:
             payload_sha256=identity.payload_sha256,
         )
         after = self._snapshot(incident_id)
+        return self._validated_dispatch_proof(proof, before=before, after=after)
+
+    @contextmanager
+    def guard_current_consumed(
+        self,
+        identity: DispatchIdentity,
+    ) -> Iterator[StoredDispatchProof]:
+        """Keep one exact consumed dispatch stable through publication and terminal commit."""
+
+        with self._service.guard_current_consumed_dispatch(
+            task_key=identity.task_key,
+            operation_id=identity.operation_id,
+            payload_sha256=identity.payload_sha256,
+        ) as proof:
+            plan = cast(Mapping[str, Any], proof["plan"])
+            incident_id = cast(str, plan["incident_id"])
+            before = self._snapshot(incident_id)
+            after = self._snapshot(incident_id)
+            yield self._validated_dispatch_proof(proof, before=before, after=after)
+
+    @staticmethod
+    def _validated_dispatch_proof(
+        proof: Mapping[str, Any],
+        *,
+        before: PlanAuthoritySnapshot,
+        after: PlanAuthoritySnapshot,
+    ) -> StoredDispatchProof:
         plan = cast(Mapping[str, Any], proof["plan"])
 
         def ordered_targets(values: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:

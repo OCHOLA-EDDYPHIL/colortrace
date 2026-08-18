@@ -2135,6 +2135,57 @@ class SQLiteSimulatorRepository:
             self._validate_history(connection, claim.action_id)
             return outcome
 
+    def fail_publication(
+        self,
+        claim: ActionClaim,
+        *,
+        reason_codes: Sequence[str],
+        now: datetime | str,
+    ) -> dict[str, Any]:
+        """Terminally reject a prepared intent without invoking publication CAS."""
+
+        now_value = normalize_time(now, code="outcome-time-invalid")
+        with self.transaction(write=True) as connection:
+            existing = connection.execute(
+                "SELECT document FROM simulator_action_outcomes WHERE action_id = ?",
+                (claim.action_id,),
+            ).fetchone()
+            if existing is not None:
+                self._validate_history(connection, claim.action_id)
+                return self.decode(existing["document"])
+            self._validate_history(connection, claim.action_id)
+            row = self._assert_claim(connection, claim, now=now_value)
+            if row["status"] != "publication_pending":
+                raise SimulatorRepositoryError("publication-state-conflict")
+            intent_row = connection.execute(
+                "SELECT document FROM simulator_publication_intents WHERE action_id = ?",
+                (claim.action_id,),
+            ).fetchone()
+            if intent_row is None:
+                raise SimulatorRepositoryError("publication-intent-missing")
+            intent = self.decode(intent_row["document"])
+            action = action_from_bundle(self.decode(row["bundle_document"]))
+            admission = self._admission_for_action(connection, claim.action_id)
+            outcome = self._build_outcome(
+                action=action,
+                admission=admission,
+                started_at=cast(str, row["started_at"]),
+                completed_at=now_value,
+                status="failed",
+                reason_codes=reason_codes,
+                intent=intent,
+                receipt=None,
+            )
+            self._persist_terminal(
+                connection,
+                claim=claim,
+                row=row,
+                outcome=outcome,
+                completed_at=now_value,
+            )
+            self._validate_history(connection, claim.action_id)
+            return outcome
+
     def fail_action(
         self,
         claim: ActionClaim,
