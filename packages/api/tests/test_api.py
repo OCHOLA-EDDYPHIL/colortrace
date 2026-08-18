@@ -43,6 +43,32 @@ class FakeService:
         return {"schema": "incident-workspace-source/v1", "incident_id": incident_id}
 
 
+class IdentityBearingService(FakeService):
+    def workspace(self, incident_id: str) -> dict[str, Any]:
+        return {
+            "schema": "incident-workspace-source/v1",
+            "incident_id": incident_id,
+            "credential_sha256": f"sha256:{'f' * 64}",
+            "human_events": [
+                {
+                    "actor": {
+                        "subject": "operator@example.test",
+                        "display_name": '<img src=x onerror="globalThis.compromised=true">',
+                        "issuer": "https://identity.example.test/tenant",
+                        "audience": "colortrace-api",
+                        "principal_kind": "human",
+                    }
+                }
+            ],
+        }
+
+
+class FailingService(FakeService):
+    def list_incidents(self, *, limit: int, cursor: str | None) -> dict[str, Any]:
+        del limit, cursor
+        raise RuntimeError("sensitive storage detail")
+
+
 class FakeVerifier:
     def verify(self, token: str) -> Principal:
         if token == "oidc-failure":
@@ -138,6 +164,22 @@ def test_public_incident_reads_and_bounded_list() -> None:
     assert api_client.get("/v1/incidents/example/workspace").status_code == 200
 
 
+def test_public_projection_removes_credentials_and_preserves_audit_attribution() -> None:
+    api_client = TestClient(create_app(IdentityBearingService()))
+
+    response = api_client.get("/v1/incidents/example/workspace")
+
+    assert response.status_code == 200
+    assert "credential_sha256" not in response.json()
+    assert response.json()["human_events"][0]["actor"] == {
+        "subject": "operator@example.test",
+        "display_name": '<img src=x onerror="globalThis.compromised=true">',
+        "issuer": "https://identity.example.test/tenant",
+        "audience": "colortrace-api",
+        "principal_kind": "human",
+    }
+
+
 def test_recovery_read_and_closure_are_separate_from_unconfigured_task_admission() -> None:
     recovery = FakeRecovery()
     api_client = TestClient(
@@ -225,6 +267,21 @@ def test_incident_mutation_requires_a_verified_operator() -> None:
     assert service.last_principal.principal_kind == "human"
 
 
+def test_cookie_only_intake_is_rejected_before_service_dispatch() -> None:
+    service = FakeService()
+    api_client = TestClient(create_app(service, token_verifier=FakeVerifier()))
+
+    response = api_client.post(
+        "/v1/incidents",
+        json={"incident_id": "incident-new"},
+        headers={"Cookie": "session=ambient-credential"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"code": "authentication-required"}
+    assert service.last_principal is None
+
+
 def test_verified_human_admission_persists_one_bound_audit_event(
     tmp_path: Path,
 ) -> None:
@@ -254,6 +311,38 @@ def test_verified_human_admission_persists_one_bound_audit_event(
         "audience": "colortrace-api",
         "principal_kind": "human",
     }
+
+
+def test_runnable_boundary_sets_strict_security_and_cache_headers() -> None:
+    response = client().get("/v1/incidents")
+
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["content-security-policy"] == (
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+    )
+    assert response.headers["cross-origin-resource-policy"] == "same-origin"
+    assert response.headers["permissions-policy"] == (
+        "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+    )
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+
+
+def test_uncaught_error_is_generic_and_retains_security_headers() -> None:
+    response = TestClient(
+        create_app(FailingService()),
+        raise_server_exceptions=False,
+    ).get("/v1/incidents")
+
+    assert response.status_code == 500
+    assert response.json() == {"code": "internal-server-error"}
+    assert "sensitive storage detail" not in response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["content-security-policy"] == (
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+    )
+    assert response.headers["x-content-type-options"] == "nosniff"
 
 
 def test_contract_errors_are_typed_without_internal_details() -> None:

@@ -99,6 +99,9 @@ export type IncidentWorkspaceSource = {
   replay: null | IncidentReplay;
 };
 
+/**
+ * Identity provenance carried by digest-bound audit records. Public read projections intentionally retain these fields for accountable attribution; credential material is never included.
+ */
 export type HumanAuditActor = {
   subject: OidcSubject;
   display_name: string;
@@ -971,6 +974,9 @@ export type RecoveryEvidenceRecord = {
   display_excerpt: string;
 };
 
+/**
+ * Identity provenance carried by digest-bound audit records. Public read projections intentionally retain these fields for accountable attribution; credential material is never included.
+ */
 export type RecoveryAuditActor = {
   issuer: string;
   subject: OidcSubject;
@@ -1008,6 +1014,9 @@ export type RecoveryAuditEvent = {
   };
 };
 
+/**
+ * Identity provenance carried by digest-bound audit records. Public read projections intentionally retain these fields for accountable attribution; credential material is never included.
+ */
 export type RecoveryClosureActor = {
   issuer: string;
   subject: OidcSubject;
@@ -1061,6 +1070,9 @@ export type RecoveryReview = {
   audit_events: Array<RecoveryAuditEvent>;
 };
 
+/**
+ * Identity provenance carried by digest-bound audit records. Public read projections intentionally retain these fields for accountable attribution; credential material is never included.
+ */
 export type ResponsePlanActor = {
   issuer: string;
   subject: OidcSubject;
@@ -1313,6 +1325,9 @@ export type AdmitSimulatorActionRequest = {
   payload_sha256: Digest;
 };
 
+/**
+ * Identity provenance carried by digest-bound audit records. Public read projections intentionally retain these fields for accountable attribution; credential material is never included.
+ */
 export type SimulatorExecutorActor = {
   issuer: string;
   subject: string;
@@ -1438,6 +1453,10 @@ export type CreateIncidentErrors = {
    * The bearer token is absent or invalid.
    */
   401: Error;
+  /**
+   * The verified principal lacks the exact intake role, kind, or incident membership.
+   */
+  403: Error;
   /**
    * The incident identity was already used for different alert content.
    */

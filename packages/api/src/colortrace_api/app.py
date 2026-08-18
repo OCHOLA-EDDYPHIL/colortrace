@@ -8,9 +8,10 @@ from colortrace_response_plans import ResponsePlanError
 from colortrace_simulator.authority import SimulatorAuthorityError
 from colortrace_simulator.repository import SimulatorRepositoryError
 from colortrace_vertical_slice import SliceContractError
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import RequestResponseEndpoint
 from starlette.types import Lifespan
 
 from .auth import Principal, TokenVerifier
@@ -36,6 +37,14 @@ def _problem(status: int, code: str) -> HTTPException:
 
 
 def _status_for_error(code: str) -> int:
+    if code == "principal-credential-expired":
+        return 401
+    if code in {
+        "incident-access-denied",
+        "incident-intake-kind-invalid",
+        "incident-intake-role-required",
+    }:
+        return 403
     if code in {"incident-not-found", "task-not-found"}:
         return 404
     if code in {
@@ -51,6 +60,27 @@ def _status_for_error(code: str) -> int:
     if code.endswith("-invalid") or code in {"alert-invalid", "identifier-invalid"}:
         return 400
     return 409
+
+
+def _public_projection(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _public_projection(child)
+            for key, child in value.items()
+            if key != "credential_sha256"
+        }
+    if isinstance(value, list):
+        return [_public_projection(child) for child in value]
+    if isinstance(value, tuple):
+        return [_public_projection(child) for child in value]
+    return value
+
+
+def _public_document(value: Mapping[str, Any]) -> dict[str, Any]:
+    projected = _public_projection(value)
+    if not isinstance(projected, dict):  # pragma: no cover - mapping always projects to a dict
+        raise TypeError("public-projection-invalid")
+    return projected
 
 
 def _status_for_plan_error(code: str) -> int:
@@ -148,6 +178,31 @@ def create_app(
         openapi_url=None,
         lifespan=lifespan,
     )
+
+    @app.middleware("http")
+    async def harden_response(
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        try:
+            response = await call_next(request)
+        except Exception:
+            response = JSONResponse(
+                status_code=500,
+                content={"code": "internal-server-error"},
+            )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+        )
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+        )
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        return response
 
     @app.exception_handler(SliceContractError)
     async def handle_contract_error(_request: Any, error: SliceContractError) -> JSONResponse:
@@ -247,27 +302,27 @@ def create_app(
         limit: int = Query(default=25, ge=1, le=50),
         cursor: str | None = Query(default=None, min_length=1, max_length=512),
     ) -> dict[str, Any]:
-        return service.list_incidents(limit=limit, cursor=cursor)
+        return _public_document(service.list_incidents(limit=limit, cursor=cursor))
 
     @app.get("/v1/incidents/{incident_id}")
     def get_incident(incident_id: str) -> dict[str, Any]:
-        return service.get_incident(incident_id)
+        return _public_document(service.get_incident(incident_id))
 
     @app.get("/v1/incidents/{incident_id}/replay")
     def replay_incident(incident_id: str) -> dict[str, Any]:
-        return service.replay(incident_id)
+        return _public_document(service.replay(incident_id))
 
     @app.get("/v1/incidents/{incident_id}/workspace")
     def get_workspace(incident_id: str) -> dict[str, Any]:
-        return service.workspace(incident_id)
+        return _public_document(service.workspace(incident_id))
 
     @app.get("/v1/incidents/{incident_id}/response-plan/draft")
     def get_response_plan_draft(incident_id: str) -> dict[str, Any]:
-        return plan_api().draft(incident_id)
+        return _public_document(plan_api().draft(incident_id))
 
     @app.get("/v1/incidents/{incident_id}/response-plan")
     def get_response_plan(incident_id: str) -> dict[str, Any]:
-        return plan_api().review(incident_id)
+        return _public_document(plan_api().review(incident_id))
 
     @app.post("/v1/incidents/{incident_id}/response-plan", status_code=201)
     def create_response_plan(
@@ -327,7 +382,7 @@ def create_app(
 
     @app.get("/v1/incidents/{incident_id}/recovery")
     def get_recovery(incident_id: str) -> dict[str, Any]:
-        return recovery_api().review(incident_id)
+        return _public_document(recovery_api().review(incident_id))
 
     @app.post("/internal/v1/incidents/{incident_id}/recovery/verifications", status_code=202)
     def admit_recovery_verification(

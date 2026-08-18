@@ -3,9 +3,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
-from colortrace_api import Principal, StoredIncidentService, create_app
+import pytest
+from colortrace_api import Principal, PrincipalKind, StoredIncidentService, create_app
 from colortrace_vertical_slice import SliceContractError
 from fastapi.testclient import TestClient
 
@@ -264,6 +265,74 @@ def test_service_admission_does_not_fabricate_a_human_actor() -> None:
     service.accept_alert({"incident_id": "incident-service"}, principal)
 
     assert store.accept_actors == [None]
+
+
+@pytest.mark.parametrize(
+    ("principal_kind", "roles", "incident_ids", "expires_at", "code"),
+    [
+        (
+            "human",
+            frozenset({"incident.admitter"}),
+            frozenset({"incident-new"}),
+            None,
+            "incident-intake-role-required",
+        ),
+        (
+            "service",
+            frozenset({"pipeline_td"}),
+            frozenset({"incident-new"}),
+            None,
+            "incident-intake-role-required",
+        ),
+        (
+            "human",
+            frozenset({"pipeline_td"}),
+            frozenset({"incident-other"}),
+            None,
+            "incident-access-denied",
+        ),
+        (
+            "service",
+            frozenset({"incident.admitter"}),
+            frozenset({"incident-new"}),
+            datetime(2026, 8, 13, 6, 31, 2, tzinfo=UTC),
+            "principal-credential-expired",
+        ),
+        (
+            cast(PrincipalKind, "robot"),
+            frozenset({"pipeline_td"}),
+            frozenset({"incident-new"}),
+            None,
+            "incident-intake-kind-invalid",
+        ),
+    ],
+)
+def test_intake_authority_fails_before_store_mutation(
+    principal_kind: PrincipalKind,
+    roles: frozenset[str],
+    incident_ids: frozenset[str],
+    expires_at: datetime | None,
+    code: str,
+) -> None:
+    store = RecordingStore()
+    service = StoredIncidentService(store, clock=clock)
+    principal = Principal(
+        "principal@example.test",
+        "Intake principal",
+        roles,
+        "https://identity.example.test/tenant",
+        "colortrace-api",
+        principal_kind,
+        incident_ids,
+        f"sha256:{'a' * 64}",
+        expires_at or datetime(2026, 8, 13, 7, 0, tzinfo=UTC),
+    )
+
+    with pytest.raises(SliceContractError, match=code):
+        service.accept_alert({"incident_id": "incident-new"}, principal)
+
+    assert store.accept_times == []
+    assert store.accept_actors == []
 
 
 def test_naive_clock_is_rejected_instead_of_assuming_a_timezone() -> None:
