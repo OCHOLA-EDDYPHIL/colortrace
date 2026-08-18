@@ -65,6 +65,7 @@ AUDIT_EVENT_TYPES = (
     "verification.requested",
     "verification.claimed",
     "verification.reclaimed",
+    "verification.renewed",
     "verification.completed",
     "recovery.closed",
 )

@@ -17,7 +17,7 @@
     "incident_id": {"$ref": "#/$defs/id"},
     "workflow_id": {"$ref": "#/$defs/id"},
     "sequence": {"type": "integer", "minimum": 1, "maximum": 4096},
-    "event_type": {"enum": ["verification.requested", "verification.claimed", "verification.reclaimed", "verification.completed", "recovery.closed"]},
+    "event_type": {"enum": ["verification.requested", "verification.claimed", "verification.reclaimed", "verification.renewed", "verification.completed", "recovery.closed"]},
     "actor": {
       "type": "object",
       "additionalProperties": false,
