@@ -51,6 +51,38 @@ class InventoryRecord:
         return (self.ecosystem, self.name, self.version)
 
 
+def resolved_locked_packages(root: Path) -> tuple[list[LockedPackage], list[Finding]]:
+    """Return every third-party package resolved by the repository lockfiles.
+
+    Missing lockfiles are left to the dependency policy check. This helper lets
+    narrower policies inspect whichever ecosystems are present in a fixture.
+    """
+
+    root = root.resolve()
+    python_first_party, node_first_party, findings = _project_names(root)
+    packages: list[LockedPackage] = []
+    uv_path = root / "uv.lock"
+    if uv_path.is_file():
+        python_packages, _names, lock_findings = _uv_packages(
+            root,
+            uv_path,
+            python_first_party,
+        )
+        packages.extend(python_packages)
+        findings.extend(lock_findings)
+    pnpm_path = root / "pnpm-lock.yaml"
+    if pnpm_path.is_file():
+        node_packages, _names, lock_findings = _pnpm_packages(
+            root,
+            pnpm_path,
+            node_first_party,
+            "https://registry.npmjs.org",
+        )
+        packages.extend(node_packages)
+        findings.extend(lock_findings)
+    return sorted(set(packages)), sorted_findings(findings)
+
+
 def _parse_requirement(requirement: str) -> tuple[str | None, str]:
     base = requirement.split(";", 1)[0].strip()
     match = _PYTHON_REQUIREMENT.fullmatch(base)
