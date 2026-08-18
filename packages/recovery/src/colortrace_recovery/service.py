@@ -86,12 +86,16 @@ class RecoveryVerificationService:
         claim: VerificationClaim,
     ) -> VerificationClaim:
         now = self._clock()
-        self._identity_boundary.assert_verifier(
+        actor = self._identity_boundary.assert_verifier(
             principal,
             incident_id=claim.incident_id,
             now=now,
         )
-        return self._repository.renew_claim(claim, now=timestamp(now))
+        return self._repository.renew_claim(
+            claim,
+            actor=actor,
+            now=timestamp(now),
+        )
 
     def complete_verification(
         self,

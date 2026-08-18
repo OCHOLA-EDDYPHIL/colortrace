@@ -474,6 +474,27 @@ def test_verified_packet_persists_resolvable_aggregate_and_human_closes(tmp_path
     changed = {**close_request, "reason": "Changed replay reason."}
     with pytest.raises(RecoveryError, match="idempotency-conflict"):
         closure.close(closer, packet["workflow_id"], changed)
+    for statement, code in (
+        (
+            "UPDATE recovery_closures SET result_sha256 = result_sha256 WHERE workflow_id = ?",
+            "recovery-closure-append-only",
+        ),
+        (
+            "DELETE FROM recovery_closures WHERE workflow_id = ?",
+            "recovery-closure-append-only",
+        ),
+        (
+            "DELETE FROM recovery_attempts WHERE workflow_id = ?",
+            "recovery-attempt-lifecycle",
+        ),
+        (
+            "DELETE FROM recovery_workflows WHERE workflow_id = ?",
+            "recovery-workflow-lifecycle",
+        ),
+    ):
+        with pytest.raises(sqlite3.IntegrityError, match=code):
+            with repository.transaction(write=True) as connection:
+                connection.execute(statement, (packet["workflow_id"],))
 
 
 def test_closure_idempotency_replay_cannot_cross_workflow_authority(tmp_path: Path) -> None:
@@ -1067,6 +1088,41 @@ def test_registration_replay_returns_exact_historical_attempt(tmp_path: Path) ->
         )
 
 
+def test_new_outcome_rejects_tampered_prior_workflow_status(tmp_path: Path) -> None:
+    _repository, verification, _closure, boundary, _clock = setup_services(tmp_path)
+    verifier = principal(boundary, kind="service", roles=frozenset({"recovery.verifier"}))
+    first_outcome = successful_outcome()
+    first_snapshot = snapshot_for(first_outcome)
+    first = verification.request_verification(
+        verifier,
+        first_snapshot,
+        evidence_request_for(first_snapshot),
+        idempotency_key="tampered-prior-workflow",
+    )
+    connection = sqlite3.connect(tmp_path / "recovery.sqlite3")
+    connection.execute(
+        "UPDATE recovery_workflows SET status = 'recovery_failed' WHERE workflow_id = ?",
+        (first.workflow_id,),
+    )
+    connection.commit()
+    connection.close()
+
+    second_outcome = copy.deepcopy(first_outcome)
+    second_outcome["action_id"] = f"simulator-action:{'b' * 64}"
+    second_outcome["task_key"] = f"dispatch-task:{'b' * 64}"
+    second_outcome["operation_id"] = f"dispatch-operation:{'b' * 64}"
+    second_outcome["payload_sha256"] = digest("b")
+    seal_outcome(second_outcome)
+    second_snapshot = snapshot_for(second_outcome)
+    with pytest.raises(RecoveryError, match="stored-attempt-lifecycle-invalid"):
+        verification.request_verification(
+            verifier,
+            second_snapshot,
+            evidence_request_for(second_snapshot, at=BASE + timedelta(milliseconds=100)),
+            idempotency_key="blocked-second-outcome",
+        )
+
+
 def test_append_only_evidence_and_audit_tables_reject_tamper(tmp_path: Path) -> None:
     repository, verification, _closure, boundary, _clock = setup_services(tmp_path)
     verifier = principal(boundary, kind="service", roles=frozenset({"recovery.verifier"}))
@@ -1087,3 +1143,480 @@ def test_append_only_evidence_and_audit_tables_reject_tamper(tmp_path: Path) -> 
                 "DELETE FROM recovery_audit_events WHERE workflow_id = ?",
                 (packet["workflow_id"],),
             )
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="recovery-audit-head-(append-only|invalid)",
+    ):
+        with repository.transaction(write=True) as connection:
+            connection.execute(
+                "DELETE FROM recovery_audit_heads WHERE workflow_id = ?",
+                (packet["workflow_id"],),
+            )
+    with pytest.raises(sqlite3.IntegrityError, match="recovery-audit-head-invalid"):
+        with repository.transaction(write=True) as connection:
+            connection.execute(
+                "UPDATE recovery_audit_heads SET sequence = sequence WHERE workflow_id = ?",
+                (packet["workflow_id"],),
+            )
+    with pytest.raises(sqlite3.IntegrityError, match="recovery-audit-sequence-invalid"):
+        with repository.transaction(write=True) as connection:
+            connection.execute(
+                "INSERT INTO recovery_audit_events("
+                "workflow_id, sequence, event_sha256, document) VALUES(?, ?, ?, ?)",
+                (packet["workflow_id"], 99, digest("e"), b"{}"),
+            )
+    with pytest.raises(sqlite3.IntegrityError, match="recovery-evidence-append-only"):
+        with repository.transaction(write=True) as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO recovery_evidence_records "
+                "SELECT * FROM recovery_evidence_records WHERE workflow_id = ?",
+                (packet["workflow_id"],),
+            )
+
+
+def test_claim_renewal_must_strictly_extend_the_existing_lease(tmp_path: Path) -> None:
+    repository, verification, _closure, boundary, clock = setup_services(tmp_path)
+    verifier = principal(boundary, kind="service", roles=frozenset({"recovery.verifier"}))
+    outcome = successful_outcome()
+    snapshot = snapshot_for(outcome)
+    request = evidence_request_for(snapshot)
+    attempt = verification.request_verification(
+        verifier,
+        snapshot,
+        request,
+        idempotency_key="renew-clock-regression",
+    )
+    claim = verification.claim_verification(verifier, attempt.workflow_id, owner="worker-1")
+    actor = boundary.assert_verifier(
+        verifier,
+        incident_id=attempt.incident_id,
+        now=BASE,
+    )
+
+    with pytest.raises(RecoveryError, match="claim-clock-regression"):
+        repository.renew_claim(
+            claim,
+            actor=actor,
+            now="2026-08-13T12:00:02.000Z",
+        )
+    clock.now = BASE + timedelta(seconds=1)
+    renewed = verification.renew_claim(verifier, claim)
+    assert renewed.workflow_version == claim.workflow_version + 1
+    assert [event["event_type"] for event in repository.audit_history(attempt.workflow_id)] == [
+        "verification.requested",
+        "verification.claimed",
+        "verification.renewed",
+    ]
+    connection = sqlite3.connect(tmp_path / "recovery.sqlite3")
+    connection.execute(
+        "UPDATE recovery_attempts SET updated_at = '2036-08-13T12:00:03.000Z', "
+        "claim_expires_at = '2036-08-13T12:00:33.000Z' WHERE attempt_id = ?",
+        (attempt.attempt_id,),
+    )
+    connection.commit()
+    connection.close()
+    with pytest.raises(RecoveryError, match="stored-claim-lifecycle-invalid"):
+        repository.review(attempt.workflow_id)
+
+
+def test_completion_rejects_time_before_the_current_claim(tmp_path: Path) -> None:
+    repository, verification, _closure, boundary, clock = setup_services(tmp_path)
+    verifier = principal(boundary, kind="service", roles=frozenset({"recovery.verifier"}))
+    outcome = successful_outcome()
+    snapshot = snapshot_for(outcome)
+    request = evidence_request_for(snapshot)
+    records = evidence_records(outcome)
+    attempt = verification.request_verification(
+        verifier,
+        snapshot,
+        request,
+        idempotency_key="completion-clock-regression",
+    )
+    claim = verification.claim_verification(verifier, attempt.workflow_id, owner="worker-1")
+    packet = build_recovery_packet(
+        snapshot,
+        request,
+        checks_for(snapshot, records),
+        workflow_id=attempt.workflow_id,
+        workflow_version=claim.workflow_version + 1,
+        attempt_id=attempt.attempt_id,
+        attempt_number=attempt.attempt_number,
+        evaluation_completed_at=BASE + timedelta(seconds=2),
+    )
+    clock.now = BASE - timedelta(seconds=1)
+
+    with pytest.raises(RecoveryError, match="claim-clock-regression"):
+        verification.complete_verification(
+            verifier,
+            claim,
+            packet,
+            evidence_records=records,
+        )
+    assert repository.review(attempt.workflow_id)["status"] == "verification_running"
+
+
+def _completed_recovery_database(tmp_path: Path) -> tuple[Path, str]:
+    repository, verification, _closure, boundary, _clock = setup_services(tmp_path)
+    verifier = principal(boundary, kind="service", roles=frozenset({"recovery.verifier"}))
+    outcome = successful_outcome()
+    snapshot = snapshot_for(outcome)
+    request = evidence_request_for(snapshot)
+    _claim, packet = complete(
+        verification,
+        verifier,
+        snapshot,
+        request,
+        evidence_records(outcome),
+    )
+    repository.close()
+    return tmp_path / "recovery.sqlite3", cast(str, packet["workflow_id"])
+
+
+V3_GUARD_TRIGGERS = (
+    "recovery_claim_lease_baseline_no_update",
+    "recovery_claim_lease_baseline_no_delete",
+    "recovery_claim_lease_baseline_no_replace",
+    "recovery_claim_lease_baseline_no_insert",
+    "recovery_audit_insert_no_replace",
+    "recovery_audit_insert_next",
+    "recovery_audit_head_insert_no_replace",
+    "recovery_audit_head_insert_exact",
+    "recovery_audit_head_advance_exact",
+    "recovery_audit_head_no_delete",
+    "recovery_evidence_insert_no_replace",
+    "recovery_workflow_no_delete",
+    "recovery_workflow_insert_no_replace",
+    "recovery_attempt_no_delete",
+    "recovery_attempt_insert_no_replace",
+    "recovery_closure_no_update",
+    "recovery_closure_no_delete",
+    "recovery_closure_insert_no_replace",
+)
+V3_SCHEMA_TABLES = ("recovery_claim_lease_baselines",)
+
+
+def test_default_external_connection_cannot_replace_append_only_rows(tmp_path: Path) -> None:
+    database, workflow_id = _completed_recovery_database(tmp_path)
+    connection = sqlite3.connect(database)
+    assert connection.execute("PRAGMA recursive_triggers").fetchone()[0] == 0
+    with pytest.raises(sqlite3.IntegrityError, match="recovery-evidence-append-only"):
+        connection.execute(
+            "INSERT OR REPLACE INTO recovery_evidence_records "
+            "SELECT * FROM recovery_evidence_records WHERE workflow_id = ?",
+            (workflow_id,),
+        )
+    connection.rollback()
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="recovery-audit-head-(append-only|invalid)",
+    ):
+        connection.execute(
+            "INSERT OR REPLACE INTO recovery_audit_heads "
+            "SELECT * FROM recovery_audit_heads WHERE workflow_id = ?",
+            (workflow_id,),
+        )
+    connection.rollback()
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="recovery-claim-lease-baseline-migration-only",
+    ):
+        connection.execute(
+            "INSERT INTO recovery_claim_lease_baselines("
+            "attempt_id, after_sequence, attempt_status, claim_generation, claim_owner, "
+            "lease_expires_at, updated_at) "
+            "SELECT attempt_id, 3, 'complete', claim_generation, claim_owner, "
+            "'2036-08-13T12:00:33.000Z', updated_at FROM recovery_attempts "
+            "WHERE workflow_id = ?",
+            (workflow_id,),
+        )
+    connection.rollback()
+    connection.close()
+
+
+def _rewrite_with_restored_triggers(
+    database: Path,
+    trigger_names: tuple[str, ...],
+    statements: tuple[tuple[str, tuple[Any, ...]], ...],
+) -> None:
+    connection = sqlite3.connect(database)
+    triggers = {
+        cast(str, name): cast(str, sql)
+        for name, sql in connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' "
+            f"AND name IN ({','.join('?' for _ in trigger_names)})",
+            trigger_names,
+        )
+    }
+    assert set(triggers) == set(trigger_names)
+    for name in trigger_names:
+        connection.execute(f'DROP TRIGGER "{name}"')
+    for statement, parameters in statements:
+        connection.execute(statement, parameters)
+    for name in trigger_names:
+        connection.execute(triggers[name])
+    connection.commit()
+    connection.close()
+
+
+def test_valid_v2_database_migrates_once_and_reopens_with_exact_v3_guards(
+    tmp_path: Path,
+) -> None:
+    database, workflow_id = _completed_recovery_database(tmp_path)
+    connection = sqlite3.connect(database)
+    for name in V3_GUARD_TRIGGERS:
+        connection.execute(f'DROP TRIGGER "{name}"')
+    for name in V3_SCHEMA_TABLES:
+        connection.execute(f'DROP TABLE "{name}"')
+    connection.execute("PRAGMA user_version = 2")
+    connection.commit()
+    connection.close()
+
+    migrated = SQLiteRecoveryRepository(database)
+    assert migrated.review(workflow_id)["status"] == "recovery_verified"
+    with migrated.transaction(write=False) as migrated_connection:
+        assert migrated_connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        triggers = {
+            row[0]
+            for row in migrated_connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'recovery_%'"
+            )
+        }
+    assert set(V3_GUARD_TRIGGERS).issubset(triggers)
+    migrated.close()
+    reopened = SQLiteRecoveryRepository(database)
+    assert reopened.review(workflow_id)["status"] == "recovery_verified"
+
+
+def test_v2_running_renewal_migrates_with_an_immutable_lease_baseline(tmp_path: Path) -> None:
+    repository, verification, _closure, boundary, _clock = setup_services(tmp_path)
+    verifier = principal(boundary, kind="service", roles=frozenset({"recovery.verifier"}))
+    outcome = successful_outcome()
+    snapshot = snapshot_for(outcome)
+    request = evidence_request_for(snapshot)
+    attempt = verification.request_verification(
+        verifier,
+        snapshot,
+        request,
+        idempotency_key="v2-running-renewal",
+    )
+    verification.claim_verification(verifier, attempt.workflow_id, owner="worker-1")
+    repository.close()
+    database = tmp_path / "recovery.sqlite3"
+    connection = sqlite3.connect(database)
+    for name in V3_GUARD_TRIGGERS:
+        connection.execute(f'DROP TRIGGER "{name}"')
+    for name in V3_SCHEMA_TABLES:
+        connection.execute(f'DROP TABLE "{name}"')
+    connection.execute("PRAGMA user_version = 2")
+    connection.execute(
+        "UPDATE recovery_attempts SET updated_at = '2026-08-13T12:00:04.000Z', "
+        "claim_expires_at = '2026-08-13T12:00:34.000Z' WHERE attempt_id = ?",
+        (attempt.attempt_id,),
+    )
+    connection.commit()
+    connection.close()
+
+    migrated = SQLiteRecoveryRepository(database)
+    assert migrated.review(attempt.workflow_id)["status"] == "verification_running"
+    with migrated.transaction(write=False) as migrated_connection:
+        row = migrated_connection.execute(
+            "SELECT updated_at, claim_expires_at FROM recovery_attempts WHERE attempt_id = ?",
+            (attempt.attempt_id,),
+        ).fetchone()
+    assert row["updated_at"] == "2026-08-13T12:00:04.000Z"
+    assert row["claim_expires_at"] == "2026-08-13T12:00:34.000Z"
+
+
+def test_v2_completed_renewal_migrates_with_an_immutable_lease_baseline(tmp_path: Path) -> None:
+    repository, verification, _closure, boundary, clock = setup_services(tmp_path)
+    verifier = principal(boundary, kind="service", roles=frozenset({"recovery.verifier"}))
+    outcome = successful_outcome()
+    snapshot = snapshot_for(outcome)
+    request = evidence_request_for(snapshot)
+    records = evidence_records(outcome)
+    attempt = verification.request_verification(
+        verifier,
+        snapshot,
+        request,
+        idempotency_key="v2-completed-renewal",
+    )
+    claim = verification.claim_verification(verifier, attempt.workflow_id, owner="worker-1")
+    packet = build_recovery_packet(
+        snapshot,
+        request,
+        checks_for(snapshot, records),
+        workflow_id=attempt.workflow_id,
+        workflow_version=claim.workflow_version + 1,
+        attempt_id=attempt.attempt_id,
+        attempt_number=attempt.attempt_number,
+        evaluation_completed_at=BASE + timedelta(seconds=2),
+    )
+    clock.now = BASE + timedelta(seconds=2)
+    verification.complete_verification(
+        verifier,
+        claim,
+        packet,
+        evidence_records=records,
+    )
+    repository.close()
+    database = tmp_path / "recovery.sqlite3"
+    connection = sqlite3.connect(database)
+    for name in V3_GUARD_TRIGGERS:
+        connection.execute(f'DROP TRIGGER "{name}"')
+    for name in V3_SCHEMA_TABLES:
+        connection.execute(f'DROP TABLE "{name}"')
+    connection.execute("PRAGMA user_version = 2")
+    connection.execute(
+        "UPDATE recovery_attempts SET claim_expires_at = '2026-08-13T12:00:34.000Z' "
+        "WHERE attempt_id = ?",
+        (attempt.attempt_id,),
+    )
+    connection.commit()
+    connection.close()
+
+    migrated = SQLiteRecoveryRepository(database)
+    assert migrated.review(attempt.workflow_id)["status"] == "recovery_verified"
+    with migrated.transaction(write=False) as migrated_connection:
+        stored_expiry = migrated_connection.execute(
+            "SELECT claim_expires_at FROM recovery_attempts WHERE attempt_id = ?",
+            (attempt.attempt_id,),
+        ).fetchone()[0]
+    assert stored_expiry == "2026-08-13T12:00:34.000Z"
+
+
+def test_invalid_v2_migration_rolls_back_schema_and_version_before_rejection(
+    tmp_path: Path,
+) -> None:
+    database, _workflow_id = _completed_recovery_database(tmp_path)
+    connection = sqlite3.connect(database)
+    for name in V3_GUARD_TRIGGERS:
+        connection.execute(f'DROP TRIGGER "{name}"')
+    for name in V3_SCHEMA_TABLES:
+        connection.execute(f'DROP TABLE "{name}"')
+    connection.execute("PRAGMA user_version = 2")
+    connection.execute(
+        "INSERT INTO recovery_evidence_records("
+        "evidence_id, workflow_id, attempt_id, sequence, evidence_sha256, document) "
+        "VALUES('orphan-evidence', 'orphan-workflow', 'orphan-attempt', 1, ?, ?)",
+        (digest("c"), b"{}"),
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(RecoveryError, match="database-integrity-invalid"):
+        SQLiteRecoveryRepository(database)
+    connection = sqlite3.connect(database)
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    remaining = {
+        row[0]
+        for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+    }
+    connection.close()
+    assert not set(V3_GUARD_TRIGGERS) & remaining
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "missing-head",
+        "row-mismatch",
+        "orphan-tail",
+        "attempt-mismatch",
+        "workflow-status",
+        "lease-extension",
+    ],
+)
+def test_reads_reconcile_exact_rows_head_and_lifecycle(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    database, workflow_id = _completed_recovery_database(tmp_path)
+    if tamper == "missing-head":
+        _rewrite_with_restored_triggers(
+            database,
+            ("recovery_audit_head_no_delete",),
+            (("DELETE FROM recovery_audit_heads WHERE workflow_id = ?", (workflow_id,)),),
+        )
+    elif tamper == "row-mismatch":
+        _rewrite_with_restored_triggers(
+            database,
+            ("recovery_audit_no_update",),
+            (
+                (
+                    "UPDATE recovery_audit_events SET event_sha256 = ? "
+                    "WHERE workflow_id = ? AND sequence = 1",
+                    (digest("d"), workflow_id),
+                ),
+            ),
+        )
+    elif tamper == "orphan-tail":
+        connection = sqlite3.connect(database)
+        connection.execute(
+            "INSERT INTO recovery_audit_events("
+            "workflow_id, sequence, event_sha256, document) VALUES(?, 4, ?, ?)",
+            (workflow_id, digest("e"), b"{}"),
+        )
+        connection.commit()
+        connection.close()
+    elif tamper == "attempt-mismatch":
+        connection = sqlite3.connect(database)
+        connection.execute(
+            "UPDATE recovery_attempts SET claim_generation = claim_generation + 1 "
+            "WHERE workflow_id = ?",
+            (workflow_id,),
+        )
+        connection.commit()
+        connection.close()
+    elif tamper == "workflow-status":
+        connection = sqlite3.connect(database)
+        connection.execute(
+            "UPDATE recovery_workflows SET status = 'recovery_unresolved' WHERE workflow_id = ?",
+            (workflow_id,),
+        )
+        connection.commit()
+        connection.close()
+    else:
+        connection = sqlite3.connect(database)
+        connection.execute(
+            "UPDATE recovery_attempts SET claim_expires_at = '2036-08-13T12:00:33.000Z' "
+            "WHERE workflow_id = ?",
+            (workflow_id,),
+        )
+        connection.commit()
+        connection.close()
+
+    repository = SQLiteRecoveryRepository(database)
+    with pytest.raises(RecoveryError):
+        repository.review(workflow_id)
+
+
+def test_coordinated_tail_and_head_rewind_fails_after_triggers_are_restored(
+    tmp_path: Path,
+) -> None:
+    database, workflow_id = _completed_recovery_database(tmp_path)
+    connection = sqlite3.connect(database)
+    prior = connection.execute(
+        "SELECT event_sha256 FROM recovery_audit_events WHERE workflow_id = ? AND sequence = 2",
+        (workflow_id,),
+    ).fetchone()
+    connection.close()
+    assert prior is not None
+    _rewrite_with_restored_triggers(
+        database,
+        ("recovery_audit_no_delete", "recovery_audit_head_advance_exact"),
+        (
+            (
+                "UPDATE recovery_audit_heads SET sequence = 2, event_sha256 = ? "
+                "WHERE workflow_id = ?",
+                (prior[0], workflow_id),
+            ),
+            (
+                "DELETE FROM recovery_audit_events WHERE workflow_id = ? AND sequence = 3",
+                (workflow_id,),
+            ),
+        ),
+    )
+
+    repository = SQLiteRecoveryRepository(database)
+    with pytest.raises(RecoveryError, match="stored-audit-lifecycle-invalid"):
+        repository.review(workflow_id)
