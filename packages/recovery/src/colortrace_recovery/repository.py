@@ -165,8 +165,220 @@ BEGIN
 END;
 """
 
+_SCHEMA_V3_PRE_BASELINE_SEAL_STATEMENTS = (
+    """
+CREATE TABLE IF NOT EXISTS recovery_claim_lease_baselines (
+    attempt_id TEXT PRIMARY KEY REFERENCES recovery_attempts(attempt_id),
+    after_sequence INTEGER NOT NULL CHECK (after_sequence >= 2),
+    attempt_status TEXT NOT NULL CHECK (attempt_status IN ('running', 'complete')),
+    claim_generation INTEGER NOT NULL CHECK (claim_generation >= 1),
+    claim_owner TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_claim_lease_baseline_no_update
+BEFORE UPDATE ON recovery_claim_lease_baselines
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-claim-lease-baseline-append-only');
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_claim_lease_baseline_no_delete
+BEFORE DELETE ON recovery_claim_lease_baselines
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-claim-lease-baseline-append-only');
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_claim_lease_baseline_no_replace
+BEFORE INSERT ON recovery_claim_lease_baselines
+WHEN EXISTS (
+    SELECT 1 FROM recovery_claim_lease_baselines WHERE attempt_id = NEW.attempt_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-claim-lease-baseline-append-only');
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_audit_insert_no_replace
+BEFORE INSERT ON recovery_audit_events
+WHEN EXISTS (
+    SELECT 1 FROM recovery_audit_events
+    WHERE (workflow_id = NEW.workflow_id AND sequence = NEW.sequence)
+       OR event_sha256 = NEW.event_sha256
+)
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-audit-append-only');
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_audit_insert_next
+BEFORE INSERT ON recovery_audit_events
+BEGIN
+    SELECT CASE WHEN NEW.sequence != COALESCE(
+        (SELECT sequence + 1 FROM recovery_audit_heads WHERE workflow_id = NEW.workflow_id),
+        1
+    ) THEN RAISE(ABORT, 'recovery-audit-sequence-invalid') END;
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_audit_head_insert_no_replace
+BEFORE INSERT ON recovery_audit_heads
+WHEN EXISTS (
+    SELECT 1 FROM recovery_audit_heads WHERE workflow_id = NEW.workflow_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-audit-head-append-only');
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_audit_head_insert_exact
+BEFORE INSERT ON recovery_audit_heads
+BEGIN
+    SELECT CASE WHEN NEW.sequence != 1 OR NOT EXISTS (
+        SELECT 1 FROM recovery_audit_events
+        WHERE workflow_id = NEW.workflow_id
+          AND sequence = NEW.sequence
+          AND event_sha256 = NEW.event_sha256
+    ) THEN RAISE(ABORT, 'recovery-audit-head-invalid') END;
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_audit_head_advance_exact
+BEFORE UPDATE ON recovery_audit_heads
+BEGIN
+    SELECT CASE WHEN NEW.workflow_id != OLD.workflow_id
+        OR NEW.sequence != OLD.sequence + 1
+        OR NOT EXISTS (
+            SELECT 1 FROM recovery_audit_events
+            WHERE workflow_id = OLD.workflow_id
+              AND sequence = OLD.sequence
+              AND event_sha256 = OLD.event_sha256
+        )
+        OR NOT EXISTS (
+            SELECT 1 FROM recovery_audit_events
+            WHERE workflow_id = NEW.workflow_id
+              AND sequence = NEW.sequence
+              AND event_sha256 = NEW.event_sha256
+        )
+    THEN RAISE(ABORT, 'recovery-audit-head-invalid') END;
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_audit_head_no_delete
+BEFORE DELETE ON recovery_audit_heads
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-audit-head-append-only');
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_evidence_insert_no_replace
+BEFORE INSERT ON recovery_evidence_records
+WHEN EXISTS (
+    SELECT 1 FROM recovery_evidence_records
+    WHERE evidence_id = NEW.evidence_id
+       OR evidence_sha256 = NEW.evidence_sha256
+       OR (attempt_id = NEW.attempt_id AND sequence = NEW.sequence)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-evidence-append-only');
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_workflow_no_delete
+BEFORE DELETE ON recovery_workflows
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-workflow-lifecycle');
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_workflow_insert_no_replace
+BEFORE INSERT ON recovery_workflows
+WHEN EXISTS (
+    SELECT 1 FROM recovery_workflows
+    WHERE workflow_id = NEW.workflow_id
+       OR snapshot_id = NEW.snapshot_id
+       OR snapshot_sha256 = NEW.snapshot_sha256
+       OR outcome_id = NEW.outcome_id
+       OR outcome_sha256 = NEW.outcome_sha256
+       OR (incident_id = NEW.incident_id AND incident_sequence = NEW.incident_sequence)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-workflow-lifecycle');
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_attempt_no_delete
+BEFORE DELETE ON recovery_attempts
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-attempt-lifecycle');
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_attempt_insert_no_replace
+BEFORE INSERT ON recovery_attempts
+WHEN EXISTS (
+    SELECT 1 FROM recovery_attempts
+    WHERE attempt_id = NEW.attempt_id
+       OR request_id = NEW.request_id
+       OR request_sha256 = NEW.request_sha256
+       OR idempotency_key = NEW.idempotency_key
+       OR (workflow_id = NEW.workflow_id AND attempt_number = NEW.attempt_number)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-attempt-lifecycle');
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_closure_no_update
+BEFORE UPDATE ON recovery_closures
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-closure-append-only');
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_closure_insert_no_replace
+BEFORE INSERT ON recovery_closures
+WHEN EXISTS (
+    SELECT 1 FROM recovery_closures
+    WHERE closure_id = NEW.closure_id
+       OR workflow_id = NEW.workflow_id
+       OR idempotency_key = NEW.idempotency_key
+       OR result_sha256 = NEW.result_sha256
+)
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-closure-append-only');
+END
+""",
+    """
+CREATE TRIGGER IF NOT EXISTS recovery_closure_no_delete
+BEFORE DELETE ON recovery_closures
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-closure-append-only');
+END
+""",
+)
+
+_SCHEMA_V3_BASELINE_SEAL_STATEMENT = """
+CREATE TRIGGER IF NOT EXISTS recovery_claim_lease_baseline_no_insert
+BEFORE INSERT ON recovery_claim_lease_baselines
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-claim-lease-baseline-migration-only');
+END
+"""
+
+_SCHEMA_V3_STATEMENTS = (
+    *_SCHEMA_V3_PRE_BASELINE_SEAL_STATEMENTS,
+    _SCHEMA_V3_BASELINE_SEAL_STATEMENT,
+)
+
+_SCHEMA += ";\n".join(statement.strip() for statement in _SCHEMA_V3_STATEMENTS) + ";\n"
+
 _APPLICATION_ID = 0x43545259
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
+_PREVIOUS_SCHEMA_VERSION = 2
 _SchemaManifest = tuple[tuple[str, str, str, str | None], ...]
 
 
@@ -199,6 +411,35 @@ def _expected_schema() -> tuple[_SchemaManifest, str]:
 
 
 _EXPECTED_SCHEMA, _EXPECTED_SCHEMA_SHA256 = _expected_schema()
+_V3_SCHEMA_NAMES = frozenset(
+    {
+        "recovery_claim_lease_baselines",
+        "recovery_claim_lease_baseline_no_update",
+        "recovery_claim_lease_baseline_no_delete",
+        "recovery_claim_lease_baseline_no_replace",
+        "recovery_claim_lease_baseline_no_insert",
+        "recovery_audit_insert_no_replace",
+        "recovery_audit_insert_next",
+        "recovery_audit_head_insert_no_replace",
+        "recovery_audit_head_insert_exact",
+        "recovery_audit_head_advance_exact",
+        "recovery_audit_head_no_delete",
+        "recovery_evidence_insert_no_replace",
+        "recovery_workflow_no_delete",
+        "recovery_workflow_insert_no_replace",
+        "recovery_attempt_no_delete",
+        "recovery_attempt_insert_no_replace",
+        "recovery_closure_no_update",
+        "recovery_closure_no_delete",
+        "recovery_closure_insert_no_replace",
+    }
+)
+_EXPECTED_SCHEMA_V2 = tuple(
+    row
+    for row in _EXPECTED_SCHEMA
+    if row[1] not in _V3_SCHEMA_NAMES and row[2] not in _V3_SCHEMA_NAMES
+)
+_EXPECTED_SCHEMA_V2_SHA256 = prefixed_sha256(canonical_json_bytes(_EXPECTED_SCHEMA_V2))
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +508,8 @@ class SQLiteRecoveryRepository:
             )
             self._connection.row_factory = sqlite3.Row
             self._connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+            self._connection.execute("PRAGMA foreign_keys = ON")
+            self._connection.execute("PRAGMA recursive_triggers = ON")
             self._initialize(created=created)
         except Exception:
             if hasattr(self, "_connection"):
@@ -308,7 +551,45 @@ class SQLiteRecoveryRepository:
                 self._connection.executescript(_SCHEMA)
                 self._connection.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
                 self._connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
-            elif application_id != _APPLICATION_ID or user_version != _SCHEMA_VERSION:
+            elif application_id != _APPLICATION_ID:
+                raise RecoveryError("database-schema-invalid")
+            elif user_version == _PREVIOUS_SCHEMA_VERSION:
+                if (
+                    existing_manifest != _EXPECTED_SCHEMA_V2
+                    or prefixed_sha256(canonical_json_bytes(existing_manifest))
+                    != _EXPECTED_SCHEMA_V2_SHA256
+                ):
+                    raise RecoveryError("database-schema-invalid")
+                self._connection.execute("BEGIN IMMEDIATE")
+                try:
+                    self._validate_all_audit_histories(
+                        self._connection,
+                        allow_legacy_renewal=True,
+                    )
+                    for statement in _SCHEMA_V3_PRE_BASELINE_SEAL_STATEMENTS:
+                        self._connection.execute(statement)
+                    self._capture_v2_claim_lease_baselines(self._connection)
+                    self._connection.execute(_SCHEMA_V3_BASELINE_SEAL_STATEMENT)
+                    self._validate_all_audit_histories(self._connection)
+                    self._connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+                    migrated_manifest = _schema_manifest(self._connection)
+                    if (
+                        migrated_manifest != _EXPECTED_SCHEMA
+                        or prefixed_sha256(canonical_json_bytes(migrated_manifest))
+                        != _EXPECTED_SCHEMA_SHA256
+                    ):
+                        raise RecoveryError("database-schema-invalid")
+                    integrity = self._connection.execute("PRAGMA integrity_check").fetchone()
+                    if integrity is None or integrity[0] != "ok":
+                        raise RecoveryError("database-integrity-invalid")
+                    if self._connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                        raise RecoveryError("database-integrity-invalid")
+                except BaseException:
+                    self._connection.rollback()
+                    raise
+                else:
+                    self._connection.commit()
+            elif user_version != _SCHEMA_VERSION:
                 raise RecoveryError("database-schema-invalid")
             manifest = _schema_manifest(self._connection)
             if (
@@ -318,6 +599,8 @@ class SQLiteRecoveryRepository:
                 raise RecoveryError("database-schema-invalid")
             result = self._connection.execute("PRAGMA integrity_check").fetchone()
             if result is None or result[0] != "ok":
+                raise RecoveryError("database-integrity-invalid")
+            if self._connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
                 raise RecoveryError("database-integrity-invalid")
 
     @contextmanager
@@ -415,6 +698,543 @@ class SQLiteRecoveryRepository:
             raise RecoveryError("recovery-attempt-not-found")
         return row
 
+    @classmethod
+    def _validated_audit_history(
+        cls,
+        connection: sqlite3.Connection,
+        workflow: sqlite3.Row,
+        *,
+        allow_legacy_renewal: bool = False,
+    ) -> list[dict[str, Any]]:
+        workflow_id = cast(str, workflow["workflow_id"])
+        rows = connection.execute(
+            "SELECT workflow_id, sequence, event_sha256, document "
+            "FROM recovery_audit_events WHERE workflow_id = ? ORDER BY sequence",
+            (workflow_id,),
+        ).fetchall()
+        events = [cls._decode(row["document"]) for row in rows]
+        validate_audit_history(events, workflow_id=workflow_id)
+        if not events or len(events) != workflow["workflow_version"]:
+            raise RecoveryError("stored-audit-lifecycle-invalid")
+        for row, event in zip(rows, events, strict=True):
+            if (
+                row["workflow_id"] != event["workflow_id"]
+                or row["sequence"] != event["sequence"]
+                or row["event_sha256"] != event["event_sha256"]
+                or event["incident_id"] != workflow["incident_id"]
+                or event["snapshot_id"] != workflow["snapshot_id"]
+                or event["snapshot_sha256"] != workflow["snapshot_sha256"]
+                or event["outcome_id"] != workflow["outcome_id"]
+                or event["outcome_sha256"] != workflow["outcome_sha256"]
+            ):
+                raise RecoveryError("stored-audit-row-invalid")
+        heads = connection.execute(
+            "SELECT workflow_id, sequence, event_sha256 FROM recovery_audit_heads "
+            "WHERE workflow_id = ?",
+            (workflow_id,),
+        ).fetchall()
+        if len(heads) != 1:
+            raise RecoveryError("stored-audit-head-invalid")
+        head = heads[0]
+        tail = events[-1]
+        if (
+            head["workflow_id"] != workflow_id
+            or head["sequence"] != len(events)
+            or head["sequence"] != tail["sequence"]
+            or head["event_sha256"] != tail["event_sha256"]
+        ):
+            raise RecoveryError("stored-audit-head-invalid")
+        cls._validate_audit_lifecycle(
+            connection,
+            workflow,
+            events,
+            allow_legacy_renewal=allow_legacy_renewal,
+        )
+        return events
+
+    @classmethod
+    def _validate_audit_lifecycle(
+        cls,
+        connection: sqlite3.Connection,
+        workflow: sqlite3.Row,
+        events: list[dict[str, Any]],
+        *,
+        allow_legacy_renewal: bool,
+    ) -> None:
+        workflow_id = cast(str, workflow["workflow_id"])
+        snapshot = validate_verification_snapshot(cls._decode(workflow["snapshot_document"]))
+        outcome = cast(Mapping[str, Any], snapshot["action_outcome"])
+        if (
+            cls._workflow_id(snapshot) != workflow_id
+            or snapshot["incident_id"] != workflow["incident_id"]
+            or snapshot["incident_version"] != workflow["incident_version"]
+            or snapshot["snapshot_id"] != workflow["snapshot_id"]
+            or snapshot["snapshot_sha256"] != workflow["snapshot_sha256"]
+            or outcome["outcome_id"] != workflow["outcome_id"]
+            or outcome["outcome_sha256"] != workflow["outcome_sha256"]
+        ):
+            raise RecoveryError("stored-workflow-binding-invalid")
+        attempts = connection.execute(
+            "SELECT * FROM recovery_attempts WHERE workflow_id = ? ORDER BY attempt_number",
+            (workflow_id,),
+        ).fetchall()
+        current_number = cast(int, workflow["current_attempt_number"])
+        if len(attempts) != current_number or [row["attempt_number"] for row in attempts] != list(
+            range(1, current_number + 1)
+        ):
+            raise RecoveryError("stored-attempt-lifecycle-invalid")
+        known_attempts = {cast(str, row["attempt_id"]): row for row in attempts}
+        grouped: dict[str, list[dict[str, Any]]] = {attempt_id: [] for attempt_id in known_attempts}
+        packet_statuses: dict[str, str] = {}
+        closing_events: list[dict[str, Any]] = []
+        expected_sequence = 1
+        for event in events:
+            details = cast(Mapping[str, Any], event["details"])
+            if details.get("action_id") != outcome["action_id"]:
+                raise RecoveryError("stored-audit-lifecycle-invalid")
+            if event["event_type"] == "recovery.closed":
+                closing_events.append(event)
+                continue
+            actor = cast(Mapping[str, Any], event["actor"])
+            if (
+                actor.get("kind") != "service"
+                or actor.get("authorized_role") != "recovery.verifier"
+            ):
+                raise RecoveryError("stored-audit-authority-invalid")
+            attempt_id = details.get("attempt_id")
+            if not isinstance(attempt_id, str) or attempt_id not in grouped:
+                raise RecoveryError("stored-audit-lifecycle-invalid")
+            grouped[attempt_id].append(event)
+
+        for index, attempt in enumerate(attempts, start=1):
+            attempt_id = cast(str, attempt["attempt_id"])
+            attempt_events = grouped[attempt_id]
+            request = validate_evidence_request(
+                cls._decode(attempt["request_document"]),
+                snapshot=snapshot,
+            )
+            request_identity_sha256 = document_sha256(
+                {
+                    "schema": "recovery-verification-registration/v1",
+                    "snapshot_sha256": snapshot["snapshot_sha256"],
+                    "request_sha256": request["request_sha256"],
+                }
+            )
+            if (
+                attempt["workflow_id"] != workflow_id
+                or attempt["attempt_number"] != index
+                or attempt_id
+                != cls._attempt_id(workflow_id, index, cast(str, request["request_sha256"]))
+                or attempt["request_id"] != request["request_id"]
+                or attempt["request_sha256"] != request["request_sha256"]
+                or attempt["request_identity_sha256"] != request_identity_sha256
+            ):
+                raise RecoveryError("stored-attempt-binding-invalid")
+            requested = [
+                event for event in attempt_events if event["event_type"] == "verification.requested"
+            ]
+            transitions = [
+                event
+                for event in attempt_events
+                if event["event_type"]
+                in {
+                    "verification.claimed",
+                    "verification.reclaimed",
+                    "verification.renewed",
+                }
+            ]
+            completed = [
+                event for event in attempt_events if event["event_type"] == "verification.completed"
+            ]
+            if len(requested) != 1:
+                raise RecoveryError("stored-attempt-lifecycle-invalid")
+            request_event = requested[0]
+            request_details = cast(Mapping[str, Any], request_event["details"])
+            if (
+                request_event["sequence"] != expected_sequence
+                or request_event["sequence"] != attempt["workflow_version"]
+                or request_event["idempotency_key"] != attempt["idempotency_key"]
+                or request_event["packet_id"] is not None
+                or request_event["packet_sha256"] is not None
+                or request_details.get("attempt_number") != index
+                or request_event["occurred_at"] != attempt["created_at"]
+            ):
+                raise RecoveryError("stored-attempt-lifecycle-invalid")
+            expected_sequence += 1
+            baseline = None
+            if not allow_legacy_renewal:
+                baseline = connection.execute(
+                    "SELECT * FROM recovery_claim_lease_baselines WHERE attempt_id = ?",
+                    (attempt_id,),
+                ).fetchone()
+                if baseline is not None:
+                    require_identifier(
+                        baseline["claim_owner"],
+                        code="stored-claim-lifecycle-invalid",
+                    )
+                    baseline_expiry = parse_timestamp(baseline["lease_expires_at"])
+                    baseline_updated = parse_timestamp(baseline["updated_at"])
+                    if (
+                        baseline["after_sequence"] <= request_event["sequence"]
+                        or baseline["after_sequence"] > len(events)
+                        or baseline["claim_generation"] < 1
+                        or baseline["claim_generation"] > attempt["claim_generation"]
+                        or (
+                            baseline["attempt_status"] == "running"
+                            and baseline_expiry
+                            != baseline_updated + timedelta(seconds=CLAIM_LEASE_SECONDS)
+                        )
+                        or (
+                            baseline["attempt_status"] == "complete"
+                            and (
+                                attempt["status"] != "complete"
+                                or baseline_expiry
+                                > baseline_updated + timedelta(seconds=CLAIM_LEASE_SECONDS)
+                            )
+                        )
+                    ):
+                        raise RecoveryError("stored-claim-lifecycle-invalid")
+            generation = cast(int, attempt["claim_generation"])
+            if attempt["status"] == "pending":
+                if (
+                    generation != 0
+                    or attempt["claim_owner"] is not None
+                    or attempt["claim_expires_at"] is not None
+                    or attempt["updated_at"] != attempt["created_at"]
+                    or transitions
+                ):
+                    raise RecoveryError("stored-claim-lifecycle-invalid")
+            else:
+                if (
+                    generation < 1
+                    or not isinstance(attempt["claim_owner"], str)
+                    or not isinstance(attempt["claim_expires_at"], str)
+                    or not transitions
+                ):
+                    raise RecoveryError("stored-claim-lifecycle-invalid")
+            observed_generation = 0
+            observed_owner: str | None = None
+            observed_expiry = None
+            observed_updated_at = None
+            baseline_applied = False
+            for event in transitions:
+                if (
+                    baseline is not None
+                    and not baseline_applied
+                    and event["sequence"] > baseline["after_sequence"]
+                ):
+                    observed_generation = cast(int, baseline["claim_generation"])
+                    observed_owner = cast(str, baseline["claim_owner"])
+                    observed_expiry = parse_timestamp(baseline["lease_expires_at"])
+                    observed_updated_at = cast(str, baseline["updated_at"])
+                    baseline_applied = True
+                details = cast(Mapping[str, Any], event["details"])
+                if (
+                    event["idempotency_key"] != attempt["idempotency_key"]
+                    or event["packet_id"] is not None
+                    or event["packet_sha256"] is not None
+                    or event["sequence"] != expected_sequence
+                ):
+                    raise RecoveryError("stored-claim-lifecycle-invalid")
+                owner = require_identifier(
+                    details.get("claim_owner"),
+                    code="stored-claim-lifecycle-invalid",
+                )
+                occurred_at = parse_timestamp(event["occurred_at"])
+                lease_expires_at = parse_timestamp(details.get("lease_expires_at"))
+                if lease_expires_at != occurred_at + timedelta(seconds=CLAIM_LEASE_SECONDS):
+                    raise RecoveryError("stored-claim-lifecycle-invalid")
+                if event["event_type"] == "verification.renewed":
+                    if (
+                        observed_generation < 1
+                        or details.get("claim_generation") != observed_generation
+                        or owner != observed_owner
+                        or observed_expiry is None
+                        or parse_timestamp(details.get("lease_expires_before")) != observed_expiry
+                        or occurred_at >= observed_expiry
+                        or lease_expires_at <= observed_expiry
+                    ):
+                        raise RecoveryError("stored-claim-lifecycle-invalid")
+                else:
+                    observed_generation += 1
+                    expected_type = (
+                        "verification.claimed"
+                        if observed_generation == 1
+                        else "verification.reclaimed"
+                    )
+                    if (
+                        event["event_type"] != expected_type
+                        or details.get("claim_generation") != observed_generation
+                        or (observed_expiry is not None and occurred_at < observed_expiry)
+                    ):
+                        raise RecoveryError("stored-claim-lifecycle-invalid")
+                observed_owner = owner
+                observed_expiry = lease_expires_at
+                observed_updated_at = cast(str, event["occurred_at"])
+                expected_sequence += 1
+            if baseline is not None and not baseline_applied:
+                observed_generation = cast(int, baseline["claim_generation"])
+                observed_owner = cast(str, baseline["claim_owner"])
+                observed_expiry = parse_timestamp(baseline["lease_expires_at"])
+                observed_updated_at = cast(str, baseline["updated_at"])
+                baseline_applied = True
+            if attempt["status"] != "pending":
+                stored_expiry = parse_timestamp(attempt["claim_expires_at"])
+                if observed_generation != generation or observed_owner != attempt["claim_owner"]:
+                    raise RecoveryError("stored-claim-lifecycle-invalid")
+                if allow_legacy_renewal:
+                    bounded_expiry = parse_timestamp(attempt["updated_at"]) + timedelta(
+                        seconds=CLAIM_LEASE_SECONDS
+                    )
+                    if (
+                        observed_expiry is None
+                        or stored_expiry < observed_expiry
+                        or (attempt["status"] == "running" and stored_expiry != bounded_expiry)
+                        or (attempt["status"] == "complete" and stored_expiry > bounded_expiry)
+                    ):
+                        raise RecoveryError("stored-claim-lifecycle-invalid")
+                elif observed_expiry != stored_expiry or (
+                    attempt["status"] == "running" and attempt["updated_at"] != observed_updated_at
+                ):
+                    raise RecoveryError("stored-claim-lifecycle-invalid")
+            evidence_rows = connection.execute(
+                "SELECT evidence_id, workflow_id, attempt_id, sequence, evidence_sha256, "
+                "document FROM recovery_evidence_records WHERE attempt_id = ? ORDER BY sequence",
+                (attempt_id,),
+            ).fetchall()
+            records = [
+                validate_evidence_record(cls._decode(row["document"])) for row in evidence_rows
+            ]
+            for sequence, (row, record) in enumerate(
+                zip(evidence_rows, records, strict=True),
+                start=1,
+            ):
+                if (
+                    row["evidence_id"] != record["evidence_id"]
+                    or row["workflow_id"] != workflow_id
+                    or row["attempt_id"] != attempt_id
+                    or row["sequence"] != sequence
+                    or row["evidence_sha256"] != record["evidence_sha256"]
+                ):
+                    raise RecoveryError("stored-evidence-row-invalid")
+            if attempt["status"] != "complete":
+                if completed or records:
+                    raise RecoveryError("stored-attempt-lifecycle-invalid")
+                continue
+            if len(completed) != 1:
+                raise RecoveryError("stored-attempt-lifecycle-invalid")
+            packet = validate_recovery_packet(
+                cls._decode(attempt["packet_document"]),
+                snapshot=snapshot,
+                evidence_request=request,
+            )
+            packet_statuses[attempt_id] = cast(str, packet["status"])
+            completion = completed[0]
+            completion_details = cast(Mapping[str, Any], completion["details"])
+            if (
+                attempt["packet_id"] != packet["packet_id"]
+                or attempt["packet_sha256"] != packet["packet_sha256"]
+                or packet["workflow_id"] != workflow_id
+                or packet["attempt_id"] != attempt_id
+                or packet["attempt_number"] != index
+                or completion["sequence"] != packet["workflow_version"]
+                or completion["sequence"] != expected_sequence
+                or completion["idempotency_key"] != attempt["idempotency_key"]
+                or completion["packet_id"] != packet["packet_id"]
+                or completion["packet_sha256"] != packet["packet_sha256"]
+                or completion_details.get("claim_owner") != attempt["claim_owner"]
+                or completion_details.get("claim_generation") != generation
+                or completion_details.get("status") != packet["status"]
+                or completion["occurred_at"] != attempt["updated_at"]
+                or set(cast(list[str], packet["evidence_ids"]))
+                != {cast(str, record["evidence_id"]) for record in records}
+            ):
+                raise RecoveryError("stored-completion-lifecycle-invalid")
+            expected_sequence += 1
+
+        current = attempts[-1]
+        if any(
+            row["status"] != "complete"
+            or packet_statuses.get(cast(str, row["attempt_id"])) != "recovery_unresolved"
+            for row in attempts[:-1]
+        ):
+            raise RecoveryError("stored-attempt-lifecycle-invalid")
+        status = cast(str, workflow["status"])
+        expected_attempt_status = {
+            "verification_pending": "pending",
+            "verification_running": "running",
+            "recovery_verified": "complete",
+            "recovery_failed": "complete",
+            "recovery_unresolved": "complete",
+            "closed": "complete",
+        }[status]
+        if current["status"] != expected_attempt_status:
+            raise RecoveryError("stored-attempt-lifecycle-invalid")
+        if current["status"] == "complete":
+            current_packet_status = packet_statuses[cast(str, current["attempt_id"])]
+            if (
+                workflow["current_packet_id"] != current["packet_id"]
+                or workflow["current_packet_sha256"] != current["packet_sha256"]
+                or bytes(workflow["current_packet_document"]) != bytes(current["packet_document"])
+                or current_packet_status != ("recovery_verified" if status == "closed" else status)
+            ):
+                raise RecoveryError("stored-workflow-packet-invalid")
+        elif any(
+            workflow[key] is not None
+            for key in ("current_packet_id", "current_packet_sha256", "current_packet_document")
+        ):
+            raise RecoveryError("stored-workflow-packet-invalid")
+
+        closures = connection.execute(
+            "SELECT * FROM recovery_closures WHERE workflow_id = ?",
+            (workflow_id,),
+        ).fetchall()
+        if status != "closed":
+            if closures or closing_events or expected_sequence != len(events) + 1:
+                raise RecoveryError("stored-closure-lifecycle-invalid")
+            return
+        if len(closures) != 1 or len(closing_events) != 1:
+            raise RecoveryError("stored-closure-lifecycle-invalid")
+        closure = closures[0]
+        result = validate_closure_result(cls._decode(closure["result_document"]))
+        event = closing_events[0]
+        event_details = cast(Mapping[str, Any], event["details"])
+        event_actor = cast(Mapping[str, Any], event["actor"])
+        if (
+            closure["closure_id"] != result["closure_id"]
+            or closure["request_sha256"]
+            != document_sha256(
+                {
+                    "schema": "recovery-closure-request/v1",
+                    "expected_incident_version": workflow["incident_version"],
+                    "expected_workflow_version": result["workflow_version_before"],
+                    "expected_packet_id": result["packet_id"],
+                    "expected_packet_sha256": result["packet_sha256"],
+                    "expected_outcome_id": result["outcome_id"],
+                    "expected_outcome_sha256": result["outcome_sha256"],
+                    "reason": result["reason"],
+                    "idempotency_key": result["idempotency_key"],
+                }
+            )
+            or closure["result_sha256"] != result["closure_sha256"]
+            or result["workflow_id"] != workflow_id
+            or result["incident_id"] != workflow["incident_id"]
+            or result["workflow_version_after"] != workflow["workflow_version"]
+            or result["packet_id"] != workflow["current_packet_id"]
+            or result["packet_sha256"] != workflow["current_packet_sha256"]
+            or result["outcome_id"] != workflow["outcome_id"]
+            or result["outcome_sha256"] != workflow["outcome_sha256"]
+            or result["idempotency_key"] != closure["idempotency_key"]
+            or result["audit_event_id"] != event["event_id"]
+            or result["audit_event_sha256"] != event["event_sha256"]
+            or result["closed_at"] != event["occurred_at"]
+            or result["actor"]
+            != {
+                key: event_actor[key]
+                for key in ("issuer", "subject", "audience", "display_name", "kind")
+            }
+            or result["authorized_role"] != event_actor.get("authorized_role")
+            or event["sequence"] != workflow["workflow_version"]
+            or event["sequence"] != expected_sequence
+            or event["idempotency_key"] != closure["idempotency_key"]
+            or event["packet_id"] != workflow["current_packet_id"]
+            or event["packet_sha256"] != workflow["current_packet_sha256"]
+            or event_details.get("reason") != result["reason"]
+            or event_details.get("workflow_version_before") != result["workflow_version_before"]
+            or event_details.get("workflow_version_after") != result["workflow_version_after"]
+        ):
+            raise RecoveryError("stored-closure-lifecycle-invalid")
+        if expected_sequence + 1 != len(events) + 1:
+            raise RecoveryError("stored-closure-lifecycle-invalid")
+
+    @classmethod
+    def _validate_all_audit_histories(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        allow_legacy_renewal: bool = False,
+    ) -> None:
+        workflows = connection.execute(
+            "SELECT * FROM recovery_workflows ORDER BY workflow_id"
+        ).fetchall()
+        workflow_ids = {cast(str, workflow["workflow_id"]) for workflow in workflows}
+        head_ids = {
+            cast(str, row["workflow_id"])
+            for row in connection.execute("SELECT workflow_id FROM recovery_audit_heads")
+        }
+        event_ids = {
+            cast(str, row["workflow_id"])
+            for row in connection.execute("SELECT DISTINCT workflow_id FROM recovery_audit_events")
+        }
+        if head_ids != workflow_ids or event_ids != workflow_ids:
+            raise RecoveryError("stored-audit-orphan-invalid")
+        for workflow in workflows:
+            cls._validated_audit_history(
+                connection,
+                workflow,
+                allow_legacy_renewal=allow_legacy_renewal,
+            )
+
+    @classmethod
+    def _capture_v2_claim_lease_baselines(cls, connection: sqlite3.Connection) -> None:
+        attempts = connection.execute(
+            "SELECT attempt_id, workflow_id, status FROM recovery_attempts "
+            "WHERE status IN ('running', 'complete')"
+        ).fetchall()
+        for attempt in attempts:
+            rows = connection.execute(
+                "SELECT document FROM recovery_audit_events WHERE workflow_id = ? "
+                "ORDER BY sequence",
+                (attempt["workflow_id"],),
+            ).fetchall()
+            transitions: list[dict[str, Any]] = []
+            for row in rows:
+                event = cls._decode(row["document"])
+                details = cast(Mapping[str, Any], event["details"])
+                if (
+                    event["event_type"] in {"verification.claimed", "verification.reclaimed"}
+                    and details.get("attempt_id") == attempt["attempt_id"]
+                ):
+                    transitions.append(event)
+            if not transitions:
+                raise RecoveryError("stored-claim-lifecycle-invalid")
+            latest = transitions[-1]
+            row = connection.execute(
+                "SELECT claim_generation, claim_owner, claim_expires_at, updated_at "
+                "FROM recovery_attempts WHERE attempt_id = ?",
+                (attempt["attempt_id"],),
+            ).fetchone()
+            if row is None:
+                raise RecoveryError("stored-attempt-lifecycle-invalid")
+            after_sequence = (
+                cast(int, latest["sequence"])
+                if attempt["status"] == "running"
+                else cast(
+                    int,
+                    next(
+                        event["sequence"]
+                        for event in (cls._decode(value["document"]) for value in rows)
+                        if event["event_type"] == "verification.completed"
+                        and cast(Mapping[str, Any], event["details"]).get("attempt_id")
+                        == attempt["attempt_id"]
+                    ),
+                )
+            )
+            connection.execute(
+                "INSERT INTO recovery_claim_lease_baselines("
+                "attempt_id, after_sequence, attempt_status, claim_generation, claim_owner, "
+                "lease_expires_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (
+                    attempt["attempt_id"],
+                    after_sequence,
+                    attempt["status"],
+                    row["claim_generation"],
+                    row["claim_owner"],
+                    row["claim_expires_at"],
+                    row["updated_at"],
+                ),
+            )
+
     def _append_audit(
         self,
         connection: sqlite3.Connection,
@@ -462,12 +1282,18 @@ class SQLiteRecoveryRepository:
                 canonical_json_bytes(event),
             ),
         )
-        connection.execute(
-            "INSERT INTO recovery_audit_heads(workflow_id, sequence, event_sha256) VALUES(?, ?, ?) "
-            "ON CONFLICT(workflow_id) DO UPDATE SET sequence = excluded.sequence, "
-            "event_sha256 = excluded.event_sha256",
-            (workflow["workflow_id"], sequence, event["event_sha256"]),
-        )
+        if head is None:
+            connection.execute(
+                "INSERT INTO recovery_audit_heads(workflow_id, sequence, event_sha256) "
+                "VALUES(?, ?, ?)",
+                (workflow["workflow_id"], sequence, event["event_sha256"]),
+            )
+        else:
+            connection.execute(
+                "UPDATE recovery_audit_heads SET sequence = ?, event_sha256 = ? "
+                "WHERE workflow_id = ?",
+                (sequence, event["event_sha256"], workflow["workflow_id"]),
+            )
         return event
 
     def register_verification(
@@ -501,6 +1327,7 @@ class SQLiteRecoveryRepository:
                 if replay["request_identity_sha256"] != request_identity_sha256:
                     raise RecoveryError("idempotency-conflict")
                 workflow = self._workflow_row(connection, cast(str, replay["workflow_id"]))
+                self._validated_audit_history(connection, workflow)
                 return self._attempt_from_rows(workflow, replay)
 
             existing = connection.execute(
@@ -513,6 +1340,8 @@ class SQLiteRecoveryRepository:
                     "ORDER BY incident_sequence DESC",
                     (snapshot["incident_id"],),
                 ).fetchall()
+                for prior_workflow in prior:
+                    self._validated_audit_history(connection, prior_workflow)
                 active = [
                     row for row in prior if row["status"] not in {"recovery_failed", "closed"}
                 ]
@@ -551,6 +1380,7 @@ class SQLiteRecoveryRepository:
                 workflow = self._workflow_row(connection, workflow_id)
             else:
                 workflow = existing
+                self._validated_audit_history(connection, workflow)
                 if (
                     workflow["workflow_id"] != workflow_id
                     or workflow["snapshot_sha256"] != snapshot["snapshot_sha256"]
@@ -559,6 +1389,8 @@ class SQLiteRecoveryRepository:
                     raise RecoveryError("recovery-workflow-conflict")
                 if workflow["status"] != "recovery_unresolved":
                     raise RecoveryError("verification-retry-not-allowed")
+                if parse_timestamp(occurred_at) < parse_timestamp(workflow["updated_at"]):
+                    raise RecoveryError("workflow-clock-regression")
                 attempt_number = cast(int, workflow["current_attempt_number"]) + 1
                 workflow_version = cast(int, workflow["workflow_version"]) + 1
                 attempt_id = self._attempt_id(
@@ -622,7 +1454,10 @@ class SQLiteRecoveryRepository:
         expires_at = timestamp(parse_timestamp(now_value) + timedelta(seconds=CLAIM_LEASE_SECONDS))
         with self.transaction(write=True) as connection:
             workflow = self._workflow_row(connection, workflow_id)
+            self._validated_audit_history(connection, workflow)
             attempt = self._current_attempt_row(connection, workflow)
+            if parse_timestamp(now_value) < parse_timestamp(attempt["updated_at"]):
+                raise RecoveryError("claim-clock-regression")
             event_type: str
             if workflow["status"] == "verification_pending" and attempt["status"] == "pending":
                 generation = 1
@@ -677,11 +1512,20 @@ class SQLiteRecoveryRepository:
                 evidence_request=self._decode(attempt["request_document"]),
             )
 
-    def renew_claim(self, claim: VerificationClaim, *, now: str) -> VerificationClaim:
+    def renew_claim(
+        self,
+        claim: VerificationClaim,
+        *,
+        actor: Mapping[str, Any],
+        now: str,
+    ) -> VerificationClaim:
         now_value = timestamp(parse_timestamp(now))
         expires_at = timestamp(parse_timestamp(now_value) + timedelta(seconds=CLAIM_LEASE_SECONDS))
+        if parse_timestamp(expires_at) <= parse_timestamp(claim.lease_expires_at):
+            raise RecoveryError("claim-clock-regression")
         with self.transaction(write=True) as connection:
             workflow = self._workflow_row(connection, claim.workflow_id)
+            self._validated_audit_history(connection, workflow)
             attempt = self._current_attempt_row(connection, workflow)
             if (
                 workflow["status"] != "verification_running"
@@ -694,16 +1538,39 @@ class SQLiteRecoveryRepository:
                 or parse_timestamp(now_value) >= parse_timestamp(claim.lease_expires_at)
             ):
                 raise RecoveryError("claim-fenced")
+            next_version = claim.workflow_version + 1
             connection.execute(
                 "UPDATE recovery_attempts SET claim_expires_at = ?, updated_at = ? "
                 "WHERE attempt_id = ?",
                 (expires_at, now_value, claim.attempt_id),
             )
+            connection.execute(
+                "UPDATE recovery_workflows SET workflow_version = ?, updated_at = ? "
+                "WHERE workflow_id = ? AND status = 'verification_running'",
+                (next_version, now_value, claim.workflow_id),
+            )
+            workflow = self._workflow_row(connection, claim.workflow_id)
+            self._append_audit(
+                connection,
+                workflow=workflow,
+                event_type="verification.renewed",
+                actor=actor,
+                idempotency_key=cast(str, attempt["idempotency_key"]),
+                occurred_at=now_value,
+                packet=None,
+                details={
+                    "attempt_id": claim.attempt_id,
+                    "claim_owner": claim.owner,
+                    "claim_generation": claim.generation,
+                    "lease_expires_before": claim.lease_expires_at,
+                    "lease_expires_at": expires_at,
+                },
+            )
             return VerificationClaim(
                 workflow_id=claim.workflow_id,
                 incident_id=claim.incident_id,
                 incident_version=claim.incident_version,
-                workflow_version=claim.workflow_version,
+                workflow_version=next_version,
                 attempt_id=claim.attempt_id,
                 attempt_number=claim.attempt_number,
                 owner=claim.owner,
@@ -767,6 +1634,7 @@ class SQLiteRecoveryRepository:
         now_value = timestamp(parse_timestamp(now))
         with self.transaction(write=True) as connection:
             workflow = self._workflow_row(connection, claim.workflow_id)
+            self._validated_audit_history(connection, workflow)
             claimed_attempt = cast(
                 sqlite3.Row | None,
                 connection.execute(
@@ -790,6 +1658,8 @@ class SQLiteRecoveryRepository:
                     raise RecoveryError("verification-completion-conflict")
                 return stored
             attempt = self._current_attempt_row(connection, workflow)
+            if parse_timestamp(now_value) < parse_timestamp(attempt["updated_at"]):
+                raise RecoveryError("claim-clock-regression")
             if (
                 workflow["status"] != "verification_running"
                 or workflow["workflow_version"] != claim.workflow_version
@@ -895,8 +1765,16 @@ class SQLiteRecoveryRepository:
                     or replay["request_sha256"] != request_sha256
                 ):
                     raise RecoveryError("idempotency-conflict")
+                replay_workflow = self._workflow_row(
+                    connection,
+                    cast(str, replay["workflow_id"]),
+                )
+                self._validated_audit_history(connection, replay_workflow)
                 return validate_closure_result(self._decode(replay["result_document"]))
             workflow = self._workflow_row(connection, workflow_id)
+            self._validated_audit_history(connection, workflow)
+            if parse_timestamp(now_value) < parse_timestamp(workflow["updated_at"]):
+                raise RecoveryError("workflow-clock-regression")
             if workflow["status"] != "recovery_verified":
                 raise RecoveryError("recovery-not-verified")
             packet = self._decode(workflow["current_packet_document"])
@@ -982,6 +1860,7 @@ class SQLiteRecoveryRepository:
         require_identifier(workflow_id, code="recovery-workflow-invalid")
         with self.transaction(write=False) as connection:
             workflow = self._workflow_row(connection, workflow_id)
+            self._validated_audit_history(connection, workflow)
             attempt = self._current_attempt_row(connection, workflow)
             packet = (
                 None
@@ -1010,6 +1889,7 @@ class SQLiteRecoveryRepository:
         require_identifier(workflow_id, code="recovery-workflow-invalid")
         with self.transaction(write=False) as connection:
             workflow = self._workflow_row(connection, workflow_id)
+            audit = self._validated_audit_history(connection, workflow)
             attempt = self._current_attempt_row(connection, workflow)
             snapshot = validate_verification_snapshot(self._decode(workflow["snapshot_document"]))
             request = validate_evidence_request(
@@ -1057,13 +1937,6 @@ class SQLiteRecoveryRepository:
                 if closure_row is None
                 else validate_closure_result(self._decode(closure_row["result_document"]))
             )
-            audit_rows = connection.execute(
-                "SELECT document FROM recovery_audit_events WHERE workflow_id = ? "
-                "ORDER BY sequence",
-                (workflow_id,),
-            ).fetchall()
-            audit = [self._decode(row["document"]) for row in audit_rows]
-            validate_audit_history(audit, workflow_id=workflow_id)
             return {
                 "schema": "recovery-durable-aggregate/v1",
                 "review": {
@@ -1128,6 +2001,7 @@ class SQLiteRecoveryRepository:
             if attempt is None:
                 return None
             workflow = self._workflow_row(connection, cast(str, attempt["workflow_id"]))
+            self._validated_audit_history(connection, workflow)
             if (
                 workflow["incident_id"] != incident_id
                 or workflow["outcome_sha256"] != expected_outcome_sha256
@@ -1178,15 +2052,8 @@ class SQLiteRecoveryRepository:
     def audit_history(self, workflow_id: str) -> list[dict[str, Any]]:
         require_identifier(workflow_id, code="recovery-workflow-invalid")
         with self.transaction(write=False) as connection:
-            self._workflow_row(connection, workflow_id)
-            rows = connection.execute(
-                "SELECT document FROM recovery_audit_events WHERE workflow_id = ? "
-                "ORDER BY sequence",
-                (workflow_id,),
-            ).fetchall()
-            events = [self._decode(row["document"]) for row in rows]
-            validate_audit_history(events, workflow_id=workflow_id)
-            return events
+            workflow = self._workflow_row(connection, workflow_id)
+            return self._validated_audit_history(connection, workflow)
 
 
 __all__ = [
