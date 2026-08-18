@@ -39,6 +39,11 @@ class StoredDispatchProof:
 class StoredDispatchSource(Protocol):
     def load_current_consumed(self, identity: DispatchIdentity) -> StoredDispatchProof: ...
 
+    def guard_current_consumed(
+        self,
+        identity: DispatchIdentity,
+    ) -> AbstractContextManager[StoredDispatchProof]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class BoundSimulatorAction:

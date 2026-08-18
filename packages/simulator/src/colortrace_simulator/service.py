@@ -15,7 +15,13 @@ from .authority import (
     SimulatorExecutorBoundary,
 )
 from .bundle import SimulatorBundleError
-from .models import DispatchIdentity, PublicationPort, StoredDispatchSource
+from .models import (
+    DispatchIdentity,
+    PreparedPublication,
+    PromotionResult,
+    PublicationPort,
+    StoredDispatchSource,
+)
 from .renderer import RendererError
 from .repository import SimulatorRepositoryError, SQLiteSimulatorRepository
 
@@ -80,16 +86,22 @@ class SimulatorActionService:
             # must never reopen or rerun simulator execution.
             return
 
-    def _cleanup_conflicted_candidate(
+    def _cleanup_terminal_candidate(
         self,
         identity: DispatchIdentity,
         outcome: Mapping[str, Any],
     ) -> None:
-        if outcome.get("reason_codes") != ["publication-pointer-conflict"]:
+        reasons = outcome.get("reason_codes")
+        if reasons not in (["publication-pointer-conflict"], ["dispatch-authority-stale"]):
             return
         try:
             state = self._publication.inspect_operation(identity.operation_id)
-            if state.state == "conflict" and state.prepared is not None:
+            removable_states = (
+                {"conflict"}
+                if reasons == ["publication-pointer-conflict"]
+                else {"staged", "sealed", "conflict"}
+            )
+            if state.state in removable_states and state.prepared is not None:
                 self._publication.discard(state.prepared)
         except (SimulatorBundleError, RendererError):
             # Cleanup is retryable from the durable terminal outcome and may not
@@ -130,7 +142,7 @@ class SimulatorActionService:
     ) -> dict[str, Any] | None:
         outcome = self._repository.outcome(identity)
         if outcome is not None:
-            self._cleanup_conflicted_candidate(identity, outcome)
+            self._cleanup_terminal_candidate(identity, outcome)
             if observe:
                 self._observe(outcome)
         return outcome
@@ -139,7 +151,7 @@ class SimulatorActionService:
         outcomes = self._repository.pending_telemetry_outcomes(limit=limit)
         for outcome in outcomes:
             identity = self._identity_from_outcome(outcome)
-            self._cleanup_conflicted_candidate(identity, outcome)
+            self._cleanup_terminal_candidate(identity, outcome)
             self._observe(outcome)
         return sum(
             self._repository.telemetry_delivered(self._identity_from_outcome(outcome))
@@ -216,18 +228,62 @@ class SimulatorActionService:
                 return failed
 
             claim = self._repository.renew_claim(claim, now=self._clock())
-            self._repository.record_publication_intent(
-                claim,
-                prepared,
-                now=self._clock(),
-            )
+        intent_recorded = claim.phase == "reconcile"
+        try:
+            with self._dispatch_source.guard_current_consumed(identity) as guarded_proof:
+                guarded_bundle = self._authority_boundary.bind(identity, guarded_proof)
+                if guarded_bundle.action.dispatch_bundle_sha256 != action.dispatch_bundle_sha256:
+                    raise SimulatorAuthorityError("dispatch-bundle-stale")
+                if claim.phase == "execute":
+                    self._repository.record_publication_intent(
+                        claim,
+                        prepared,
+                        now=self._clock(),
+                    )
+                    intent_recorded = True
+                outcome = self._repository.reconcile_publication(
+                    claim,
+                    now=self._clock(),
+                    promote=self._publication.compare_and_swap,
+                )
+        except (ResponsePlanError, SimulatorAuthorityError):
+            if intent_recorded:
+                operation = self._publication.inspect_operation(identity.operation_id)
+                if operation.state == "promoted":
+                    if operation.prepared is None or operation.promotion is None:
+                        raise SimulatorAuthorityError("publication-operation-invalid") from None
+                    recovered_prepared = operation.prepared
+                    recovered_promotion = operation.promotion
 
-        outcome = self._repository.reconcile_publication(
-            claim,
-            now=self._clock(),
-            promote=self._publication.compare_and_swap,
-        )
-        self._cleanup_conflicted_candidate(identity, outcome)
+                    def verify_recovered_promotion(
+                        prepared: PreparedPublication,
+                    ) -> PromotionResult:
+                        if prepared != recovered_prepared:
+                            raise SimulatorAuthorityError("publication-operation-mismatch")
+                        return recovered_promotion
+
+                    # The immutable operation view proves that the prior CAS
+                    # completed while its authority guard was held. Recording
+                    # that result must not inspect or mutate the active pointer
+                    # again: a later publication may already be current.
+                    outcome = self._repository.reconcile_publication(
+                        claim,
+                        now=self._clock(),
+                        promote=verify_recovered_promotion,
+                    )
+                else:
+                    outcome = self._repository.fail_publication(
+                        claim,
+                        reason_codes=("dispatch-authority-stale",),
+                        now=self._clock(),
+                    )
+            else:
+                outcome = self._repository.fail_action(
+                    claim,
+                    reason_codes=("dispatch-authority-stale",),
+                    now=self._clock(),
+                )
+        self._cleanup_terminal_candidate(identity, outcome)
         if observe_terminal:
             self._observe(outcome)
         return outcome
