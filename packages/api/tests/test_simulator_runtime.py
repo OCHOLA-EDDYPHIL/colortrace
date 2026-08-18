@@ -723,7 +723,7 @@ def test_real_plan_source_service_and_local_publication_compose_through_http(
     incidents = CanonicalIncidentService(
         affected=affected,
         safe=safe,
-        causal_resource_sha256=causal,
+        causal_resource_sha256=causal.removeprefix("sha256:"),
     )
     identity_boundary = OIDCTrustBoundary(
         trusted_issuers=frozenset({"https://identity.example.test"}),

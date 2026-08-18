@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
+import pytest
 from colortrace_api import Principal, ResponsePlanCoordinator, create_app
 from colortrace_response_plans import (
     CanonicalAuthorityBoundary,
     OIDCTrustBoundary,
+    ResponsePlanError,
     SQLiteResponsePlanRepository,
 )
 from colortrace_simulator import DispatchIdentity
@@ -18,6 +21,7 @@ INCIDENT_ID = "incident-plan-api"
 PACKET_DIGEST = f"sha256:{'6' * 64}"
 PACKET_ID = f"response-packet:{'6' * 64}"
 CAUSAL_DIGEST = f"sha256:{'7' * 64}"
+VALIDATOR_CAUSAL_DIGEST = CAUSAL_DIGEST.removeprefix("sha256:")
 
 
 class IncidentService:
@@ -65,7 +69,7 @@ class IncidentService:
                 },
                 "unresolved_items": [],
             },
-            "validator_results": [{"scope": {"causal_resource_sha256": CAUSAL_DIGEST}}],
+            "validator_results": [{"scope": {"causal_resource_sha256": VALIDATOR_CAUSAL_DIGEST}}],
         }
 
 
@@ -237,6 +241,30 @@ def create_body(api_client: TestClient) -> dict[str, Any]:
         "unresolved_acknowledged": False,
         "idempotency_key": "create-plan-api",
     }
+
+
+def test_validator_causal_digest_must_be_canonical_bare_hex(tmp_path: Path) -> None:
+    class PrefixedIncidentService(IncidentService):
+        def replay(self, incident_id: str) -> dict[str, Any]:
+            replay = super().replay(incident_id)
+            replay["validator_results"][0]["scope"]["causal_resource_sha256"] = CAUSAL_DIGEST
+            return replay
+
+    authority = CanonicalAuthorityBoundary()
+    coordinator = ResponsePlanCoordinator(
+        incident_reader=PrefixedIncidentService(),
+        repository=SQLiteResponsePlanRepository(
+            tmp_path / "response-plans.sqlite3", authority_boundary=authority
+        ),
+        authority_boundary=authority,
+        identity_boundary=OIDCTrustBoundary(
+            trusted_issuers=frozenset({"https://identity.example.test"}),
+            audience="colortrace-api",
+        ),
+    )
+
+    with pytest.raises(ResponsePlanError, match="canonical-scope-invalid"):
+        coordinator.draft(INCIDENT_ID)
 
 
 def test_absent_plan_is_a_side_effect_free_not_found() -> None:

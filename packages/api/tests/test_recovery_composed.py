@@ -232,7 +232,7 @@ def execute_canonical_action(
         safe=[{"kind": str(target["kind"]), "id": str(target["id"])} for target in exclusions],
         causal_resource_sha256=next(
             str(target["id"]) for target in targets if target["kind"] == "color-resource"
-        ),
+        ).removeprefix("sha256:"),
     )
     identity_boundary = OIDCTrustBoundary(
         trusted_issuers=frozenset({ISSUER}),
