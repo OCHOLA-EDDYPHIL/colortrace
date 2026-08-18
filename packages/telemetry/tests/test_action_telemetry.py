@@ -16,6 +16,8 @@ from colortrace_telemetry.action_emitter import (
     ActionOtelSink,
     ActionTelemetryEvent,
     MemoryActionTelemetrySink,
+    _flat_action_attributes,
+    _metric_action_attributes,
     build_action_events,
     emit_action_outcome,
 )
@@ -413,6 +415,32 @@ def test_action_otel_sink_has_a_fixed_local_endpoint_and_no_attribute_input() ->
     assert "endpoint" not in constructor.parameters
     assert list(emit.parameters) == ["self", "event"]
     assert LOCAL_ACTION_OTLP_ENDPOINT == "http://127.0.0.1:14318"
+
+
+def test_metric_projection_omits_redundant_publication_labels_only() -> None:
+    events = build_action_events(successful_outcome(), emitted_at="2026-08-13T12:00:03.000Z")
+    metric = next(event.to_dict() for event in events if event.signal == "metric")
+    complete = _flat_action_attributes(metric)
+    projected = _metric_action_attributes(metric)
+
+    assert len(projected) < 58
+    assert not any(name.startswith("publication.") for name in projected)
+    assert all(
+        projected[name] == complete[name]
+        for name in (
+            "action.action_id",
+            "action.incident_id",
+            "action.operation_id",
+            "action.outcome_sha256",
+            "telemetry.event_id",
+            "telemetry.observed_at",
+            "telemetry.emitted_at",
+            "observation.contract",
+            "observation.scope",
+            "target.id",
+        )
+    )
+    assert any(name.startswith("publication.") for name in complete)
 
 
 def test_action_event_builder_returns_detached_validated_documents() -> None:
