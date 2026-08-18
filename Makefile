@@ -3,10 +3,14 @@ SHELL := /bin/sh
 TOOL_IMAGE := colortrace-dev:phase1
 GITLEAKS_IMAGE := zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
 TELEMETRY_IMAGE := grafana/otel-lgtm@sha256:bb182ac3174a20923fa58f00d1790fa71eb06cc0150078c0b0e8feb9e6611492
+TRIVY_IMAGE := aquasec/trivy@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c
 HOST_UID := $(shell id -u)
 HOST_GID := $(shell id -g)
 WORKSPACE := $(CURDIR)
 CACHE_HOME := $(WORKSPACE)/.cache/home
+SECURITY_EVIDENCE_HOST := $(WORKSPACE)/.cache/security-evidence
+SECURITY_EVIDENCE_CONTAINER := /workspace/.cache/security-evidence
+SECURITY_CANDIDATE_SHA ?= $(shell git rev-parse HEAD)
 
 TOOL_RUN := docker run --rm \
 	--user $(HOST_UID):$(HOST_GID) \
@@ -42,7 +46,7 @@ TOOL_RUN_HOST := docker run --rm \
 .PHONY: bootstrap build-tools prepare-cache format generate generate-fixture check check-fast \
 	check-format check-lint check-typecheck check-unit check-contract \
 	check-generated check-license check-policy check-secret check-secret-fixture check-telemetry \
-	check-bootstrap
+	check-bootstrap security-evidence
 
 prepare-cache:
 	@mkdir -p "$(CACHE_HOME)" "$(WORKSPACE)/.cache/uv" "$(WORKSPACE)/.cache/pnpm"
@@ -51,6 +55,7 @@ build-tools:
 	docker build --pull --file Dockerfile.dev --tag $(TOOL_IMAGE) .
 	docker pull $(GITLEAKS_IMAGE)
 	docker pull $(TELEMETRY_IMAGE)
+	docker pull $(TRIVY_IMAGE)
 
 bootstrap: prepare-cache build-tools
 	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
@@ -209,6 +214,61 @@ check-secret:
 		--workdir /repo \
 		$(GITLEAKS_IMAGE) git --no-banner --redact \
 		--config /policy/.gitleaks.toml --log-opts=--all
+
+security-evidence: prepare-cache
+	@set -eu; \
+	test "$$(git rev-parse HEAD)" = "$(SECURITY_CANDIDATE_SHA)"; \
+	git diff --quiet; \
+	git diff --cached --quiet; \
+	mkdir -p "$(SECURITY_EVIDENCE_HOST)" "$(WORKSPACE)/.cache/trivy"; \
+	docker run --rm --network none --pull=never \
+		--user $(HOST_UID):$(HOST_GID) \
+		--volume $(WORKSPACE):/workspace \
+		--workdir /workspace \
+		--env CI=true \
+		--env HOME=/workspace/.cache/home \
+		--env UV_CACHE_DIR=/workspace/.cache/uv \
+		--env COLORTRACE_CI=$(GITHUB_ACTIONS) \
+		--env COLORTRACE_DOCKER_ENDPOINT=$(DOCKER_HOST) \
+		--env COLORTRACE_HOST_DOCKER_SOCKET_PRESENT=$$(test -S /var/run/docker.sock && echo true || echo false) \
+		--env COLORTRACE_RUNNER_ARCH=$(RUNNER_ARCH) \
+		--env COLORTRACE_RUNNER_NAME=$(RUNNER_NAME) \
+		--env COLORTRACE_RUNNER_OS=$(RUNNER_OS) \
+		$(TOOL_IMAGE) uv run --offline colortrace-repo security-prepare \
+			--output "$(SECURITY_EVIDENCE_CONTAINER)"; \
+	$(MAKE) check-secret; \
+	docker run --rm --network none --pull=never \
+		--user $(HOST_UID):$(HOST_GID) \
+		--volume $(WORKSPACE):/source:ro \
+		--volume "$(SECURITY_EVIDENCE_HOST):/evidence" \
+		--workdir /source \
+		$(GITLEAKS_IMAGE) git --no-banner --redact \
+			--config /source/.gitleaks.toml \
+			--report-format json --report-path /evidence/secret.json \
+			--log-opts=HEAD; \
+	docker run --rm --pull=never \
+		--user $(HOST_UID):$(HOST_GID) \
+		--volume $(WORKSPACE):/workspace:ro \
+		--volume "$(SECURITY_EVIDENCE_HOST):/evidence" \
+		--volume "$(WORKSPACE)/.cache/trivy:/trivy-cache" \
+		$(TRIVY_IMAGE) sbom --cache-dir /trivy-cache \
+			--scanners vuln --severity HIGH,CRITICAL --exit-code 1 \
+			--ignorefile /workspace/policy/trivyignore.yaml \
+			--skip-java-db-update --skip-version-check \
+			--format json --output /evidence/vulnerability.json \
+			/evidence/sbom.cdx.json; \
+	scanner_metadata="$$(docker run --rm --network none --pull=never \
+		--user $(HOST_UID):$(HOST_GID) \
+		--volume "$(WORKSPACE)/.cache/trivy:/trivy-cache:ro" \
+		$(TRIVY_IMAGE) --cache-dir /trivy-cache version --format json)"; \
+	candidate_tree="$$(git rev-parse HEAD^{tree})"; \
+	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo security-finalize \
+		--output "$(SECURITY_EVIDENCE_CONTAINER)" \
+		--candidate-sha "$(SECURITY_CANDIDATE_SHA)" \
+		--candidate-tree "$$candidate_tree" \
+		--scanner-image "$(TRIVY_IMAGE)" \
+		--scanner-metadata "$$scanner_metadata" \
+		--secret-scanner-image "$(GITLEAKS_IMAGE)"
 
 check-secret-fixture:
 	@set -eu; \

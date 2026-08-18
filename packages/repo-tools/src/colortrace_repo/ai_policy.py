@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 import tomllib
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from colortrace_repo.common import Finding, load_json, relative_path, sorted_findings, walk_files
+from colortrace_repo.dependencies import resolved_locked_packages
 
 _MANIFEST_NAMES = frozenset({"package.json", "pyproject.toml"})
 _PYTHON_REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^]]+\])?")
@@ -73,6 +75,28 @@ def _runtime_dependencies(path: Path, document: dict[str, Any]) -> Iterable[tupl
                     name = _python_requirement_name(requirement)
                     if name:
                         yield name, f"/project/optional-dependencies/{group_name}/{index}"
+
+
+def _development_dependencies(path: Path, document: dict[str, Any]) -> Iterable[tuple[str, str]]:
+    if path.name == "package.json":
+        section = document.get("devDependencies", {})
+        if isinstance(section, dict):
+            for name in section:
+                if isinstance(name, str):
+                    yield name.lower(), f"/devDependencies/{name}"
+        return
+
+    groups = document.get("dependency-groups", {})
+    if not isinstance(groups, dict):
+        return
+    for group_name, requirements in groups.items():
+        if not isinstance(requirements, list):
+            continue
+        for index, requirement in enumerate(requirements):
+            if isinstance(requirement, str):
+                name = _python_requirement_name(requirement)
+                if name:
+                    yield name, f"/dependency-groups/{group_name}/{index}"
 
 
 def _load_structured(path: Path) -> dict[str, Any]:
@@ -225,6 +249,113 @@ def _dependency_findings(
                     f"#{pointer}",
                 )
             )
+    for package, pointer in _development_dependencies(path, document):
+        normalized = package.lower()
+        if normalized in disallowed or any(normalized.startswith(prefix) for prefix in prefixes):
+            findings.append(
+                Finding(
+                    display_path,
+                    "ai.dependency.disallowed",
+                    f"development dependency {package!r} is outside the accepted AI boundary",
+                    f"#{pointer}",
+                )
+            )
+    return findings
+
+
+def _resolved_dependency_findings(
+    root: Path,
+    policy: dict[str, Any],
+) -> list[Finding]:
+    packages, findings = resolved_locked_packages(root)
+    for package in packages:
+        ecosystem = "python" if package.ecosystem == "pypi" else "node"
+        rules = policy.get(ecosystem, {})
+        if not isinstance(rules, dict):
+            continue
+        disallowed = {str(value).lower() for value in rules.get("disallowed_ai_packages", [])}
+        prefixes = tuple(str(value).lower() for value in rules.get("disallowed_ai_prefixes", []))
+        if package.name in disallowed or any(
+            package.name.startswith(prefix) for prefix in prefixes
+        ):
+            lockfile = "uv.lock" if package.ecosystem == "pypi" else "pnpm-lock.yaml"
+            findings.append(
+                Finding(
+                    lockfile,
+                    "ai.resolved-dependency.disallowed",
+                    f"resolved {package.ecosystem} dependency {package.name!r} "
+                    "is outside the accepted AI boundary",
+                )
+            )
+    return findings
+
+
+_NODE_IMPORT = re.compile(
+    r"(?:^\s*(?:import|export)\b[^\n]*?\bfrom\s*|^\s*import\s*|\brequire\s*\(|\bimport\s*\()"
+    r"[\"']([^\"']+)[\"']",
+    re.MULTILINE,
+)
+
+
+def _node_package_name(specifier: str) -> str:
+    if specifier.startswith("@"):
+        return "/".join(specifier.split("/")[:2]).lower()
+    return specifier.split("/", 1)[0].lower()
+
+
+def _source_import_findings(root: Path, policy: dict[str, Any]) -> list[Finding]:
+    findings: list[Finding] = []
+    for path in walk_files(root):
+        if "src" not in path.parts:
+            continue
+        suffix = path.suffix.lower()
+        ecosystem: str
+        imports: set[str]
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            findings.append(Finding(relative_path(root, path), "ai.source.invalid", str(error)))
+            continue
+        if suffix == ".py":
+            ecosystem = "python"
+            try:
+                tree = ast.parse(source, filename=path.as_posix())
+            except SyntaxError as error:
+                findings.append(
+                    Finding(
+                        relative_path(root, path),
+                        "ai.source.invalid",
+                        f"cannot parse Python source: {error.msg}",
+                        f":{error.lineno or 1}",
+                    )
+                )
+                continue
+            imports = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imports.update(alias.name.split(".", 1)[0] for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imports.add(node.module.split(".", 1)[0])
+            imports = {_normalize_python_package(value) for value in imports}
+        elif suffix in {".cjs", ".js", ".jsx", ".mjs", ".ts", ".tsx"}:
+            ecosystem = "node"
+            imports = {_node_package_name(match) for match in _NODE_IMPORT.findall(source)}
+        else:
+            continue
+        rules = policy.get(ecosystem, {})
+        if not isinstance(rules, dict):
+            continue
+        disallowed = {str(value).lower() for value in rules.get("disallowed_ai_packages", [])}
+        prefixes = tuple(str(value).lower() for value in rules.get("disallowed_ai_prefixes", []))
+        for package in sorted(imports):
+            if package in disallowed or any(package.startswith(prefix) for prefix in prefixes):
+                findings.append(
+                    Finding(
+                        relative_path(root, path),
+                        "ai.source-import.disallowed",
+                        f"source import {package!r} is outside the accepted AI boundary",
+                    )
+                )
     return findings
 
 
@@ -414,6 +545,9 @@ def check_ai_policy(root: Path, policy_path: Path | None = None) -> list[Finding
             )
             continue
         findings.extend(_dependency_findings(root, manifest_path, document, policy))
+
+    findings.extend(_resolved_dependency_findings(root, policy))
+    findings.extend(_source_import_findings(root, policy))
 
     config_paths: set[Path] = set()
     globs = policy.get("structured_config_globs", [])
