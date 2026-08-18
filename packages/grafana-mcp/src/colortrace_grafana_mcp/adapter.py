@@ -2547,7 +2547,14 @@ def _project_action_attributes(
     authority = expected.get((signal, event_id))
     if authority is None:
         raise AdapterError("action_observation_correlation_mismatch")
-    for name, value in authority.attributes.items():
+    expected_attributes = authority.attributes
+    if signal == "metric":
+        expected_attributes = {
+            name: value
+            for name, value in authority.attributes.items()
+            if not name.startswith("publication.")
+        }
+    for name, value in expected_attributes.items():
         if _action_attribute(attributes, name, normalized=normalized) != _action_attribute_text(
             value
         ):

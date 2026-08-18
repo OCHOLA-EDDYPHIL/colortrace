@@ -301,6 +301,14 @@ def _flat_action_attributes(event: Mapping[str, Any]) -> dict[str, str | int | b
     return attributes
 
 
+def _metric_action_attributes(event: Mapping[str, Any]) -> dict[str, str | int | bool]:
+    return {
+        name: value
+        for name, value in _flat_action_attributes(event).items()
+        if not name.startswith("publication.")
+    }
+
+
 class ActionOtelSink:
     """A local-only OTLP pipeline with no caller-controlled endpoint or attributes."""
 
@@ -360,11 +368,11 @@ class ActionOtelSink:
 
     def emit(self, event: ActionTelemetryEvent) -> None:
         document = event.to_dict()
-        attributes = _flat_action_attributes(document)
         signal = document["signal"]
         if signal == "metric":
-            self._observations.add(1, attributes=attributes)
+            self._observations.add(1, attributes=_metric_action_attributes(document))
             return
+        attributes = _flat_action_attributes(document)
         if signal == "log":
             self._logger.info(document["event_name"], extra=attributes)
             return
