@@ -13,6 +13,10 @@ from colortrace_repo.common import Finding, sorted_findings
 from colortrace_repo.contracts import check_contracts
 from colortrace_repo.dependencies import check_dependencies
 from colortrace_repo.generated import check_generated_manifest, compare_generated_trees
+from colortrace_repo.security_evidence import (
+    finalize_security_evidence,
+    prepare_security_evidence,
+)
 
 
 def _path(root: Path, value: str | None) -> Path | None:
@@ -83,6 +87,23 @@ def _parser() -> argparse.ArgumentParser:
     _add_common_arguments(binaries)
     binaries.add_argument("--policy", metavar="PATH", help="binary asset policy JSON")
 
+    security_prepare = subparsers.add_parser(
+        "security-prepare", help="create deterministic security evidence inputs"
+    )
+    _add_common_arguments(security_prepare)
+    security_prepare.add_argument("--output", required=True, metavar="PATH")
+
+    security_finalize = subparsers.add_parser(
+        "security-finalize", help="seal exact-candidate security evidence"
+    )
+    _add_common_arguments(security_finalize)
+    security_finalize.add_argument("--output", required=True, metavar="PATH")
+    security_finalize.add_argument("--candidate-sha", required=True)
+    security_finalize.add_argument("--candidate-tree", required=True)
+    security_finalize.add_argument("--scanner-image", required=True)
+    security_finalize.add_argument("--scanner-metadata", required=True)
+    security_finalize.add_argument("--secret-scanner-image", required=True)
+
     check = subparsers.add_parser("check", help="run every repository policy check")
     _add_common_arguments(check)
     return parser
@@ -116,6 +137,18 @@ def _run(args: argparse.Namespace, root: Path) -> list[Finding]:
         return check_actions(root)
     if args.command == "binary-assets":
         return check_binary_assets(root, _path(root, args.policy))
+    if args.command == "security-prepare":
+        return prepare_security_evidence(root, _path(root, args.output))  # type: ignore[arg-type]
+    if args.command == "security-finalize":
+        return finalize_security_evidence(
+            root,
+            _path(root, args.output),  # type: ignore[arg-type]
+            candidate_sha=args.candidate_sha,
+            candidate_tree=args.candidate_tree,
+            scanner_image=args.scanner_image,
+            scanner_metadata=args.scanner_metadata,
+            secret_scanner_image=args.secret_scanner_image,
+        )
     if args.command == "check":
         findings: list[Finding] = []
         findings.extend(check_contracts(root))

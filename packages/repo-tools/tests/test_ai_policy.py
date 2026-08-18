@@ -21,7 +21,7 @@ class AiPolicyTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def test_allows_google_boundary_and_ignores_development_and_prose(self) -> None:
+    def test_allows_google_boundary_and_non_ai_development_and_prose(self) -> None:
         (self.root / "pyproject.toml").write_text(
             """
 [project]
@@ -30,7 +30,7 @@ version = "0.0.0"
 dependencies = ["google-adk==1.0.0", "google-genai==1.0.0", "mcp==1.0.0"]
 
 [dependency-groups]
-dev = ["openai==1.0.0"]
+dev = ["pytest==1.0.0"]
 """.strip()
             + "\n",
             encoding="utf-8",
@@ -59,6 +59,50 @@ dev = ["openai==1.0.0"]
         )
 
         self.assertEqual(check_ai_policy(self.root), [])
+
+    def test_rejects_disallowed_development_and_resolved_dependencies(self) -> None:
+        (self.root / "pyproject.toml").write_text(
+            """
+[project]
+name = "example"
+version = "0.0.0"
+
+[dependency-groups]
+dev = ["openai==1.0.0"]
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        (self.root / "pnpm-lock.yaml").write_text(
+            """
+lockfileVersion: '9.0'
+
+packages:
+
+  '@anthropic-ai/sdk@1.0.0':
+    resolution: {integrity: sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA}
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        codes = {finding.code for finding in check_ai_policy(self.root)}
+
+        self.assertIn("ai.dependency.disallowed", codes)
+        self.assertIn("ai.resolved-dependency.disallowed", codes)
+
+    def test_rejects_disallowed_python_and_node_source_imports(self) -> None:
+        source = self.root / "src"
+        source.mkdir()
+        (source / "unsafe.py").write_text("from openai import OpenAI\n", encoding="utf-8")
+        (source / "unsafe.ts").write_text(
+            'import Anthropic from "@anthropic-ai/sdk";\n',
+            encoding="utf-8",
+        )
+
+        codes = {finding.code for finding in check_ai_policy(self.root)}
+
+        self.assertIn("ai.source-import.disallowed", codes)
 
     def test_rejects_alternate_runtime_dependency_and_public_mcp(self) -> None:
         (self.root / "pyproject.toml").write_text(
