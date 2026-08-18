@@ -695,6 +695,46 @@ def test_simulator_action_pre_action_provider_data_is_not_accepted() -> None:
             asyncio.run(projection_adapter.collect_simulator_action_projection(batch))
 
 
+def test_simulator_action_accepts_exact_grafana_loki_unix_nanosecond_row_time() -> None:
+    batch = action_batch()
+
+    async def handler(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        payload = action_payload(name, arguments, batch)
+        if name == "query_loki_logs":
+            for row in payload["data"]:
+                row["timestamp"] = '"1786579260000000000"'
+        return types.CallToolResult(
+            _meta=(
+                {"encoding": "json", "type": "trace", "version": "2"}
+                if name == "tempo_get-trace"
+                else None
+            ),
+            content=[types.TextContent(type="text", text=json.dumps(payload))],
+        )
+
+    adapter, result = collect_action_with(FakeSession(handler), batch)
+    observations = adapter.normalize_simulator_action_observations(batch, result.envelopes)
+    assert len(observations) == 21
+
+
+@pytest.mark.parametrize(
+    "value,error",
+    [
+        ("1786579260000000000", "malformed_result"),
+        ('"178657926000000000"', "malformed_result"),
+        ('"17865792600000000000"', "malformed_result"),
+        ('"178657926000000000x"', "malformed_result"),
+        ('"1786579199000000000"', "pre_action_evidence"),
+        ('"1786579321000000000"', "pre_action_evidence"),
+    ],
+)
+def test_simulator_action_loki_unix_nanosecond_row_time_fails_closed(
+    value: str, error: str
+) -> None:
+    with pytest.raises(subject.AdapterError, match=error):
+        subject._validate_loki_row_time(value, action_batch())
+
+
 def test_simulator_action_projection_deduplicates_byte_identical_events() -> None:
     batch = action_batch()
 

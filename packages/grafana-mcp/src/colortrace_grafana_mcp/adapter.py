@@ -2050,6 +2050,27 @@ def _validate_action_observation_time(value: Any, batch: SimulatorActionEvidence
         raise AdapterError("pre_action_evidence")
 
 
+def _validate_loki_row_time(value: Any, batch: SimulatorActionEvidenceBatch) -> None:
+    if isinstance(value, str) and re.fullmatch(r'"[0-9]{19}"', value):
+        nanoseconds = int(value[1:-1])
+        epoch = datetime(1970, 1, 1, tzinfo=UTC)
+
+        def epoch_nanoseconds(timestamp: datetime) -> int:
+            delta = timestamp - epoch
+            return (
+                delta.days * 86_400 + delta.seconds
+            ) * 1_000_000_000 + delta.microseconds * 1_000
+
+        if not (
+            epoch_nanoseconds(batch.action_started_at)
+            < nanoseconds
+            <= epoch_nanoseconds(batch.snapshot_observed_at)
+        ):
+            raise AdapterError("pre_action_evidence")
+        return
+    _validate_action_observation_time(value, batch)
+
+
 def _validate_simulator_action_collection(
     raw: _RawCollection, batch: SimulatorActionEvidenceBatch
 ) -> None:
@@ -2088,7 +2109,7 @@ def _validate_simulator_action_collection(
             ):
                 raise AdapterError("incomplete_result")
             _validate_action_observation_time(metadata.get("telemetry_observed_at"), batch)
-            _validate_action_observation_time(row.get("timestamp"), batch)
+            _validate_loki_row_time(row.get("timestamp"), batch)
         return
     if raw.bound.spec.result_kind == "trace":
         trace = payload.get("trace")
