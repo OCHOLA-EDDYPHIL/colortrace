@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any
 
 import pytest
@@ -521,6 +522,44 @@ def test_simulator_source_loads_only_the_exact_current_consumed_dispatch() -> No
     assert proof.consumption == consumption
     assert proof.audit_events[-1]["event_type"] == "dispatch.consumed"
     assert proof.trusted_audit_head_sha256 == proof.audit_events[-1]["event_sha256"]
+
+    identity = DispatchIdentity(
+        task_key=authorization["task_key"],
+        operation_id=authorization["operation_id"],
+        payload_sha256=authorization["payload_sha256"],
+    )
+    edit_started = Event()
+    edit_finished = Event()
+    edit_results: list[dict[str, Any]] = []
+    edit_errors: list[BaseException] = []
+    edit_body = {
+        **create_body(api_client),
+        "expected_plan_version": 1,
+        "expected_plan_sha256": plan["plan_sha256"],
+        "idempotency_key": "edit-after-dispatch-guard",
+    }
+
+    def edit_plan() -> None:
+        edit_started.set()
+        try:
+            edit_results.append(plans.edit(Verifier().verify("editor"), INCIDENT_ID, edit_body))
+        except BaseException as error:
+            edit_errors.append(error)
+        finally:
+            edit_finished.set()
+
+    with plans.guard_current_consumed(identity) as guarded:
+        assert guarded == proof
+        thread = Thread(target=edit_plan)
+        thread.start()
+        assert edit_started.wait(timeout=1)
+        assert not edit_finished.wait(timeout=0.05)
+
+    assert edit_finished.wait(timeout=2)
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert edit_errors == []
+    assert edit_results[0]["version"] == 2
 
 
 def test_expired_credential_and_unexpected_request_fields_fail_closed() -> None:
