@@ -300,6 +300,7 @@ describe("incident read adapter", () => {
     expect(requests[1]?.headers.has("Authorization")).toBe(false);
     expect(requests[2]?.headers.has("Authorization")).toBe(false);
     expect(requests.every((request) => request.method === "GET")).toBe(true);
+    expect(requests.every((request) => request.credentials === "omit")).toBe(true);
   });
 
   it("preserves typed API status and error codes", async () => {
@@ -357,6 +358,7 @@ describe("incident read adapter", () => {
         (request) => request.headers.get("Authorization") === "Bearer ephemeral-plan-token",
       ),
     ).toBe(true);
+    expect(requests.every((request) => request.credentials === "omit")).toBe(true);
     expect(await requests[0]?.clone().json()).toEqual({
       expected_incident_version: review.plan.incident_version,
       expected_plan_version: review.plan.version,
@@ -411,6 +413,7 @@ describe("incident read adapter", () => {
       `/v1/incidents/${review.snapshot.incident_id}/recovery/close`,
     );
     expect(requests[0]?.headers.get("Authorization")).toBe("Bearer ephemeral-recovery-token");
+    expect(requests[0]?.credentials).toBe("omit");
     expect(await requests[0]?.clone().json()).toEqual({
       schema: "recovery-closure-request/v1",
       expected_incident_version: review.current_incident_version,

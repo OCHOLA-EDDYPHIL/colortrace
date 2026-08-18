@@ -57,6 +57,9 @@
         "security": [
           {
             "operatorOidc": []
+          },
+          {
+            "serviceOidc": []
           }
         ],
         "requestBody": {
@@ -92,6 +95,16 @@
           },
           "401": {
             "description": "The bearer token is absent or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The verified principal lacks the exact intake role, kind, or incident membership.",
             "content": {
               "application/json": {
                 "schema": {
@@ -505,7 +518,7 @@
     "/v1/incidents/{incidentId}/response-plan/dispatch-authorizations": {
       "post": {
         "operationId": "authorizeResponsePlanDispatch",
-        "security": [{ "operatorOidc": [] }],
+        "security": [{ "serviceOidc": [] }],
         "parameters": [
           {
             "name": "incidentId",
@@ -540,7 +553,7 @@
     "/v1/incidents/{incidentId}/response-plan/dispatch-consumptions": {
       "post": {
         "operationId": "consumeResponsePlanDispatch",
-        "security": [{ "operatorOidc": [] }],
+        "security": [{ "serviceOidc": [] }],
         "parameters": [
           {
             "name": "incidentId",
@@ -677,7 +690,7 @@
     "/internal/v1/incidents/{incidentId}/simulator-actions": {
       "post": {
         "operationId": "admitSimulatorAction",
-        "security": [{ "operatorOidc": [] }],
+        "security": [{ "serviceOidc": [] }],
         "parameters": [
           {
             "name": "incidentId",
@@ -1162,6 +1175,7 @@
         }
       },
       "HumanAuditActor": {
+        "description": "Identity provenance carried by digest-bound audit records. Public read projections intentionally retain these fields for accountable attribution; credential material is never included.",
         "type": "object",
         "additionalProperties": false,
         "required": ["subject", "display_name", "issuer", "audience", "principal_kind"],
@@ -4083,6 +4097,7 @@
         }
       },
       "RecoveryAuditActor": {
+        "description": "Identity provenance carried by digest-bound audit records. Public read projections intentionally retain these fields for accountable attribution; credential material is never included.",
         "type": "object",
         "additionalProperties": false,
         "required": ["issuer", "subject", "audience", "display_name", "kind", "authorized_role"],
@@ -4160,6 +4175,7 @@
         }
       },
       "RecoveryClosureActor": {
+        "description": "Identity provenance carried by digest-bound audit records. Public read projections intentionally retain these fields for accountable attribution; credential material is never included.",
         "type": "object",
         "additionalProperties": false,
         "required": ["issuer", "subject", "audience", "display_name", "kind"],
@@ -4289,6 +4305,7 @@
         }
       },
       "ResponsePlanActor": {
+        "description": "Identity provenance carried by digest-bound audit records. Public read projections intentionally retain these fields for accountable attribution; credential material is never included.",
         "type": "object",
         "additionalProperties": false,
         "required": ["issuer", "subject", "audience", "kind"],
@@ -4939,6 +4956,7 @@
         }
       },
       "SimulatorExecutorActor": {
+        "description": "Identity provenance carried by digest-bound audit records. Public read projections intentionally retain these fields for accountable attribution; credential material is never included.",
         "type": "object",
         "additionalProperties": false,
         "required": ["issuer", "subject", "audience", "kind"],
