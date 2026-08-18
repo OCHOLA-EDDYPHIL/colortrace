@@ -63,6 +63,30 @@ describe("canonical API contract", () => {
     ).toBe("editResponsePlan");
     expect(canonicalContract.paths["/v1/session"].get.operationId).toBe("getOperatorSession");
     expect(canonicalContract.components.securitySchemes.operatorOidc.scheme).toBe("bearer");
+    expect(canonicalContract.components.securitySchemes.serviceOidc.scheme).toBe("bearer");
+    expect(canonicalContract.paths["/v1/incidents"].post.security).toEqual([
+      { operatorOidc: [] },
+      { serviceOidc: [] },
+    ]);
+    expect(
+      canonicalContract.paths["/v1/incidents/{incidentId}/response-plan/dispatch-authorizations"]
+        .post.security,
+    ).toEqual([{ serviceOidc: [] }]);
+    expect(
+      canonicalContract.paths["/v1/incidents/{incidentId}/response-plan/dispatch-consumptions"].post
+        .security,
+    ).toEqual([{ serviceOidc: [] }]);
+    expect(
+      canonicalContract.paths["/internal/v1/incidents/{incidentId}/recovery/verifications"].post
+        .security,
+    ).toEqual([{ serviceOidc: [] }]);
+    expect(
+      canonicalContract.paths["/private/v1/recovery-verification-tasks/{taskKey}"].post.security,
+    ).toEqual([{ serviceOidc: [] }]);
+    expect(
+      canonicalContract.paths["/internal/v1/incidents/{incidentId}/simulator-actions"].post
+        .security,
+    ).toEqual([{ serviceOidc: [] }]);
     const session = canonicalContract.components.schemas.OperatorSession;
     expect(session.properties.subject.$ref).toBe("#/components/schemas/OidcSubject");
     expect(session.required).toContain("principal_kind");

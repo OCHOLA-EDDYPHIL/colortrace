@@ -131,6 +131,11 @@ export const createIncident = <ThrowOnError extends boolean = false>(
         scheme: "bearer",
         type: "http",
       },
+      {
+        key: "serviceOidc",
+        scheme: "bearer",
+        type: "http",
+      },
     ],
     url: "/v1/incidents",
     ...options,
@@ -525,7 +530,7 @@ export const authorizeResponsePlanDispatch = <ThrowOnError extends boolean = fal
     responseStyle: "data",
     security: [
       {
-        key: "operatorOidc",
+        key: "serviceOidc",
         scheme: "bearer",
         type: "http",
       },
@@ -573,7 +578,7 @@ export const consumeResponsePlanDispatch = <ThrowOnError extends boolean = false
     responseStyle: "data",
     security: [
       {
-        key: "operatorOidc",
+        key: "serviceOidc",
         scheme: "bearer",
         type: "http",
       },
@@ -717,7 +722,7 @@ export const admitSimulatorAction = <ThrowOnError extends boolean = false>(
     responseStyle: "data",
     security: [
       {
-        key: "operatorOidc",
+        key: "serviceOidc",
         scheme: "bearer",
         type: "http",
       },

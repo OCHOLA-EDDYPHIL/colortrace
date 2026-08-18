@@ -110,7 +110,7 @@ export function createIncidentReadAdapter({
 }: IncidentReadAdapterOptions): IncidentReadAdapter {
   const client = createClient({
     baseUrl,
-    credentials: "same-origin",
+    credentials: "omit",
     ...(fetchImplementation === undefined ? {} : { fetch: fetchImplementation }),
     ...(tokenProvider === undefined ? {} : { auth: () => tokenProvider() }),
   });
