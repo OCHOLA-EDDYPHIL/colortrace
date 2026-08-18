@@ -357,6 +357,10 @@ def action_payload(
 
     def flat(event: subject._ExpectedActionEvent, *, normalized: bool) -> dict[str, Any]:
         values = dict(event.attributes)
+        if event.signal == "metric":
+            values = {
+                name: value for name, value in values.items() if not name.startswith("publication.")
+            }
         values["telemetry.emitted_at"] = emitted_at
         return {
             (name.replace(".", "_") if normalized else name): (
@@ -513,6 +517,36 @@ def test_simulator_action_collection_projects_exact_twenty_one_observations() ->
     assert {value["clock_provenance"] for value in observations} == {"local-host-utc"}
     assert {value["clock_skew_milliseconds"] for value in observations} == {0}
     assert all(value["truncated"] is False for value in observations)
+
+    metric_payload = action_payload(
+        "query_prometheus",
+        {"endTime": "2026-08-13T00:05:00.000Z"},
+        batch,
+    )
+    metric_labels = metric_payload["data"][0]["metric"]
+    assert len(metric_labels) < 58
+    assert not any(name.startswith("publication_") for name in metric_labels)
+    assert {
+        "action_action_id",
+        "action_incident_id",
+        "action_operation_id",
+        "action_outcome_sha256",
+        "telemetry_event_id",
+    } <= metric_labels.keys()
+    log_payload = action_payload(
+        "query_loki_logs",
+        {
+            "startRfc3339": "2026-08-13T00:00:00.000Z",
+            "endRfc3339": "2026-08-13T00:05:00.000Z",
+        },
+        batch,
+    )
+    assert any(
+        name.startswith("publication_") for name in log_payload["data"][0]["structuredMetadata"]
+    )
+    trace_payload = action_payload("tempo_get-trace", {"trace_id": batch.trace_ids[0]}, batch)
+    trace_attributes = trace_payload["trace"]["services"][0]["scopes"][0]["spans"][0]["attributes"]
+    assert any(name.startswith("publication.") for name in trace_attributes)
 
     projection_session = FakeSession(handler)
     projection_factory = FakeFactory(projection_session)
