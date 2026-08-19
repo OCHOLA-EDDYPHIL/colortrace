@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "plan_sha256",
+    "spec_id",
+    "candidate",
+    "response_plan_proof",
+    "simulator",
+    "recovery_aggregate",
+    "evidence_id",
+    "sha256"
+  ],
+  "properties": {
+    "schema": {"const": "reliability-action-recovery-evidence/v1"},
+    "plan_sha256": {"$ref": "#/$defs/digest"},
+    "spec_id": {"type": "string", "pattern": "^eval-[0-9]{2}$"},
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree"],
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "response_plan_proof": {"type": "object"},
+    "simulator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "admission",
+        "primary_outcome",
+        "replay_outcome",
+        "audit_before_replay",
+        "audit_after_replay"
+      ],
+      "properties": {
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["task_key", "operation_id", "payload_sha256"],
+          "properties": {
+            "task_key": {"type": "string", "pattern": "^dispatch-task:[0-9a-f]{64}$"},
+            "operation_id": {"type": "string", "pattern": "^dispatch-operation:[0-9a-f]{64}$"},
+            "payload_sha256": {"$ref": "#/$defs/digest"}
+          }
+        },
+        "admission": {"type": "object"},
+        "primary_outcome": {"type": "object"},
+        "replay_outcome": {"type": "object"},
+        "audit_before_replay": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+        "audit_after_replay": {"type": "array", "minItems": 1, "items": {"type": "object"}}
+      }
+    },
+    "recovery_aggregate": {"type": "object"},
+    "evidence_id": {"type": "string", "pattern": "^reliability-action-recovery:[0-9a-f]{64}$"},
+    "sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

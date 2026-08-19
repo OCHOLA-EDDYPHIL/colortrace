@@ -5,6 +5,7 @@ requires-python = "==3.12.*"
 [manifest]
 members = [
     "colortrace-api",
+    "colortrace-evaluation",
     "colortrace-fixture",
     "colortrace-grafana-mcp",
     "colortrace-investigation",
@@ -301,6 +302,37 @@ requires-dist = [
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.13.0" },
     { name = "uvicorn", specifier = "==0.52.1" },
+]
+
+[[package]]
+name = "colortrace-evaluation"
+version = "1.0.0"
+source = { editable = "packages/evaluation" }
+dependencies = [
+    { name = "colortrace-api" },
+    { name = "colortrace-fixture" },
+    { name = "colortrace-grafana-mcp" },
+    { name = "colortrace-investigation" },
+    { name = "colortrace-recovery" },
+    { name = "colortrace-response-plans" },
+    { name = "colortrace-simulator" },
+    { name = "colortrace-telemetry" },
+    { name = "colortrace-vertical-slice" },
+    { name = "jsonschema" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "colortrace-api", editable = "packages/api" },
+    { name = "colortrace-fixture", editable = "packages/fixture-generator" },
+    { name = "colortrace-grafana-mcp", editable = "packages/grafana-mcp" },
+    { name = "colortrace-investigation", editable = "packages/investigation" },
+    { name = "colortrace-recovery", editable = "packages/recovery" },
+    { name = "colortrace-response-plans", editable = "packages/response-plans" },
+    { name = "colortrace-simulator", editable = "packages/simulator" },
+    { name = "colortrace-telemetry", editable = "packages/telemetry" },
+    { name = "colortrace-vertical-slice", editable = "packages/vertical-slice" },
+    { name = "jsonschema", specifier = "==4.25.1" },
 ]
 
 [[package]]
