@@ -21,6 +21,7 @@ from .campaign import (
 )
 from .contracts import ContractError, strict_json_file, write_exclusive
 from .evidence import build_action_recovery_evidence
+from .grafana_cleanup import cleanup_grafana_resources
 from .runner import execute_investigation_slot
 
 
@@ -114,6 +115,14 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--mcp-binary", type=Path, required=True)
     run.add_argument("--timeout-seconds", type=int, default=180)
     run.add_argument("--output", type=Path, required=True)
+
+    cleanup = subparsers.add_parser("cleanup-grafana")
+    cleanup.add_argument("--grafana-url", required=True)
+    cleanup.add_argument("--viewer-token-file", type=Path, required=True)
+    cleanup.add_argument("--editor-token-file", type=Path, required=True)
+    cleanup.add_argument("--folder-uid", required=True)
+    cleanup.add_argument("--rule-uid", required=True)
+    cleanup.add_argument("--output", type=Path, required=True)
 
     no_grafana = subparsers.add_parser("control-no-grafana")
     no_grafana.add_argument("--plan", type=Path, required=True)
@@ -247,6 +256,14 @@ def _execute(arguments: argparse.Namespace) -> dict[str, Any]:
             mcp_binary=arguments.mcp_binary,
             timeout_seconds=arguments.timeout_seconds,
         )
+    if arguments.command == "cleanup-grafana":
+        return cleanup_grafana_resources(
+            grafana_url=arguments.grafana_url,
+            viewer_token_file=arguments.viewer_token_file,
+            editor_token_file=arguments.editor_token_file,
+            folder_uid=arguments.folder_uid,
+            rule_uid=arguments.rule_uid,
+        )
     if arguments.command == "control-no-grafana":
         return build_no_grafana_control(
             plan=strict_json_file(arguments.plan.resolve(strict=True)),
@@ -283,6 +300,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = _execute(arguments)
         write_exclusive(arguments.output, result)
+        if arguments.command == "cleanup-grafana" and not result["cleanup_complete"]:
+            return 2
     except (ContractError, EvaluationError, OSError, TypeError, ValueError) as error:
         code = str(error) or "evaluation-failed"
         print(f"colortrace-evaluation: {code.split(':', 1)[0]}", file=sys.stderr)

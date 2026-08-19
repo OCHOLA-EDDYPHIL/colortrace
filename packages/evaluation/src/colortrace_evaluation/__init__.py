@@ -16,6 +16,7 @@ from .campaign import (
 )
 from .contracts import canonical_json_bytes, prefixed_sha256, strict_json_file
 from .evidence import build_action_recovery_evidence
+from .grafana_cleanup import cleanup_grafana_resources
 from .runner import execute_investigation_slot
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "build_no_grafana_control",
     "build_run_record",
     "canonical_json_bytes",
+    "cleanup_grafana_resources",
     "execute_investigation_slot",
     "execute_recovery_failure_case",
     "derive_investigation_observation",
