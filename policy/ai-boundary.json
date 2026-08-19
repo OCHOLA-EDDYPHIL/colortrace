@@ -9,6 +9,7 @@
       "mcp"
     ],
     "allowed_non_ai_runtime_packages": [
+      "colortrace-api",
       "colortrace-fixture",
       "colortrace-grafana-mcp",
       "colortrace-recovery",
