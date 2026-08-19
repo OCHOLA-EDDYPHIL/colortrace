@@ -49,6 +49,22 @@ def _child_environment(repository: Path) -> tuple[dict[str, str], str]:
         for path in sources
     ):
         raise EvaluationError("child-candidate-sources-invalid")
+    local_dependency = (
+        repository
+        / ".venv"
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
+    )
+    local_components = (
+        repository / ".venv",
+        repository / ".venv" / "lib",
+        repository / ".venv" / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}",
+        local_dependency,
+    )
+    local_dependency_valid = all(
+        path.exists() and not path.is_symlink() for path in local_components
+    )
     dependencies: list[Path] = []
     for value in sys.path:
         if not value:
@@ -57,7 +73,16 @@ def _child_environment(repository: Path) -> tuple[dict[str, str], str]:
             path = Path(value).resolve(strict=True)
         except OSError:
             continue
-        if path.name not in {"site-packages", "dist-packages"} or repository in path.parents:
+        lexical_path = Path(os.path.abspath(value))
+        inside_repository = lexical_path == repository or repository in lexical_path.parents
+        allowed_local = (
+            local_dependency_valid
+            and lexical_path == local_dependency
+            and path == local_dependency.resolve(strict=True)
+        )
+        if path.name not in {"site-packages", "dist-packages"} or (
+            inside_repository and not allowed_local
+        ):
             continue
         if path not in dependencies:
             dependencies.append(path)
@@ -276,6 +301,7 @@ def execute_investigation_slot(
             ),
             "mcp_lock_sha256": sha256_file(repository / "config/grafana-mcp/mcp-grafana.lock.json"),
             "mcp_binary_sha256": sha256_file(binary),
+            "dependency_lock_sha256": sha256_file(repository / "uv.lock"),
             "child_python_sha256": sha256_file(Path(sys.executable).resolve(strict=True)),
             "child_pythonpath_sha256": child_pythonpath_sha256,
             "project_id_sha256": f"sha256:{hashlib.sha256(project_id.encode()).hexdigest()}",
