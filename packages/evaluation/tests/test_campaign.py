@@ -14,6 +14,7 @@ from colortrace_evaluation.campaign import (
     build_manual_no_gemini_control,
     build_no_grafana_control,
     build_run_record,
+    derive_investigation_observation,
     prepare_fixture,
 )
 from colortrace_evaluation.contracts import canonical_json_bytes, prefixed_sha256
@@ -191,6 +192,90 @@ def test_run_record_recomputes_truth_metrics_and_binds_artifacts(
             artifact_paths=[raw, oracle_path, observation_path],
             started_at=NOW,
             finished_at="2026-08-19T00:00:05Z",
+        )
+
+
+def test_unresolved_recovery_case_is_recorded_without_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(subject, "validate_response_packet", lambda value: None)
+    monkeypatch.setattr(subject, "validate_replay", lambda value: None)
+    monkeypatch.setattr(subject, "validate_schema", lambda name, value: None)
+    value = plan()
+    spec = next(item for item in value["specs"] if item["family"] == "recovery-failure")
+    packet_value = {
+        "status": "unresolved",
+        "incident_id": f"phase3-{spec['spec_id']}",
+        "claims": [],
+        "scope": {
+            "state": "unresolved",
+            "policy": "single-causal-resource-scope/v1",
+            "affected": [],
+            "safe": [],
+            "unknown": [],
+            "reason_codes": ["insufficient-evidence"],
+        },
+        "budget_use": {"trusted_transient_retries": 0},
+    }
+    execution = {
+        "outcome": "complete",
+        "plan_sha256": value["sha256"],
+        "spec_id": spec["spec_id"],
+        "candidate": value["candidate"],
+    }
+    replay = {
+        "packet": packet_value,
+        "alert": {"incident_id": packet_value["incident_id"]},
+    }
+    observation = derive_investigation_observation(
+        plan=value,
+        spec_id=spec["spec_id"],
+        packet=packet_value,
+        execution=execution,
+        replay=replay,
+    )
+    assert observation["outcome"] == "unresolved"
+    assert observation["primary_action_count"] == 0
+    assert observation["sources"]["action_evidence_sha256"] is None
+
+    oracle = {
+        "causal_resource_sha256": "a" * 64,
+        "directly_affected_jobs": ["job-1"],
+        "affected_derivatives": [],
+        "safe_jobs": ["job-2"],
+    }
+    packet_path = tmp_path / "packet.json"
+    oracle_path = tmp_path / "oracle.json"
+    observation_path = tmp_path / "observation.json"
+    packet_path.write_bytes(canonical_json_bytes(packet_value) + b"\n")
+    oracle_path.write_bytes(canonical_json_bytes(oracle) + b"\n")
+    observation_path.write_bytes(canonical_json_bytes(observation) + b"\n")
+    record = build_run_record(
+        plan=value,
+        spec_id=spec["spec_id"],
+        packet=packet_value,
+        oracle=oracle,
+        observation=observation,
+        run_root=tmp_path,
+        packet_path=packet_path,
+        oracle_path=oracle_path,
+        observation_path=observation_path,
+        action_evidence_path=None,
+        artifact_paths=[packet_path, oracle_path, observation_path],
+        started_at=NOW,
+        finished_at="2026-08-19T00:00:05Z",
+    )
+    assert record["observed_outcome"] == "unresolved"
+    assert record["action_evidence_sha256"] is None
+
+    packet_value["status"] = "resolved"
+    with pytest.raises(EvaluationError, match="recovery-evidence-required"):
+        derive_investigation_observation(
+            plan=value,
+            spec_id=spec["spec_id"],
+            packet=packet_value,
+            execution=execution,
+            replay=replay,
         )
 
 
