@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "plan_sha256", "candidate", "run_count", "family_counts", "observations", "checks", "control_sha256s", "record_sha256s", "pass", "report_id", "sha256"],
+  "properties": {
+    "schema": {"const": "reliability-report/v1"}, "plan_sha256": {"$ref": "#/$defs/digest"},
+    "candidate": {"type": "object", "additionalProperties": false, "required": ["commit", "tree"], "properties": {"commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"}}},
+    "run_count": {"const": 50},
+    "family_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "observations": {"type": "object", "additionalProperties": false, "required": ["trace_correlation_failures", "unsupported_diagnoses", "unauthorized_actions", "duplicate_actions", "transparent_transient_retries"], "properties": {"trace_correlation_failures": {"type": "integer", "minimum": 0}, "unsupported_diagnoses": {"type": "integer", "minimum": 0}, "unauthorized_actions": {"type": "integer", "minimum": 0}, "duplicate_actions": {"type": "integer", "minimum": 0}, "transparent_transient_retries": {"type": "integer", "minimum": 0, "maximum": 50}}},
+    "checks": {"type": "object", "minProperties": 11, "additionalProperties": {"type": "boolean"}},
+    "control_sha256s": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/digest"}},
+    "record_sha256s": {"type": "array", "minItems": 50, "maxItems": 50, "uniqueItems": true, "items": {"$ref": "#/$defs/digest"}},
+    "pass": {"type": "boolean"}, "report_id": {"type": "string", "pattern": "^reliability-report:[0-9a-f]{64}$"}, "sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

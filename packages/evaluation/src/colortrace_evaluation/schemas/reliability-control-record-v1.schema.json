@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "kind", "candidate", "operator_kind", "started_at", "finished_at", "elapsed_ms", "outcome", "quality", "provider_calls", "limitations", "artifacts", "control_id", "sha256"],
+  "properties": {
+    "schema": {"const": "reliability-control-record/v1"},
+    "kind": {"enum": ["manual-no-gemini", "no-grafana"]},
+    "candidate": {"type": "object", "additionalProperties": false, "required": ["commit", "tree"], "properties": {"commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"}}},
+    "operator_kind": {"enum": ["human", "automation-assisted"]},
+    "started_at": {"type": "string", "format": "date-time"}, "finished_at": {"type": "string", "format": "date-time"},
+    "elapsed_ms": {"type": "integer", "minimum": 0},
+    "outcome": {"enum": ["resolved", "unresolved", "unavailable", "failed"]},
+    "quality": {"type": "object", "additionalProperties": false, "required": ["root_cause_correct", "affected_scope_exact", "safe_scope_exact", "decisive_operational_facts"], "properties": {"root_cause_correct": {"type": "boolean"}, "affected_scope_exact": {"type": "boolean"}, "safe_scope_exact": {"type": "boolean"}, "decisive_operational_facts": {"type": "integer", "minimum": 0}}},
+    "provider_calls": {"type": "object", "additionalProperties": false, "required": ["vertex", "grafana"], "properties": {"vertex": {"const": 0}, "grafana": {"type": "integer", "minimum": 0}}},
+    "limitations": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 512}},
+    "artifacts": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 512}, "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}}},
+    "control_id": {"type": "string", "pattern": "^reliability-control:[0-9a-f]{64}$"}, "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "plan_sha256", "spec_id", "execution_order", "candidate", "attempt", "retry_count", "started_at", "finished_at", "expected_outcome", "observed_outcome", "outcome_matches", "metrics", "packet_sha256", "oracle_sha256", "observation_sha256", "action_evidence_sha256", "source_artifacts", "artifacts", "record_id", "sha256"],
+  "properties": {
+    "schema": {"const": "reliability-run-record/v1"},
+    "plan_sha256": {"$ref": "#/$defs/digest"},
+    "spec_id": {"type": "string", "pattern": "^eval-[0-9]{2}$"},
+    "execution_order": {"type": "integer", "minimum": 1, "maximum": 50},
+    "candidate": {"$ref": "#/$defs/candidate"},
+    "attempt": {"const": 1}, "retry_count": {"type": "integer", "minimum": 0, "maximum": 1},
+    "started_at": {"type": "string", "format": "date-time"}, "finished_at": {"type": "string", "format": "date-time"},
+    "expected_outcome": {"enum": ["resolved", "unresolved", "recovery-failed"]},
+    "observed_outcome": {"enum": ["resolved", "unresolved", "recovery-failed"]},
+    "outcome_matches": {"type": "boolean"},
+    "metrics": {
+      "type": "object", "additionalProperties": false,
+      "required": ["root_cause", "affected_precision", "affected_recall", "safe_precision", "safe_recall", "trace_correlation_failure", "unsupported_diagnoses", "unauthorized_actions", "duplicate_actions", "primary_action_count", "replay_action_count", "confirmed_facts_sha256"],
+      "properties": {
+        "root_cause": {"type": "object", "additionalProperties": false, "required": ["expected", "observed", "correct"], "properties": {"expected": {"$ref": "#/$defs/raw_digest"}, "observed": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/raw_digest"}]}, "correct": {"type": "boolean"}}},
+        "affected_precision": {"$ref": "#/$defs/fraction"}, "affected_recall": {"$ref": "#/$defs/fraction"},
+        "safe_precision": {"$ref": "#/$defs/fraction"}, "safe_recall": {"$ref": "#/$defs/fraction"},
+        "trace_correlation_failure": {"type": "boolean"},
+        "unsupported_diagnoses": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
+        "unauthorized_actions": {"type": "integer", "minimum": 0}, "duplicate_actions": {"type": "integer", "minimum": 0},
+        "primary_action_count": {"type": "integer", "minimum": 0}, "replay_action_count": {"type": "integer", "minimum": 0},
+        "confirmed_facts_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "packet_sha256": {"$ref": "#/$defs/digest"}, "oracle_sha256": {"$ref": "#/$defs/digest"}, "observation_sha256": {"$ref": "#/$defs/digest"},
+    "action_evidence_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
+    "source_artifacts": {"type": "object", "additionalProperties": false, "required": ["packet", "oracle", "observation", "action_evidence"], "properties": {"packet": {"$ref": "#/$defs/artifact"}, "oracle": {"$ref": "#/$defs/artifact"}, "observation": {"$ref": "#/$defs/artifact"}, "action_evidence": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/artifact"}]}}},
+    "artifacts": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/artifact"}},
+    "record_id": {"type": "string", "pattern": "^reliability-run:[0-9a-f]{64}$"}, "sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "raw_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "candidate": {"type": "object", "additionalProperties": false, "required": ["commit", "tree"], "properties": {"commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"}}},
+    "fraction": {"type": "object", "additionalProperties": false, "required": ["numerator", "denominator"], "properties": {"numerator": {"type": "integer", "minimum": 0}, "denominator": {"type": "integer", "minimum": 0}}},
+    "artifact": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$"}, "sha256": {"$ref": "#/$defs/digest"}}}
+  }
+}
