@@ -524,11 +524,13 @@ def derive_recovery_observation(
     )
     if (
         response_plan["incident_id"] != packet["incident_id"]
-        or response_plan["response_packet_sha256"] != packet["packet_sha256"]
+        or response_plan["response_packet_sha256"] != packet["derivation_sha256"]
     ):
         raise EvaluationError("action-investigation-packet-binding-invalid")
     simulator = cast(Mapping[str, Any], action_evidence["simulator"])
     events = cast(Sequence[Mapping[str, Any]], simulator["audit_after_replay"])
+    admission = cast(Mapping[str, Any], simulator["admission"])
+    executor = cast(Mapping[str, Any], admission["executor_actor"])
     terminal_count = sum(
         event["event_type"] in {"action.succeeded", "action.failed"} for event in events
     )
@@ -544,7 +546,7 @@ def derive_recovery_observation(
         "retry_count": retries,
         "trace_correlation_failure": False,
         "unsupported_diagnoses": [],
-        "unauthorized_actions": 0,
+        "unauthorized_actions": 0 if executor["kind"] == "service" else 1,
         "duplicate_actions": max(0, terminal_count - 1),
         "primary_action_count": terminal_count,
         "replay_action_count": 0,

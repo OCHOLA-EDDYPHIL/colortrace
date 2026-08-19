@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .action_runner import execute_recovery_failure_case
 from .campaign import (
     EvaluationError,
     aggregate_campaign,
@@ -75,6 +76,15 @@ def _parser() -> argparse.ArgumentParser:
     recovery.add_argument("--replay", type=Path, required=True)
     recovery.add_argument("--action-evidence", type=Path, required=True)
     recovery.add_argument("--output", type=Path, required=True)
+
+    run_recovery = subparsers.add_parser("run-recovery-failure")
+    run_recovery.add_argument("--plan", type=Path, required=True)
+    run_recovery.add_argument("--spec-id", required=True)
+    run_recovery.add_argument("--replay", type=Path, required=True)
+    run_recovery.add_argument("--fixture-bundle", type=Path, required=True)
+    run_recovery.add_argument("--run-root", type=Path, required=True)
+    run_recovery.add_argument("--query-catalog", type=Path, required=True)
+    run_recovery.add_argument("--output", type=Path, required=True)
 
     prepare = subparsers.add_parser("prepare-fixture")
     prepare.add_argument("--plan", type=Path, required=True)
@@ -196,6 +206,15 @@ def _execute(arguments: argparse.Namespace) -> dict[str, Any]:
             execution=strict_json_file(arguments.execution.resolve(strict=True)),
             replay=strict_json_file(arguments.replay.resolve(strict=True)),
             action_evidence=strict_json_file(arguments.action_evidence.resolve(strict=True)),
+        )
+    if arguments.command == "run-recovery-failure":
+        return execute_recovery_failure_case(
+            plan=strict_json_file(arguments.plan.resolve(strict=True)),
+            spec_id=arguments.spec_id,
+            replay_path=arguments.replay,
+            fixture_bundle=arguments.fixture_bundle,
+            run_root=arguments.run_root,
+            query_catalog_path=arguments.query_catalog,
         )
     if arguments.command == "prepare-fixture":
         return prepare_fixture(

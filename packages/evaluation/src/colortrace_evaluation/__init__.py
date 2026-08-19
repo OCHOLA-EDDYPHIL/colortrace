@@ -1,5 +1,6 @@
 """Sealed and independently recomputable ColorTrace reliability evaluation."""
 
+from .action_runner import execute_recovery_failure_case
 from .campaign import (
     EvaluationError,
     aggregate_campaign,
@@ -28,6 +29,7 @@ __all__ = [
     "build_run_record",
     "canonical_json_bytes",
     "execute_investigation_slot",
+    "execute_recovery_failure_case",
     "derive_investigation_observation",
     "derive_recovery_observation",
     "prefixed_sha256",

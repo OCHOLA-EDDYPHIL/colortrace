@@ -8,7 +8,9 @@ version = "1.0.0"
 description = "Sealed, recomputable ColorTrace reliability evaluation"
 requires-python = ">=3.12"
 dependencies = [
+    "colortrace-api",
     "colortrace-fixture",
+    "colortrace-grafana-mcp",
     "colortrace-investigation",
     "colortrace-recovery",
     "colortrace-response-plans",
@@ -22,7 +24,9 @@ dependencies = [
 colortrace-evaluation = "colortrace_evaluation.cli:main"
 
 [tool.uv.sources]
+colortrace-api = { workspace = true }
 colortrace-fixture = { workspace = true }
+colortrace-grafana-mcp = { workspace = true }
 colortrace-investigation = { workspace = true }
 colortrace-recovery = { workspace = true }
 colortrace-response-plans = { workspace = true }
