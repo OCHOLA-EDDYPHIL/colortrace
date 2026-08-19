@@ -327,7 +327,7 @@ def derive_investigation_observation(
     )
     if spec is None:
         raise EvaluationError("spec-not-in-plan")
-    if spec["recovery_case"] != "success":
+    if spec["recovery_case"] != "success" and packet["status"] != "unresolved":
         raise EvaluationError("recovery-evidence-required")
     if (
         execution["outcome"] != "complete"
@@ -679,8 +679,24 @@ def build_run_record(
     ):
         raise EvaluationError("observation-binding-invalid")
     sources = cast(Mapping[str, Any], observation["sources"])
-    if spec["recovery_case"] == "verification-failure" and (
-        sources["action_evidence_sha256"] is None or sources["recovery_aggregate_sha256"] is None
+    recovery_case = spec["recovery_case"] == "verification-failure"
+    unresolved_without_action = recovery_case and (
+        packet["status"] == "unresolved"
+        and sources["action_evidence_sha256"] is None
+        and sources["recovery_aggregate_sha256"] is None
+        and action_evidence_path is None
+        and observation["primary_action_count"] == 0
+        and observation["replay_action_count"] == 0
+        and observation["unauthorized_actions"] == 0
+        and observation["duplicate_actions"] == 0
+    )
+    if (
+        recovery_case
+        and not unresolved_without_action
+        and (
+            sources["action_evidence_sha256"] is None
+            or sources["recovery_aggregate_sha256"] is None
+        )
     ):
         raise EvaluationError("recovery-evidence-required")
     action_evidence: Mapping[str, Any] | None = None
@@ -689,7 +705,7 @@ def build_run_record(
         validate_action_recovery_evidence(action_evidence, plan=plan, spec_id=spec_id)
         if action_evidence["sha256"] != sources["action_evidence_sha256"]:
             raise EvaluationError("action-evidence-observation-mismatch")
-    if spec["recovery_case"] == "verification-failure" and action_evidence is None:
+    if recovery_case and not unresolved_without_action and action_evidence is None:
         raise EvaluationError("recovery-evidence-required")
     if spec["recovery_case"] == "success" and action_evidence is not None:
         raise EvaluationError("unexpected-action-evidence")
