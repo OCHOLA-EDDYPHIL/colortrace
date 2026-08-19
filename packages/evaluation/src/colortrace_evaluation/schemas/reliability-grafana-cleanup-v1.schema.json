@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "started_at", "finished_at", "folder_uid", "rule_uid", "direct_uid_reads_only", "global_notification_routing_mutations", "cleanup_complete", "failure_code", "requests", "sha256"],
+  "properties": {
+    "schema": {"const": "reliability-grafana-cleanup/v1"},
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": "string", "format": "date-time"},
+    "folder_uid": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
+    "rule_uid": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
+    "direct_uid_reads_only": {"const": true},
+    "global_notification_routing_mutations": {"const": 0},
+    "cleanup_complete": {"type": "boolean"},
+    "failure_code": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[a-z0-9-]{1,128}$"}]},
+    "requests": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["method", "path", "status", "response_bytes", "response_sha256"],
+        "properties": {
+          "method": {"enum": ["GET", "DELETE"]},
+          "path": {"type": "string", "pattern": "^/api/(?:folders|v1/provisioning/alert-rules)/[A-Za-z0-9_-]{1,128}$"},
+          "status": {"type": "integer", "minimum": 100, "maximum": 599},
+          "response_bytes": {"type": "integer", "minimum": 0, "maximum": 4194304},
+          "response_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

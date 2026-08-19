@@ -42,6 +42,49 @@ def _git(repository: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
+def _child_environment(repository: Path) -> tuple[dict[str, str], str]:
+    sources = tuple(sorted((repository / "packages").glob("*/src")))
+    if not sources or any(
+        path.is_symlink() or not path.is_dir() or repository not in path.resolve().parents
+        for path in sources
+    ):
+        raise EvaluationError("child-candidate-sources-invalid")
+    dependencies: list[Path] = []
+    for value in sys.path:
+        if not value:
+            continue
+        try:
+            path = Path(value).resolve(strict=True)
+        except OSError:
+            continue
+        if path.name not in {"site-packages", "dist-packages"} or repository in path.parents:
+            continue
+        if path not in dependencies:
+            dependencies.append(path)
+    if not dependencies:
+        raise EvaluationError("child-dependencies-unavailable")
+    pythonpath = os.pathsep.join(str(path) for path in (*sources, *dependencies))
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = pythonpath
+    return environment, f"sha256:{hashlib.sha256(pythonpath.encode()).hexdigest()}"
+
+
+def _verify_child_runtime(repository: Path, environment: Mapping[str, str]) -> None:
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", "import colortrace_vertical_slice"],
+            cwd=repository,
+            env=dict(environment),
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise EvaluationError("child-runtime-unavailable") from error
+    if result.returncode != 0 or result.stdout or result.stderr:
+        raise EvaluationError("child-runtime-unavailable")
+
+
 def _write_bytes_exclusive(path: Path, value: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -133,6 +176,8 @@ def execute_investigation_slot(
         path.exists() for path in (database, packet_path, replay_path, stdout_path, stderr_path)
     ):
         raise EvaluationError("slot-already-attempted")
+    child_environment, child_pythonpath_sha256 = _child_environment(repository)
+    _verify_child_runtime(repository, child_environment)
     command = [
         sys.executable,
         "-m",
@@ -170,6 +215,7 @@ def execute_investigation_slot(
         result = subprocess.run(
             command,
             cwd=repository,
+            env=child_environment,
             check=False,
             capture_output=True,
             timeout=timeout_seconds,
@@ -230,6 +276,8 @@ def execute_investigation_slot(
             ),
             "mcp_lock_sha256": sha256_file(repository / "config/grafana-mcp/mcp-grafana.lock.json"),
             "mcp_binary_sha256": sha256_file(binary),
+            "child_python_sha256": sha256_file(Path(sys.executable).resolve(strict=True)),
+            "child_pythonpath_sha256": child_pythonpath_sha256,
             "project_id_sha256": f"sha256:{hashlib.sha256(project_id.encode()).hexdigest()}",
             "grafana_url_sha256": f"sha256:{hashlib.sha256(grafana_url.encode()).hexdigest()}",
         },

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -30,6 +31,7 @@ def test_runner_executes_exactly_one_product_process_and_retains_sanitized_recei
     spec = min(plan["specs"], key=lambda item: item["execution_order"])
     repository = tmp_path / "repository"
     campaign = tmp_path / "campaign"
+    (repository / "packages" / "vertical-slice" / "src").mkdir(parents=True)
     run_root = campaign / "runs" / f"{spec['execution_order']:02d}-{spec['spec_id']}"
     (run_root / "runtime-bundle").mkdir(parents=True)
     alert = run_root / "alert.json"
@@ -60,10 +62,12 @@ def test_runner_executes_exactly_one_product_process_and_retains_sanitized_recei
         assert arguments == ("status", "--porcelain=v1", "--untracked-files=all")
         return ""
 
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], dict[str, Any]]] = []
 
     def fake_run(command: list[str], **kwargs: Any) -> SimpleNamespace:
-        calls.append(command)
+        calls.append((command, kwargs))
+        if command[1:] == ["-c", "import colortrace_vertical_slice"]:
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
         output = Path(command[command.index("--output") + 1])
         database = Path(command[command.index("--database") + 1])
         packet = {
@@ -95,7 +99,12 @@ def test_runner_executes_exactly_one_product_process_and_retains_sanitized_recei
         token_file=token,
         mcp_binary=binary,
     )
-    assert len(calls) == 1
+    assert len(calls) == 2
+    product_command, product_options = calls[1]
+    assert product_command[1:3] == ["-m", "colortrace_vertical_slice"]
+    assert str(repository / "packages" / "vertical-slice" / "src") in (
+        product_options["env"]["PYTHONPATH"].split(os.pathsep)
+    )
     assert receipt["process_invocations"] == 1
     assert receipt["model_invocations"] == 2
     assert receipt["outcome"] == "complete"
@@ -103,6 +112,25 @@ def test_runner_executes_exactly_one_product_process_and_retains_sanitized_recei
     stdout = campaign / receipt["artifacts"]["stdout"]["path"]
     assert b"provider detail" not in stdout.read_bytes()
     assert b"sanitized-process-stream/v1" in stdout.read_bytes()
+
+
+def test_runner_refuses_product_admission_when_child_import_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repository"
+    (repository / "packages" / "vertical-slice" / "src").mkdir(parents=True)
+    environment, _ = subject._child_environment(repository)
+    monkeypatch.setattr(
+        subject.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=1,
+            stdout=b"",
+            stderr=b"module unavailable",
+        ),
+    )
+    with pytest.raises(subject.EvaluationError, match="child-runtime-unavailable"):
+        subject._verify_child_runtime(repository, environment)
 
 
 def test_runner_rejects_second_attempt_before_execution(
