@@ -32,6 +32,7 @@ def test_runner_executes_exactly_one_product_process_and_retains_sanitized_recei
     repository = tmp_path / "repository"
     campaign = tmp_path / "campaign"
     (repository / "packages" / "vertical-slice" / "src").mkdir(parents=True)
+    (repository / "uv.lock").write_bytes(b"locked dependencies\n")
     run_root = campaign / "runs" / f"{spec['execution_order']:02d}-{spec['spec_id']}"
     (run_root / "runtime-bundle").mkdir(parents=True)
     alert = run_root / "alert.json"
@@ -106,6 +107,7 @@ def test_runner_executes_exactly_one_product_process_and_retains_sanitized_recei
         product_options["env"]["PYTHONPATH"].split(os.pathsep)
     )
     assert receipt["process_invocations"] == 1
+    assert receipt["bindings"]["dependency_lock_sha256"].startswith("sha256:")
     assert receipt["model_invocations"] == 2
     assert receipt["outcome"] == "complete"
     assert receipt["artifacts"]["replay"] is not None
@@ -131,6 +133,37 @@ def test_runner_refuses_product_admission_when_child_import_fails(
     )
     with pytest.raises(subject.EvaluationError, match="child-runtime-unavailable"):
         subject._verify_child_runtime(repository, environment)
+
+
+def test_child_environment_admits_only_canonical_candidate_venv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repository"
+    source = repository / "packages" / "vertical-slice" / "src"
+    dependency = (
+        repository
+        / ".venv"
+        / "lib"
+        / f"python{subject.sys.version_info.major}.{subject.sys.version_info.minor}"
+        / "site-packages"
+    )
+    source.mkdir(parents=True)
+    dependency.mkdir(parents=True)
+    monkeypatch.setattr(subject.sys, "path", [str(dependency)])
+    environment, _ = subject._child_environment(repository)
+    assert environment["PYTHONPATH"].split(os.pathsep) == [str(source), str(dependency)]
+
+
+def test_child_environment_rejects_arbitrary_candidate_site_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repository"
+    (repository / "packages" / "vertical-slice" / "src").mkdir(parents=True)
+    dependency = repository / "vendor" / "site-packages"
+    dependency.mkdir(parents=True)
+    monkeypatch.setattr(subject.sys, "path", [str(dependency)])
+    with pytest.raises(subject.EvaluationError, match="child-dependencies-unavailable"):
+        subject._child_environment(repository)
 
 
 def test_runner_rejects_second_attempt_before_execution(
