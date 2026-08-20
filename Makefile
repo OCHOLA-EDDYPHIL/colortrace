@@ -64,7 +64,7 @@ TOOL_RUN_HOST := docker run --rm \
 	check-bootstrap security-evidence
 
 prepare-cache:
-	@mkdir -p "$(CACHE_HOME)" "$(UV_CACHE)" "$(PNPM_STORE)" "$(UV_PROJECT_ENVIRONMENT)"
+	@mkdir -p "$(WORKSPACE)/.cache" "$(CACHE_HOME)" "$(UV_CACHE)" "$(PNPM_STORE)" "$(UV_PROJECT_ENVIRONMENT)"
 
 ensure-tool-image:
 	@set -eu; \
