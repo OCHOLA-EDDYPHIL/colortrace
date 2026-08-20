@@ -131,6 +131,7 @@ export async function installPreparedApi(
     readonly removedValidatorEvidenceId?: string;
     readonly approvalMode?: "ambiguous-once" | "normal" | "refresh-fails-once";
     readonly closureMode?: "ambiguous-once" | "normal";
+    readonly incidentListMode?: "delayed" | "empty" | "error" | "normal";
     readonly recoveryState?:
       | "closed"
       | "recovery_failed"
@@ -236,10 +237,17 @@ export async function installPreparedApi(
       return;
     }
     if (url.pathname === "/v1/incidents") {
+      if (options.incidentListMode === "delayed") {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      if (options.incidentListMode === "error") {
+        await route.fulfill({ json: { code: "temporary-list-failure" }, status: 503 });
+        return;
+      }
       await route.fulfill({
         json: {
           schema: "incident-list/v1",
-          items: [data.incident],
+          items: options.incidentListMode === "empty" ? [] : [data.incident],
           next_cursor: null,
         },
       });
