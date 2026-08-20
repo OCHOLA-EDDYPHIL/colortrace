@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 10
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CACHE_ROOT: ${{ github.workspace }}/../../_colortrace-cache
     steps:
       - name: Check out repository history
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -27,8 +28,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ env.CANDIDATE_SHA }}
-      - name: Bootstrap pinned tools
-        run: make bootstrap
+      - name: Bootstrap security tools
+        run: make bootstrap-security
       - name: Produce exact-candidate security evidence
         run: make security-evidence SECURITY_CANDIDATE_SHA="$CANDIDATE_SHA"
       - name: Retain private security evidence
@@ -47,13 +48,14 @@ jobs:
     timeout-minutes: 45
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CACHE_ROOT: ${{ github.workspace }}/../../_colortrace-cache
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
           ref: ${{ env.CANDIDATE_SHA }}
-      - name: Bootstrap pinned tools
-        run: make bootstrap
-      - name: Run local quality gate
-        run: make check
+      - name: Bootstrap quality tools
+        run: make bootstrap-quality
+      - name: Run independent quality shards
+        run: make --jobs=2 check-fast check-telemetry

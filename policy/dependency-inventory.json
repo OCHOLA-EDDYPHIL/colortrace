@@ -1557,6 +1557,13 @@
     {
       "ecosystem": "pypi",
       "license": "MIT",
+      "name": "execnet",
+      "source": "https://pypi.org/simple",
+      "version": "2.1.2"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
       "name": "fastapi",
       "source": "https://pypi.org/simple",
       "version": "0.141.1"
@@ -1847,6 +1854,13 @@
       "name": "pytest",
       "source": "https://pypi.org/simple",
       "version": "9.1.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "pytest-xdist",
+      "source": "https://pypi.org/simple",
+      "version": "3.8.0"
     },
     {
       "ecosystem": "pypi",
