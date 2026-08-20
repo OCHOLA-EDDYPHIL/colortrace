@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from colortrace_evaluation import campaign as subject
@@ -68,6 +69,63 @@ def test_plan_predeclares_exact_coverage_and_randomized_order() -> None:
     }
     assert [item["spec_id"] for item in specs] != [f"eval-{index:02d}" for index in range(1, 51)]
     assert all(item["coverage"][-2:] == ["model-sampled", "order-randomized"] for item in specs)
+
+
+def test_canonical_fixtures_keep_semantic_facts_and_namespace_trace_ids(
+    tmp_path: Path,
+) -> None:
+    first_plan = plan()
+    second_plan = build_campaign_plan(
+        candidate_commit=COMMIT,
+        candidate_tree=TREE,
+        campaign_seed="phase3-reliability-02",
+        created_at=NOW,
+    )
+    first_specs = [item for item in first_plan["specs"] if item["family"] == "canonical"]
+    second_specs = [item for item in second_plan["specs"] if item["family"] == "canonical"]
+    first_seeds = {item["seed"] for item in first_specs}
+    second_seeds = {item["seed"] for item in second_specs}
+    assert len(first_seeds) == len(second_seeds) == 10
+    assert first_seeds.isdisjoint(second_seeds)
+
+    first = prepare_fixture(
+        plan=first_plan,
+        spec_id=first_specs[0]["spec_id"],
+        campaign_root=tmp_path / "first",
+    )
+    second = prepare_fixture(
+        plan=second_plan,
+        spec_id=second_specs[0]["spec_id"],
+        campaign_root=tmp_path / "second",
+    )
+
+    def oracle(root: Path, receipt: dict[str, Any]) -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            json.loads((root / receipt["oracle"] / "fixture-oracle.json").read_text()),
+        )
+
+    def trace_ids(root: Path, receipt: dict[str, Any]) -> set[str]:
+        bundle = root / receipt["bundle"]
+        manifest = json.loads(
+            (bundle / "runtime/manifests/fixture-runtime-manifest.json").read_text()
+        )
+        return {
+            json.loads((bundle / pointer["manifest"]).read_text())["trace_id"]
+            for pointer in manifest["jobs"]
+        }
+
+    first_oracle = oracle(tmp_path / "first", first)
+    second_oracle = oracle(tmp_path / "second", second)
+    for field in (
+        "causal_resource_sha256",
+        "directly_affected_jobs",
+        "affected_derivatives",
+        "safe_jobs",
+        "role_to_job_id",
+    ):
+        assert first_oracle[field] == second_oracle[field]
+    assert trace_ids(tmp_path / "first", first).isdisjoint(trace_ids(tmp_path / "second", second))
 
 
 def test_plan_candidate_or_seal_drift_is_rejected(tmp_path: Path) -> None:
