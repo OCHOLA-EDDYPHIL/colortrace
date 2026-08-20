@@ -1,6 +1,6 @@
 {
   "schema": "colortrace-ux-accessibility-evidence/v1",
-  "generated_at": "2026-08-20T15:39:13.215Z",
+  "generated_at": "2026-08-20T20:08:27.097Z",
   "source_test": "packages/web/e2e/incident-workspace.spec.ts",
   "engine": {
     "name": "axe-core",
@@ -26,15 +26,23 @@
   "screenshots": [
     {
       "path": "packages/web/evidence/ux-accessibility/workspace-1440x900.png",
-      "sha256": "43056c0b08a7216886a70a13d23ee5640f72cb0b702dd57c708a42714c39d7e0"
+      "sha256": "8c28759d6a45680e83af1bbcd644ffcf35c890b453b40f0e3c3807e564e49b35"
     },
     {
       "path": "packages/web/evidence/ux-accessibility/workspace-390x844.png",
-      "sha256": "a402b8cb67d342e3ef6a584047432e95201f7783e123e8cadff7f610e0979983"
+      "sha256": "157176027e7cc9da9fae42740b0769c18054ded503ec6cd95ce1fb2280f77797"
     },
     {
       "path": "packages/web/evidence/ux-accessibility/evidence-comparison-1440x900.png",
       "sha256": "ab94ebc000d8126eefcebca777dff3569ac032d3105d4a6db954b8cff749bd02"
+    },
+    {
+      "path": "packages/web/evidence/ux-accessibility/impact-report-1440x900.png",
+      "sha256": "f621652a4023742f6b58d565eed137885f7d397a15c520f17a3b53f836c69921"
+    },
+    {
+      "path": "packages/web/evidence/ux-accessibility/impact-report-390x844.png",
+      "sha256": "82560fc4a50eabcbdd7e0bc6aec06daa0941e2f39c77779be61e2dcb0054de1d"
     }
   ]
 }
