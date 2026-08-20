@@ -650,6 +650,97 @@ def _structured_facts(packet: Mapping[str, Any]) -> str:
     return prefixed_sha256(facts)
 
 
+def _contained_fixture_file(bundle: Path, logical_value: Any) -> Path:
+    if not isinstance(logical_value, str):
+        raise EvaluationError("fixture-manifest-path-invalid")
+    logical = PurePosixPath(logical_value)
+    if logical.is_absolute() or any(part in {"", ".", ".."} for part in logical.parts):
+        raise EvaluationError("fixture-manifest-path-invalid")
+    candidate = bundle.joinpath(*logical.parts)
+    if candidate.is_symlink():
+        raise EvaluationError("fixture-manifest-symlink-prohibited")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError as error:
+        raise EvaluationError("fixture-manifest-missing") from error
+    try:
+        resolved.relative_to(bundle)
+    except ValueError as error:
+        raise EvaluationError("fixture-manifest-outside-bundle") from error
+    if not resolved.is_file():
+        raise EvaluationError("fixture-manifest-not-file")
+    return resolved
+
+
+def _job_frame_mapping(
+    *, fixture_bundle: Path, run_root: Path
+) -> tuple[dict[str, str], list[Path]]:
+    root = run_root.resolve(strict=True)
+    bundle = fixture_bundle.resolve(strict=True)
+    try:
+        bundle.relative_to(root)
+    except ValueError as error:
+        raise EvaluationError("fixture-bundle-outside-run-root") from error
+    if not bundle.is_dir():
+        raise EvaluationError("fixture-bundle-not-directory")
+    manifest_path = _contained_fixture_file(
+        bundle, "runtime/manifests/fixture-runtime-manifest.json"
+    )
+    manifest = strict_json_file(manifest_path)
+    if manifest.get("schema") != "fixture-runtime-manifest/v1":
+        raise EvaluationError("fixture-runtime-manifest-invalid")
+    pointers = manifest.get("jobs")
+    if not isinstance(pointers, list) or not pointers:
+        raise EvaluationError("fixture-job-index-invalid")
+    mapping: dict[str, str] = {}
+    frame_ids: set[str] = set()
+    artifacts = [manifest_path]
+    for pointer in pointers:
+        if not isinstance(pointer, Mapping):
+            raise EvaluationError("fixture-job-pointer-invalid")
+        pointer_job_id = pointer.get("job_id")
+        pointer_digest = pointer.get("sha256")
+        if not isinstance(pointer_job_id, str) or not pointer_job_id:
+            raise EvaluationError("fixture-job-pointer-invalid")
+        if (
+            not isinstance(pointer_digest, str)
+            or len(pointer_digest) != 64
+            or any(character not in "0123456789abcdef" for character in pointer_digest)
+        ):
+            raise EvaluationError("fixture-job-pointer-invalid")
+        job_path = _contained_fixture_file(bundle, pointer.get("manifest"))
+        if sha256_file(job_path) != f"sha256:{pointer_digest}":
+            raise EvaluationError("fixture-job-manifest-digest-invalid")
+        job = strict_json_file(job_path)
+        if job.get("schema") != "fixture-job/v1":
+            raise EvaluationError("fixture-job-manifest-invalid")
+        job_id = job.get("job_id")
+        frame_id = job.get("frame_id")
+        if job_id != pointer_job_id:
+            raise EvaluationError("fixture-job-pointer-mismatch")
+        if not isinstance(frame_id, str) or not frame_id:
+            raise EvaluationError("fixture-frame-id-invalid")
+        if job_id in mapping:
+            raise EvaluationError("fixture-job-id-duplicate")
+        if frame_id in frame_ids:
+            raise EvaluationError("fixture-frame-id-duplicate")
+        mapping[job_id] = frame_id
+        frame_ids.add(frame_id)
+        artifacts.append(job_path)
+    return mapping, artifacts
+
+
+def _mapped_frame_ids(values: Any, mapping: Mapping[str, str]) -> set[str]:
+    if not isinstance(values, list) or any(not isinstance(item, str) for item in values):
+        raise EvaluationError("oracle-job-set-invalid")
+    if len(set(values)) != len(values):
+        raise EvaluationError("oracle-job-id-duplicate")
+    missing = set(values) - mapping.keys()
+    if missing:
+        raise EvaluationError("oracle-job-mapping-missing")
+    return {mapping[item] for item in values}
+
+
 def build_run_record(
     *,
     plan: Mapping[str, Any],
@@ -658,6 +749,7 @@ def build_run_record(
     oracle: Mapping[str, Any],
     observation: Mapping[str, Any],
     run_root: Path,
+    fixture_bundle: Path,
     packet_path: Path,
     oracle_path: Path,
     observation_path: Path,
@@ -728,11 +820,16 @@ def build_run_record(
         raise EvaluationError("retry-observation-mismatch")
     causal_expected = cast(str, oracle["causal_resource_sha256"])
     causal_observed = _causal_value(packet)
+    job_frames, mapping_artifacts = _job_frame_mapping(
+        fixture_bundle=fixture_bundle, run_root=run_root
+    )
+    affected_frames = _mapped_frame_ids(oracle["directly_affected_jobs"], job_frames)
+    safe_frames = _mapped_frame_ids(oracle["safe_jobs"], job_frames)
     expected_affected = {
-        *(("frame", item) for item in cast(Sequence[str], oracle["directly_affected_jobs"])),
+        *(("frame", item) for item in affected_frames),
         *(("derivative", item) for item in cast(Sequence[str], oracle["affected_derivatives"])),
     }
-    expected_safe = {("frame", item) for item in cast(Sequence[str], oracle["safe_jobs"])}
+    expected_safe = {("frame", item) for item in safe_frames}
     observed_affected = _scope_set(packet, "affected")
     observed_safe = _scope_set(packet, "safe")
     affected_precision, affected_recall = _classification_metrics(
@@ -745,7 +842,7 @@ def build_run_record(
     ):
         raise EvaluationError("unsupported-diagnosis-observation-invalid")
     artifacts = sorted(
-        (_artifact_reference(path, run_root) for path in artifact_paths),
+        (_artifact_reference(path, run_root) for path in {*artifact_paths, *mapping_artifacts}),
         key=lambda item: item["path"],
     )
     if len({item["path"] for item in artifacts}) != len(artifacts) or not artifacts:
@@ -1002,6 +1099,49 @@ def _verify_record_sources(record: Mapping[str, Any], root: Path) -> None:
         value = strict_json_file(_resolve_artifact(action_reference, root))
         if prefixed_sha256(value) != record["action_evidence_sha256"]:
             raise EvaluationError("action-evidence-semantic-digest-invalid")
+
+
+def rescore_run_record(
+    *,
+    plan: Mapping[str, Any],
+    record: Mapping[str, Any],
+    artifact_root: Path,
+    fixture_bundle: Path,
+) -> dict[str, Any]:
+    _verify_plan(plan)
+    _verify_record(record, plan)
+    root = artifact_root.resolve(strict=True)
+    artifact_references = cast(Sequence[Mapping[str, Any]], record["artifacts"])
+    source_references = cast(Mapping[str, Mapping[str, Any] | None], record["source_artifacts"])
+    _verify_artifact_set(artifact_references, root)
+    _verify_artifact_set(
+        [reference for reference in source_references.values() if reference is not None], root
+    )
+    _verify_record_sources(record, root)
+    packet_reference = cast(Mapping[str, Any], source_references["packet"])
+    oracle_reference = cast(Mapping[str, Any], source_references["oracle"])
+    observation_reference = cast(Mapping[str, Any], source_references["observation"])
+    action_reference = source_references["action_evidence"]
+    packet_path = _resolve_artifact(packet_reference, root)
+    oracle_path = _resolve_artifact(oracle_reference, root)
+    observation_path = _resolve_artifact(observation_reference, root)
+    action_path = None if action_reference is None else _resolve_artifact(action_reference, root)
+    return build_run_record(
+        plan=plan,
+        spec_id=cast(str, record["spec_id"]),
+        packet=strict_json_file(packet_path),
+        oracle=strict_json_file(oracle_path),
+        observation=strict_json_file(observation_path),
+        run_root=root,
+        fixture_bundle=fixture_bundle,
+        packet_path=packet_path,
+        oracle_path=oracle_path,
+        observation_path=observation_path,
+        action_evidence_path=action_path,
+        artifact_paths=[_resolve_artifact(reference, root) for reference in artifact_references],
+        started_at=cast(str, record["started_at"]),
+        finished_at=cast(str, record["finished_at"]),
+    )
 
 
 def aggregate_campaign(
