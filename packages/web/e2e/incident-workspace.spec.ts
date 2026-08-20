@@ -331,7 +331,7 @@ test("keeps slow, empty, and failed list states actionable", async ({ baseURL, b
 test("captures the current UX and accessibility evidence set", async ({ page }) => {
   test.skip(process.env.COLORTRACE_CAPTURE_UX_EVIDENCE !== "1");
   await mkdir(uxEvidenceRoot, { recursive: true });
-  const { captured } = await installPreparedApi(page);
+  const { captured } = await installPreparedApi(page, { recoveryState: "recovery_verified" });
 
   await page.setViewportSize(DESKTOP_VIEWPORT);
   await page.goto("/");
@@ -363,6 +363,17 @@ test("captures the current UX and accessibility evidence set", async ({ page }) 
     animations: "disabled",
     path: path.join(uxEvidenceRoot, "evidence-comparison-1440x900.png"),
   });
+  const impactTop = await page
+    .getByRole("region", { name: "Incident-level impact" })
+    .evaluate((element) => element.getBoundingClientRect().top + window.scrollY);
+  await page.evaluate(
+    (top) => window.scrollTo({ behavior: "instant", top: Math.max(0, top - 16) }),
+    impactTop,
+  );
+  const impactDesktopImage = await page.screenshot({
+    animations: "disabled",
+    path: path.join(uxEvidenceRoot, "impact-report-1440x900.png"),
+  });
 
   await page.setViewportSize(MOBILE_VIEWPORT);
   await page.evaluate(() => window.scrollTo({ behavior: "instant", top: 0 }));
@@ -370,6 +381,22 @@ test("captures the current UX and accessibility evidence set", async ({ page }) 
     animations: "disabled",
     path: path.join(uxEvidenceRoot, "workspace-390x844.png"),
   });
+  const impactMobileTop = await page
+    .getByRole("region", { name: "Incident-level impact" })
+    .evaluate((element) => element.getBoundingClientRect().top + window.scrollY);
+  await page.evaluate(
+    (top) => window.scrollTo({ behavior: "instant", top: Math.max(0, top - 16) }),
+    impactMobileTop,
+  );
+  const impactMobileImage = await page.screenshot({
+    animations: "disabled",
+    path: path.join(uxEvidenceRoot, "impact-report-390x844.png"),
+  });
+  const impactLayout = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(impactLayout.scrollWidth).toBeLessThanOrEqual(impactLayout.clientWidth);
   await page.getByRole("button", { name: "Reset workspace view" }).click();
   await expect(page.getByRole("heading", { name: "Incident overview" })).toBeVisible();
 
@@ -406,6 +433,14 @@ test("captures the current UX and accessibility evidence set", async ({ page }) 
           {
             path: "packages/web/evidence/ux-accessibility/evidence-comparison-1440x900.png",
             sha256: createHash("sha256").update(comparisonImage).digest("hex"),
+          },
+          {
+            path: "packages/web/evidence/ux-accessibility/impact-report-1440x900.png",
+            sha256: createHash("sha256").update(impactDesktopImage).digest("hex"),
+          },
+          {
+            path: "packages/web/evidence/ux-accessibility/impact-report-390x844.png",
+            sha256: createHash("sha256").update(impactMobileImage).digest("hex"),
           },
         ],
       },
