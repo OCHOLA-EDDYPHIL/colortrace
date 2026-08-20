@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.local/schemas/fixture-impact-report-v1.schema.json",
+  "title": "ColorTrace fixture impact report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "policy",
+    "incident",
+    "bindings",
+    "observed",
+    "hypothetical",
+    "limitations"
+  ],
+  "properties": {
+    "schema": { "const": "fixture-impact-report/v1" },
+    "policy": { "const": "fixture-observed-impact/v1" },
+    "incident": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "scope_policy"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "integer", "minimum": 0 },
+        "scope_policy": { "type": "string", "minLength": 1 }
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recovery_outcome_id", "recovery_packet_id"],
+      "properties": {
+        "recovery_outcome_id": { "type": ["string", "null"] },
+        "recovery_packet_id": { "type": ["string", "null"] }
+      }
+    },
+    "observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "affected_frames",
+        "affected_derivatives",
+        "verified_safe_frames",
+        "frame_rerender_outcomes",
+        "derivative_rerender_outcomes",
+        "investigation_elapsed",
+        "recovery_elapsed",
+        "provider_cost",
+        "compute_time"
+      ],
+      "properties": {
+        "affected_frames": { "$ref": "#/$defs/count" },
+        "affected_derivatives": { "$ref": "#/$defs/count" },
+        "verified_safe_frames": { "$ref": "#/$defs/count" },
+        "frame_rerender_outcomes": { "$ref": "#/$defs/count" },
+        "derivative_rerender_outcomes": { "$ref": "#/$defs/count" },
+        "investigation_elapsed": { "$ref": "#/$defs/duration" },
+        "recovery_elapsed": { "$ref": "#/$defs/duration" },
+        "provider_cost": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["unit", "value"],
+          "properties": { "unit": { "const": "USD" }, "value": { "type": "null" } }
+        },
+        "compute_time": { "$ref": "#/$defs/duration" }
+      }
+    },
+    "hypothetical": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "assumption",
+        "source_frame_rerenders",
+        "source_frame_rerenders_avoided"
+      ],
+      "properties": {
+        "name": { "const": "rerender-all-observed-source-frames" },
+        "assumption": { "type": "string", "minLength": 1 },
+        "source_frame_rerenders": { "$ref": "#/$defs/count" },
+        "source_frame_rerenders_avoided": { "$ref": "#/$defs/count" }
+      }
+    },
+    "limitations": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+  },
+  "$defs": {
+    "count": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "value"],
+      "properties": {
+        "unit": { "const": "items" },
+        "value": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "duration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "value"],
+      "properties": {
+        "unit": { "const": "milliseconds" },
+        "value": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    }
+  }
+}

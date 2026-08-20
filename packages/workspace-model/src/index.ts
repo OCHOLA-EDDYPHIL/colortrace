@@ -1,5 +1,10 @@
 export { canonicalJsonSha256 } from "./canonical-sha256.ts";
+export {
+  FIXTURE_IMPACT_CALCULATION_POLICY,
+  projectFixtureImpact,
+} from "./impact.ts";
 export { projectIncidentReplay } from "./project.ts";
 export { projectRecoveryReview, RECOVERY_CHECKS } from "./recovery.ts";
 export type * from "./recovery-types.ts";
+export type * from "./impact.ts";
 export type * from "./types.ts";
