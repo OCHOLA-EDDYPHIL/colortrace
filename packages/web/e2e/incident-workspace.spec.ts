@@ -116,6 +116,34 @@ async function captureIssue24Evidence(page: Page, name: string) {
   });
 }
 
+test("reports bound fixture impact without turning the counterfactual into a benchmark", async ({
+  page,
+}) => {
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  await installPreparedApi(page, { recoveryState: "recovery_verified" });
+  await page.goto("/");
+
+  const report = page.getByRole("region", { name: "Incident-level impact" });
+  await expect(report).toBeVisible();
+  await expect(report).toContainText("Not a production benchmark");
+  const observed = report.locator(".impact-report__observed");
+  const hypothetical = report.locator(".impact-report__hypothetical");
+  await expect(observed).toContainText("Observed records");
+  await expect(observed).toContainText("Affected frames3");
+  await expect(observed).toContainText("Verified-safe frames3");
+  await expect(observed).toContainText("Provider costNot recorded");
+  await expect(observed).toContainText("Compute timeNot recorded");
+  await expect(hypothetical).toContainText("Hypothetical comparison");
+  await expect(hypothetical).toContainText("Rerenders avoided under assumption3");
+  await expect(hypothetical).toContainText("not an observed cost, time saving");
+
+  await report.getByText("Calculation policy, bindings, and limitations").click();
+  await expect(report.getByText("fixture-observed-impact/v1")).toBeVisible();
+  await expect(report.getByText(/recovery-packet:/u)).toBeVisible();
+  await expect(report).not.toContainText("ROI");
+  await expect(report).not.toContainText("industry-wide");
+});
+
 test("renders the canonical evidence and exact supported scope at 1440x900", async ({
   page,
 }, testInfo) => {
