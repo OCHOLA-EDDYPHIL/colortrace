@@ -1,9 +1,11 @@
+import { projectFixtureImpact, type ImpactRecoveryRecord } from "@colortrace/workspace-model";
 import { useEffect, useRef } from "react";
 
 import { EvidenceView } from "./evidence-view.tsx";
 import { IncidentInbox } from "./incident-inbox.tsx";
 import { IncidentOverview } from "./incident-overview.tsx";
 import { InvestigationTimeline } from "./investigation-timeline.tsx";
+import { ImpactReport } from "./impact-report.tsx";
 import { RecoveryVerification, type RecoveryVerificationProps } from "./recovery-verification.tsx";
 import { ResponsePlanReview, type ResponsePlanReviewProps } from "./response-plan-review.tsx";
 import { ScopeView } from "./scope-view.tsx";
@@ -270,6 +272,22 @@ function WorkspaceContent({
         );
       }
 
+      const recoveryRecord: ImpactRecoveryRecord | null =
+        recovery?.state.kind === "ready"
+          ? {
+              incident_id: recovery.state.workspace.review.snapshot.incident_id,
+              outcome_id: recovery.state.workspace.review.snapshot.action_outcome.outcome_id,
+              packet_id: recovery.state.workspace.review.packet?.packet_id ?? null,
+              action_started_at:
+                recovery.state.workspace.review.snapshot.action_outcome.action_started_at,
+              evaluation_completed_at:
+                recovery.state.workspace.review.packet?.evaluation_completed_at ?? null,
+              command_outcomes:
+                recovery.state.workspace.review.snapshot.action_outcome.command_outcomes,
+            }
+          : null;
+      const impactReport = projectFixtureImpact(workspace, recoveryRecord);
+
       return (
         <div className="workspace-page">
           <div className="workspace-content-grid">
@@ -311,6 +329,7 @@ function WorkspaceContent({
               }
             />
           )}
+          <ImpactReport report={impactReport} />
         </div>
       );
     }
