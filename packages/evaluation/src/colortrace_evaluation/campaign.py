@@ -88,7 +88,8 @@ def _case_rows(seed: str) -> list[dict[str, Any]]:
     for family, count, variant, expected, coverage in definitions:
         for sample in range(count):
             case_seed = (
-                "ct-shadowed-lut-v1:canonical"
+                "ct-shadowed-lut-v1:canonical:"
+                f"{hashlib.sha256(seed.encode()).hexdigest()}:{sample:02d}"
                 if family == "canonical"
                 else f"ct-evaluation:{seed}:{family}:{sample:02d}"
             )
