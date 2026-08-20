@@ -137,6 +137,35 @@ h4 {
   background: var(--background);
 }
 
+.app-header__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.provenance-chip {
+  display: grid;
+  gap: 0.08rem;
+  min-height: 48px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.55rem 0.8rem;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.provenance-chip strong {
+  color: var(--warning);
+}
+
+.reset-workspace-button {
+  min-height: 48px;
+  white-space: nowrap;
+}
+
 .brand-mark,
 .eyebrow {
   margin-bottom: 0.35rem;
@@ -1828,6 +1857,16 @@ main {
   .app-header {
     display: grid;
     gap: 1rem;
+  }
+
+  .app-header__controls {
+    display: grid;
+    justify-content: stretch;
+  }
+
+  .provenance-chip,
+  .reset-workspace-button {
+    width: 100%;
   }
 
   .session-chip {

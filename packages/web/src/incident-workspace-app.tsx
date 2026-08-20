@@ -764,6 +764,7 @@ export function IncidentWorkspaceApp({ adapter }: IncidentWorkspaceAppProps) {
       incidents={incidents}
       focusRequest={focusRequest}
       onRetry={retry}
+      onReset={retry}
       onSelectIncident={selectIncident}
       selectedIncidentId={selectedIncidentId}
       state={state}

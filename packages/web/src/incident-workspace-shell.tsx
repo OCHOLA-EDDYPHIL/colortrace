@@ -29,6 +29,7 @@ export type IncidentWorkspaceShellProps = {
   readonly focusRequest?: number;
   readonly incidents: readonly IncidentInboxItem[];
   readonly onRetry?: () => void;
+  readonly onReset?: () => void;
   readonly onSelectIncident?: (incidentId: string) => void;
   readonly selectedIncidentId: string | null;
   readonly state: IncidentWorkspaceViewState;
@@ -334,6 +335,7 @@ export function IncidentWorkspaceShell({
   focusRequest = 0,
   incidents,
   onRetry,
+  onReset,
   recovery,
   responsePlan,
   onSelectIncident,
@@ -342,6 +344,7 @@ export function IncidentWorkspaceShell({
   viewer,
 }: IncidentWorkspaceShellProps) {
   const mainRef = useRef<HTMLElement>(null);
+  const resetDisabled = responsePlan.busy || recovery?.busy === true;
 
   useEffect(() => {
     if (focusRequest > 0) mainRef.current?.focus();
@@ -357,7 +360,23 @@ export function IncidentWorkspaceShell({
           <p className="brand-mark">COLORTRACE</p>
           <h1>Incident workspace</h1>
         </div>
-        <SessionChip viewer={viewer} />
+        <div className="app-header__controls">
+          <div aria-label="Data provenance" className="provenance-chip" role="note">
+            <strong>Synthetic simulator data</strong>
+            <span>Generated fixture · simulator-only actions</span>
+          </div>
+          <SessionChip viewer={viewer} />
+          {onReset === undefined ? null : (
+            <button
+              className="secondary-button reset-workspace-button"
+              disabled={resetDisabled}
+              onClick={onReset}
+              type="button"
+            >
+              Reset workspace view
+            </button>
+          )}
+        </div>
       </header>
 
       <SessionStatus viewer={viewer} />

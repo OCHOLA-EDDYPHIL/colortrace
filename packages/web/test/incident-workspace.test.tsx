@@ -56,7 +56,11 @@ function pendingIncident(
 function renderWorkspace(
   state: IncidentWorkspaceViewState,
   incidents: readonly WorkspaceIncidentSummary[] = [],
-  options: { readonly onRetry?: () => void; readonly onSelectIncident?: (id: string) => void } = {},
+  options: {
+    readonly onReset?: () => void;
+    readonly onRetry?: () => void;
+    readonly onSelectIncident?: (id: string) => void;
+  } = {},
 ) {
   return render(
     <IncidentWorkspaceShell
@@ -73,6 +77,19 @@ function renderWorkspace(
 afterEach(cleanup);
 
 describe("IncidentWorkspaceShell adverse and lifecycle states", () => {
+  it("identifies synthetic provenance and offers a deterministic view reset", () => {
+    const reset = vi.fn();
+    renderWorkspace({ kind: "empty", message: "No incident records were returned." }, [], {
+      onReset: reset,
+    });
+
+    expect(screen.getByLabelText("Data provenance")).toHaveTextContent("Synthetic simulator data");
+    expect(screen.getByLabelText("Data provenance")).toHaveTextContent("simulator-only actions");
+    const button = screen.getByRole("button", { name: "Reset workspace view" });
+    fireEvent.click(button);
+    expect(reset).toHaveBeenCalledOnce();
+  });
+
   it("announces loading without moving keyboard focus", () => {
     renderWorkspace({ kind: "loading", message: "Loading the incident list." });
 
