@@ -17,6 +17,7 @@ from .campaign import (
     derive_investigation_observation,
     derive_recovery_observation,
     prepare_fixture,
+    rescore_run_record,
     utc_now,
 )
 from .contracts import ContractError, strict_json_file, write_exclusive
@@ -44,10 +45,18 @@ def _parser() -> argparse.ArgumentParser:
     record.add_argument("--observation", type=Path, required=True)
     record.add_argument("--action-evidence", type=Path)
     record.add_argument("--run-root", type=Path, required=True)
+    record.add_argument("--fixture-bundle", type=Path, required=True)
     record.add_argument("--artifact", type=Path, action="append", required=True)
     record.add_argument("--started-at", required=True)
     record.add_argument("--finished-at", required=True)
     record.add_argument("--output", type=Path, required=True)
+
+    rescore = subparsers.add_parser("rescore-record")
+    rescore.add_argument("--plan", type=Path, required=True)
+    rescore.add_argument("--record", type=Path, required=True)
+    rescore.add_argument("--artifact-root", type=Path, required=True)
+    rescore.add_argument("--fixture-bundle", type=Path, required=True)
+    rescore.add_argument("--output", type=Path, required=True)
 
     observe = subparsers.add_parser("observe-investigation")
     observe.add_argument("--plan", type=Path, required=True)
@@ -163,6 +172,7 @@ def _execute(arguments: argparse.Namespace) -> dict[str, Any]:
             oracle=strict_json_file(arguments.oracle.resolve(strict=True)),
             observation=strict_json_file(arguments.observation.resolve(strict=True)),
             run_root=arguments.run_root.resolve(strict=True),
+            fixture_bundle=arguments.fixture_bundle.resolve(strict=True),
             packet_path=arguments.packet.resolve(strict=True),
             oracle_path=arguments.oracle.resolve(strict=True),
             observation_path=arguments.observation.resolve(strict=True),
@@ -186,6 +196,13 @@ def _execute(arguments: argparse.Namespace) -> dict[str, Any]:
             ),
             started_at=arguments.started_at,
             finished_at=arguments.finished_at,
+        )
+    if arguments.command == "rescore-record":
+        return rescore_run_record(
+            plan=strict_json_file(arguments.plan.resolve(strict=True)),
+            record=strict_json_file(arguments.record.resolve(strict=True)),
+            artifact_root=arguments.artifact_root.resolve(strict=True),
+            fixture_bundle=arguments.fixture_bundle.resolve(strict=True),
         )
     if arguments.command == "observe-investigation":
         return derive_investigation_observation(

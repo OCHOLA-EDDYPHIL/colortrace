@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter
 from pathlib import Path
@@ -17,6 +18,7 @@ from colortrace_evaluation.campaign import (
     build_run_record,
     derive_investigation_observation,
     prepare_fixture,
+    rescore_run_record,
 )
 from colortrace_evaluation.contracts import canonical_json_bytes, prefixed_sha256
 
@@ -40,8 +42,6 @@ def seal(body: dict[str, Any], id_key: str, prefix: str) -> dict[str, Any]:
 
 
 def artifact(root: Path, relative: str, content: bytes) -> dict[str, str]:
-    import hashlib
-
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
@@ -50,6 +50,37 @@ def artifact(root: Path, relative: str, content: bytes) -> dict[str, str]:
 
 def json_artifact(root: Path, relative: str, value: dict[str, Any]) -> dict[str, str]:
     return artifact(root, relative, canonical_json_bytes(value) + b"\n")
+
+
+def runtime_bundle(
+    root: Path,
+    pairs: tuple[tuple[str, str], ...] = (("job-1", "frame-1"), ("job-2", "frame-2")),
+) -> Path:
+    bundle = root / "runtime-bundle"
+    pointers = []
+    for job_id, frame_id in pairs:
+        relative = f"runtime/manifests/jobs/{job_id}.json"
+        content = (
+            canonical_json_bytes(
+                {"schema": "fixture-job/v1", "job_id": job_id, "frame_id": frame_id}
+            )
+            + b"\n"
+        )
+        path = bundle / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        pointers.append(
+            {
+                "job_id": job_id,
+                "manifest": relative,
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        )
+    manifest = bundle / "runtime/manifests/fixture-runtime-manifest.json"
+    manifest.write_bytes(
+        canonical_json_bytes({"schema": "fixture-runtime-manifest/v1", "jobs": pointers}) + b"\n"
+    )
+    return bundle
 
 
 def test_plan_predeclares_exact_coverage_and_randomized_order() -> None:
@@ -158,10 +189,10 @@ def packet() -> dict[str, Any]:
             "state": "resolved",
             "policy": "single-causal-resource-scope/v1",
             "affected": [
-                {"kind": "frame", "id": "job-1"},
+                {"kind": "frame", "id": "frame-1"},
                 {"kind": "derivative", "id": "derivative-1"},
             ],
-            "safe": [{"kind": "frame", "id": "job-2"}],
+            "safe": [{"kind": "frame", "id": "frame-2"}],
             "unknown": [],
             "reason_codes": [],
         },
@@ -220,6 +251,7 @@ def test_run_record_recomputes_truth_metrics_and_binds_artifacts(
         oracle=oracle,
         observation=observation,
         run_root=tmp_path,
+        fixture_bundle=runtime_bundle(tmp_path),
         packet_path=raw,
         oracle_path=oracle_path,
         observation_path=observation_path,
@@ -232,6 +264,21 @@ def test_run_record_recomputes_truth_metrics_and_binds_artifacts(
     assert record["metrics"]["affected_precision"] == {"numerator": 2, "denominator": 2}
     assert record["metrics"]["safe_recall"] == {"numerator": 1, "denominator": 1}
     assert record["source_artifacts"]["packet"]["path"] == "packet.json"
+    assert {
+        item["path"] for item in record["artifacts"] if "runtime/manifests" in item["path"]
+    } == {
+        "runtime-bundle/runtime/manifests/fixture-runtime-manifest.json",
+        "runtime-bundle/runtime/manifests/jobs/job-1.json",
+        "runtime-bundle/runtime/manifests/jobs/job-2.json",
+    }
+
+    rescored = rescore_run_record(
+        plan=value,
+        record=record,
+        artifact_root=tmp_path,
+        fixture_bundle=tmp_path / "runtime-bundle",
+    )
+    assert rescored == record
 
     observation["retry_count"] = 1
     observation_path.write_bytes(canonical_json_bytes(observation) + b"\n")
@@ -243,6 +290,7 @@ def test_run_record_recomputes_truth_metrics_and_binds_artifacts(
             oracle=oracle,
             observation=observation,
             run_root=tmp_path,
+            fixture_bundle=tmp_path / "runtime-bundle",
             packet_path=raw,
             oracle_path=oracle_path,
             observation_path=observation_path,
@@ -251,6 +299,50 @@ def test_run_record_recomputes_truth_metrics_and_binds_artifacts(
             started_at=NOW,
             finished_at="2026-08-19T00:00:05Z",
         )
+
+
+def test_job_frame_mapping_fails_closed_on_untrusted_boundaries(tmp_path: Path) -> None:
+    bundle = runtime_bundle(tmp_path)
+    manifest_path = bundle / "runtime/manifests/fixture-runtime-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+
+    job_path = bundle / manifest["jobs"][0]["manifest"]
+    job_path.write_bytes(job_path.read_bytes() + b"\n")
+    with pytest.raises(EvaluationError, match="fixture-job-manifest-digest-invalid"):
+        subject._job_frame_mapping(fixture_bundle=bundle, run_root=tmp_path)
+
+    bundle = runtime_bundle(tmp_path / "mismatch")
+    manifest_path = bundle / "runtime/manifests/fixture-runtime-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["jobs"][0]["job_id"] = "different-job"
+    manifest_path.write_bytes(canonical_json_bytes(manifest) + b"\n")
+    with pytest.raises(EvaluationError, match="fixture-job-pointer-mismatch"):
+        subject._job_frame_mapping(fixture_bundle=bundle, run_root=tmp_path)
+
+    bundle = runtime_bundle(tmp_path / "duplicate")
+    manifest_path = bundle / "runtime/manifests/fixture-runtime-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["jobs"].append(manifest["jobs"][0])
+    manifest_path.write_bytes(canonical_json_bytes(manifest) + b"\n")
+    with pytest.raises(EvaluationError, match="fixture-job-id-duplicate"):
+        subject._job_frame_mapping(fixture_bundle=bundle, run_root=tmp_path)
+
+    bundle = runtime_bundle(
+        tmp_path / "duplicate-frame", (("job-1", "frame-1"), ("job-2", "frame-1"))
+    )
+    with pytest.raises(EvaluationError, match="fixture-frame-id-duplicate"):
+        subject._job_frame_mapping(fixture_bundle=bundle, run_root=tmp_path)
+
+    bundle = runtime_bundle(tmp_path / "escape")
+    manifest_path = bundle / "runtime/manifests/fixture-runtime-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["jobs"][0]["manifest"] = "../outside.json"
+    manifest_path.write_bytes(canonical_json_bytes(manifest) + b"\n")
+    with pytest.raises(EvaluationError, match="fixture-manifest-path-invalid"):
+        subject._job_frame_mapping(fixture_bundle=bundle, run_root=tmp_path)
+
+    with pytest.raises(EvaluationError, match="oracle-job-mapping-missing"):
+        subject._mapped_frame_ids(["missing-job"], {"job-1": "frame-1"})
 
 
 def test_unresolved_recovery_case_is_recorded_without_action(
@@ -315,6 +407,7 @@ def test_unresolved_recovery_case_is_recorded_without_action(
         oracle=oracle,
         observation=observation,
         run_root=tmp_path,
+        fixture_bundle=runtime_bundle(tmp_path),
         packet_path=packet_path,
         oracle_path=oracle_path,
         observation_path=observation_path,
