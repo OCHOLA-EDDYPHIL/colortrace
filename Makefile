@@ -7,18 +7,27 @@ TRIVY_IMAGE := aquasec/trivy@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f
 HOST_UID := $(shell id -u)
 HOST_GID := $(shell id -g)
 WORKSPACE := $(CURDIR)
-CACHE_HOME := $(WORKSPACE)/.cache/home
+CACHE_ROOT ?= $(WORKSPACE)/.cache
+CACHE_ROOT := $(abspath $(CACHE_ROOT))
+CACHE_HOME := $(CACHE_ROOT)/home
+UV_CACHE := $(CACHE_ROOT)/uv
+UV_PROJECT_ENVIRONMENT := $(CACHE_ROOT)/venv
+PNPM_STORE := $(CACHE_ROOT)/pnpm
 SECURITY_EVIDENCE_HOST := $(WORKSPACE)/.cache/security-evidence
 SECURITY_EVIDENCE_CONTAINER := /workspace/.cache/security-evidence
 SECURITY_CANDIDATE_SHA ?= $(shell git rev-parse HEAD)
+TOOL_INPUT_SHA256 := $(shell test ! -f Dockerfile.dev || sha256sum Dockerfile.dev | cut -d ' ' -f 1)
+PYTEST_WORKERS ?= 2
 
 TOOL_RUN := docker run --rm \
 	--user $(HOST_UID):$(HOST_GID) \
 	--volume $(WORKSPACE):/workspace \
+	--volume $(CACHE_ROOT):$(CACHE_ROOT) \
 	--workdir /workspace \
 	--env CI=true \
-	--env HOME=/workspace/.cache/home \
-	--env UV_CACHE_DIR=/workspace/.cache/uv \
+	--env HOME=$(CACHE_HOME) \
+	--env UV_CACHE_DIR=$(UV_CACHE) \
+	--env UV_PROJECT_ENVIRONMENT=$(UV_PROJECT_ENVIRONMENT) \
 	$(TOOL_IMAGE)
 
 TOOL_RUN_OFFLINE := docker run --rm \
@@ -26,10 +35,12 @@ TOOL_RUN_OFFLINE := docker run --rm \
 	--pull=never \
 	--user $(HOST_UID):$(HOST_GID) \
 	--volume $(WORKSPACE):/workspace \
+	--volume $(CACHE_ROOT):$(CACHE_ROOT) \
 	--workdir /workspace \
 	--env CI=true \
-	--env HOME=/workspace/.cache/home \
-	--env UV_CACHE_DIR=/workspace/.cache/uv \
+	--env HOME=$(CACHE_HOME) \
+	--env UV_CACHE_DIR=$(UV_CACHE) \
+	--env UV_PROJECT_ENVIRONMENT=$(UV_PROJECT_ENVIRONMENT) \
 	$(TOOL_IMAGE)
 
 TOOL_RUN_HOST := docker run --rm \
@@ -37,29 +48,60 @@ TOOL_RUN_HOST := docker run --rm \
 	--pull=never \
 	--user $(HOST_UID):$(HOST_GID) \
 	--volume $(WORKSPACE):/workspace \
+	--volume $(CACHE_ROOT):$(CACHE_ROOT) \
 	--workdir /workspace \
 	--env CI=true \
-	--env HOME=/workspace/.cache/home \
-	--env UV_CACHE_DIR=/workspace/.cache/uv \
+	--env HOME=$(CACHE_HOME) \
+	--env UV_CACHE_DIR=$(UV_CACHE) \
+	--env UV_PROJECT_ENVIRONMENT=$(UV_PROJECT_ENVIRONMENT) \
 	$(TOOL_IMAGE)
 
-.PHONY: bootstrap build-tools prepare-cache format generate generate-fixture check check-fast \
+.PHONY: bootstrap bootstrap-quality bootstrap-security build-tools build-quality-tools \
+	build-security-tools ensure-gitleaks-image ensure-telemetry-image ensure-tool-image \
+	ensure-trivy-image prepare-cache format generate generate-fixture check check-fast \
 	check-format check-lint check-typecheck check-unit check-contract \
 	check-generated check-license check-policy check-secret check-secret-fixture check-telemetry \
 	check-bootstrap security-evidence
 
 prepare-cache:
-	@mkdir -p "$(CACHE_HOME)" "$(WORKSPACE)/.cache/uv" "$(WORKSPACE)/.cache/pnpm"
+	@mkdir -p "$(WORKSPACE)/.cache" "$(CACHE_HOME)" "$(UV_CACHE)" "$(PNPM_STORE)" "$(UV_PROJECT_ENVIRONMENT)"
 
-build-tools:
-	docker build --pull --file Dockerfile.dev --tag $(TOOL_IMAGE) .
-	docker pull $(GITLEAKS_IMAGE)
-	docker pull $(TELEMETRY_IMAGE)
-	docker pull $(TRIVY_IMAGE)
+ensure-tool-image:
+	@set -eu; \
+	current="$$(docker image inspect --format '{{ index .Config.Labels "org.colortrace.tool-input-sha256" }}' $(TOOL_IMAGE) 2>/dev/null || true)"; \
+	if test "$$current" = "$(TOOL_INPUT_SHA256)"; then \
+		echo "Reusing integrity-bound $(TOOL_IMAGE)"; \
+	else \
+		docker build --pull --file Dockerfile.dev \
+			--label "org.colortrace.tool-input-sha256=$(TOOL_INPUT_SHA256)" \
+			--tag $(TOOL_IMAGE) .; \
+	fi
+
+ensure-gitleaks-image:
+	@docker image inspect $(GITLEAKS_IMAGE) >/dev/null 2>&1 || docker pull $(GITLEAKS_IMAGE)
+
+ensure-telemetry-image:
+	@docker image inspect $(TELEMETRY_IMAGE) >/dev/null 2>&1 || docker pull $(TELEMETRY_IMAGE)
+
+ensure-trivy-image:
+	@docker image inspect $(TRIVY_IMAGE) >/dev/null 2>&1 || docker pull $(TRIVY_IMAGE)
+
+build-tools: ensure-tool-image ensure-gitleaks-image ensure-telemetry-image ensure-trivy-image
+
+build-quality-tools: ensure-tool-image ensure-gitleaks-image ensure-telemetry-image
+
+build-security-tools: ensure-tool-image ensure-gitleaks-image ensure-trivy-image
 
 bootstrap: prepare-cache build-tools
 	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
-	$(TOOL_RUN) pnpm install --frozen-lockfile --store-dir /workspace/.cache/pnpm
+	$(TOOL_RUN) pnpm install --frozen-lockfile --store-dir $(PNPM_STORE)
+
+bootstrap-quality: prepare-cache build-quality-tools
+	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
+	$(TOOL_RUN) pnpm install --frozen-lockfile --store-dir $(PNPM_STORE)
+
+bootstrap-security: prepare-cache build-security-tools
+	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
 
 format: prepare-cache
 	$(TOOL_RUN) uv run ruff format .
@@ -98,7 +140,7 @@ check-typecheck: prepare-cache
 	$(TOOL_RUN_OFFLINE) pnpm run typecheck
 
 check-unit: prepare-cache
-	$(TOOL_RUN_OFFLINE) uv run --offline pytest
+	$(TOOL_RUN_OFFLINE) uv run --offline pytest --numprocesses $(PYTEST_WORKERS) --dist loadscope
 	$(TOOL_RUN_OFFLINE) pnpm run test
 
 check-contract: prepare-cache
@@ -135,11 +177,13 @@ check-telemetry: prepare-cache
 	docker run --rm --network none --pull=never \
 		--user $(HOST_UID):$(HOST_GID) \
 		--volume $(WORKSPACE):/workspace \
+		--volume $(CACHE_ROOT):$(CACHE_ROOT) \
 		--volume "$$private_root:/isolated-fixture-private" \
 		--workdir /workspace \
 		--env CI=true \
-		--env HOME=/workspace/.cache/home \
-		--env UV_CACHE_DIR=/workspace/.cache/uv \
+		--env HOME=$(CACHE_HOME) \
+		--env UV_CACHE_DIR=$(UV_CACHE) \
+		--env UV_PROJECT_ENVIRONMENT=$(UV_PROJECT_ENVIRONMENT) \
 		$(TOOL_IMAGE) uv run --offline colortrace-fixture generate \
 		--bundle "$$container_root/runtime-bundle" \
 		--oracle /isolated-fixture-private/offline-oracle; \
@@ -224,10 +268,12 @@ security-evidence: prepare-cache
 	docker run --rm --network none --pull=never \
 		--user $(HOST_UID):$(HOST_GID) \
 		--volume $(WORKSPACE):/workspace \
+		--volume $(CACHE_ROOT):$(CACHE_ROOT) \
 		--workdir /workspace \
 		--env CI=true \
-		--env HOME=/workspace/.cache/home \
-		--env UV_CACHE_DIR=/workspace/.cache/uv \
+		--env HOME=$(CACHE_HOME) \
+		--env UV_CACHE_DIR=$(UV_CACHE) \
+		--env UV_PROJECT_ENVIRONMENT=$(UV_PROJECT_ENVIRONMENT) \
 		--env COLORTRACE_CI=$(GITHUB_ACTIONS) \
 		--env COLORTRACE_DOCKER_ENDPOINT=$(DOCKER_HOST) \
 		--env COLORTRACE_HOST_DOCKER_SOCKET_PRESENT=$$(test -S /var/run/docker.sock && echo true || echo false) \
