@@ -16,6 +16,7 @@ const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const evidenceRoot = path.join(packageRoot, "evidence", "issue-21");
 const issue22EvidenceRoot = path.join(packageRoot, "evidence", "issue-22");
 const issue24EvidenceRoot = path.join(packageRoot, "evidence", "issue-24");
+const uxEvidenceRoot = path.join(packageRoot, "evidence", "ux-accessibility");
 const ISSUE_22_EVIDENCE_SCREENSHOTS = [
   {
     filename: "response-plan-review-1440x900.png",
@@ -242,6 +243,151 @@ test("renders the canonical evidence and exact supported scope at 1440x900", asy
   await captureEvidenceScreenshot(page, EVIDENCE_SCREENSHOTS.desktop);
 });
 
+test("labels synthetic provenance and resets the workspace using read-only requests", async ({
+  page,
+}) => {
+  const securityConsoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  page.on("console", (message) => {
+    if (
+      message.type() === "error" &&
+      /Content Security Policy|@vitejs\/plugin-react|Refused to execute/iu.test(message.text())
+    ) {
+      securityConsoleErrors.push(message.text());
+    }
+  });
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  const { captured } = await installPreparedApi(page);
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Incident overview" })).toBeVisible();
+  await expect(page.getByLabel("Data provenance")).toContainText("Synthetic simulator data");
+  await page.getByRole("button", { name: "Reset workspace view" }).click();
+  await expect(page.getByRole("heading", { name: "Incident overview" })).toBeVisible();
+
+  const listRequests = captured.filter(
+    (request) => new URL(request.url).pathname === "/v1/incidents",
+  );
+  expect(listRequests.length).toBeGreaterThanOrEqual(2);
+  expect(captured.every((request) => request.method === "GET")).toBe(true);
+  expect(securityConsoleErrors).toEqual([]);
+  expect(pageErrors).toEqual([]);
+});
+
+test("keeps slow, empty, and failed list states actionable", async ({ baseURL, browser }) => {
+  if (baseURL === undefined) throw new Error("Playwright base URL is required");
+  const delayedPage = await browser.newPage({ baseURL, viewport: DESKTOP_VIEWPORT });
+  await installPreparedApi(delayedPage, { incidentListMode: "delayed" });
+  await delayedPage.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(delayedPage.getByRole("heading", { name: "Loading incident" })).toBeVisible();
+  await expect(delayedPage.getByRole("button", { name: "Reset workspace view" })).toBeEnabled();
+  await expect(delayedPage.getByRole("heading", { name: "Incident overview" })).toBeVisible();
+  await delayedPage.close();
+
+  const emptyPage = await browser.newPage({ baseURL, viewport: DESKTOP_VIEWPORT });
+  await installPreparedApi(emptyPage, { incidentListMode: "empty" });
+  await emptyPage.goto("/");
+  await expect(emptyPage.getByRole("heading", { name: "No incidents" })).toBeVisible();
+  await expect(emptyPage.getByRole("button", { name: "Reset workspace view" })).toBeEnabled();
+  await emptyPage.close();
+
+  const errorPage = await browser.newPage({ baseURL, viewport: DESKTOP_VIEWPORT });
+  await installPreparedApi(errorPage, { incidentListMode: "error" });
+  await errorPage.goto("/");
+  await expect(errorPage.getByRole("heading", { name: "Incident data unavailable" })).toBeVisible();
+  await expect(errorPage.getByRole("button", { name: "Try again" })).toBeEnabled();
+  await expect(errorPage.getByRole("button", { name: "Reset workspace view" })).toBeEnabled();
+  await errorPage.close();
+});
+
+test("captures the current UX and accessibility evidence set", async ({ page }) => {
+  test.skip(process.env.COLORTRACE_CAPTURE_UX_EVIDENCE !== "1");
+  await mkdir(uxEvidenceRoot, { recursive: true });
+  const { captured } = await installPreparedApi(page);
+
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Incident overview" })).toBeVisible();
+  const axeResults = await new AxeBuilder({ page }).withTags([...WCAG_TAGS]).analyze();
+  expect(axeResults.violations).toEqual([]);
+  const contrastIncomplete = axeResults.incomplete.filter(
+    (result) =>
+      result.id === "color-contrast" &&
+      (result.impact === "serious" ||
+        result.impact === "critical" ||
+        result.nodes.some((node) => node.impact === "serious" || node.impact === "critical")),
+  );
+  expect(contrastIncomplete).toEqual([]);
+
+  await page.evaluate(() => window.scrollTo({ behavior: "instant", top: 0 }));
+  const desktopImage = await page.screenshot({
+    animations: "disabled",
+    path: path.join(uxEvidenceRoot, "workspace-1440x900.png"),
+  });
+  const scopeTop = await page.locator(".scope-panel").evaluate((element) => {
+    return element.getBoundingClientRect().top + window.scrollY;
+  });
+  await page.evaluate(
+    (top) => window.scrollTo({ behavior: "instant", top: Math.max(0, top - 16) }),
+    scopeTop,
+  );
+  const comparisonImage = await page.screenshot({
+    animations: "disabled",
+    path: path.join(uxEvidenceRoot, "evidence-comparison-1440x900.png"),
+  });
+
+  await page.setViewportSize(MOBILE_VIEWPORT);
+  await page.evaluate(() => window.scrollTo({ behavior: "instant", top: 0 }));
+  const mobileImage = await page.screenshot({
+    animations: "disabled",
+    path: path.join(uxEvidenceRoot, "workspace-390x844.png"),
+  });
+  await page.getByRole("button", { name: "Reset workspace view" }).click();
+  await expect(page.getByRole("heading", { name: "Incident overview" })).toBeVisible();
+
+  const requestMethods = [...new Set(captured.map((request) => request.method))].sort();
+  expect(requestMethods).toEqual(["GET"]);
+  await writeFile(
+    path.join(uxEvidenceRoot, "acceptance-evidence.json"),
+    `${JSON.stringify(
+      {
+        schema: "colortrace-ux-accessibility-evidence/v1",
+        generated_at: new Date().toISOString(),
+        source_test: "packages/web/e2e/incident-workspace.spec.ts",
+        engine: axeResults.testEngine,
+        wcag_tags: WCAG_TAGS,
+        violations: axeResults.violations.length,
+        serious_or_critical_color_contrast_incomplete: contrastIncomplete.length,
+        reset: {
+          control: "Reset workspace view",
+          behavior: "Reload the generated fixture view and select its first incident.",
+          request_methods: requestMethods,
+          simulator_action_requests: captured.filter((request) =>
+            new URL(request.url).pathname.includes("simulator-actions"),
+          ).length,
+        },
+        screenshots: [
+          {
+            path: "packages/web/evidence/ux-accessibility/workspace-1440x900.png",
+            sha256: createHash("sha256").update(desktopImage).digest("hex"),
+          },
+          {
+            path: "packages/web/evidence/ux-accessibility/workspace-390x844.png",
+            sha256: createHash("sha256").update(mobileImage).digest("hex"),
+          },
+          {
+            path: "packages/web/evidence/ux-accessibility/evidence-comparison-1440x900.png",
+            sha256: createHash("sha256").update(comparisonImage).digest("hex"),
+          },
+        ],
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+});
+
 test("keeps the investigation legible without page-level horizontal overflow on a small viewport", async ({
   page,
 }, testInfo) => {
@@ -273,6 +419,22 @@ test("keeps the investigation legible without page-level horizontal overflow on 
   await captureEvidenceScreenshot(page, EVIDENCE_SCREENSHOTS.mobile);
   await captureIssue22Evidence(page, "response-plan-review-390x844.png");
   await captureIssue22ActionEvidence(page, "response-plan-actions-390x844.png");
+});
+
+test("reflows without page-level overflow at a 200 percent zoom-equivalent viewport", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 450, width: 720 });
+  await installPreparedApi(page);
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Incident overview" })).toBeVisible();
+  await expect(page.getByLabel("Data provenance")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reset workspace view" })).toBeVisible();
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
 });
 
 test("requires exact confirmation and sends immutable bindings before approval", async ({

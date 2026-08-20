@@ -15,7 +15,7 @@ export const WEB_SECURITY_HEADERS = {
 export default defineConfig({
   plugins: [react()],
   preview: { headers: WEB_SECURITY_HEADERS },
-  server: { headers: WEB_SECURITY_HEADERS },
+  server: { headers: WEB_SECURITY_HEADERS, hmr: false },
   test: {
     css: true,
     environment: "jsdom",
