@@ -15,14 +15,19 @@ class NeverConnect:
 def test_migration_bundle_is_contiguous_digest_bound_and_reversible() -> None:
     migrations = load_migrations()
 
-    assert [migration.version for migration in migrations] == [1]
-    assert [migration.name for migration in migrations] == ["canonical_metadata"]
+    assert [migration.version for migration in migrations] == [1, 2]
+    assert [migration.name for migration in migrations] == [
+        "canonical_metadata",
+        "hosted_read_projection",
+    ]
     assert all(migration.sha256.startswith("sha256:") for migration in migrations)
     assert all(len(migration.sha256) == 71 for migration in migrations)
     assert all(migration.up_statements for migration in migrations)
     assert all(migration.down_statements for migration in migrations)
     assert "metadata_records" in migrations[0].up_sql
     assert "DROP TABLE IF EXISTS colortrace.metadata_records" in migrations[0].down_sql
+    assert "hosted_read_projection_v1" in migrations[1].up_sql
+    assert "DROP VIEW IF EXISTS colortrace.hosted_read_projection_v1" in migrations[1].down_sql
 
 
 def test_migration_digest_changes_if_either_direction_changes() -> None:

@@ -6,11 +6,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from .ports import ConnectionFactory, DbConnection, DbCursor, PersistenceError
+from .canonical import _snapshot_from_record_rows
+from .ports import ConnectionFactory, DbConnection, DbCursor, MetadataSnapshot, PersistenceError
 from .schema_validation import validate_reader_privileges
 
 _ROLE_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]{0,62}$")
 _DATABASE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,62}$")
+HOSTED_FIXTURE_RECORD_ID = "incident-hosted-synthetic-001"
+HOSTED_READINESS_RECORD_ID = "hosted-readiness:synthetic-hosted-read-v1"
+_HOSTED_RECORD_IDS = frozenset({HOSTED_FIXTURE_RECORD_ID, HOSTED_READINESS_RECORD_ID})
 
 
 def _column_names(cursor: DbCursor) -> tuple[str, ...]:
@@ -96,11 +100,14 @@ class PostgresReaderVerifier:
 
     def validate(self) -> None:
         with _connection(self.connection_factory) as (_connection_value, cursor):
-            cursor.execute("SELECT current_user, current_database()")
+            cursor.execute("SELECT session_user, current_user, current_database()")
             identity = _rows(cursor)
             if len(identity) != 1:
                 raise PersistenceError("postgres-result-invalid")
-            if identity[0].get("current_user") != self.reader_role:
+            if (
+                identity[0].get("session_user") != self.reader_role
+                or identity[0].get("current_user") != self.reader_role
+            ):
                 raise PersistenceError("postgres-reader-role-mismatch")
             if identity[0].get("current_database") != self.database:
                 raise PersistenceError("postgres-reader-database-mismatch")
@@ -124,3 +131,27 @@ class PostgresReaderVerifier:
             }:
                 raise PersistenceError("postgres-role-privileges-invalid")
             validate_reader_privileges(cursor, self.reader_role)
+
+
+@dataclass(frozen=True, slots=True)
+class HostedProjectionPostgresStore:
+    connection_factory: ConnectionFactory
+
+    @property
+    def namespace(self) -> str:
+        return "incident"
+
+    def read(self, record_id: str) -> MetadataSnapshot:
+        if record_id not in _HOSTED_RECORD_IDS:
+            raise PersistenceError("metadata-record-not-found")
+        with _connection(self.connection_factory) as (_connection_value, cursor):
+            cursor.execute(
+                "SELECT current_version, current_document, current_document_sha256, "
+                "current_chain_sha256, history_version, history_document, "
+                "history_document_sha256, history_previous_chain_sha256, "
+                "history_chain_sha256 FROM colortrace.hosted_read_projection_v1 "
+                "WHERE namespace = 'incident' AND record_id = %s ORDER BY history_version",
+                (record_id,),
+            )
+            rows = _rows(cursor)
+        return _snapshot_from_record_rows("incident", record_id, rows)

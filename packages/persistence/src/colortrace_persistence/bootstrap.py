@@ -167,6 +167,21 @@ class PostgresRoleBootstrapper:
             "reader_is_runtime": False,
         }:
             raise PersistenceError("postgres-role-separation-invalid")
+        cursor.execute(
+            "SELECT EXISTS ("
+            "SELECT 1 FROM pg_auth_members AS memberships "
+            "JOIN pg_roles AS granted_role ON granted_role.oid = memberships.roleid "
+            "JOIN pg_roles AS member_role ON member_role.oid = memberships.member "
+            "WHERE granted_role.rolname = %s OR member_role.rolname = %s"
+            ") AS has_reader_membership",
+            (self.reader_role, self.reader_role),
+        )
+        reader_memberships = _rows(cursor)
+        if (
+            len(reader_memberships) != 1
+            or reader_memberships[0].get("has_reader_membership") is not False
+        ):
+            raise PersistenceError("postgres-role-separation-invalid")
 
     def _apply_privileges(self, cursor: DbCursor) -> None:
         database = _quote_identifier(self.database)

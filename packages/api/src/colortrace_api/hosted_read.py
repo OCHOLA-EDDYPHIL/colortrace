@@ -16,8 +16,11 @@ from typing import Any, Protocol, cast
 
 import uvicorn
 from colortrace_persistence import (
+    HOSTED_FIXTURE_RECORD_ID,
+    HOSTED_READINESS_RECORD_ID,
     CanonicalPostgresStore,
     CloudSqlConnectionFactory,
+    HostedProjectionPostgresStore,
     MetadataSnapshot,
     PersistenceError,
     PostgresMigrationRunner,
@@ -50,7 +53,7 @@ _DATABASE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,62}$")
 _ROLE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]{0,62}$")
 _ASSET_NAME = "hosted-read-projection-v1.json"
 _SCHEMA_NAME = "hosted-read-projection-v1.schema.json"
-_READY_RECORD_ID = "hosted-readiness:synthetic-hosted-read-v1"
+_READY_RECORD_ID = HOSTED_READINESS_RECORD_ID
 _MAX_ASSET_BYTES = 131_072
 _MAX_SECRET_BYTES = 16_384
 
@@ -86,6 +89,10 @@ class PasswordFactoryBuilder(Protocol):
         user: str,
         password: str,
     ) -> ClosableConnectionFactory: ...
+
+
+class ProjectionReader(Protocol):
+    def read(self, record_id: str) -> MetadataSnapshot: ...
 
 
 def _required(environment: Mapping[str, str], name: str, *, maximum: int = 4096) -> str:
@@ -276,7 +283,8 @@ def _validate_fixture_semantics(document: Mapping[str, Any]) -> None:
     incident = cast(Mapping[str, Any], view.get("incident"))
     task = cast(Mapping[str, Any], view.get("task"))
     if (
-        summary.get("incident_id") != incident_id
+        incident_id != HOSTED_FIXTURE_RECORD_ID
+        or summary.get("incident_id") != incident_id
         or incident.get("incident_id") != incident_id
         or task.get("incident_id") != incident_id
         or workspace.get("view") != view
@@ -323,7 +331,7 @@ def _sentinel(asset: FixtureAsset, fixture: MetadataSnapshot) -> dict[str, Any]:
 
 
 def _load_seeded_fixture(
-    store: CanonicalPostgresStore,
+    store: ProjectionReader,
     asset: FixtureAsset,
 ) -> tuple[MetadataSnapshot, MetadataSnapshot]:
     try:
@@ -440,7 +448,7 @@ def create_hosted_read_app(
         database=config.database,
         user=config.api_role,
     )
-    store = CanonicalPostgresStore(factory, namespace="incident")
+    store = HostedProjectionPostgresStore(factory)
     service = HostedProjectionService()
 
     @asynccontextmanager

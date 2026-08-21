@@ -91,6 +91,14 @@ _EXPECTED_COLUMNS = (
     ),
 )
 
+_HOSTED_BINDING_COLUMNS = (
+    ("hosted_read_bindings", 1, "binding_key", "text", True, ""),
+    ("hosted_read_bindings", 2, "reader_role", "text", True, ""),
+)
+_EXPECTED_HOSTED_COLUMNS = tuple(
+    sorted((*_EXPECTED_COLUMNS, *_HOSTED_BINDING_COLUMNS), key=lambda value: (value[0], value[1]))
+)
+
 _EXPECTED_CONSTRAINTS = frozenset(
     {
         ("metadata_claim_events", "c", "CHECK (event_sequence >= 1)"),
@@ -254,6 +262,19 @@ _EXPECTED_CONSTRAINTS = frozenset(
         ("schema_migrations", "p", "PRIMARY KEY (version)"),
     }
 )
+_EXPECTED_HOSTED_CONSTRAINTS = _EXPECTED_CONSTRAINTS | {
+    (
+        "hosted_read_bindings",
+        "c",
+        "CHECK (binding_key = 'hosted-read-v1'::text)",
+    ),
+    (
+        "hosted_read_bindings",
+        "c",
+        "CHECK (reader_role ~ '^[A-Za-z0-9_][A-Za-z0-9_.@-]{0,62}$'::text)",
+    ),
+    ("hosted_read_bindings", "p", "PRIMARY KEY (binding_key)"),
+}
 
 _EXPECTED_INDEXES = frozenset(
     {
@@ -302,6 +323,14 @@ _EXPECTED_INDEXES = frozenset(
         ),
     }
 )
+_EXPECTED_HOSTED_INDEXES = _EXPECTED_INDEXES | {
+    (
+        "hosted_read_bindings",
+        "hosted_read_bindings_pkey",
+        "CREATE UNIQUE INDEX hosted_read_bindings_pkey ON "
+        "colortrace.hosted_read_bindings USING btree (binding_key)",
+    )
+}
 
 _EXPECTED_TRIGGERS = frozenset(
     {
@@ -401,6 +430,32 @@ _EXPECTED_RELATIONS = frozenset(
         ("schema_migrations_pkey", "i"),
     }
 )
+_EXPECTED_HOSTED_RELATIONS = _EXPECTED_RELATIONS | {
+    ("hosted_read_bindings", "r"),
+    ("hosted_read_bindings_pkey", "i"),
+    ("hosted_read_projection_v1", "v"),
+}
+_EXPECTED_HOSTED_VIEW_DEFINITION = """
+SELECT records.namespace,
+    records.record_id,
+    records.record_version AS current_version,
+    records.document AS current_document,
+    records.document_sha256 AS current_document_sha256,
+    records.chain_sha256 AS current_chain_sha256,
+    versions.record_version AS history_version,
+    versions.document AS history_document,
+    versions.document_sha256 AS history_document_sha256,
+    versions.previous_chain_sha256 AS history_previous_chain_sha256,
+    versions.chain_sha256 AS history_chain_sha256
+FROM colortrace.metadata_records records
+JOIN colortrace.metadata_record_versions versions
+  ON versions.namespace = records.namespace AND versions.record_id = records.record_id
+JOIN colortrace.hosted_read_bindings binding
+  ON binding.binding_key = 'hosted-read-v1'::text AND binding.reader_role = SESSION_USER::text
+WHERE records.namespace = 'incident'::text
+  AND (records.record_id = ANY (ARRAY['incident-hosted-synthetic-001'::text,
+      'hosted-readiness:synthetic-hosted-read-v1'::text]));
+"""
 
 _EXPECTED_TABLE_PRIVILEGES: Mapping[str, frozenset[str]] = {
     "metadata_claim_events": frozenset({"INSERT", "SELECT"}),
@@ -410,16 +465,24 @@ _EXPECTED_TABLE_PRIVILEGES: Mapping[str, frozenset[str]] = {
     "metadata_records": frozenset({"INSERT", "SELECT", "UPDATE"}),
     "schema_migrations": frozenset(),
 }
+_EXPECTED_HOSTED_TABLE_PRIVILEGES: Mapping[str, frozenset[str]] = {
+    **_EXPECTED_TABLE_PRIVILEGES,
+    "hosted_read_bindings": frozenset(),
+    "hosted_read_projection_v1": frozenset(),
+}
 _EXPECTED_READER_TABLE_PRIVILEGES: Mapping[str, frozenset[str]] = {
     "metadata_claim_events": frozenset(),
     "metadata_claims": frozenset(),
     "metadata_idempotency": frozenset(),
-    "metadata_record_versions": frozenset({"SELECT"}),
-    "metadata_records": frozenset({"SELECT"}),
+    "metadata_record_versions": frozenset(),
+    "metadata_records": frozenset(),
     "schema_migrations": frozenset(),
+    "hosted_read_bindings": frozenset(),
+    "hosted_read_projection_v1": frozenset({"SELECT"}),
 }
 
 _TABLE_PRIVILEGES = ("DELETE", "INSERT", "REFERENCES", "SELECT", "TRIGGER", "TRUNCATE", "UPDATE")
+_SEQUENCE_PRIVILEGES = ("SELECT", "USAGE", "UPDATE")
 
 
 def _column_names(cursor: DbCursor) -> tuple[str, ...]:
@@ -453,7 +516,12 @@ def _tuples(cursor: DbCursor, names: tuple[str, ...]) -> tuple[tuple[object, ...
     return tuple(tuple(row[name] for name in names) for row in _rows(cursor))
 
 
-def _validate_relations(cursor: DbCursor, migration_role: str) -> None:
+def _validate_relations(
+    cursor: DbCursor,
+    migration_role: str,
+    *,
+    hosted_projection: bool,
+) -> None:
     cursor.execute(
         "SELECT c.relname, c.relkind, pg_get_userbyid(c.relowner) AS owner "
         "FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace "
@@ -461,11 +529,12 @@ def _validate_relations(cursor: DbCursor, migration_role: str) -> None:
     )
     rows = _rows(cursor)
     relations = frozenset((row["relname"], row["relkind"]) for row in rows)
-    if relations != _EXPECTED_RELATIONS or any(row["owner"] != migration_role for row in rows):
+    expected = _EXPECTED_HOSTED_RELATIONS if hosted_projection else _EXPECTED_RELATIONS
+    if relations != expected or any(row["owner"] != migration_role for row in rows):
         raise PersistenceError("migration-schema-drift")
 
 
-def _validate_columns(cursor: DbCursor) -> None:
+def _validate_columns(cursor: DbCursor, *, hosted_projection: bool) -> None:
     cursor.execute(
         "SELECT c.relname, a.attnum, a.attname, format_type(a.atttypid, a.atttypmod) "
         "AS data_type, a.attnotnull, COALESCE(pg_get_expr(d.adbin, d.adrelid), '') "
@@ -479,11 +548,12 @@ def _validate_columns(cursor: DbCursor) -> None:
         cursor,
         ("relname", "attnum", "attname", "data_type", "attnotnull", "default_expression"),
     )
-    if observed != _EXPECTED_COLUMNS:
+    expected = _EXPECTED_HOSTED_COLUMNS if hosted_projection else _EXPECTED_COLUMNS
+    if observed != expected:
         raise PersistenceError("migration-schema-drift")
 
 
-def _validate_constraints(cursor: DbCursor) -> None:
+def _validate_constraints(cursor: DbCursor, *, hosted_projection: bool) -> None:
     cursor.execute(
         "SELECT r.relname, c.contype, pg_get_constraintdef(c.oid, true) AS definition "
         "FROM pg_constraint AS c JOIN pg_class AS r ON r.oid = c.conrelid "
@@ -491,16 +561,36 @@ def _validate_constraints(cursor: DbCursor) -> None:
         "WHERE n.nspname = 'colortrace'"
     )
     observed = frozenset(_tuples(cursor, ("relname", "contype", "definition")))
-    if observed != _EXPECTED_CONSTRAINTS:
+    expected = _EXPECTED_HOSTED_CONSTRAINTS if hosted_projection else _EXPECTED_CONSTRAINTS
+    if observed != expected:
         raise PersistenceError("migration-schema-drift")
 
 
-def _validate_indexes(cursor: DbCursor) -> None:
+def _validate_indexes(cursor: DbCursor, *, hosted_projection: bool) -> None:
     cursor.execute(
         "SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname = 'colortrace'"
     )
     observed = frozenset(_tuples(cursor, ("tablename", "indexname", "indexdef")))
-    if observed != _EXPECTED_INDEXES:
+    expected = _EXPECTED_HOSTED_INDEXES if hosted_projection else _EXPECTED_INDEXES
+    if observed != expected:
+        raise PersistenceError("migration-schema-drift")
+
+
+def _validate_hosted_view(cursor: DbCursor) -> None:
+    cursor.execute(
+        "SELECT c.reloptions, pg_get_viewdef(c.oid, true) AS definition "
+        "FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'colortrace' AND c.relname = 'hosted_read_projection_v1' "
+        "AND c.relkind = 'v'"
+    )
+    rows = _rows(cursor)
+    if len(rows) != 1:
+        raise PersistenceError("migration-schema-drift")
+    options = rows[0].get("reloptions")
+    definition = rows[0].get("definition")
+    if options != ["security_barrier=true"] or not isinstance(definition, str):
+        raise PersistenceError("migration-schema-drift")
+    if " ".join(definition.split()) != " ".join(_EXPECTED_HOSTED_VIEW_DEFINITION.split()):
         raise PersistenceError("migration-schema-drift")
 
 
@@ -544,7 +634,12 @@ def _validate_triggers(cursor: DbCursor) -> None:
         raise PersistenceError("migration-schema-drift")
 
 
-def _validate_runtime_privileges(cursor: DbCursor, runtime_role: str) -> None:
+def _validate_runtime_privileges(
+    cursor: DbCursor,
+    runtime_role: str,
+    *,
+    hosted_projection: bool,
+) -> None:
     cursor.execute(
         "SELECT has_schema_privilege(%s, n.oid, 'USAGE') AS usage, "
         "has_schema_privilege(%s, n.oid, 'CREATE') AS create_privilege "
@@ -565,7 +660,7 @@ def _validate_runtime_privileges(cursor: DbCursor, runtime_role: str) -> None:
         "has_table_privilege(%s, c.oid, 'TRUNCATE') AS truncate_privilege, "
         "has_table_privilege(%s, c.oid, 'UPDATE') AS update_privilege "
         "FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace "
-        "WHERE n.nspname = 'colortrace' AND c.relkind = 'r' ORDER BY c.relname",
+        "WHERE n.nspname = 'colortrace' AND c.relkind IN ('r', 'v') ORDER BY c.relname",
         (runtime_role,) * len(_TABLE_PRIVILEGES),
     )
     rows = _rows(cursor)
@@ -576,7 +671,10 @@ def _validate_runtime_privileges(cursor: DbCursor, runtime_role: str) -> None:
             for privilege in _TABLE_PRIVILEGES
             if row[f"{privilege.lower()}_privilege"] is True
         )
-    if observed != _EXPECTED_TABLE_PRIVILEGES:
+    expected = (
+        _EXPECTED_HOSTED_TABLE_PRIVILEGES if hosted_projection else _EXPECTED_TABLE_PRIVILEGES
+    )
+    if observed != expected:
         raise PersistenceError("postgres-runtime-privilege-invalid")
 
     cursor.execute(
@@ -602,25 +700,50 @@ def _validate_runtime_privileges(cursor: DbCursor, runtime_role: str) -> None:
         raise PersistenceError("postgres-runtime-privilege-invalid")
 
 
-def validate_reader_privileges(cursor: DbCursor, reader_role: str) -> None:
+def _validate_reader_memberships(cursor: DbCursor, reader_role: str, *, code: str) -> None:
     cursor.execute(
-        "SELECT has_schema_privilege(%s, n.oid, 'USAGE') AS usage, "
-        "has_schema_privilege(%s, n.oid, 'CREATE') AS create_privilege "
-        "FROM pg_namespace AS n WHERE n.nspname = 'colortrace'",
+        "SELECT EXISTS ("
+        "SELECT 1 FROM pg_auth_members AS memberships "
+        "JOIN pg_roles AS granted_role ON granted_role.oid = memberships.roleid "
+        "JOIN pg_roles AS member_role ON member_role.oid = memberships.member "
+        "WHERE granted_role.rolname = %s OR member_role.rolname = %s"
+        ") AS has_membership",
         (reader_role, reader_role),
     )
-    schema_rows = _rows(cursor)
-    if len(schema_rows) != 1 or schema_rows[0] != {"usage": True, "create_privilege": False}:
-        raise PersistenceError("postgres-reader-privilege-invalid")
+    rows = _rows(cursor)
+    if len(rows) != 1 or rows[0].get("has_membership") is not False:
+        raise PersistenceError(code)
 
-    cursor.execute(
-        "SELECT bool_or(has_schema_privilege(%s, n.oid, 'CREATE')) AS can_create "
-        "FROM pg_namespace AS n WHERE n.nspname !~ '^pg_' "
-        "AND n.nspname <> 'information_schema'",
-        (reader_role,),
+
+def validate_reader_privileges(cursor: DbCursor, reader_role: str) -> None:
+    _validate_reader_memberships(
+        cursor,
+        reader_role,
+        code="postgres-reader-privilege-invalid",
     )
-    create_rows = _rows(cursor)
-    if len(create_rows) != 1 or create_rows[0].get("can_create") is not False:
+    cursor.execute(
+        "SELECT n.nspname, has_schema_privilege(%s, n.oid, 'USAGE') AS usage, "
+        "has_schema_privilege(%s, n.oid, 'CREATE') AS create_privilege, "
+        "has_schema_privilege(%s, n.oid, 'USAGE WITH GRANT OPTION') AS usage_grant, "
+        "has_schema_privilege(%s, n.oid, 'CREATE WITH GRANT OPTION') AS create_grant "
+        "FROM pg_namespace AS n WHERE n.nspname !~ '^pg_' "
+        "AND n.nspname <> 'information_schema' ORDER BY n.nspname",
+        (reader_role,) * 4,
+    )
+    observed_schemas = {
+        str(row["nspname"]): (
+            row["usage"],
+            row["create_privilege"],
+            row["usage_grant"],
+            row["create_grant"],
+        )
+        for row in _rows(cursor)
+    }
+    if observed_schemas.get("colortrace") != (True, False, False, False) or any(
+        privileges != (False, False, False, False)
+        for schema, privileges in observed_schemas.items()
+        if schema != "colortrace"
+    ):
         raise PersistenceError("postgres-reader-privilege-invalid")
 
     cursor.execute(
@@ -631,11 +754,25 @@ def validate_reader_privileges(cursor: DbCursor, reader_role: str) -> None:
         "has_table_privilege(%s, c.oid, 'SELECT') AS select_privilege, "
         "has_table_privilege(%s, c.oid, 'TRIGGER') AS trigger_privilege, "
         "has_table_privilege(%s, c.oid, 'TRUNCATE') AS truncate_privilege, "
-        "has_table_privilege(%s, c.oid, 'UPDATE') AS update_privilege "
+        "has_table_privilege(%s, c.oid, 'UPDATE') AS update_privilege, "
+        "has_table_privilege(%s, c.oid, 'DELETE WITH GRANT OPTION') "
+        "AS delete_grant_option, "
+        "has_table_privilege(%s, c.oid, 'INSERT WITH GRANT OPTION') "
+        "AS insert_grant_option, "
+        "has_table_privilege(%s, c.oid, 'REFERENCES WITH GRANT OPTION') "
+        "AS references_grant_option, "
+        "has_table_privilege(%s, c.oid, 'SELECT WITH GRANT OPTION') "
+        "AS select_grant_option, "
+        "has_table_privilege(%s, c.oid, 'TRIGGER WITH GRANT OPTION') "
+        "AS trigger_grant_option, "
+        "has_table_privilege(%s, c.oid, 'TRUNCATE WITH GRANT OPTION') "
+        "AS truncate_grant_option, "
+        "has_table_privilege(%s, c.oid, 'UPDATE WITH GRANT OPTION') "
+        "AS update_grant_option "
         "FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace "
         "WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' "
-        "AND c.relkind = 'r' ORDER BY n.nspname, c.relname",
-        (reader_role,) * len(_TABLE_PRIVILEGES),
+        "AND c.relkind IN ('r', 'v', 'm', 'f', 'p') ORDER BY n.nspname, c.relname",
+        (reader_role,) * (len(_TABLE_PRIVILEGES) * 2),
     )
     observed: dict[str, frozenset[str]] = {}
     for row in _rows(cursor):
@@ -646,6 +783,8 @@ def validate_reader_privileges(cursor: DbCursor, reader_role: str) -> None:
             for privilege in _TABLE_PRIVILEGES
             if row[f"{privilege.lower()}_privilege"] is True
         )
+        if any(row[f"{privilege.lower()}_grant_option"] is True for privilege in _TABLE_PRIVILEGES):
+            raise PersistenceError("postgres-reader-privilege-invalid")
         if schema != "colortrace":
             if privileges:
                 raise PersistenceError("postgres-reader-privilege-invalid")
@@ -655,15 +794,85 @@ def validate_reader_privileges(cursor: DbCursor, reader_role: str) -> None:
         raise PersistenceError("postgres-reader-privilege-invalid")
 
     cursor.execute(
-        "SELECT bool_or(has_function_privilege(%s, p.oid, 'EXECUTE')) AS can_execute "
-        "FROM pg_proc AS p JOIN pg_namespace AS n ON n.oid = p.pronamespace "
-        "WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'",
-        (reader_role,),
+        "SELECT bool_or(has_sequence_privilege(%s, c.oid, 'SELECT')) AS can_select, "
+        "bool_or(has_sequence_privilege(%s, c.oid, 'USAGE')) AS can_use, "
+        "bool_or(has_sequence_privilege(%s, c.oid, 'UPDATE')) AS can_update, "
+        "bool_or(has_sequence_privilege(%s, c.oid, 'SELECT WITH GRANT OPTION')) "
+        "AS can_grant_select, "
+        "bool_or(has_sequence_privilege(%s, c.oid, 'USAGE WITH GRANT OPTION')) "
+        "AS can_grant_usage, "
+        "bool_or(has_sequence_privilege(%s, c.oid, 'UPDATE WITH GRANT OPTION')) "
+        "AS can_grant_update "
+        "FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+        "WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' "
+        "AND c.relkind = 'S'",
+        (reader_role,) * (len(_SEQUENCE_PRIVILEGES) * 2),
     )
-    function_rows = _rows(cursor)
-    if len(function_rows) != 1 or function_rows[0].get("can_execute") is not False:
+    sequence_rows = _rows(cursor)
+    if len(sequence_rows) != 1 or any(
+        value not in (False, None) for value in sequence_rows[0].values()
+    ):
         raise PersistenceError("postgres-reader-privilege-invalid")
 
+    cursor.execute(
+        "SELECT bool_or(has_function_privilege(%s, p.oid, 'EXECUTE')) AS can_execute, "
+        "bool_or(has_function_privilege(%s, p.oid, 'EXECUTE WITH GRANT OPTION')) "
+        "AS can_grant_execute "
+        "FROM pg_proc AS p JOIN pg_namespace AS n ON n.oid = p.pronamespace "
+        "WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'",
+        (reader_role, reader_role),
+    )
+    function_rows = _rows(cursor)
+    if len(function_rows) != 1 or function_rows[0] != {
+        "can_execute": False,
+        "can_grant_execute": False,
+    }:
+        raise PersistenceError("postgres-reader-privilege-invalid")
+
+    cursor.execute(
+        "SELECT has_database_privilege(%s, current_database(), 'CONNECT') AS connect, "
+        "has_database_privilege(%s, current_database(), 'CREATE') AS create_privilege, "
+        "has_database_privilege(%s, current_database(), 'TEMPORARY') AS temporary, "
+        "has_database_privilege(%s, current_database(), 'CONNECT WITH GRANT OPTION') "
+        "AS connect_grant, "
+        "has_database_privilege(%s, current_database(), 'CREATE WITH GRANT OPTION') "
+        "AS create_grant, "
+        "has_database_privilege(%s, current_database(), 'TEMPORARY WITH GRANT OPTION') "
+        "AS temporary_grant",
+        (reader_role,) * 6,
+    )
+    database_rows = _rows(cursor)
+    if len(database_rows) != 1 or database_rows[0] != {
+        "connect": True,
+        "create_privilege": False,
+        "temporary": False,
+        "connect_grant": False,
+        "create_grant": False,
+        "temporary_grant": False,
+    }:
+        raise PersistenceError("postgres-reader-privilege-invalid")
+
+
+def validate_revoked_reader_privileges(cursor: DbCursor, reader_role: str) -> None:
+    cursor.execute(
+        "SELECT rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls "
+        "FROM pg_roles WHERE rolname = %s",
+        (reader_role,),
+    )
+    role_rows = _rows(cursor)
+    if len(role_rows) != 1 or role_rows[0] != {
+        "rolsuper": False,
+        "rolcreaterole": False,
+        "rolcreatedb": False,
+        "rolreplication": False,
+        "rolbypassrls": False,
+    }:
+        raise PersistenceError("postgres-reader-revocation-invalid")
+    _validate_reader_memberships(
+        cursor,
+        reader_role,
+        code="postgres-reader-revocation-invalid",
+    )
     cursor.execute(
         "SELECT has_database_privilege(%s, current_database(), 'CONNECT') AS connect, "
         "has_database_privilege(%s, current_database(), 'CREATE') AS create_privilege, "
@@ -672,14 +881,67 @@ def validate_reader_privileges(cursor: DbCursor, reader_role: str) -> None:
     )
     database_rows = _rows(cursor)
     if len(database_rows) != 1 or database_rows[0] != {
-        "connect": True,
+        "connect": False,
         "create_privilege": False,
         "temporary": False,
     }:
-        raise PersistenceError("postgres-reader-privilege-invalid")
+        raise PersistenceError("postgres-reader-revocation-invalid")
+    cursor.execute(
+        "SELECT bool_or(has_schema_privilege(%s, n.oid, 'USAGE')) AS can_use, "
+        "bool_or(has_schema_privilege(%s, n.oid, 'CREATE')) AS can_create "
+        "FROM pg_namespace AS n WHERE n.nspname !~ '^pg_' "
+        "AND n.nspname <> 'information_schema'",
+        (reader_role, reader_role),
+    )
+    schema_rows = _rows(cursor)
+    if len(schema_rows) != 1 or schema_rows[0] != {
+        "can_use": False,
+        "can_create": False,
+    }:
+        raise PersistenceError("postgres-reader-revocation-invalid")
+    cursor.execute(
+        "SELECT "
+        "bool_or(has_table_privilege(%s, c.oid, 'DELETE')) AS can_delete, "
+        "bool_or(has_table_privilege(%s, c.oid, 'INSERT')) AS can_insert, "
+        "bool_or(has_table_privilege(%s, c.oid, 'REFERENCES')) AS can_reference, "
+        "bool_or(has_table_privilege(%s, c.oid, 'SELECT')) AS can_select, "
+        "bool_or(has_table_privilege(%s, c.oid, 'TRIGGER')) AS can_trigger, "
+        "bool_or(has_table_privilege(%s, c.oid, 'TRUNCATE')) AS can_truncate, "
+        "bool_or(has_table_privilege(%s, c.oid, 'UPDATE')) AS can_update "
+        "FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+        "WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' "
+        "AND c.relkind IN ('r', 'v', 'm', 'f', 'p')",
+        (reader_role,) * len(_TABLE_PRIVILEGES),
+    )
+    relation_rows = _rows(cursor)
+    if len(relation_rows) != 1 or any(value is not False for value in relation_rows[0].values()):
+        raise PersistenceError("postgres-reader-revocation-invalid")
+    cursor.execute(
+        "SELECT bool_or(has_sequence_privilege(%s, c.oid, 'SELECT')) AS can_select, "
+        "bool_or(has_sequence_privilege(%s, c.oid, 'USAGE')) AS can_use, "
+        "bool_or(has_sequence_privilege(%s, c.oid, 'UPDATE')) AS can_update "
+        "FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+        "WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' "
+        "AND c.relkind = 'S'",
+        (reader_role,) * len(_SEQUENCE_PRIVILEGES),
+    )
+    sequence_rows = _rows(cursor)
+    if len(sequence_rows) != 1 or any(
+        value not in (False, None) for value in sequence_rows[0].values()
+    ):
+        raise PersistenceError("postgres-reader-revocation-invalid")
+    cursor.execute(
+        "SELECT bool_or(has_function_privilege(%s, p.oid, 'EXECUTE')) AS can_execute "
+        "FROM pg_proc AS p JOIN pg_namespace AS n ON n.oid = p.pronamespace "
+        "WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'",
+        (reader_role,),
+    )
+    function_rows = _rows(cursor)
+    if len(function_rows) != 1 or function_rows[0].get("can_execute") is not False:
+        raise PersistenceError("postgres-reader-revocation-invalid")
 
 
-def validate_schema(
+def _validate_direct_relation_acls(
     cursor: DbCursor,
     *,
     migration_role: str,
@@ -687,17 +949,76 @@ def validate_schema(
     reader_role: str,
 ) -> None:
     cursor.execute(
+        "SELECT DISTINCT grantee.rolname AS grantee "
+        "FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+        "CROSS JOIN LATERAL aclexplode(c.relacl) AS acl "
+        "LEFT JOIN pg_roles AS grantee ON grantee.oid = acl.grantee "
+        "WHERE n.nspname = 'colortrace' AND c.relkind IN ('r', 'v') "
+        "ORDER BY grantee.rolname"
+    )
+    allowed = {migration_role, runtime_role, reader_role}
+    if any(row.get("grantee") not in allowed for row in _rows(cursor)):
+        raise PersistenceError("postgres-reader-privilege-invalid")
+    cursor.execute(
+        "SELECT EXISTS ("
+        "SELECT 1 FROM pg_class AS c "
+        "JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+        "JOIN pg_attribute AS a ON a.attrelid = c.oid "
+        "CROSS JOIN LATERAL aclexplode(a.attacl) AS acl "
+        "WHERE n.nspname = 'colortrace' AND c.relkind IN ('r', 'v') "
+        "AND a.attnum > 0 AND NOT a.attisdropped"
+        ") AS has_column_grants"
+    )
+    rows = _rows(cursor)
+    if len(rows) != 1 or rows[0].get("has_column_grants") is not False:
+        raise PersistenceError("postgres-reader-privilege-invalid")
+
+
+def _validate_hosted_reader_binding(cursor: DbCursor, reader_role: str) -> None:
+    cursor.execute(
+        "SELECT binding_key, reader_role FROM colortrace.hosted_read_bindings ORDER BY binding_key"
+    )
+    rows = _rows(cursor)
+    if rows != [{"binding_key": "hosted-read-v1", "reader_role": reader_role}]:
+        raise PersistenceError("postgres-reader-binding-invalid")
+
+
+def validate_schema(
+    cursor: DbCursor,
+    *,
+    migration_role: str,
+    runtime_role: str,
+    reader_role: str | None,
+    hosted_projection: bool,
+) -> None:
+    if hosted_projection != (reader_role is not None):
+        raise PersistenceError("postgres-reader-binding-invalid")
+    cursor.execute(
         "SELECT pg_get_userbyid(n.nspowner) AS owner FROM pg_namespace AS n "
         "WHERE n.nspname = 'colortrace'"
     )
     schema_rows = _rows(cursor)
     if len(schema_rows) != 1 or schema_rows[0].get("owner") != migration_role:
         raise PersistenceError("migration-schema-drift")
-    _validate_relations(cursor, migration_role)
-    _validate_columns(cursor)
-    _validate_constraints(cursor)
-    _validate_indexes(cursor)
+    _validate_relations(cursor, migration_role, hosted_projection=hosted_projection)
+    _validate_columns(cursor, hosted_projection=hosted_projection)
+    _validate_constraints(cursor, hosted_projection=hosted_projection)
+    _validate_indexes(cursor, hosted_projection=hosted_projection)
+    if hosted_projection:
+        _validate_hosted_view(cursor)
     _validate_functions(cursor, migration_role)
     _validate_triggers(cursor)
-    _validate_runtime_privileges(cursor, runtime_role)
-    validate_reader_privileges(cursor, reader_role)
+    _validate_runtime_privileges(
+        cursor,
+        runtime_role,
+        hosted_projection=hosted_projection,
+    )
+    if reader_role is not None:
+        _validate_hosted_reader_binding(cursor, reader_role)
+        _validate_direct_relation_acls(
+            cursor,
+            migration_role=migration_role,
+            runtime_role=runtime_role,
+            reader_role=reader_role,
+        )
+        validate_reader_privileges(cursor, reader_role)

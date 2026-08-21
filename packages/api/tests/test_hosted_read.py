@@ -243,7 +243,7 @@ def test_hosted_app_validates_reader_binding_and_closes_connector(
             calls.append(("validated", "validated"))
 
     monkeypatch.setattr(
-        "colortrace_api.hosted_read.CanonicalPostgresStore", lambda *_a, **_k: store
+        "colortrace_api.hosted_read.HostedProjectionPostgresStore", lambda *_a, **_k: store
     )
     monkeypatch.setattr("colortrace_api.hosted_read.PostgresReaderVerifier", Verifier)
     app = create_hosted_read_app(

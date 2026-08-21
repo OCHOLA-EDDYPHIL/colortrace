@@ -9,7 +9,12 @@ from .ports import (
     MetadataSnapshot,
     PersistenceError,
 )
-from .reader import PostgresReaderVerifier
+from .reader import (
+    HOSTED_FIXTURE_RECORD_ID,
+    HOSTED_READINESS_RECORD_ID,
+    HostedProjectionPostgresStore,
+    PostgresReaderVerifier,
+)
 
 __all__ = [
     "CanonicalMetadataPort",
@@ -18,6 +23,9 @@ __all__ = [
     "CloudSqlConnectionFactory",
     "ConnectionFactory",
     "HostedMetadataStores",
+    "HostedProjectionPostgresStore",
+    "HOSTED_FIXTURE_RECORD_ID",
+    "HOSTED_READINESS_RECORD_ID",
     "MetadataSnapshot",
     "Migration",
     "PersistenceError",
