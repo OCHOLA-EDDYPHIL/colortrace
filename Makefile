@@ -4,6 +4,7 @@ TOOL_IMAGE := colortrace-dev:phase1
 GITLEAKS_IMAGE := zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
 TELEMETRY_IMAGE := grafana/otel-lgtm@sha256:bb182ac3174a20923fa58f00d1790fa71eb06cc0150078c0b0e8feb9e6611492
 TRIVY_IMAGE := aquasec/trivy@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c
+POSTGRES_IMAGE := postgres@sha256:3b0d656f5fff31c7d8a64f500a703dcf3f35e98ce78f602831a73059a5e6a012
 HOST_UID := $(shell id -u)
 HOST_GID := $(shell id -g)
 WORKSPACE := $(CURDIR)
@@ -58,9 +59,9 @@ TOOL_RUN_HOST := docker run --rm \
 
 .PHONY: bootstrap bootstrap-quality bootstrap-security build-tools build-quality-tools \
 	build-security-tools ensure-gitleaks-image ensure-telemetry-image ensure-tool-image \
-	ensure-trivy-image prepare-cache format generate generate-fixture check check-fast \
+	ensure-trivy-image ensure-postgres-image prepare-cache format generate generate-fixture check check-fast \
 	check-format check-lint check-typecheck check-unit check-contract \
-	check-generated check-license check-policy check-secret check-secret-fixture check-telemetry \
+	check-generated check-license check-policy check-postgres check-secret check-secret-fixture check-telemetry \
 	check-bootstrap security-evidence
 
 prepare-cache:
@@ -86,9 +87,12 @@ ensure-telemetry-image:
 ensure-trivy-image:
 	@docker image inspect $(TRIVY_IMAGE) >/dev/null 2>&1 || docker pull $(TRIVY_IMAGE)
 
-build-tools: ensure-tool-image ensure-gitleaks-image ensure-telemetry-image ensure-trivy-image
+ensure-postgres-image:
+	@docker image inspect $(POSTGRES_IMAGE) >/dev/null 2>&1 || docker pull $(POSTGRES_IMAGE)
 
-build-quality-tools: ensure-tool-image ensure-gitleaks-image ensure-telemetry-image
+build-tools: ensure-tool-image ensure-gitleaks-image ensure-telemetry-image ensure-trivy-image ensure-postgres-image
+
+build-quality-tools: ensure-tool-image ensure-gitleaks-image ensure-telemetry-image ensure-postgres-image
 
 build-security-tools: ensure-tool-image ensure-gitleaks-image ensure-trivy-image
 
@@ -142,6 +146,51 @@ check-typecheck: prepare-cache
 check-unit: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline pytest --numprocesses $(PYTEST_WORKERS) --dist loadscope
 	$(TOOL_RUN_OFFLINE) pnpm run test
+
+check-postgres: prepare-cache ensure-postgres-image
+	@set -eu; \
+		network="colortrace-postgres-$$$$"; \
+		container="colortrace-postgres-$$$$"; \
+		cleanup() { \
+			docker rm --force "$$container" >/dev/null 2>&1 || true; \
+			docker network rm "$$network" >/dev/null 2>&1 || true; \
+		}; \
+		trap cleanup EXIT HUP INT TERM; \
+		docker network create "$$network" >/dev/null; \
+		docker run --detach --rm --pull=never \
+			--name "$$container" --network "$$network" \
+			--env POSTGRES_DB=colortrace_test \
+			--env POSTGRES_USER=colortrace_test \
+			--env POSTGRES_PASSWORD="$$container" \
+			$(POSTGRES_IMAGE) >/dev/null; \
+		ready=false; \
+		attempt=0; \
+		while test "$$attempt" -lt 30; do \
+			if docker exec "$$container" pg_isready \
+				--username colortrace_test --dbname colortrace_test >/dev/null 2>&1; then \
+				ready=true; \
+				break; \
+			fi; \
+			attempt=$$((attempt + 1)); \
+			sleep 1; \
+		done; \
+		test "$$ready" = true; \
+		docker run --rm --pull=never --network "container:$$container" \
+			--user $(HOST_UID):$(HOST_GID) \
+			--volume $(WORKSPACE):/workspace \
+			--volume $(CACHE_ROOT):$(CACHE_ROOT) \
+			--workdir /workspace \
+			--env CI=true \
+			--env HOME=$(CACHE_HOME) \
+			--env UV_CACHE_DIR=$(UV_CACHE) \
+			--env UV_PROJECT_ENVIRONMENT=$(UV_PROJECT_ENVIRONMENT) \
+			--env COLORTRACE_POSTGRES_TEST_REQUIRED=1 \
+			--env COLORTRACE_POSTGRES_TEST_HOST=127.0.0.1 \
+			--env COLORTRACE_POSTGRES_TEST_PORT=5432 \
+			--env COLORTRACE_POSTGRES_TEST_DATABASE=colortrace_test \
+			--env COLORTRACE_POSTGRES_TEST_USER=colortrace_test \
+			--env COLORTRACE_POSTGRES_TEST_PASSWORD="$$container" \
+			$(TOOL_IMAGE) uv run --offline pytest packages/persistence/tests/test_postgres.py
 
 check-contract: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo contracts
@@ -337,7 +386,7 @@ check-secret-fixture:
 		exit 1; \
 	fi
 
-check-fast: check-format check-lint check-typecheck check-unit check-contract check-generated check-license check-policy check-secret-fixture
+check-fast: check-format check-lint check-typecheck check-unit check-postgres check-contract check-generated check-license check-policy check-secret-fixture
 
 check: check-fast check-telemetry check-secret
 

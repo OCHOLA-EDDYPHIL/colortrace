@@ -57,4 +57,30 @@ def test_migration_runner_fails_closed_on_noncontiguous_input() -> None:
     )
 
     with pytest.raises(PersistenceError, match="^migration-sequence-invalid$"):
-        PostgresMigrationRunner(NeverConnect(), migrations=(invalid,))  # type: ignore[arg-type]
+        PostgresMigrationRunner(
+            NeverConnect(),  # type: ignore[arg-type]
+            migration_role="colortrace_migrator",
+            runtime_role="colortrace_runtime",
+            migrations=(invalid,),
+        )
+
+
+@pytest.mark.parametrize(
+    ("migration_role", "runtime_role", "code"),
+    [
+        ("bad role", "colortrace_runtime", "postgres-migration-role-invalid"),
+        ("colortrace_migrator", "bad role", "postgres-runtime-role-invalid"),
+        ("colortrace_runtime", "colortrace_runtime", "postgres-role-separation-invalid"),
+    ],
+)
+def test_migration_runner_requires_distinct_safe_role_names(
+    migration_role: str,
+    runtime_role: str,
+    code: str,
+) -> None:
+    with pytest.raises(PersistenceError, match=f"^{code}$"):
+        PostgresMigrationRunner(
+            NeverConnect(),  # type: ignore[arg-type]
+            migration_role=migration_role,
+            runtime_role=runtime_role,
+        )

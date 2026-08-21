@@ -722,13 +722,52 @@ class CanonicalPostgresStore:
 
     def _last_claim_event(self, cursor: DbCursor, record_id: str) -> dict[str, Any] | None:
         cursor.execute(
-            "SELECT event_sequence, generation, event_sha256 "
+            "SELECT event_sequence, generation, event_type, owner, record_version, expires_at, "
+            "event_sha256, occurred_at "
             "FROM colortrace.metadata_claim_events "
             "WHERE namespace = %s AND record_id = %s "
             "ORDER BY event_sequence DESC LIMIT 1",
             (self._namespace, record_id),
         )
         return _one(cursor)
+
+    def _validated_claim_tail(
+        self,
+        cursor: DbCursor,
+        record_id: str,
+        active: ClaimSnapshot | None,
+    ) -> tuple[dict[str, Any] | None, datetime | None]:
+        last = self._last_claim_event(cursor, record_id)
+        if last is None:
+            if active is not None:
+                raise PersistenceError("stored-claim-invalid")
+            return None, None
+        occurred_at = last.get("occurred_at")
+        if (
+            not isinstance(occurred_at, datetime)
+            or occurred_at.tzinfo is None
+            or occurred_at.utcoffset() is None
+        ):
+            raise PersistenceError("stored-claim-invalid")
+        event_type = last.get("event_type")
+        if active is None:
+            if event_type != "completed":
+                raise PersistenceError("stored-claim-invalid")
+        else:
+            expires_at = last.get("expires_at")
+            if not isinstance(expires_at, datetime) or expires_at.tzinfo is None:
+                raise PersistenceError("stored-claim-invalid")
+            if (
+                event_type not in {"acquired", "reclaimed", "renewed"}
+                or last.get("event_sequence") != active.event_sequence
+                or last.get("generation") != active.generation
+                or last.get("owner") != active.owner
+                or last.get("record_version") != active.record_version
+                or expires_at.astimezone(UTC) != active.expires_at
+                or last.get("event_sha256") != active.event_sha256
+            ):
+                raise PersistenceError("stored-claim-invalid")
+        return last, occurred_at.astimezone(UTC)
 
     def _append_claim_event(
         self,
@@ -808,12 +847,14 @@ class CanonicalPostgresStore:
             if current is None or current.version != expected_version:
                 raise PersistenceError("metadata-version-conflict")
             active = self._active_claim(cursor, record)
+            last, last_occurred_at = self._validated_claim_tail(cursor, record, active)
+            if last_occurred_at is not None and instant < last_occurred_at:
+                raise PersistenceError("claim-clock-regression")
             if active is not None and active.expires_at > instant:
                 if active.owner == claim_owner and active.record_version == expected_version:
                     return active
                 raise PersistenceError("claim-in-progress")
             expires_at = instant + timedelta(seconds=lease)
-            last = self._last_claim_event(cursor, record)
             sequence = 1 if last is None else cast(int, last["event_sequence"]) + 1
             generation = 1 if last is None else cast(int, last["generation"]) + 1
             previous = None if last is None else cast(str, last["event_sha256"])
@@ -901,6 +942,9 @@ class CanonicalPostgresStore:
             active = self._assert_claim(cursor, claim)
             if current is None or current.version != active.record_version:
                 raise PersistenceError("claim-fenced")
+            _last, last_occurred_at = self._validated_claim_tail(cursor, record, active)
+            if last_occurred_at is None or instant < last_occurred_at:
+                raise PersistenceError("claim-clock-regression")
             if instant >= active.expires_at:
                 raise PersistenceError("claim-expired")
             expires_at = instant + timedelta(seconds=lease)
@@ -973,6 +1017,9 @@ class CanonicalPostgresStore:
             active = self._assert_claim(cursor, claim)
             if current is None or current.version != active.record_version:
                 raise PersistenceError("claim-fenced")
+            _last, last_occurred_at = self._validated_claim_tail(cursor, record, active)
+            if last_occurred_at is None or instant < last_occurred_at:
+                raise PersistenceError("claim-clock-regression")
             if instant >= active.expires_at:
                 raise PersistenceError("claim-expired")
             response = self._write_locked(cursor, current, document)
@@ -1017,6 +1064,7 @@ class CanonicalPostgresStore:
             rows = _rows(cursor)
         events: list[dict[str, Any]] = []
         previous: str | None = None
+        previous_time: datetime | None = None
         for expected_sequence, row in enumerate(rows, start=1):
             occurred_at = row.get("occurred_at")
             expires_at = row.get("expires_at")
@@ -1034,6 +1082,8 @@ class CanonicalPostgresStore:
                 raise PersistenceError("stored-claim-history-invalid")
             normalized_expiry = None if expires_at is None else expires_at.astimezone(UTC)
             normalized_time = occurred_at.astimezone(UTC)
+            if previous_time is not None and normalized_time < previous_time:
+                raise PersistenceError("stored-claim-history-invalid")
             event_sha256 = _claim_event_sha256(
                 namespace=self._namespace,
                 record_id=record,
@@ -1067,6 +1117,7 @@ class CanonicalPostgresStore:
                 }
             )
             previous = event_sha256
+            previous_time = normalized_time
         return events
 
 
