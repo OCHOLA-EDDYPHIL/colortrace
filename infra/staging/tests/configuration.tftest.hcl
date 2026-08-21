@@ -42,6 +42,11 @@ run "foundation_is_bounded" {
   }
 
   assert {
+    condition     = google_storage_bucket.artifacts.soft_delete_policy[0].retention_duration_seconds == 0
+    error_message = "The staging artifact bucket must not retain soft-deleted temporary evidence after cleanup."
+  }
+
+  assert {
     condition     = google_sql_database_instance.workflow.settings[0].ip_configuration[0].ipv4_enabled == false
     error_message = "Cloud SQL must not receive a public IP address."
   }
