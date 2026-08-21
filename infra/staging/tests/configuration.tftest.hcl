@@ -32,6 +32,12 @@ run "foundation_is_bounded" {
     condition     = google_storage_bucket.artifacts.force_destroy
     error_message = "The staging artifact bucket must support complete owned-resource cleanup."
   }
+
+  assert {
+    condition     = google_sql_database_instance.workflow.settings[0].ip_configuration[0].ipv4_enabled == false
+    error_message = "Cloud SQL must not receive a public IP address."
+  }
+
 }
 
 run "workloads_require_every_binding" {
@@ -44,7 +50,10 @@ run "workloads_require_every_binding" {
     web_image_digest     = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
   }
 
-  expect_failures = [check.complete_workload_bindings]
+  expect_failures = [
+    check.complete_workload_bindings,
+    google_cloud_run_v2_service.service,
+  ]
 }
 
 run "workload_isolation_is_explicit" {
@@ -62,6 +71,7 @@ run "workload_isolation_is_explicit" {
     model_profile_sha256   = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
     policy_sha256          = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
     grafana_secret_version = "1"
+    grafana_url            = "https://example.grafana.net"
     oidc_issuer            = "https://identity.example.test"
     oidc_audience          = "colortrace-api"
     oidc_jwks_uri          = "https://identity.example.test/.well-known/jwks.json"
@@ -74,7 +84,18 @@ run "workload_isolation_is_explicit" {
 
   assert {
     condition     = google_cloud_run_v2_service.service["api"].ingress == "INGRESS_TRAFFIC_ALL"
-    error_message = "The API must expose public reads while enforcing mutation authorization in-app."
+    error_message = "The API transport must accept the authenticated web proxy while remaining IAM-protected."
+  }
+
+
+  assert {
+    condition     = toset(keys(google_cloud_run_v2_service_iam_member.public)) == toset(["web"])
+    error_message = "Only the web service may grant unauthenticated Cloud Run invocation."
+  }
+
+  assert {
+    condition     = toset(keys(google_cloud_run_v2_service_iam_member.web_api)) == toset(["api"])
+    error_message = "The web identity invocation grant must target only the API."
   }
 
   assert {
@@ -95,6 +116,11 @@ run "workload_isolation_is_explicit" {
   assert {
     condition     = alltrue([for service in google_cloud_run_v2_service.service : service.template[0].scaling[0].max_instance_count == 1])
     error_message = "Every staging service must have a one-instance ceiling."
+  }
+
+  assert {
+    condition     = alltrue([for service in google_cloud_run_v2_service.service : service.template[0].vpc_access[0].egress == "PRIVATE_RANGES_ONLY"])
+    error_message = "Every workload must use direct private-range VPC egress."
   }
 
   assert {

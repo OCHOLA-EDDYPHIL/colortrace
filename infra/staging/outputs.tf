@@ -6,6 +6,8 @@ output "resource_inventory" {
     cloud_sql_instance  = google_sql_database_instance.workflow.connection_name
     database            = google_sql_database.workflow.name
     grafana_secret      = google_secret_manager_secret.grafana_viewer.id
+    network             = google_compute_network.staging.id
+    subnetwork          = google_compute_subnetwork.staging.id
     queues = {
       simulator = google_cloud_tasks_queue.simulator.id
       worker    = google_cloud_tasks_queue.worker.id

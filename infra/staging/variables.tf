@@ -144,6 +144,18 @@ variable "grafana_secret_version" {
   }
 }
 
+variable "grafana_url" {
+  description = "Exact Grafana Cloud origin used by the private MCP subprocess."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.grafana_url == null || can(regex("^https://[^/?#]+/?$", var.grafana_url))
+    error_message = "grafana_url must be one HTTPS origin without credentials, path, query, or fragment."
+  }
+}
+
 variable "oidc_issuer" {
   description = "Exact trusted human-operator OIDC issuer."
   type        = string

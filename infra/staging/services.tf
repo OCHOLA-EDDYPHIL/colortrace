@@ -3,11 +3,13 @@ locals {
     "artifactregistry.googleapis.com",
     "cloudasset.googleapis.com",
     "cloudtasks.googleapis.com",
+    "compute.googleapis.com",
     "iamcredentials.googleapis.com",
     "logging.googleapis.com",
     "monitoring.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
+    "servicenetworking.googleapis.com",
     "sqladmin.googleapis.com",
     "storage.googleapis.com",
   ])

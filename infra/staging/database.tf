@@ -28,8 +28,11 @@ resource "google_sql_database_instance" "workflow" {
     }
 
     ip_configuration {
-      ipv4_enabled = true
-      ssl_mode     = "ENCRYPTED_ONLY"
+      ipv4_enabled                                  = false
+      private_network                               = google_compute_network.staging.id
+      allocated_ip_range                            = google_compute_global_address.private_services.name
+      enable_private_path_for_google_cloud_services = true
+      ssl_mode                                      = "ENCRYPTED_ONLY"
     }
 
     password_validation_policy {
@@ -43,7 +46,10 @@ resource "google_sql_database_instance" "workflow" {
     user_labels = local.labels
   }
 
-  depends_on = [google_project_service.required["sqladmin.googleapis.com"]]
+  depends_on = [
+    google_project_service.required["sqladmin.googleapis.com"],
+    google_service_networking_connection.private_services,
+  ]
 }
 
 resource "google_sql_database" "workflow" {

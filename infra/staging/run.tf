@@ -53,6 +53,15 @@ resource "google_cloud_run_v2_service" "service" {
       max_instance_count = 1
     }
 
+    vpc_access {
+      egress = "PRIVATE_RANGES_ONLY"
+
+      network_interfaces {
+        network    = google_compute_network.staging.name
+        subnetwork = google_compute_subnetwork.staging.name
+      }
+    }
+
     containers {
       image   = each.key == "web" ? local.web_image : local.runtime_image
       command = length(each.value.command) == 0 ? null : each.value.command
@@ -115,17 +124,15 @@ resource "google_cloud_run_v2_service" "service" {
       }
 
       dynamic "env" {
-        for_each = each.key == "worker" ? { COLORTRACE_GRAFANA_TOKEN = coalesce(var.grafana_secret_version, "0") } : {}
+        for_each = each.key == "worker" ? {
+          COLORTRACE_GRAFANA_TOKEN_FILE   = "/var/run/colortrace-private/grafana-viewer"
+          COLORTRACE_GRAFANA_TOKEN_SOURCE = "/var/run/secrets/colortrace/grafana-viewer"
+          COLORTRACE_GRAFANA_URL          = coalesce(var.grafana_url, "unbound")
+        } : {}
 
         content {
-          name = env.key
-
-          value_source {
-            secret_key_ref {
-              secret  = google_secret_manager_secret.grafana_viewer.secret_id
-              version = env.value
-            }
-          }
+          name  = env.key
+          value = env.value
         }
       }
 
@@ -135,6 +142,15 @@ resource "google_cloud_run_v2_service" "service" {
         content {
           name       = "cloudsql"
           mount_path = "/cloudsql"
+        }
+      }
+
+      dynamic "volume_mounts" {
+        for_each = each.key == "worker" ? [1] : []
+
+        content {
+          name       = "grafana-viewer"
+          mount_path = "/var/run/secrets/colortrace"
         }
       }
     }
@@ -150,9 +166,35 @@ resource "google_cloud_run_v2_service" "service" {
         }
       }
     }
+
+    dynamic "volumes" {
+      for_each = each.key == "worker" ? [1] : []
+
+      content {
+        name = "grafana-viewer"
+
+        secret {
+          secret       = google_secret_manager_secret.grafana_viewer.secret_id
+          default_mode = 256
+
+          items {
+            version = coalesce(var.grafana_secret_version, "0")
+            path    = "grafana-viewer"
+            mode    = 256
+          }
+        }
+      }
+    }
   }
 
   lifecycle {
+    precondition {
+      condition = alltrue([
+        for value in local.required_workload_bindings : value != null
+      ])
+      error_message = "Every immutable workload and identity binding must be supplied before Cloud Run deployment."
+    }
+
     precondition {
       condition     = strcontains(each.key == "web" ? local.web_image : local.runtime_image, "@sha256:")
       error_message = "Cloud Run images must use immutable SHA-256 digest references."
@@ -162,17 +204,28 @@ resource "google_cloud_run_v2_service" "service" {
   depends_on = [
     google_project_service.required["run.googleapis.com"],
     google_secret_manager_secret_iam_member.worker_grafana,
+    google_service_networking_connection.private_services,
   ]
 }
 
 resource "google_cloud_run_v2_service_iam_member" "public" {
-  for_each = var.deploy_workloads ? toset(["api", "web"]) : toset([])
+  for_each = var.deploy_workloads ? toset(["web"]) : toset([])
 
   project  = var.project_id
   location = var.region
   name     = google_cloud_run_v2_service.service[each.key].name
   role     = "roles/run.invoker"
   member   = "allUsers"
+}
+
+resource "google_cloud_run_v2_service_iam_member" "web_api" {
+  for_each = var.deploy_workloads ? toset(["api"]) : toset([])
+
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.service[each.key].name
+  role     = "roles/run.invoker"
+  member   = google_service_account.service["web"].member
 }
 
 resource "google_cloud_run_v2_service_iam_member" "task_private" {

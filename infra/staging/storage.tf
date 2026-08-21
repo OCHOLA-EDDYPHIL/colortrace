@@ -20,6 +20,16 @@ resource "google_artifact_registry_repository" "runtime" {
   }
 
   cleanup_policies {
+    id     = "delete-superseded"
+    action = "DELETE"
+
+    condition {
+      tag_state  = "ANY"
+      older_than = "604800s"
+    }
+  }
+
+  cleanup_policies {
     id     = "keep-recent"
     action = "KEEP"
 
@@ -94,7 +104,11 @@ resource "google_secret_manager_secret" "grafana_viewer" {
   labels    = local.labels
 
   replication {
-    auto {}
+    user_managed {
+      replicas {
+        location = var.region
+      }
+    }
   }
 
   depends_on = [google_project_service.required["secretmanager.googleapis.com"]]

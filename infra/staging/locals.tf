@@ -15,6 +15,7 @@ locals {
     var.model_profile_sha256,
     var.policy_sha256,
     var.grafana_secret_version,
+    var.grafana_url,
     var.oidc_issuer,
     var.oidc_audience,
     var.oidc_jwks_uri,

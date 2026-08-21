@@ -17,7 +17,7 @@ resource "google_cloud_tasks_queue" "worker" {
   }
 
   stackdriver_logging_config {
-    sampling_ratio = 1
+    sampling_ratio = 0
   }
 
   depends_on = [google_project_service.required["cloudtasks.googleapis.com"]]
@@ -42,7 +42,7 @@ resource "google_cloud_tasks_queue" "simulator" {
   }
 
   stackdriver_logging_config {
-    sampling_ratio = 1
+    sampling_ratio = 0
   }
 
   depends_on = [google_project_service.required["cloudtasks.googleapis.com"]]
