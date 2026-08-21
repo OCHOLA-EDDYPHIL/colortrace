@@ -1,2 +1,17 @@
 *
 !Dockerfile.dev
+!Dockerfile.runtime
+!Dockerfile.web
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!pyproject.toml
+!uv.lock
+!config/
+!config/grafana-mcp/
+!config/grafana-mcp/**
+!deploy/
+!deploy/runtime-entrypoint.py
+!deploy/web-server.mjs
+!packages/
+!packages/**

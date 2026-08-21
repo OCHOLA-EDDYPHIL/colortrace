@@ -1,0 +1,16 @@
+*
+!Dockerfile.web
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!deploy/
+!deploy/web-server.mjs
+!packages/
+!packages/api-client/
+!packages/api-client/**
+!packages/contracts/
+!packages/contracts/**
+!packages/web/
+!packages/web/**
+!packages/workspace-model/
+!packages/workspace-model/**

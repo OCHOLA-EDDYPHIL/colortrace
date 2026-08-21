@@ -36,6 +36,7 @@ class CloudSqlConnectionFactory:
     database: str
     user: str
     connector: CloudSqlConnector = field(repr=False)
+    password: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         instance = _identity(
@@ -45,6 +46,8 @@ class CloudSqlConnectionFactory:
         )
         database = _identity(self.database, code="cloud-sql-database-invalid", maximum=63)
         _identity(self.user, code="cloud-sql-user-invalid", maximum=256)
+        if self.password is not None:
+            _identity(self.password, code="cloud-sql-password-invalid", maximum=16_384)
         if _INSTANCE_NAME.fullmatch(instance) is None:
             raise PersistenceError("cloud-sql-instance-invalid")
         if _DATABASE_NAME.fullmatch(database) is None:
@@ -69,15 +72,37 @@ class CloudSqlConnectionFactory:
             connector=Connector(refresh_strategy="LAZY"),
         )
 
+    @classmethod
+    def private_password(
+        cls,
+        *,
+        instance_connection_name: str,
+        database: str,
+        user: str,
+        password: str,
+    ) -> CloudSqlConnectionFactory:
+        return cls(
+            instance_connection_name=instance_connection_name,
+            database=database,
+            user=user,
+            connector=Connector(refresh_strategy="LAZY"),
+            password=password,
+        )
+
     def connect(self) -> DbConnection:
         try:
+            options: dict[str, object] = {
+                "user": self.user,
+                "db": self.database,
+                "enable_iam_auth": self.password is None,
+                "ip_type": IPTypes.PRIVATE,
+            }
+            if self.password is not None:
+                options["password"] = self.password
             connection = self.connector.connect(
                 self.instance_connection_name,
                 "pg8000",
-                user=self.user,
-                db=self.database,
-                enable_iam_auth=True,
-                ip_type=IPTypes.PRIVATE,
+                **options,
             )
         except Exception:
             raise PersistenceError("cloud-sql-unavailable") from None

@@ -15,14 +15,19 @@ class NeverConnect:
 def test_migration_bundle_is_contiguous_digest_bound_and_reversible() -> None:
     migrations = load_migrations()
 
-    assert [migration.version for migration in migrations] == [1]
-    assert [migration.name for migration in migrations] == ["canonical_metadata"]
+    assert [migration.version for migration in migrations] == [1, 2]
+    assert [migration.name for migration in migrations] == [
+        "canonical_metadata",
+        "hosted_read_projection",
+    ]
     assert all(migration.sha256.startswith("sha256:") for migration in migrations)
     assert all(len(migration.sha256) == 71 for migration in migrations)
     assert all(migration.up_statements for migration in migrations)
     assert all(migration.down_statements for migration in migrations)
     assert "metadata_records" in migrations[0].up_sql
     assert "DROP TABLE IF EXISTS colortrace.metadata_records" in migrations[0].down_sql
+    assert "hosted_read_projection_v1" in migrations[1].up_sql
+    assert "DROP VIEW IF EXISTS colortrace.hosted_read_projection_v1" in migrations[1].down_sql
 
 
 def test_migration_digest_changes_if_either_direction_changes() -> None:
@@ -61,21 +66,50 @@ def test_migration_runner_fails_closed_on_noncontiguous_input() -> None:
             NeverConnect(),  # type: ignore[arg-type]
             migration_role="colortrace_migrator",
             runtime_role="colortrace_runtime",
+            reader_role="colortrace_reader",
             migrations=(invalid,),
         )
 
 
 @pytest.mark.parametrize(
-    ("migration_role", "runtime_role", "code"),
+    ("migration_role", "runtime_role", "reader_role", "code"),
     [
-        ("bad role", "colortrace_runtime", "postgres-migration-role-invalid"),
-        ("colortrace_migrator", "bad role", "postgres-runtime-role-invalid"),
-        ("colortrace_runtime", "colortrace_runtime", "postgres-role-separation-invalid"),
+        (
+            "bad role",
+            "colortrace_runtime",
+            "colortrace_reader",
+            "postgres-migration-role-invalid",
+        ),
+        (
+            "colortrace_migrator",
+            "bad role",
+            "colortrace_reader",
+            "postgres-runtime-role-invalid",
+        ),
+        (
+            "colortrace_migrator",
+            "colortrace_runtime",
+            "bad role",
+            "postgres-reader-role-invalid",
+        ),
+        (
+            "colortrace_runtime",
+            "colortrace_runtime",
+            "colortrace_reader",
+            "postgres-role-separation-invalid",
+        ),
+        (
+            "colortrace_migrator",
+            "colortrace_runtime",
+            "colortrace_runtime",
+            "postgres-role-separation-invalid",
+        ),
     ],
 )
 def test_migration_runner_requires_distinct_safe_role_names(
     migration_role: str,
     runtime_role: str,
+    reader_role: str,
     code: str,
 ) -> None:
     with pytest.raises(PersistenceError, match=f"^{code}$"):
@@ -83,4 +117,5 @@ def test_migration_runner_requires_distinct_safe_role_names(
             NeverConnect(),  # type: ignore[arg-type]
             migration_role=migration_role,
             runtime_role=runtime_role,
+            reader_role=reader_role,
         )

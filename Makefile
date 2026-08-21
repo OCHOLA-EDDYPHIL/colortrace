@@ -14,6 +14,7 @@ CACHE_HOME := $(CACHE_ROOT)/home
 UV_CACHE := $(CACHE_ROOT)/uv
 UV_PROJECT_ENVIRONMENT := $(CACHE_ROOT)/venv
 PNPM_STORE := $(CACHE_ROOT)/pnpm
+TERRAFORM_PLUGIN_CACHE := $(CACHE_ROOT)/terraform-plugins
 SECURITY_EVIDENCE_HOST := $(WORKSPACE)/.cache/security-evidence
 SECURITY_EVIDENCE_CONTAINER := /workspace/.cache/security-evidence
 SECURITY_CANDIDATE_SHA ?= $(shell git rev-parse HEAD)
@@ -29,6 +30,7 @@ TOOL_RUN := docker run --rm \
 	--env HOME=$(CACHE_HOME) \
 	--env UV_CACHE_DIR=$(UV_CACHE) \
 	--env UV_PROJECT_ENVIRONMENT=$(UV_PROJECT_ENVIRONMENT) \
+	--env TF_PLUGIN_CACHE_DIR=$(TERRAFORM_PLUGIN_CACHE) \
 	$(TOOL_IMAGE)
 
 TOOL_RUN_OFFLINE := docker run --rm \
@@ -42,6 +44,7 @@ TOOL_RUN_OFFLINE := docker run --rm \
 	--env HOME=$(CACHE_HOME) \
 	--env UV_CACHE_DIR=$(UV_CACHE) \
 	--env UV_PROJECT_ENVIRONMENT=$(UV_PROJECT_ENVIRONMENT) \
+	--env TF_PLUGIN_CACHE_DIR=$(TERRAFORM_PLUGIN_CACHE) \
 	$(TOOL_IMAGE)
 
 TOOL_RUN_HOST := docker run --rm \
@@ -55,6 +58,7 @@ TOOL_RUN_HOST := docker run --rm \
 	--env HOME=$(CACHE_HOME) \
 	--env UV_CACHE_DIR=$(UV_CACHE) \
 	--env UV_PROJECT_ENVIRONMENT=$(UV_PROJECT_ENVIRONMENT) \
+	--env TF_PLUGIN_CACHE_DIR=$(TERRAFORM_PLUGIN_CACHE) \
 	$(TOOL_IMAGE)
 
 .PHONY: bootstrap bootstrap-quality bootstrap-security build-tools build-quality-tools \
@@ -62,10 +66,11 @@ TOOL_RUN_HOST := docker run --rm \
 	ensure-trivy-image ensure-postgres-image prepare-cache format generate generate-fixture check check-fast \
 	check-format check-lint check-typecheck check-unit check-contract \
 	check-generated check-license check-policy check-postgres check-secret check-secret-fixture check-telemetry \
+	check-terraform \
 	check-bootstrap security-evidence
 
 prepare-cache:
-	@mkdir -p "$(WORKSPACE)/.cache" "$(CACHE_HOME)" "$(UV_CACHE)" "$(PNPM_STORE)" "$(UV_PROJECT_ENVIRONMENT)"
+	@mkdir -p "$(WORKSPACE)/.cache" "$(CACHE_HOME)" "$(UV_CACHE)" "$(PNPM_STORE)" "$(TERRAFORM_PLUGIN_CACHE)" "$(UV_PROJECT_ENVIRONMENT)"
 
 ensure-tool-image:
 	@set -eu; \
@@ -99,10 +104,12 @@ build-security-tools: ensure-tool-image ensure-gitleaks-image ensure-trivy-image
 bootstrap: prepare-cache build-tools
 	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
 	$(TOOL_RUN) pnpm install --frozen-lockfile --store-dir $(PNPM_STORE)
+	$(TOOL_RUN) terraform -chdir=infra/staging init -backend=false -input=false
 
 bootstrap-quality: prepare-cache build-quality-tools
 	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
 	$(TOOL_RUN) pnpm install --frozen-lockfile --store-dir $(PNPM_STORE)
+	$(TOOL_RUN) terraform -chdir=infra/staging init -backend=false -input=false
 
 bootstrap-security: prepare-cache build-security-tools
 	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
@@ -145,7 +152,9 @@ check-typecheck: prepare-cache
 
 check-unit: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline pytest --numprocesses $(PYTEST_WORKERS) --dist loadscope
+	$(TOOL_RUN_OFFLINE) uv run --offline pytest deploy/test_runtime_entrypoint.py
 	$(TOOL_RUN_OFFLINE) pnpm run test
+	$(TOOL_RUN_OFFLINE) node --test deploy/web-server.test.mjs
 
 check-postgres: prepare-cache ensure-postgres-image
 	@set -eu; \
@@ -206,6 +215,12 @@ check-policy: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo ai-policy
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo actions
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo binary-assets
+	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo deployment
+
+check-terraform: prepare-cache
+	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/staging fmt -check -recursive
+	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/staging validate
+	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/staging test -no-color
 
 check-telemetry: prepare-cache
 	@set -eu; \
@@ -386,7 +401,7 @@ check-secret-fixture:
 		exit 1; \
 	fi
 
-check-fast: check-format check-lint check-typecheck check-unit check-postgres check-contract check-generated check-license check-policy check-secret-fixture
+check-fast: check-format check-lint check-typecheck check-unit check-postgres check-contract check-generated check-license check-policy check-secret-fixture check-terraform
 
 check: check-fast check-telemetry check-secret
 

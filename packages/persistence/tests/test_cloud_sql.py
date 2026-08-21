@@ -54,6 +54,33 @@ def test_cloud_sql_factory_uses_private_iam_auth_without_password() -> None:
     assert connector.closed
 
 
+def test_cloud_sql_factory_uses_private_password_auth_without_exposing_secret() -> None:
+    connector = FakeConnector()
+    factory = CloudSqlConnectionFactory(
+        instance_connection_name="example-project:us-central1:colortrace-staging",
+        database="colortrace",
+        user="postgres",
+        connector=connector,
+        password="synthetic-admin-password",
+    )
+
+    assert factory.connect() is connector.connection
+    assert connector.calls == [
+        (
+            "example-project:us-central1:colortrace-staging",
+            "pg8000",
+            {
+                "user": "postgres",
+                "db": "colortrace",
+                "enable_iam_auth": False,
+                "ip_type": IPTypes.PRIVATE,
+                "password": "synthetic-admin-password",
+            },
+        )
+    ]
+    assert "synthetic-admin-password" not in repr(factory)
+
+
 @pytest.mark.parametrize(
     ("instance", "database", "user", "code"),
     [
