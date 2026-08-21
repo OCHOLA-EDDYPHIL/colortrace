@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isPublicApiRequest, loadConfiguration } from "./web-server.mjs";
+import { createApplication, isPublicApiRequest, loadConfiguration } from "./web-server.mjs";
 
 test("only bounded read paths are public", () => {
   assert.equal(isPublicApiRequest("GET", "/v1/incidents"), true);
@@ -43,4 +43,29 @@ test("configuration binds one exact private API origin", () => {
       }),
     /api-boundary-invalid/,
   );
+});
+
+test("credential-free public sessions fail closed without contacting the API", async () => {
+  const server = createApplication({
+    port: 0,
+    apiOrigin: "https://api.example.run.app",
+    apiAudience: "https://api.example.run.app",
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = server.address();
+    assert.notEqual(address, null);
+    assert.equal(typeof address, "object");
+    if (address === null || typeof address === "string") throw new Error("listener-invalid");
+    const response = await fetch(`http://127.0.0.1:${address.port}/v1/session`);
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { code: "authentication-required" });
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error === undefined ? resolve() : reject(error)));
+    });
+  }
 });

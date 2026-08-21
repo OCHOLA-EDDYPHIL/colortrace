@@ -99,6 +99,10 @@ async function identityToken(audience) {
 }
 
 async function proxyApi(request, response, requestUrl, configuration) {
+  if (request.method === "GET" && requestUrl.pathname === "/v1/session") {
+    jsonResponse(response, 401, "authentication-required");
+    return;
+  }
   if (!isPublicApiRequest(request.method, requestUrl.pathname)) {
     jsonResponse(response, request.method === "GET" ? 404 : 405, "request-not-allowed");
     return;
