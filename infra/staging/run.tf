@@ -1,38 +1,43 @@
 locals {
   run_services = {
     api = {
-      command     = ["python", "-m", "colortrace_api"]
+      arguments   = ["api"]
       concurrency = 10
       ingress     = "INGRESS_TRAFFIC_ALL"
       port        = 8080
       timeout     = "60s"
     }
     simulator = {
-      command     = ["colortrace-simulator-service"]
+      arguments   = ["simulator"]
       concurrency = 1
       ingress     = "INGRESS_TRAFFIC_INTERNAL_ONLY"
       port        = 8080
       timeout     = "180s"
     }
     web = {
-      command     = []
+      arguments   = []
       concurrency = 40
       ingress     = "INGRESS_TRAFFIC_ALL"
       port        = 8080
       timeout     = "30s"
     }
     worker = {
-      command     = ["colortrace-worker-service"]
+      arguments   = ["worker"]
       concurrency = 1
       ingress     = "INGRESS_TRAFFIC_INTERNAL_ONLY"
       port        = 8080
       timeout     = "180s"
     }
   }
+
+  selected_run_services = {
+    for name, configuration in local.run_services : name => configuration
+    if contains(var.workload_services, name)
+  }
 }
 
 resource "google_cloud_run_v2_service" "service" {
-  for_each = var.deploy_workloads ? local.run_services : {}
+  for_each = local.selected_run_services
 
   project             = var.project_id
   name                = "${var.resource_prefix}-${each.key}"
@@ -63,8 +68,8 @@ resource "google_cloud_run_v2_service" "service" {
     }
 
     containers {
-      image   = each.key == "web" ? local.web_image : local.runtime_image
-      command = length(each.value.command) == 0 ? null : each.value.command
+      image = each.key == "web" ? local.web_image : local.runtime_image
+      args  = length(each.value.arguments) == 0 ? null : each.value.arguments
 
       ports {
         container_port = each.value.port
@@ -103,6 +108,18 @@ resource "google_cloud_run_v2_service" "service" {
 
       dynamic "env" {
         for_each = each.key == "web" ? {} : local.candidate_environment
+
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      dynamic "env" {
+        for_each = each.key == "web" ? {
+          COLORTRACE_API_AUDIENCE = coalesce(var.api_origin, "unbound")
+          COLORTRACE_API_ORIGIN   = coalesce(var.api_origin, "unbound")
+        } : {}
 
         content {
           name  = env.key
@@ -176,12 +193,12 @@ resource "google_cloud_run_v2_service" "service" {
 
         secret {
           secret       = google_secret_manager_secret.grafana_viewer.secret_id
-          default_mode = 256
+          default_mode = 292
 
           items {
             version = coalesce(var.grafana_secret_version, "0")
             path    = "grafana-viewer"
-            mode    = 256
+            mode    = 292
           }
         }
       }
@@ -190,9 +207,7 @@ resource "google_cloud_run_v2_service" "service" {
 
   lifecycle {
     precondition {
-      condition = alltrue([
-        for value in local.required_workload_bindings : value != null
-      ])
+      condition     = local.workload_bindings_complete
       error_message = "Every immutable workload and identity binding must be supplied before Cloud Run deployment."
     }
 
@@ -210,7 +225,7 @@ resource "google_cloud_run_v2_service" "service" {
 }
 
 resource "google_cloud_run_v2_service_iam_member" "public" {
-  for_each = var.deploy_workloads ? toset(["web"]) : toset([])
+  for_each = contains(var.workload_services, "web") ? toset(["web"]) : toset([])
 
   project  = var.project_id
   location = var.region
@@ -220,7 +235,7 @@ resource "google_cloud_run_v2_service_iam_member" "public" {
 }
 
 resource "google_cloud_run_v2_service_iam_member" "web_api" {
-  for_each = var.deploy_workloads ? toset(["api"]) : toset([])
+  for_each = contains(var.workload_services, "web") ? toset(["api"]) : toset([])
 
   project  = var.project_id
   location = var.region
@@ -230,7 +245,7 @@ resource "google_cloud_run_v2_service_iam_member" "web_api" {
 }
 
 resource "google_cloud_run_v2_service_iam_member" "task_private" {
-  for_each = var.deploy_workloads ? toset(["simulator", "worker"]) : toset([])
+  for_each = setintersection(var.workload_services, toset(["simulator", "worker"]))
 
   project  = var.project_id
   location = var.region

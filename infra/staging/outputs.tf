@@ -26,7 +26,7 @@ output "resource_inventory" {
 
 output "candidate_bindings" {
   description = "Exact non-secret bindings for deployed workload evidence."
-  value = var.deploy_workloads ? {
+  value = length(var.workload_services) > 0 ? {
     commit         = var.candidate_commit
     tree           = var.candidate_tree
     runtime_image  = local.runtime_image
@@ -36,5 +36,7 @@ output "candidate_bindings" {
     model_profile  = var.model_profile_sha256
     policy         = var.policy_sha256
     grafana_secret = "${google_secret_manager_secret.grafana_viewer.id}/versions/${coalesce(var.grafana_secret_version, "0")}"
+    api_origin     = var.api_origin
+    services       = sort(tolist(var.workload_services))
   } : null
 }

@@ -148,7 +148,9 @@ check-typecheck: prepare-cache
 
 check-unit: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline pytest --numprocesses $(PYTEST_WORKERS) --dist loadscope
+	$(TOOL_RUN_OFFLINE) uv run --offline pytest deploy/test_runtime_entrypoint.py
 	$(TOOL_RUN_OFFLINE) pnpm run test
+	$(TOOL_RUN_OFFLINE) node --test deploy/web-server.test.mjs
 
 check-contract: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo contracts

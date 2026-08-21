@@ -113,6 +113,19 @@ class DeploymentPolicyTest(unittest.TestCase):
 
             self.assertEqual(check_deployment(root), [])
 
+    def test_dynamic_terraform_image_is_not_misclassified_as_a_literal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            _write_valid_root(root)
+            main = root / "infra" / "main.tf"
+            main.write_text(
+                main.read_text(encoding="utf-8")
+                + 'locals { runtime_image = "registry.example/${var.name}@${var.digest}" }\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(check_deployment(root), [])
+
     def test_rejects_remote_modules_and_lock_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

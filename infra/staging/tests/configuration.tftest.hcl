@@ -45,7 +45,7 @@ run "workloads_require_every_binding" {
 
   variables {
     project_id           = "colortrace-test-project"
-    deploy_workloads     = true
+    workload_services    = ["api"]
     runtime_image_digest = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
     web_image_digest     = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
   }
@@ -56,12 +56,41 @@ run "workloads_require_every_binding" {
   ]
 }
 
+run "api_can_be_admitted_before_the_web_proxy" {
+  command = plan
+
+  variables {
+    project_id           = "colortrace-test-project"
+    workload_services    = ["api"]
+    candidate_commit     = "1111111111111111111111111111111111111111"
+    candidate_tree       = "2222222222222222222222222222222222222222"
+    runtime_image_digest = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    configuration_sha256 = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    fixture_sha256       = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    model_profile_sha256 = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    policy_sha256        = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    oidc_issuer          = "https://identity.example.test"
+    oidc_audience        = "colortrace-api"
+    oidc_jwks_uri        = "https://identity.example.test/.well-known/jwks.json"
+  }
+
+  assert {
+    condition     = toset(keys(google_cloud_run_v2_service.service)) == toset(["api"])
+    error_message = "The API must be independently deployable before its exact URI is bound to the web proxy."
+  }
+
+  assert {
+    condition     = length(google_cloud_run_v2_service_iam_member.public) == 0
+    error_message = "The API-only stage must not grant unauthenticated invocation."
+  }
+}
+
 run "workload_isolation_is_explicit" {
   command = plan
 
   variables {
     project_id             = "colortrace-test-project"
-    deploy_workloads       = true
+    workload_services      = ["api", "simulator", "web", "worker"]
     candidate_commit       = "1111111111111111111111111111111111111111"
     candidate_tree         = "2222222222222222222222222222222222222222"
     runtime_image_digest   = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
@@ -72,6 +101,7 @@ run "workload_isolation_is_explicit" {
     policy_sha256          = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
     grafana_secret_version = "1"
     grafana_url            = "https://example.grafana.net"
+    api_origin             = "https://api.example.run.app"
     oidc_issuer            = "https://identity.example.test"
     oidc_audience          = "colortrace-api"
     oidc_jwks_uri          = "https://identity.example.test/.well-known/jwks.json"

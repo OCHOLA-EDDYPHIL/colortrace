@@ -272,7 +272,10 @@ def _image_literal_findings(display_path: str, source: str) -> list[Finding]:
     for match in pattern.finditer(visible):
         if structural[match.start()] == " ":
             continue
-        if _IMAGE_DIGEST.fullmatch(match.group(1)) is None:
+        value = match.group(1)
+        if "${" in value:
+            continue
+        if _IMAGE_DIGEST.fullmatch(value) is None:
             findings.append(
                 Finding(
                     display_path,

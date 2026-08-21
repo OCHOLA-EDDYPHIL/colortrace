@@ -30,10 +30,18 @@ variable "resource_prefix" {
   }
 }
 
-variable "deploy_workloads" {
-  description = "Create Cloud Run services after immutable images and secret versions exist."
-  type        = bool
-  default     = false
+variable "workload_services" {
+  description = "Explicit Cloud Run service set admitted after its immutable bindings and runtime exist."
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = (
+      length(setsubtract(var.workload_services, toset(["api", "simulator", "web", "worker"]))) == 0
+      && (!contains(var.workload_services, "web") || contains(var.workload_services, "api"))
+    )
+    error_message = "workload_services may contain only api, simulator, web, and worker; web requires api."
+  }
 }
 
 variable "candidate_commit" {
@@ -153,6 +161,18 @@ variable "grafana_url" {
   validation {
     condition     = var.grafana_url == null || can(regex("^https://[^/?#]+/?$", var.grafana_url))
     error_message = "grafana_url must be one HTTPS origin without credentials, path, query, or fragment."
+  }
+}
+
+variable "api_origin" {
+  description = "Exact IAM-protected API origin used by the public read-only web proxy."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.api_origin == null || can(regex("^https://[^/?#]+/?$", var.api_origin))
+    error_message = "api_origin must be one HTTPS origin without credentials, path, query, or fragment."
   }
 }
 
