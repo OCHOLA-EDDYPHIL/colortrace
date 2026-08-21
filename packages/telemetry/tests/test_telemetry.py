@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Thread
 from typing import Any
 
+import colortrace_telemetry.cli as telemetry_cli
 import colortrace_telemetry.observer as observer
 import pytest
 import yaml  # type: ignore[import-untyped]
@@ -24,8 +25,10 @@ from colortrace_telemetry.contract import (
 from colortrace_telemetry.emitter import MemorySink, emit_plans
 from colortrace_telemetry.observer import (
     BackendEndpoints,
+    BackendUnavailable,
     observe_without_grafana,
     telemetry_isolation_receipt,
+    wait_for_grafana_readiness,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -511,6 +514,173 @@ def test_no_grafana_rejects_reachable_plain_text_backend(scenario: Path) -> None
         server.shutdown()
         thread.join(timeout=2)
         server.server_close()
+
+
+class _ReadinessClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def test_grafana_readiness_waits_for_delayed_ruler_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _ReadinessClock()
+    paths: list[str] = []
+
+    def delayed_get(
+        base: str,
+        path: str,
+        *,
+        query: object = None,
+        timeout_seconds: float = 5.0,
+    ) -> dict[str, object]:
+        del base, query, timeout_seconds
+        paths.append(path)
+        if paths == ["/api/health", "/api/ruler/grafana/api/v1/rules"]:
+            raise BackendUnavailable("not ready")
+        return {}
+
+    monkeypatch.setattr(observer, "_json_get", delayed_get)
+    endpoints = BackendEndpoints(*(f"http://127.0.0.1:{port}" for port in range(1, 6)))
+
+    wait_for_grafana_readiness(
+        endpoints,
+        timeout_seconds=2.0,
+        poll_seconds=0.25,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert paths == [
+        "/api/health",
+        "/api/ruler/grafana/api/v1/rules",
+        "/api/health",
+        "/api/ruler/grafana/api/v1/rules",
+    ]
+    assert clock.sleeps == [0.25]
+
+
+def test_grafana_readiness_timeout_is_bounded_and_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _ReadinessClock()
+    calls = 0
+
+    def unavailable_get(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        raise BackendUnavailable("backend unavailable: http://user:secret@example.invalid/private")
+
+    monkeypatch.setattr(observer, "_json_get", unavailable_get)
+    endpoints = BackendEndpoints(*(f"http://127.0.0.1:{port}" for port in range(1, 6)))
+
+    with pytest.raises(BackendUnavailable, match=r"^Grafana readiness gate timed out$") as error:
+        wait_for_grafana_readiness(
+            endpoints,
+            timeout_seconds=0.5,
+            poll_seconds=0.2,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+    assert clock.now == pytest.approx(0.5)
+    assert calls == 3
+    assert "secret" not in str(error.value)
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+
+
+def test_grafana_readiness_uses_only_exact_grafana_api_surfaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def available_get(
+        base: str,
+        path: str,
+        *,
+        query: object = None,
+        timeout_seconds: float = 5.0,
+    ) -> object:
+        del query
+        assert 0 < timeout_seconds <= 5.0
+        calls.append((base, path))
+        return {}
+
+    monkeypatch.setattr(observer, "_json_get", available_get)
+    endpoints = BackendEndpoints(
+        otlp="http://otlp.invalid",
+        prometheus="http://prometheus.invalid",
+        loki="http://loki.invalid",
+        tempo="http://tempo.invalid",
+        grafana="http://grafana.invalid",
+    )
+
+    wait_for_grafana_readiness(endpoints)
+
+    assert calls == [
+        ("http://grafana.invalid", "/api/health"),
+        ("http://grafana.invalid", "/api/ruler/grafana/api/v1/rules"),
+    ]
+
+
+def test_integration_admits_readiness_before_one_shot_emission_and_verification(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+    runtime = object()
+    plans: tuple[object, ...] = ()
+    receipt: dict[str, Any] = {"runs": []}
+    report: dict[str, Any] = {}
+
+    def readiness(endpoints: BackendEndpoints) -> None:
+        del endpoints
+        calls.append("readiness")
+
+    def emit(runtime_value: object, plans_value: object, sink: object) -> dict[str, Any]:
+        del sink
+        assert runtime_value is runtime
+        assert plans_value is plans
+        calls.append("emit")
+        return receipt
+
+    def verify(
+        receipt_value: object, endpoints: BackendEndpoints, **kwargs: object
+    ) -> dict[str, Any]:
+        del endpoints, kwargs
+        assert receipt_value is receipt
+        calls.append("verify")
+        return report
+
+    monkeypatch.setattr(telemetry_cli, "_plans", lambda scenario, runs: (runtime, plans))
+    monkeypatch.setattr(telemetry_cli, "wait_for_grafana_readiness", readiness)
+    monkeypatch.setattr(telemetry_cli, "OtelSink", lambda endpoint: object())
+    monkeypatch.setattr(telemetry_cli, "emit_plans", emit)
+    monkeypatch.setattr(telemetry_cli, "verify_real_backends", verify)
+    monkeypatch.setattr(telemetry_cli, "_write", lambda path, value: None)
+
+    assert (
+        telemetry_cli.main(
+            [
+                "integration",
+                "--scenario",
+                str(tmp_path / "scenario"),
+                "--isolation-receipt",
+                str(tmp_path / "isolation.json"),
+            ]
+        )
+        == 0
+    )
+    assert calls == ["readiness", "emit", "verify"]
 
 
 def test_local_stack_and_alert_contracts_are_pinned() -> None:
