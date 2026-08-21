@@ -525,19 +525,19 @@ class FakeEvidence:
             b"unit-test-viewer-token",
             mcp_subject._RUNTIME_VERIFICATION,
         )
+        inventory = mcp_subject.FrozenInventory("sha256:" + "a" * 64, mcp_subject.TOOL_PINS)
+
+        async def load_inventory(_session: mcp_subject.McpSession) -> mcp_subject.FrozenInventory:
+            return inventory
+
         adapter = mcp_subject.EvidenceAdapter(
             runtime=runtime,
             catalog=mcp_subject.QueryCatalog.load(Path("config/grafana-mcp/query-catalog.json")),
             session_factory=factory,
+            inventory_loader=load_inventory,
             clock=lambda: self.clock,
         )
-        inventory = mcp_subject.FrozenInventory("sha256:" + "a" * 64, mcp_subject.TOOL_PINS)
-
-        async def load_inventory(_session: FakeSession) -> mcp_subject.FrozenInventory:
-            return inventory
-
-        with patch.object(mcp_subject, "_load_inventory", new=load_inventory):
-            result = await adapter.collect(batch, controls=controls)
+        result = await adapter.collect(batch, controls=controls)
         if self.argument_drift:
             attempts = list(result.attempts)
             attempts[0] = replace(attempts[0], arguments_sha256="sha256:" + "0" * 64)
