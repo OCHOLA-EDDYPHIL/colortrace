@@ -24,8 +24,8 @@ variable "resource_prefix" {
   type        = string
 
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{2,20}[a-z0-9]$", var.resource_prefix))
-    error_message = "resource_prefix must be a bounded lowercase resource prefix."
+    condition     = can(regex("^[a-z][a-z0-9-]{2,17}[a-z0-9]$", var.resource_prefix))
+    error_message = "resource_prefix must be a lowercase 4-19 character prefix that fits every service-account identifier."
   }
 }
 
@@ -178,18 +178,6 @@ variable "grafana_url" {
   validation {
     condition     = var.grafana_url == null || can(regex("^https://[^/?#]+/?$", var.grafana_url))
     error_message = "grafana_url must be one HTTPS origin without credentials, path, query, or fragment."
-  }
-}
-
-variable "api_origin" {
-  description = "Exact IAM-protected API origin used by the public read-only web proxy."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition     = var.api_origin == null || can(regex("^https://[^/?#]+/?$", var.api_origin))
-    error_message = "api_origin must be one HTTPS origin without credentials, path, query, or fragment."
   }
 }
 

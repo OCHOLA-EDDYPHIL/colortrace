@@ -24,9 +24,7 @@ locals {
       length(setintersection(var.workload_services, toset(["api"]))) == 0
       || var.runtime_image_digest != null
     )
-    && (!contains(var.workload_services, "web") || (
-      var.web_image_digest != null && var.api_origin != null
-    ))
+    && (!contains(var.workload_services, "web") || var.web_image_digest != null)
   )
 
   database_job_requested = (
@@ -59,5 +57,15 @@ check "complete_database_job_bindings" {
   assert {
     condition     = !local.database_job_requested || local.database_job_bindings_complete
     error_message = "Every immutable candidate and runtime binding is required before a database job is created."
+  }
+}
+
+check "database_stage_isolation" {
+  assert {
+    condition = (
+      !(var.enable_database_migration_job && var.database_bootstrap_secret_version != null)
+      && (!local.database_job_requested || length(var.workload_services) == 0)
+    )
+    error_message = "Bootstrap, migrate-seed, and workload admission are isolated sequential stages and must never coexist."
   }
 }

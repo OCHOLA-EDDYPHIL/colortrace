@@ -14,8 +14,9 @@ output "resource_inventory" {
       for key, user in google_sql_user.iam : key => user.name
     }
     secrets = {
-      grafana_viewer     = google_secret_manager_secret.grafana_viewer.id
-      postgres_bootstrap = google_secret_manager_secret.postgres_bootstrap.id
+      grafana_viewer             = google_secret_manager_secret.grafana_viewer.id
+      postgres_bootstrap         = google_secret_manager_secret.postgres_bootstrap.id
+      postgres_bootstrap_version = var.database_bootstrap_secret_version
     }
     queues = {
       simulator = google_cloud_tasks_queue.simulator.id
@@ -34,11 +35,16 @@ output "resource_inventory" {
       for key, job in google_cloud_run_v2_job.database : key => job.name
     }
     iam = {
-      cloud_sql = sort([for binding in google_project_iam_member.cloud_sql_runtime : binding.id])
-      project   = sort([for binding in google_project_iam_member.service_roles : binding.id])
-      run_admin = google_project_iam_member.deployment_run_admin.id
-      actors    = sort([for binding in google_service_account_iam_member.deployment_runtime_actor : binding.id])
-      bootstrap = sort([for binding in google_secret_manager_secret_iam_member.migration_bootstrap : binding.id])
+      cloud_sql       = sort([for binding in google_project_iam_member.cloud_sql_runtime : binding.id])
+      project         = sort([for binding in google_project_iam_member.service_roles : binding.id])
+      run_admin       = google_project_iam_member.deployment_run_admin.id
+      actors          = sort([for binding in google_service_account_iam_member.deployment_runtime_actor : binding.id])
+      bootstrap       = sort([for binding in google_secret_manager_secret_iam_member.migration_bootstrap : binding.id])
+      artifact_writer = google_artifact_registry_repository_iam_member.deployment_writer.id
+      run_invokers = sort(concat(
+        [for binding in google_cloud_run_v2_service_iam_member.public : binding.id],
+        [for binding in google_cloud_run_v2_service_iam_member.web_api : binding.id],
+      ))
     }
   }
 }
@@ -49,12 +55,12 @@ output "candidate_bindings" {
     commit        = var.candidate_commit
     tree          = var.candidate_tree
     runtime_image = local.runtime_image
-    web_image     = local.web_image
+    web_image     = contains(var.workload_services, "web") ? local.web_image : null
     configuration = var.configuration_sha256
     fixture       = var.fixture_sha256
     model_profile = var.model_profile_sha256
     policy        = var.policy_sha256
-    api_origin    = var.api_origin
+    api_origin    = contains(var.workload_services, "web") ? data.google_cloud_run_v2_service.api[0].uri : null
     services      = sort(tolist(var.workload_services))
     database_jobs = sort(keys(google_cloud_run_v2_job.database))
   } : null

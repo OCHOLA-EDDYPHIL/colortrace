@@ -41,6 +41,14 @@ locals {
   )
 }
 
+data "google_cloud_run_v2_service" "api" {
+  count = contains(var.workload_services, "web") ? 1 : 0
+
+  project  = var.project_id
+  name     = "${var.resource_prefix}-api"
+  location = var.region
+}
+
 resource "google_cloud_run_v2_service" "service" {
   for_each = local.selected_run_services
 
@@ -126,8 +134,8 @@ resource "google_cloud_run_v2_service" "service" {
 
       dynamic "env" {
         for_each = each.key == "web" ? {
-          COLORTRACE_API_AUDIENCE = coalesce(var.api_origin, "unbound")
-          COLORTRACE_API_ORIGIN   = coalesce(var.api_origin, "unbound")
+          COLORTRACE_API_AUDIENCE = data.google_cloud_run_v2_service.api[0].uri
+          COLORTRACE_API_ORIGIN   = data.google_cloud_run_v2_service.api[0].uri
         } : {}
 
         content {
@@ -159,6 +167,11 @@ resource "google_cloud_run_v2_service" "service" {
   }
 
   lifecycle {
+    precondition {
+      condition     = !local.database_job_requested
+      error_message = "Database preparation jobs must be removed before any workload is admitted."
+    }
+
     precondition {
       condition     = local.workload_bindings_complete
       error_message = "Every immutable workload and identity binding must be supplied before Cloud Run deployment."
@@ -289,6 +302,11 @@ resource "google_cloud_run_v2_job" "database" {
   }
 
   lifecycle {
+    precondition {
+      condition     = length(var.workload_services) == 0 && length(local.database_jobs) == 1
+      error_message = "Exactly one database preparation stage may exist, with no admitted workloads."
+    }
+
     precondition {
       condition     = local.database_job_bindings_complete
       error_message = "Every immutable candidate and runtime binding is required before a database job is created."
