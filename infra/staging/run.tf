@@ -1,0 +1,255 @@
+locals {
+  run_services = {
+    api = {
+      arguments   = ["api"]
+      concurrency = 10
+      ingress     = "INGRESS_TRAFFIC_ALL"
+      port        = 8080
+      timeout     = "60s"
+    }
+    simulator = {
+      arguments   = ["simulator"]
+      concurrency = 1
+      ingress     = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+      port        = 8080
+      timeout     = "180s"
+    }
+    web = {
+      arguments   = []
+      concurrency = 40
+      ingress     = "INGRESS_TRAFFIC_ALL"
+      port        = 8080
+      timeout     = "30s"
+    }
+    worker = {
+      arguments   = ["worker"]
+      concurrency = 1
+      ingress     = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+      port        = 8080
+      timeout     = "180s"
+    }
+  }
+
+  selected_run_services = {
+    for name, configuration in local.run_services : name => configuration
+    if contains(var.workload_services, name)
+  }
+}
+
+resource "google_cloud_run_v2_service" "service" {
+  for_each = local.selected_run_services
+
+  project             = var.project_id
+  name                = "${var.resource_prefix}-${each.key}"
+  location            = var.region
+  ingress             = each.value.ingress
+  deletion_protection = false
+  labels              = local.labels
+
+  template {
+    service_account                  = google_service_account.service[each.key].email
+    timeout                          = each.value.timeout
+    max_instance_request_concurrency = each.value.concurrency
+    execution_environment            = "EXECUTION_ENVIRONMENT_GEN2"
+    labels                           = local.labels
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 1
+    }
+
+    vpc_access {
+      egress = "PRIVATE_RANGES_ONLY"
+
+      network_interfaces {
+        network    = google_compute_network.staging.name
+        subnetwork = google_compute_subnetwork.staging.name
+      }
+    }
+
+    containers {
+      image = each.key == "web" ? local.web_image : local.runtime_image
+      args  = length(each.value.arguments) == 0 ? null : each.value.arguments
+
+      ports {
+        container_port = each.value.port
+      }
+
+      resources {
+        limits = {
+          cpu    = each.key == "worker" ? "2" : "1"
+          memory = each.key == "worker" ? "1Gi" : "512Mi"
+        }
+        cpu_idle          = true
+        startup_cpu_boost = false
+      }
+
+      startup_probe {
+        initial_delay_seconds = 0
+        timeout_seconds       = 2
+        period_seconds        = 2
+        failure_threshold     = 30
+
+        http_get {
+          path = "/health/startup"
+        }
+      }
+
+      liveness_probe {
+        initial_delay_seconds = 0
+        timeout_seconds       = 2
+        period_seconds        = 10
+        failure_threshold     = 3
+
+        http_get {
+          path = "/health/live"
+        }
+      }
+
+      dynamic "env" {
+        for_each = each.key == "web" ? {} : local.candidate_environment
+
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      dynamic "env" {
+        for_each = each.key == "web" ? {
+          COLORTRACE_API_AUDIENCE = coalesce(var.api_origin, "unbound")
+          COLORTRACE_API_ORIGIN   = coalesce(var.api_origin, "unbound")
+        } : {}
+
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      dynamic "env" {
+        for_each = each.key == "api" ? {
+          COLORTRACE_BIND_HOST     = "0.0.0.0"
+          COLORTRACE_OIDC_AUDIENCE = coalesce(var.oidc_audience, "unbound")
+          COLORTRACE_OIDC_ISSUER   = coalesce(var.oidc_issuer, "unbound")
+          COLORTRACE_OIDC_JWKS_URI = coalesce(var.oidc_jwks_uri, "unbound")
+        } : {}
+
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      dynamic "env" {
+        for_each = each.key == "worker" ? {
+          COLORTRACE_GRAFANA_TOKEN_FILE   = "/var/run/colortrace-private/grafana-viewer"
+          COLORTRACE_GRAFANA_TOKEN_SOURCE = "/var/run/secrets/colortrace/grafana-viewer"
+          COLORTRACE_GRAFANA_URL          = coalesce(var.grafana_url, "unbound")
+        } : {}
+
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      dynamic "volume_mounts" {
+        for_each = contains(["api", "simulator", "worker"], each.key) ? [1] : []
+
+        content {
+          name       = "cloudsql"
+          mount_path = "/cloudsql"
+        }
+      }
+
+      dynamic "volume_mounts" {
+        for_each = each.key == "worker" ? [1] : []
+
+        content {
+          name       = "grafana-viewer"
+          mount_path = "/var/run/secrets/colortrace"
+        }
+      }
+    }
+
+    dynamic "volumes" {
+      for_each = contains(["api", "simulator", "worker"], each.key) ? [1] : []
+
+      content {
+        name = "cloudsql"
+
+        cloud_sql_instance {
+          instances = [google_sql_database_instance.workflow.connection_name]
+        }
+      }
+    }
+
+    dynamic "volumes" {
+      for_each = each.key == "worker" ? [1] : []
+
+      content {
+        name = "grafana-viewer"
+
+        secret {
+          secret       = google_secret_manager_secret.grafana_viewer.secret_id
+          default_mode = 292
+
+          items {
+            version = coalesce(var.grafana_secret_version, "0")
+            path    = "grafana-viewer"
+            mode    = 292
+          }
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = local.workload_bindings_complete
+      error_message = "Every immutable workload and identity binding must be supplied before Cloud Run deployment."
+    }
+
+    precondition {
+      condition     = strcontains(each.key == "web" ? local.web_image : local.runtime_image, "@sha256:")
+      error_message = "Cloud Run images must use immutable SHA-256 digest references."
+    }
+  }
+
+  depends_on = [
+    google_project_service.required["run.googleapis.com"],
+    google_secret_manager_secret_iam_member.worker_grafana,
+    google_service_networking_connection.private_services,
+  ]
+}
+
+resource "google_cloud_run_v2_service_iam_member" "public" {
+  for_each = contains(var.workload_services, "web") ? toset(["web"]) : toset([])
+
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.service[each.key].name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
+resource "google_cloud_run_v2_service_iam_member" "web_api" {
+  for_each = contains(var.workload_services, "web") ? toset(["api"]) : toset([])
+
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.service[each.key].name
+  role     = "roles/run.invoker"
+  member   = google_service_account.service["web"].member
+}
+
+resource "google_cloud_run_v2_service_iam_member" "task_private" {
+  for_each = setintersection(var.workload_services, toset(["simulator", "worker"]))
+
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.service[each.key].name
+  role     = "roles/run.invoker"
+  member   = google_service_account.service["task"].member
+}

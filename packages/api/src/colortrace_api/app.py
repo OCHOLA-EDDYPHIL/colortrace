@@ -270,6 +270,14 @@ def create_app(
 
     principal_dependency = Depends(current_principal)
 
+    @app.get("/health/startup", include_in_schema=False)
+    def startup_health() -> dict[str, str]:
+        return {"status": "ready"}
+
+    @app.get("/health/live", include_in_schema=False)
+    def liveness_health() -> dict[str, str]:
+        return {"status": "alive"}
+
     def plan_api() -> ResponsePlanApi:
         if response_plans is None:
             raise _problem(404, "response-plan-unavailable")

@@ -279,3 +279,39 @@ def test_module_cli_uses_the_fail_closed_uvicorn_factory(monkeypatch: pytest.Mon
             {"factory": True, "host": "127.0.0.1", "port": 8000},
         )
     ]
+
+
+def test_module_cli_accepts_the_cloud_run_bind_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def run(application: str, **options: object) -> None:
+        calls.append((application, options))
+
+    monkeypatch.setattr(uvicorn, "run", run)
+    main({"COLORTRACE_BIND_HOST": "0.0.0.0", "PORT": "8080"})
+
+    assert calls == [
+        (
+            "colortrace_api.runtime:create_application",
+            {"factory": True, "host": "0.0.0.0", "port": 8080},
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {"COLORTRACE_BIND_HOST": "example.test"},
+        {"PORT": "0"},
+        {"PORT": "65536"},
+        {"PORT": "eight-thousand"},
+    ],
+)
+def test_module_cli_rejects_unbounded_bind_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    environment: dict[str, str],
+) -> None:
+    monkeypatch.setattr(uvicorn, "run", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(ValueError, match="bind-(?:host|port)-invalid"):
+        main(environment)
