@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -22,6 +23,7 @@ from colortrace_persistence import (
     CanonicalPostgresStore,
     HostedMetadataStores,
     HostedProjectionPostgresStore,
+    Migration,
     PersistenceError,
     PostgresMigrationRunner,
     PostgresReaderVerifier,
@@ -264,6 +266,47 @@ def test_concurrent_initial_migrations_serialize(postgres: PostgresEnvironment) 
         results = list(executor.map(lambda _value: postgres.runner().apply_all(), range(2)))
 
     assert sorted(results, key=len) == [(), (1, 2)]
+
+
+def test_future_migration_rollback_preserves_v2_reader_access(
+    postgres: PostgresEnvironment,
+) -> None:
+    up_sql = "SELECT 1"
+    down_sql = "SELECT 1"
+    digest = (
+        "sha256:"
+        + hashlib.sha256(up_sql.encode("utf-8") + b"\x00" + down_sql.encode("utf-8")).hexdigest()
+    )
+    migration_v3 = Migration(
+        version=3,
+        name="future_noop",
+        up_sql=up_sql,
+        down_sql=down_sql,
+        sha256=digest,
+    )
+    runner = PostgresMigrationRunner(
+        postgres.migration,
+        migration_role=_MIGRATION_ROLE,
+        runtime_role=_RUNTIME_ROLE,
+        reader_role=_READER_ROLE,
+        migrations=(*load_migrations(), migration_v3),
+    )
+    assert runner.apply_all() == (1, 2, 3)
+    fixture_digest = bundled_fixture_digest()
+    seed_fixture(
+        CanonicalPostgresStore(postgres.migration, namespace="incident"),
+        fixture_digest,
+    )
+    expected = HostedProjectionPostgresStore(postgres.reader).read(HOSTED_FIXTURE_RECORD_ID)
+
+    assert runner.rollback_latest() == 3
+    PostgresReaderVerifier(
+        postgres.reader,
+        database="colortrace_test",
+        reader_role=_READER_ROLE,
+    ).validate()
+    assert HostedProjectionPostgresStore(postgres.reader).read(HOSTED_FIXTURE_RECORD_ID) == expected
+    assert [version for version, _name, _digest in runner.applied()] == [1, 2]
 
 
 def test_v1_upgrade_requires_binding_the_legacy_reader_before_rotation(
@@ -638,6 +681,31 @@ def test_reader_profile_fails_closed_on_out_of_band_schema_create_grant(
     with pytest.raises(PersistenceError, match="^postgres-reader-privilege-invalid$"):
         migrated.runner().apply_all()
     with pytest.raises(PersistenceError, match="^postgres-reader-privilege-invalid$"):
+        PostgresReaderVerifier(
+            migrated.reader,
+            database="colortrace_test",
+            reader_role=_READER_ROLE,
+        ).validate()
+
+
+def test_public_database_connect_is_denied_and_drift_fails_closed(
+    migrated: PostgresEnvironment,
+) -> None:
+    with _cursor(migrated.migration) as cursor:
+        cursor.execute("SELECT has_database_privilege('public', current_database(), 'CONNECT')")
+        assert cursor.fetchone() == [False]
+    PostgresReaderVerifier(
+        migrated.reader,
+        database="colortrace_test",
+        reader_role=_READER_ROLE,
+    ).validate()
+
+    with _cursor(migrated.admin) as cursor:
+        cursor.execute("GRANT CONNECT ON DATABASE colortrace_test TO PUBLIC")
+
+    with pytest.raises(PersistenceError, match="^postgres-public-privilege-invalid$"):
+        migrated.runner().apply_all()
+    with pytest.raises(PersistenceError, match="^postgres-public-privilege-invalid$"):
         PostgresReaderVerifier(
             migrated.reader,
             database="colortrace_test",

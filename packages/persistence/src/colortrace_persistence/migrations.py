@@ -511,15 +511,15 @@ class PostgresMigrationRunner:
             if not isinstance(version, int) or not 1 <= version <= len(self._migrations):
                 raise PersistenceError("migration-unknown")
             migration = self._migrations[version - 1]
-            hosted_projection = migration.version >= _HOSTED_PROJECTION_VERSION
+            current_has_projection = migration.version >= _HOSTED_PROJECTION_VERSION
             removes_projection = migration.version == _HOSTED_PROJECTION_VERSION
-            bound_reader = self._bound_reader_role(cursor) if hosted_projection else None
+            bound_reader = self._bound_reader_role(cursor) if current_has_projection else None
             validate_schema(
                 cursor,
                 migration_role=self._migration_role,
                 runtime_role=self._runtime_role,
                 reader_role=bound_reader,
-                hosted_projection=hosted_projection,
+                hosted_projection=current_has_projection,
             )
             if migration.version == 1 and not self._canonical_state_is_empty(cursor):
                 raise PersistenceError("migration-rollback-nonempty")

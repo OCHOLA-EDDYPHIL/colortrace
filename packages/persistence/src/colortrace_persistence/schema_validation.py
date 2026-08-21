@@ -715,7 +715,17 @@ def _validate_reader_memberships(cursor: DbCursor, reader_role: str, *, code: st
         raise PersistenceError(code)
 
 
+def _validate_public_database_privileges(cursor: DbCursor) -> None:
+    cursor.execute(
+        "SELECT has_database_privilege('public', current_database(), 'CONNECT') AS connect"
+    )
+    rows = _rows(cursor)
+    if len(rows) != 1 or rows[0].get("connect") is not False:
+        raise PersistenceError("postgres-public-privilege-invalid")
+
+
 def validate_reader_privileges(cursor: DbCursor, reader_role: str) -> None:
+    _validate_public_database_privileges(cursor)
     _validate_reader_memberships(
         cursor,
         reader_role,
@@ -993,6 +1003,7 @@ def validate_schema(
 ) -> None:
     if hosted_projection != (reader_role is not None):
         raise PersistenceError("postgres-reader-binding-invalid")
+    _validate_public_database_privileges(cursor)
     cursor.execute(
         "SELECT pg_get_userbyid(n.nspowner) AS owner FROM pg_namespace AS n "
         "WHERE n.nspname = 'colortrace'"
