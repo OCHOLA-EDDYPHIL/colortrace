@@ -91,6 +91,7 @@ class PostgresReaderVerifier:
     connection_factory: ConnectionFactory
     database: str
     reader_role: str
+    cloud_sql_iam_service_account: bool = False
 
     def __post_init__(self) -> None:
         if _DATABASE_NAME.fullmatch(self.database) is None:
@@ -130,7 +131,11 @@ class PostgresReaderVerifier:
                 "rolbypassrls": False,
             }:
                 raise PersistenceError("postgres-role-privileges-invalid")
-            validate_reader_privileges(cursor, self.reader_role)
+            validate_reader_privileges(
+                cursor,
+                self.reader_role,
+                cloud_sql_iam_service_account=self.cloud_sql_iam_service_account,
+            )
 
 
 @dataclass(frozen=True, slots=True)

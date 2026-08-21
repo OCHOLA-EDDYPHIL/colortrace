@@ -458,6 +458,7 @@ def create_hosted_read_app(
                 factory,
                 database=config.database,
                 reader_role=config.api_role,
+                cloud_sql_iam_service_account=True,
             ).validate()
             fixture, _readiness = _load_seeded_fixture(store, asset)
             service.install(fixture.document)
@@ -540,6 +541,7 @@ def bootstrap_database(
             migration_role=config.migration_role,
             runtime_role=config.runtime_role,
             reader_role=config.api_role,
+            cloud_sql_iam_service_account=True,
         ).apply()
     finally:
         factory.close()
@@ -561,6 +563,7 @@ def migrate_and_seed(
             migration_role=config.migration_role,
             runtime_role=config.runtime_role,
             reader_role=config.api_role,
+            cloud_sql_iam_service_account=True,
         ).apply_all()
         store = CanonicalPostgresStore(factory, namespace="incident")
         return seed_fixture(store, config.fixture_sha256)

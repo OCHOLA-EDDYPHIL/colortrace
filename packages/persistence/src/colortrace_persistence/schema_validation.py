@@ -5,6 +5,8 @@ from typing import Any
 
 from .ports import DbCursor, PersistenceError
 
+_CLOUD_SQL_IAM_SERVICE_ACCOUNT_ROLE = "cloudsqliamserviceaccount"
+
 _EXPECTED_COLUMNS = (
     ("metadata_claim_events", 1, "namespace", "text", True, ""),
     ("metadata_claim_events", 2, "record_id", "text", True, ""),
@@ -700,18 +702,41 @@ def _validate_runtime_privileges(
         raise PersistenceError("postgres-runtime-privilege-invalid")
 
 
-def _validate_reader_memberships(cursor: DbCursor, reader_role: str, *, code: str) -> None:
+def validate_reader_memberships(
+    cursor: DbCursor,
+    reader_role: str,
+    *,
+    cloud_sql_iam_service_account: bool,
+    code: str,
+) -> None:
     cursor.execute(
-        "SELECT EXISTS ("
-        "SELECT 1 FROM pg_auth_members AS memberships "
+        "SELECT granted_role.rolname AS granted_role, "
+        "member_role.rolname AS member_role, memberships.admin_option, "
+        "COALESCE((to_jsonb(memberships) ->> 'inherit_option')::boolean, "
+        "member_role.rolinherit) AS inherit_option, "
+        "COALESCE((to_jsonb(memberships) ->> 'set_option')::boolean, TRUE) AS set_option "
+        "FROM pg_auth_members AS memberships "
         "JOIN pg_roles AS granted_role ON granted_role.oid = memberships.roleid "
         "JOIN pg_roles AS member_role ON member_role.oid = memberships.member "
-        "WHERE granted_role.rolname = %s OR member_role.rolname = %s"
-        ") AS has_membership",
+        "WHERE granted_role.rolname = %s OR member_role.rolname = %s "
+        "ORDER BY granted_role.rolname, member_role.rolname",
         (reader_role, reader_role),
     )
     rows = _rows(cursor)
-    if len(rows) != 1 or rows[0].get("has_membership") is not False:
+    expected = (
+        [
+            {
+                "granted_role": _CLOUD_SQL_IAM_SERVICE_ACCOUNT_ROLE,
+                "member_role": reader_role,
+                "admin_option": False,
+                "inherit_option": True,
+                "set_option": True,
+            }
+        ]
+        if cloud_sql_iam_service_account
+        else []
+    )
+    if rows != expected:
         raise PersistenceError(code)
 
 
@@ -724,11 +749,17 @@ def _validate_public_database_privileges(cursor: DbCursor) -> None:
         raise PersistenceError("postgres-public-privilege-invalid")
 
 
-def validate_reader_privileges(cursor: DbCursor, reader_role: str) -> None:
+def validate_reader_privileges(
+    cursor: DbCursor,
+    reader_role: str,
+    *,
+    cloud_sql_iam_service_account: bool = False,
+) -> None:
     _validate_public_database_privileges(cursor)
-    _validate_reader_memberships(
+    validate_reader_memberships(
         cursor,
         reader_role,
+        cloud_sql_iam_service_account=cloud_sql_iam_service_account,
         code="postgres-reader-privilege-invalid",
     )
     cursor.execute(
@@ -863,7 +894,12 @@ def validate_reader_privileges(cursor: DbCursor, reader_role: str) -> None:
         raise PersistenceError("postgres-reader-privilege-invalid")
 
 
-def validate_revoked_reader_privileges(cursor: DbCursor, reader_role: str) -> None:
+def validate_revoked_reader_privileges(
+    cursor: DbCursor,
+    reader_role: str,
+    *,
+    cloud_sql_iam_service_account: bool = False,
+) -> None:
     cursor.execute(
         "SELECT rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls "
         "FROM pg_roles WHERE rolname = %s",
@@ -878,9 +914,10 @@ def validate_revoked_reader_privileges(cursor: DbCursor, reader_role: str) -> No
         "rolbypassrls": False,
     }:
         raise PersistenceError("postgres-reader-revocation-invalid")
-    _validate_reader_memberships(
+    validate_reader_memberships(
         cursor,
         reader_role,
+        cloud_sql_iam_service_account=cloud_sql_iam_service_account,
         code="postgres-reader-revocation-invalid",
     )
     cursor.execute(
@@ -1000,6 +1037,7 @@ def validate_schema(
     runtime_role: str,
     reader_role: str | None,
     hosted_projection: bool,
+    cloud_sql_iam_service_account: bool = False,
 ) -> None:
     if hosted_projection != (reader_role is not None):
         raise PersistenceError("postgres-reader-binding-invalid")
@@ -1032,4 +1070,8 @@ def validate_schema(
             runtime_role=runtime_role,
             reader_role=reader_role,
         )
-        validate_reader_privileges(cursor, reader_role)
+        validate_reader_privileges(
+            cursor,
+            reader_role,
+            cloud_sql_iam_service_account=cloud_sql_iam_service_account,
+        )
