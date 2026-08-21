@@ -21,6 +21,7 @@
       "colortrace-vertical-slice",
       "colortrace-validator",
       "fastapi",
+      "google-auth",
       "google-cloud-storage",
       "jsonschema",
       "opencolorio",
