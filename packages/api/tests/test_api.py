@@ -149,6 +149,13 @@ def admission_alert() -> dict[str, Any]:
     }
 
 
+def test_health_routes_are_minimal_and_unauthenticated() -> None:
+    api_client = client()
+
+    assert api_client.get("/health/startup").json() == {"status": "ready"}
+    assert api_client.get("/health/live").json() == {"status": "alive"}
+
+
 def test_public_incident_reads_and_bounded_list() -> None:
     service = FakeService()
     api_client = TestClient(create_app(service, token_verifier=FakeVerifier()))

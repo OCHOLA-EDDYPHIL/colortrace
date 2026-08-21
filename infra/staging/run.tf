@@ -1,7 +1,7 @@
 locals {
   run_services = {
     api = {
-      command     = ["colortrace-api"]
+      command     = ["python", "-m", "colortrace_api"]
       concurrency = 10
       ingress     = "INGRESS_TRAFFIC_ALL"
       port        = 8080
@@ -112,6 +112,7 @@ resource "google_cloud_run_v2_service" "service" {
 
       dynamic "env" {
         for_each = each.key == "api" ? {
+          COLORTRACE_BIND_HOST     = "0.0.0.0"
           COLORTRACE_OIDC_AUDIENCE = coalesce(var.oidc_audience, "unbound")
           COLORTRACE_OIDC_ISSUER   = coalesce(var.oidc_issuer, "unbound")
           COLORTRACE_OIDC_JWKS_URI = coalesce(var.oidc_jwks_uri, "unbound")
