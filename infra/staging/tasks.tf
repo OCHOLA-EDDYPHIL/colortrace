@@ -16,10 +16,6 @@ resource "google_cloud_tasks_queue" "worker" {
     max_doublings      = 3
   }
 
-  stackdriver_logging_config {
-    sampling_ratio = 0
-  }
-
   depends_on = [google_project_service.required["cloudtasks.googleapis.com"]]
 }
 
@@ -39,10 +35,6 @@ resource "google_cloud_tasks_queue" "simulator" {
     min_backoff        = "5s"
     max_backoff        = "60s"
     max_doublings      = 3
-  }
-
-  stackdriver_logging_config {
-    sampling_ratio = 0
   }
 
   depends_on = [google_project_service.required["cloudtasks.googleapis.com"]]
