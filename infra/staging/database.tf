@@ -56,6 +56,10 @@ resource "google_sql_database" "workflow" {
   project  = var.project_id
   name     = "colortrace"
   instance = google_sql_database_instance.workflow.name
+
+  # Migration-owned schema objects disappear with the database before Terraform
+  # removes the instance-scoped IAM database users during destroy.
+  depends_on = [google_sql_user.iam]
 }
 
 locals {
