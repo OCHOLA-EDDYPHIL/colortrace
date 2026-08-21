@@ -38,6 +38,7 @@ _RUNTIME_ROLE = "colortrace_runtime_test"
 _READER_ROLE = "colortrace_reader_test"
 _ROTATED_READER_ROLE = "colortrace_reader_rotated_test"
 _READER_GROUP_ROLE = "colortrace_reader_group_test"
+_CLOUD_SQL_IAM_SERVICE_ACCOUNT_ROLE = "cloudsqliamserviceaccount"
 
 
 class LocalPostgresFactory:
@@ -617,6 +618,106 @@ def test_reader_profile_rejects_role_membership_edges(
             database="colortrace_test",
             reader_role=_READER_ROLE,
         ).validate()
+
+
+def test_cloud_sql_iam_membership_profile_preserves_exact_reader_isolation(
+    postgres: PostgresEnvironment,
+) -> None:
+    roles = (_MIGRATION_ROLE, _RUNTIME_ROLE, _READER_ROLE, _ROTATED_READER_ROLE)
+    with _cursor(postgres.admin) as cursor:
+        cursor.execute(
+            f'CREATE ROLE "{_CLOUD_SQL_IAM_SERVICE_ACCOUNT_ROLE}" NOLOGIN NOSUPERUSER '
+            "NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS"
+        )
+        for role in roles:
+            cursor.execute(f'GRANT "{_CLOUD_SQL_IAM_SERVICE_ACCOUNT_ROLE}" TO "{role}"')
+
+    try:
+        bootstrapper = PostgresRoleBootstrapper(
+            postgres.admin,
+            database="colortrace_test",
+            admin_role=postgres.admin.user,
+            migration_role=_MIGRATION_ROLE,
+            runtime_role=_RUNTIME_ROLE,
+            reader_role=_READER_ROLE,
+            cloud_sql_iam_service_account=True,
+        )
+        bootstrapper.apply()
+        bootstrapper.apply()
+
+        runner = PostgresMigrationRunner(
+            postgres.migration,
+            migration_role=_MIGRATION_ROLE,
+            runtime_role=_RUNTIME_ROLE,
+            reader_role=_READER_ROLE,
+            cloud_sql_iam_service_account=True,
+        )
+        assert runner.apply_all() == (1, 2)
+        assert runner.apply_all() == ()
+        PostgresReaderVerifier(
+            postgres.reader,
+            database="colortrace_test",
+            reader_role=_READER_ROLE,
+            cloud_sql_iam_service_account=True,
+        ).validate()
+
+        with _cursor(postgres.admin) as cursor:
+            cursor.execute("SELECT current_setting('server_version_num')::integer")
+            server_version = cursor.fetchone()[0]
+        if server_version >= 160000:
+            for option in ("INHERIT", "SET"):
+                with _cursor(postgres.admin) as cursor:
+                    cursor.execute(
+                        f'GRANT "{_CLOUD_SQL_IAM_SERVICE_ACCOUNT_ROLE}" '
+                        f'TO "{_READER_ROLE}" WITH {option} FALSE'
+                    )
+                with pytest.raises(
+                    PersistenceError,
+                    match="^postgres-reader-privilege-invalid$",
+                ):
+                    PostgresReaderVerifier(
+                        postgres.reader,
+                        database="colortrace_test",
+                        reader_role=_READER_ROLE,
+                        cloud_sql_iam_service_account=True,
+                    ).validate()
+                with _cursor(postgres.admin) as cursor:
+                    cursor.execute(
+                        f'GRANT "{_CLOUD_SQL_IAM_SERVICE_ACCOUNT_ROLE}" '
+                        f'TO "{_READER_ROLE}" WITH {option} TRUE'
+                    )
+                PostgresReaderVerifier(
+                    postgres.reader,
+                    database="colortrace_test",
+                    reader_role=_READER_ROLE,
+                    cloud_sql_iam_service_account=True,
+                ).validate()
+
+        rotated_runner = PostgresMigrationRunner(
+            postgres.migration,
+            migration_role=_MIGRATION_ROLE,
+            runtime_role=_RUNTIME_ROLE,
+            reader_role=_ROTATED_READER_ROLE,
+            cloud_sql_iam_service_account=True,
+        )
+        assert rotated_runner.apply_all() == ()
+        PostgresReaderVerifier(
+            postgres.rotated_reader,
+            database="colortrace_test",
+            reader_role=_ROTATED_READER_ROLE,
+            cloud_sql_iam_service_account=True,
+        ).validate()
+        with pytest.raises(PersistenceError, match="^postgres-reader-privilege-invalid$"):
+            PostgresReaderVerifier(
+                postgres.rotated_reader,
+                database="colortrace_test",
+                reader_role=_ROTATED_READER_ROLE,
+            ).validate()
+    finally:
+        with _cursor(postgres.admin) as cursor:
+            for role in roles:
+                cursor.execute(f'REVOKE "{_CLOUD_SQL_IAM_SERVICE_ACCOUNT_ROLE}" FROM "{role}"')
+            cursor.execute(f'DROP ROLE "{_CLOUD_SQL_IAM_SERVICE_ACCOUNT_ROLE}"')
 
 
 def test_reader_rotation_is_atomic_and_revokes_existing_sessions(

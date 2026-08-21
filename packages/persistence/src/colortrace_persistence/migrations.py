@@ -187,6 +187,7 @@ class PostgresMigrationRunner:
         runtime_role: str,
         reader_role: str,
         migrations: tuple[Migration, ...] | None = None,
+        cloud_sql_iam_service_account: bool = False,
     ) -> None:
         self._factory = connection_factory
         self._migration_role = _role_name(
@@ -195,6 +196,7 @@ class PostgresMigrationRunner:
         )
         self._runtime_role = _role_name(runtime_role, code="postgres-runtime-role-invalid")
         self._reader_role = _role_name(reader_role, code="postgres-reader-role-invalid")
+        self._cloud_sql_iam_service_account = cloud_sql_iam_service_account
         if len({self._migration_role, self._runtime_role, self._reader_role}) != 3:
             raise PersistenceError("postgres-role-separation-invalid")
         self._migrations = load_migrations() if migrations is None else migrations
@@ -393,7 +395,11 @@ class PostgresMigrationRunner:
         cursor.execute(f"GRANT USAGE ON SCHEMA colortrace TO {reader}")
         cursor.execute(f"GRANT SELECT ON colortrace.hosted_read_projection_v1 TO {reader}")
         if previous_role is not None and previous_role != self._reader_role:
-            validate_revoked_reader_privileges(cursor, previous_role)
+            validate_revoked_reader_privileges(
+                cursor,
+                previous_role,
+                cloud_sql_iam_service_account=self._cloud_sql_iam_service_account,
+            )
 
     def _revoke_runtime_access(self, cursor: DbCursor, database: str) -> None:
         runtime = _quote_identifier(self._runtime_role)
@@ -495,6 +501,7 @@ class PostgresMigrationRunner:
                 runtime_role=self._runtime_role,
                 reader_role=self._reader_role if hosted_projection else None,
                 hosted_projection=hosted_projection,
+                cloud_sql_iam_service_account=self._cloud_sql_iam_service_account,
             )
         return tuple(applied_now)
 
@@ -520,12 +527,17 @@ class PostgresMigrationRunner:
                 runtime_role=self._runtime_role,
                 reader_role=bound_reader,
                 hosted_projection=current_has_projection,
+                cloud_sql_iam_service_account=self._cloud_sql_iam_service_account,
             )
             if migration.version == 1 and not self._canonical_state_is_empty(cursor):
                 raise PersistenceError("migration-rollback-nonempty")
             if bound_reader is not None and removes_projection:
                 self._revoke_reader_role(cursor, database, bound_reader)
-                validate_revoked_reader_privileges(cursor, bound_reader)
+                validate_revoked_reader_privileges(
+                    cursor,
+                    bound_reader,
+                    cloud_sql_iam_service_account=self._cloud_sql_iam_service_account,
+                )
             for statement in migration.down_statements:
                 cursor.execute(statement)
             cursor.execute(
@@ -542,5 +554,6 @@ class PostgresMigrationRunner:
                     runtime_role=self._runtime_role,
                     reader_role=None,
                     hosted_projection=False,
+                    cloud_sql_iam_service_account=self._cloud_sql_iam_service_account,
                 )
         return migration.version
