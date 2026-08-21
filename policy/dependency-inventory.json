@@ -1487,6 +1487,13 @@
     {
       "ecosystem": "pypi",
       "license": "MIT",
+      "name": "asn1crypto",
+      "source": "https://pypi.org/simple",
+      "version": "1.5.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
       "name": "ast-serialize",
       "source": "https://pypi.org/simple",
       "version": "0.8.0"
@@ -1535,6 +1542,13 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "cloud-sql-python-connector",
+      "source": "https://pypi.org/simple",
+      "version": "1.22.0"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "BSD-3-Clause",
       "name": "colorama",
       "source": "https://pypi.org/simple",
@@ -1553,6 +1567,13 @@
       "name": "distro",
       "source": "https://pypi.org/simple",
       "version": "1.9.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "ISC",
+      "name": "dnspython",
+      "source": "https://pypi.org/simple",
+      "version": "2.8.0"
     },
     {
       "ecosystem": "pypi",
@@ -1644,6 +1665,13 @@
       "name": "graphviz",
       "source": "https://pypi.org/simple",
       "version": "0.21"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "grpcio",
+      "source": "https://pypi.org/simple",
+      "version": "1.83.0"
     },
     {
       "ecosystem": "pypi",
@@ -1808,6 +1836,13 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "name": "pg8000",
+      "source": "https://pypi.org/simple",
+      "version": "1.31.5"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "MIT",
       "name": "pluggy",
       "source": "https://pypi.org/simple",
@@ -1906,6 +1941,13 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "Apache-2.0 OR BSD-3-Clause",
+      "name": "python-dateutil",
+      "source": "https://pypi.org/simple",
+      "version": "2.9.0.post0"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "BSD-3-Clause",
       "name": "python-dotenv",
       "source": "https://pypi.org/simple",
@@ -1959,6 +2001,20 @@
       "name": "ruff",
       "source": "https://pypi.org/simple",
       "version": "0.16.2"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT-0",
+      "name": "scramp",
+      "source": "https://pypi.org/simple",
+      "version": "1.4.17"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "MIT",
+      "name": "six",
+      "source": "https://pypi.org/simple",
+      "version": "1.17.0"
     },
     {
       "ecosystem": "pypi",
