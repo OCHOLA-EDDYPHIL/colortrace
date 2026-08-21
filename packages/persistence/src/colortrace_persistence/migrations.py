@@ -9,12 +9,14 @@ from importlib.resources import files
 from typing import Any, cast
 
 from .ports import ConnectionFactory, DbConnection, DbCursor, PersistenceError
-from .schema_validation import validate_schema
+from .schema_validation import validate_revoked_reader_privileges, validate_schema
 
 _MIGRATION_NAME = re.compile(r"^(?P<version>[0-9]{4})_(?P<name>[a-z][a-z0-9_]*)\.up\.sql$")
 _ROLE_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]{0,62}$")
 _STATEMENT_MARKER = "\n-- colortrace-statement\n"
 _MIGRATION_LOCK = 4851319803954839635
+_HOSTED_PROJECTION_VERSION = 2
+_HOSTED_READER_BINDING = "hosted-read-v1"
 _BOOTSTRAP = (
     "CREATE SCHEMA IF NOT EXISTS colortrace",
     """
@@ -183,6 +185,7 @@ class PostgresMigrationRunner:
         *,
         migration_role: str,
         runtime_role: str,
+        reader_role: str,
         migrations: tuple[Migration, ...] | None = None,
     ) -> None:
         self._factory = connection_factory
@@ -191,7 +194,8 @@ class PostgresMigrationRunner:
             code="postgres-migration-role-invalid",
         )
         self._runtime_role = _role_name(runtime_role, code="postgres-runtime-role-invalid")
-        if self._migration_role == self._runtime_role:
+        self._reader_role = _role_name(reader_role, code="postgres-reader-role-invalid")
+        if len({self._migration_role, self._runtime_role, self._reader_role}) != 3:
             raise PersistenceError("postgres-role-separation-invalid")
         self._migrations = load_migrations() if migrations is None else migrations
         if tuple(value.version for value in self._migrations) != tuple(
@@ -222,11 +226,11 @@ class PostgresMigrationRunner:
 
         cursor.execute(
             "SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb, rolcanlogin, "
-            "rolreplication, rolbypassrls FROM pg_roles WHERE rolname IN (%s, %s)",
-            (self._migration_role, self._runtime_role),
+            "rolreplication, rolbypassrls FROM pg_roles WHERE rolname IN (%s, %s, %s)",
+            (self._migration_role, self._runtime_role, self._reader_role),
         )
         roles = {cast(str, row["rolname"]): row for row in _rows(cursor)}
-        if set(roles) != {self._migration_role, self._runtime_role}:
+        if set(roles) != {self._migration_role, self._runtime_role, self._reader_role}:
             raise PersistenceError("postgres-role-missing")
         for role in roles.values():
             if (
@@ -240,15 +244,34 @@ class PostgresMigrationRunner:
             ):
                 raise PersistenceError("postgres-role-privileges-invalid")
         cursor.execute(
-            "SELECT pg_has_role(%s, %s, 'MEMBER') AS runtime_is_migrator",
-            (self._runtime_role, self._migration_role),
+            "SELECT pg_has_role(%s, %s, 'MEMBER') AS runtime_is_migrator, "
+            "pg_has_role(%s, %s, 'MEMBER') AS reader_is_migrator, "
+            "pg_has_role(%s, %s, 'MEMBER') AS reader_is_runtime",
+            (
+                self._runtime_role,
+                self._migration_role,
+                self._reader_role,
+                self._migration_role,
+                self._reader_role,
+                self._runtime_role,
+            ),
         )
         membership = _rows(cursor)
-        if len(membership) != 1 or membership[0].get("runtime_is_migrator") is not False:
+        if len(membership) != 1 or membership[0] != {
+            "runtime_is_migrator": False,
+            "reader_is_migrator": False,
+            "reader_is_runtime": False,
+        }:
             raise PersistenceError("postgres-role-separation-invalid")
         return database
 
-    def _grant_runtime_access(self, cursor: DbCursor, database: str) -> None:
+    def _grant_runtime_access(
+        self,
+        cursor: DbCursor,
+        database: str,
+        *,
+        hosted_projection: bool,
+    ) -> None:
         runtime = _quote_identifier(self._runtime_role)
         database_name = _quote_identifier(database)
         cursor.execute(f"REVOKE CREATE ON DATABASE {database_name} FROM {runtime}")
@@ -264,12 +287,122 @@ class PostgresMigrationRunner:
         cursor.execute(
             f"REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA colortrace FROM {runtime}"
         )
+        if hosted_projection:
+            cursor.execute(
+                f"REVOKE ALL PRIVILEGES ON TABLE colortrace.hosted_read_bindings FROM {runtime}"
+            )
+            cursor.execute(
+                f"REVOKE ALL PRIVILEGES ON TABLE colortrace.hosted_read_projection_v1 "
+                f"FROM {runtime}"
+            )
+
+    @staticmethod
+    def _revoke_reader_role(cursor: DbCursor, database: str, reader_role: str) -> None:
+        reader = _quote_identifier(_role_name(reader_role, code="postgres-reader-role-invalid"))
+        database_name = _quote_identifier(database)
+        cursor.execute(f"REVOKE ALL PRIVILEGES ON DATABASE {database_name} FROM {reader} CASCADE")
+        cursor.execute(f"REVOKE ALL PRIVILEGES ON SCHEMA colortrace FROM {reader} CASCADE")
+        cursor.execute(
+            f"REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA colortrace FROM {reader} CASCADE"
+        )
+        cursor.execute(
+            f"REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA colortrace FROM {reader} CASCADE"
+        )
+        cursor.execute(
+            f"REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA colortrace FROM {reader} CASCADE"
+        )
+        cursor.execute(
+            "SELECT n.nspname, c.relname, a.attname, acl.privilege_type "
+            "FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+            "JOIN pg_attribute AS a ON a.attrelid = c.oid "
+            "CROSS JOIN LATERAL aclexplode(a.attacl) AS acl "
+            "JOIN pg_roles AS grantee ON grantee.oid = acl.grantee "
+            "WHERE n.nspname = 'colortrace' AND a.attnum > 0 "
+            "AND NOT a.attisdropped AND grantee.rolname = %s "
+            "ORDER BY n.nspname, c.relname, a.attnum, acl.privilege_type",
+            (reader_role,),
+        )
+        column_grants = _rows(cursor)
+        column_privileges = {"INSERT", "REFERENCES", "SELECT", "UPDATE"}
+        for row in column_grants:
+            schema_name = row.get("nspname")
+            relation_name = row.get("relname")
+            column_name = row.get("attname")
+            privilege = row.get("privilege_type")
+            if (
+                not isinstance(schema_name, str)
+                or not isinstance(relation_name, str)
+                or not isinstance(column_name, str)
+                or privilege not in column_privileges
+            ):
+                raise PersistenceError("postgres-result-invalid")
+            cursor.execute(
+                f"REVOKE {privilege} ({_quote_identifier(column_name)}) ON TABLE "
+                f"{_quote_identifier(schema_name)}.{_quote_identifier(relation_name)} "
+                f"FROM {reader} CASCADE"
+            )
+
+    @staticmethod
+    def _bound_reader_role(cursor: DbCursor) -> str:
+        cursor.execute(
+            "SELECT reader_role FROM colortrace.hosted_read_bindings "
+            "WHERE binding_key = %s FOR UPDATE",
+            (_HOSTED_READER_BINDING,),
+        )
+        rows = _rows(cursor)
+        if len(rows) != 1:
+            raise PersistenceError("postgres-reader-binding-invalid")
+        observed = rows[0].get("reader_role")
+        if not isinstance(observed, str):
+            raise PersistenceError("postgres-reader-binding-invalid")
+        return _role_name(observed, code="postgres-reader-binding-invalid")
+
+    def _grant_reader_access(
+        self,
+        cursor: DbCursor,
+        database: str,
+        *,
+        initialize_binding: bool,
+    ) -> None:
+        previous_role: str | None
+        if initialize_binding:
+            cursor.execute("SELECT 1 FROM colortrace.hosted_read_bindings")
+            if _rows(cursor):
+                raise PersistenceError("postgres-reader-binding-invalid")
+            previous_role = None
+        else:
+            previous_role = self._bound_reader_role(cursor)
+            self._revoke_reader_role(cursor, database, previous_role)
+        if previous_role is None or previous_role != self._reader_role:
+            self._revoke_reader_role(cursor, database, self._reader_role)
+        if previous_role is not None:
+            cursor.execute(
+                "UPDATE colortrace.hosted_read_bindings SET reader_role = %s "
+                "WHERE binding_key = %s",
+                (self._reader_role, _HOSTED_READER_BINDING),
+            )
+        else:
+            cursor.execute(
+                "INSERT INTO colortrace.hosted_read_bindings (binding_key, reader_role) "
+                "VALUES (%s, %s)",
+                (_HOSTED_READER_BINDING, self._reader_role),
+            )
+        reader = _quote_identifier(self._reader_role)
+        database_name = _quote_identifier(database)
+        cursor.execute(f"GRANT CONNECT ON DATABASE {database_name} TO {reader}")
+        cursor.execute(f"GRANT USAGE ON SCHEMA colortrace TO {reader}")
+        cursor.execute(f"GRANT SELECT ON colortrace.hosted_read_projection_v1 TO {reader}")
+        if previous_role is not None and previous_role != self._reader_role:
+            validate_revoked_reader_privileges(cursor, previous_role)
 
     def _revoke_runtime_access(self, cursor: DbCursor, database: str) -> None:
         runtime = _quote_identifier(self._runtime_role)
         database_name = _quote_identifier(database)
         cursor.execute(f"REVOKE ALL PRIVILEGES ON SCHEMA colortrace FROM {runtime}")
         cursor.execute(f"REVOKE CONNECT ON DATABASE {database_name} FROM {runtime}")
+
+    def _revoke_reader_access(self, cursor: DbCursor, database: str) -> None:
+        self._revoke_reader_role(cursor, database, self._reader_role)
 
     def _existing(self, cursor: DbCursor) -> list[dict[str, Any]]:
         cursor.execute(
@@ -342,11 +475,26 @@ class PostgresMigrationRunner:
                     ),
                 )
                 applied_now.append(migration.version)
-            self._grant_runtime_access(cursor, database)
+            hosted_projection = len(self._migrations) >= _HOSTED_PROJECTION_VERSION
+            self._grant_runtime_access(
+                cursor,
+                database,
+                hosted_projection=hosted_projection,
+            )
+            if hosted_projection:
+                self._grant_reader_access(
+                    cursor,
+                    database,
+                    initialize_binding=_HOSTED_PROJECTION_VERSION in applied_now,
+                )
+            else:
+                self._revoke_reader_access(cursor, database)
             validate_schema(
                 cursor,
                 migration_role=self._migration_role,
                 runtime_role=self._runtime_role,
+                reader_role=self._reader_role if hosted_projection else None,
+                hosted_projection=hosted_projection,
             )
         return tuple(applied_now)
 
@@ -363,13 +511,21 @@ class PostgresMigrationRunner:
             if not isinstance(version, int) or not 1 <= version <= len(self._migrations):
                 raise PersistenceError("migration-unknown")
             migration = self._migrations[version - 1]
+            current_has_projection = migration.version >= _HOSTED_PROJECTION_VERSION
+            removes_projection = migration.version == _HOSTED_PROJECTION_VERSION
+            bound_reader = self._bound_reader_role(cursor) if current_has_projection else None
             validate_schema(
                 cursor,
                 migration_role=self._migration_role,
                 runtime_role=self._runtime_role,
+                reader_role=bound_reader,
+                hosted_projection=current_has_projection,
             )
-            if not self._canonical_state_is_empty(cursor):
+            if migration.version == 1 and not self._canonical_state_is_empty(cursor):
                 raise PersistenceError("migration-rollback-nonempty")
+            if bound_reader is not None and removes_projection:
+                self._revoke_reader_role(cursor, database, bound_reader)
+                validate_revoked_reader_privileges(cursor, bound_reader)
             for statement in migration.down_statements:
                 cursor.execute(statement)
             cursor.execute(
@@ -378,4 +534,13 @@ class PostgresMigrationRunner:
             )
             if migration.version == 1:
                 self._revoke_runtime_access(cursor, database)
+                self._revoke_reader_access(cursor, database)
+            elif migration.version == _HOSTED_PROJECTION_VERSION:
+                validate_schema(
+                    cursor,
+                    migration_role=self._migration_role,
+                    runtime_role=self._runtime_role,
+                    reader_role=None,
+                    hosted_projection=False,
+                )
         return migration.version

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from colortrace_recovery import RecoveryError
@@ -30,6 +30,26 @@ class IncidentService(Protocol):
     def replay(self, incident_id: str) -> dict[str, Any]: ...
 
     def workspace(self, incident_id: str) -> dict[str, Any]: ...
+
+
+class IncidentReadService(Protocol):
+    def list_incidents(self, *, limit: int, cursor: str | None) -> dict[str, Any]: ...
+
+    def get_incident(self, incident_id: str) -> dict[str, Any]: ...
+
+    def replay(self, incident_id: str) -> dict[str, Any]: ...
+
+    def workspace(self, incident_id: str) -> dict[str, Any]: ...
+
+
+class ResponsePlanReadService(Protocol):
+    def draft(self, incident_id: str) -> dict[str, Any]: ...
+
+    def review(self, incident_id: str) -> dict[str, Any]: ...
+
+
+class RecoveryReadService(Protocol):
+    def review(self, incident_id: str) -> dict[str, Any]: ...
 
 
 def _problem(status: int, code: str) -> HTTPException:
@@ -160,6 +180,121 @@ def _status_for_recovery_error(code: str) -> int:
     return 409
 
 
+def create_read_only_app(
+    service: IncidentReadService,
+    *,
+    response_plans: ResponsePlanReadService,
+    recovery: RecoveryReadService,
+    readiness: Callable[[], bool] | None = None,
+    lifespan: Lifespan[FastAPI] | None = None,
+) -> FastAPI:
+    app = FastAPI(
+        title="ColorTrace Hosted Read API",
+        version="1.0.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
+
+    @app.middleware("http")
+    async def harden_response(
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        try:
+            response = await call_next(request)
+        except Exception:
+            response = JSONResponse(status_code=500, content={"code": "internal-server-error"})
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+        )
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+        )
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        return response
+
+    @app.exception_handler(SliceContractError)
+    async def handle_contract_error(_request: Any, error: SliceContractError) -> JSONResponse:
+        return JSONResponse(status_code=_status_for_error(error.code), content={"code": error.code})
+
+    @app.exception_handler(ResponsePlanError)
+    async def handle_plan_error(_request: Any, error: ResponsePlanError) -> JSONResponse:
+        return JSONResponse(
+            status_code=_status_for_plan_error(error.code),
+            content={"code": error.code},
+        )
+
+    @app.exception_handler(RecoveryError)
+    async def handle_recovery_error(_request: Any, error: RecoveryError) -> JSONResponse:
+        return JSONResponse(
+            status_code=_status_for_recovery_error(error.code),
+            content={"code": error.code},
+        )
+
+    @app.exception_handler(HTTPException)
+    async def handle_http_error(_request: Any, error: HTTPException) -> JSONResponse:
+        detail = error.detail
+        if isinstance(detail, dict) and isinstance(detail.get("code"), str):
+            return JSONResponse(status_code=error.status_code, content={"code": detail["code"]})
+        return JSONResponse(status_code=error.status_code, content={"code": "request-rejected"})
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_request_validation(
+        _request: Any,
+        _error: RequestValidationError,
+    ) -> JSONResponse:
+        return JSONResponse(status_code=422, content={"code": "request-invalid"})
+
+    @app.get("/health/startup", include_in_schema=False)
+    def startup_health() -> dict[str, str]:
+        if readiness is not None and not readiness():
+            raise _problem(503, "hosted-read-not-ready")
+        return {"status": "ready"}
+
+    @app.get("/health/live", include_in_schema=False)
+    def liveness_health() -> dict[str, str]:
+        return {"status": "alive"}
+
+    @app.get("/v1/incidents")
+    def list_incidents(
+        limit: int = Query(default=25, ge=1, le=50),
+        cursor: str | None = Query(default=None, min_length=1, max_length=512),
+    ) -> dict[str, Any]:
+        return _public_document(service.list_incidents(limit=limit, cursor=cursor))
+
+    @app.get("/v1/incidents/{incident_id}")
+    def get_incident(incident_id: str) -> dict[str, Any]:
+        return _public_document(service.get_incident(incident_id))
+
+    @app.get("/v1/incidents/{incident_id}/replay")
+    def replay_incident(incident_id: str) -> dict[str, Any]:
+        return _public_document(service.replay(incident_id))
+
+    @app.get("/v1/incidents/{incident_id}/workspace")
+    def get_workspace(incident_id: str) -> dict[str, Any]:
+        return _public_document(service.workspace(incident_id))
+
+    @app.get("/v1/incidents/{incident_id}/response-plan/draft")
+    def get_response_plan_draft(incident_id: str) -> dict[str, Any]:
+        return _public_document(response_plans.draft(incident_id))
+
+    @app.get("/v1/incidents/{incident_id}/response-plan")
+    def get_response_plan(incident_id: str) -> dict[str, Any]:
+        return _public_document(response_plans.review(incident_id))
+
+    @app.get("/v1/incidents/{incident_id}/recovery")
+    def get_recovery(incident_id: str) -> dict[str, Any]:
+        return _public_document(recovery.review(incident_id))
+
+    return app
+
+
 def create_app(
     service: IncidentService,
     *,
@@ -269,6 +404,14 @@ def create_app(
             raise _problem(401, "authentication-invalid") from None
 
     principal_dependency = Depends(current_principal)
+
+    @app.get("/health/startup", include_in_schema=False)
+    def startup_health() -> dict[str, str]:
+        return {"status": "ready"}
+
+    @app.get("/health/live", include_in_schema=False)
+    def liveness_health() -> dict[str, str]:
+        return {"status": "alive"}
 
     def plan_api() -> ResponsePlanApi:
         if response_plans is None:

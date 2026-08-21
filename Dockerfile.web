@@ -1,0 +1,29 @@
+FROM node@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS build
+RUN corepack disable \
+    && npm install --global pnpm@11.21.0 \
+    && pnpm --version | grep -Fx 11.21.0
+WORKDIR /source
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY packages/api-client/ packages/api-client/
+COPY packages/contracts/ packages/contracts/
+COPY packages/web/ packages/web/
+COPY packages/workspace-model/ packages/workspace-model/
+RUN pnpm install --frozen-lockfile \
+    && pnpm --filter @colortrace/web build
+
+FROM node@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
+ARG SOURCE_COMMIT
+ARG SOURCE_TREE
+RUN case "$SOURCE_COMMIT" in (*[!0-9a-f]*|'') exit 1;; esac \
+    && test "${#SOURCE_COMMIT}" = 40 \
+    && case "$SOURCE_TREE" in (*[!0-9a-f]*|'') exit 1;; esac \
+    && test "${#SOURCE_TREE}" = 40
+COPY --chown=node:node --from=build /source/packages/web/dist /app/public
+COPY --chown=node:node deploy/web-server.mjs /app/server.mjs
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      org.colortrace.source-tree="${SOURCE_TREE}"
+ENV NODE_ENV=production \
+    PORT=8080
+USER node
+EXPOSE 8080
+ENTRYPOINT ["node", "/app/server.mjs"]

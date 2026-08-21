@@ -283,6 +283,75 @@ ORDER BY versions.record_version
 """
 
 
+def _snapshot_from_record_rows(
+    namespace: str,
+    record_id: str,
+    rows: list[dict[str, Any]],
+) -> MetadataSnapshot:
+    if not rows:
+        raise PersistenceError("metadata-record-not-found")
+    expected_version = 1
+    previous_chain: str | None = None
+    final_document: dict[str, Any] | None = None
+    final_document_bytes: bytes | None = None
+    final_document_sha256: str | None = None
+    final_chain_sha256: str | None = None
+    for row in rows:
+        if row.get("history_version") != expected_version:
+            raise PersistenceError("stored-metadata-history-invalid")
+        document = _decode_document(
+            row.get("history_document"), code="stored-metadata-document-invalid"
+        )
+        document_bytes = _canonical_json(document)
+        document_sha256 = _sha256(document_bytes)
+        if (
+            row.get("history_document_sha256") != document_sha256
+            or row.get("history_previous_chain_sha256") != previous_chain
+        ):
+            raise PersistenceError("stored-metadata-history-invalid")
+        chain_sha256 = _chain_sha256(
+            namespace=namespace,
+            record_id=record_id,
+            version=expected_version,
+            document_sha256=document_sha256,
+            previous_chain_sha256=previous_chain,
+        )
+        if row.get("history_chain_sha256") != chain_sha256:
+            raise PersistenceError("stored-metadata-history-invalid")
+        final_document = document
+        final_document_bytes = document_bytes
+        final_document_sha256 = document_sha256
+        final_chain_sha256 = chain_sha256
+        previous_chain = chain_sha256
+        expected_version += 1
+    last = rows[-1]
+    if (
+        final_document is None
+        or final_document_bytes is None
+        or final_document_sha256 is None
+        or final_chain_sha256 is None
+        or last.get("current_version") != expected_version - 1
+    ):
+        raise PersistenceError("stored-metadata-record-invalid")
+    current_document = _decode_document(
+        last.get("current_document"), code="stored-metadata-document-invalid"
+    )
+    if (
+        _canonical_json(current_document) != final_document_bytes
+        or last.get("current_document_sha256") != final_document_sha256
+        or last.get("current_chain_sha256") != final_chain_sha256
+    ):
+        raise PersistenceError("stored-metadata-record-invalid")
+    return MetadataSnapshot(
+        namespace=namespace,
+        record_id=record_id,
+        version=expected_version - 1,
+        document=final_document,
+        document_sha256=final_document_sha256,
+        chain_sha256=final_chain_sha256,
+    )
+
+
 class CanonicalPostgresStore:
     def __init__(self, connection_factory: ConnectionFactory, *, namespace: str) -> None:
         if namespace not in _NAMESPACES:
@@ -309,66 +378,7 @@ class CanonicalPostgresStore:
             if required:
                 raise PersistenceError("metadata-record-not-found")
             return None
-        expected_version = 1
-        previous_chain: str | None = None
-        final_document: dict[str, Any] | None = None
-        final_document_bytes: bytes | None = None
-        final_document_sha256: str | None = None
-        final_chain_sha256: str | None = None
-        for row in rows:
-            if row.get("history_version") != expected_version:
-                raise PersistenceError("stored-metadata-history-invalid")
-            document = _decode_document(
-                row.get("history_document"), code="stored-metadata-document-invalid"
-            )
-            document_bytes = _canonical_json(document)
-            document_sha256 = _sha256(document_bytes)
-            if (
-                row.get("history_document_sha256") != document_sha256
-                or row.get("history_previous_chain_sha256") != previous_chain
-            ):
-                raise PersistenceError("stored-metadata-history-invalid")
-            chain_sha256 = _chain_sha256(
-                namespace=self._namespace,
-                record_id=record_id,
-                version=expected_version,
-                document_sha256=document_sha256,
-                previous_chain_sha256=previous_chain,
-            )
-            if row.get("history_chain_sha256") != chain_sha256:
-                raise PersistenceError("stored-metadata-history-invalid")
-            final_document = document
-            final_document_bytes = document_bytes
-            final_document_sha256 = document_sha256
-            final_chain_sha256 = chain_sha256
-            previous_chain = chain_sha256
-            expected_version += 1
-        last = rows[-1]
-        if (
-            final_document is None
-            or final_document_bytes is None
-            or final_document_sha256 is None
-            or final_chain_sha256 is None
-            or last.get("current_version") != expected_version - 1
-        ):
-            raise PersistenceError("stored-metadata-record-invalid")
-        current_document = _decode_document(
-            last.get("current_document"), code="stored-metadata-document-invalid"
-        )
-        if (
-            _canonical_json(current_document) != final_document_bytes
-            or last.get("current_document_sha256") != final_document_sha256
-            or last.get("current_chain_sha256") != final_chain_sha256
-        ):
-            raise PersistenceError("stored-metadata-record-invalid")
-        return MetadataSnapshot(
-            namespace=self._namespace,
-            record_id=record_id,
-            version=expected_version - 1,
-            document=final_document,
-            document_sha256=final_document_sha256,
-            chain_sha256=final_chain_sha256,
-        )
+        return _snapshot_from_record_rows(self._namespace, record_id, rows)
 
     @staticmethod
     def _request_sha256(value: Mapping[str, Any]) -> str:

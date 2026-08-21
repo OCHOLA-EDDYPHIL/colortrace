@@ -13,6 +13,7 @@ IGNORED_DIRECTORIES = frozenset(
         ".mypy_cache",
         ".pytest_cache",
         ".ruff_cache",
+        ".terraform",
         ".venv",
         "__pycache__",
         "build",

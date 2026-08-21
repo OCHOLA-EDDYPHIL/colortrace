@@ -1,0 +1,11 @@
+*
+!Dockerfile.runtime
+!pyproject.toml
+!uv.lock
+!config/
+!config/grafana-mcp/
+!config/grafana-mcp/**
+!deploy/
+!deploy/runtime-entrypoint.py
+!packages/
+!packages/**
