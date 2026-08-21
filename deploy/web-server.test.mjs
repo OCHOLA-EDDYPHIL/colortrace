@@ -142,6 +142,7 @@ test("the BFF uses the exact audience and target while replacing browser credent
       headers: browserHeaders,
     });
     assert.equal(list.status, 200);
+    assert.equal(list.headers.get("x-robots-tag"), "noindex, nofollow, noarchive");
     assert.deepEqual(await list.json(), {
       target: "/v1/incidents?limit=10&cursor=next%2Fpage",
     });
