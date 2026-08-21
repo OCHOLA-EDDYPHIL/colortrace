@@ -156,27 +156,3 @@ variable "policy_sha256" {
     error_message = "policy_sha256 must be a prefixed SHA-256 digest."
   }
 }
-
-variable "grafana_secret_version" {
-  description = "Existing Secret Manager version containing the Viewer token."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition     = var.grafana_secret_version == null || can(regex("^[1-9][0-9]*$", var.grafana_secret_version))
-    error_message = "grafana_secret_version must be an immutable numeric version."
-  }
-}
-
-variable "grafana_url" {
-  description = "Exact Grafana Cloud origin used by the private MCP subprocess."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition     = var.grafana_url == null || can(regex("^https://[^/?#]+/?$", var.grafana_url))
-    error_message = "grafana_url must be one HTTPS origin without credentials, path, query, or fragment."
-  }
-}

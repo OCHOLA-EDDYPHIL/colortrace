@@ -163,6 +163,16 @@ run "workload_isolation_is_explicit" {
 
   assert {
     condition = (
+      output.candidate_bindings.grafana_mcp.deployed == false
+      && output.candidate_bindings.grafana_mcp.public == false
+      && output.candidate_bindings.grafana_mcp.viewer_secret_version == null
+      && length(output.candidate_bindings.grafana_mcp.secret_accessors) == 0
+    )
+    error_message = "The provisional API/web topology must bind Grafana MCP as absent, private, and credential-free."
+  }
+
+  assert {
+    condition = (
       length([
         for env in google_cloud_run_v2_service.service["web"].template[0].containers[0].env : env
         if contains(["COLORTRACE_API_AUDIENCE", "COLORTRACE_API_ORIGIN"], env.name)

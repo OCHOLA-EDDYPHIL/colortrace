@@ -67,6 +67,12 @@ output "candidate_bindings" {
       jwks_uri          = null
       mutations_exposed = false
     }
+    grafana_mcp = {
+      deployed              = false
+      public                = false
+      viewer_secret_version = null
+      secret_accessors      = []
+    }
     api_origin    = contains(var.workload_services, "web") ? data.google_cloud_run_v2_service.api[0].uri : null
     services      = sort(tolist(var.workload_services))
     database_jobs = sort(keys(google_cloud_run_v2_job.database))
