@@ -69,6 +69,7 @@ class SecurityEvidenceTest(unittest.TestCase):
                     "action-pins.json",
                     "ai-runtime.json",
                     "dependency.json",
+                    "deployment.json",
                     "runner-isolation.json",
                     "sbom.cdx.json",
                     "secret.json",

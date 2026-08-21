@@ -12,6 +12,7 @@ from colortrace_repo.actions import check_actions
 from colortrace_repo.ai_policy import check_ai_policy
 from colortrace_repo.common import Finding, load_json, sorted_findings
 from colortrace_repo.dependencies import check_dependencies, resolved_locked_packages
+from colortrace_repo.deployment import check_deployment
 
 _DIGEST = re.compile(r"^[0-9a-f]{40}$")
 _IMAGE_DIGEST = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}$")
@@ -19,6 +20,7 @@ _REPORTS = (
     "action-pins.json",
     "ai-runtime.json",
     "dependency.json",
+    "deployment.json",
     "runner-isolation.json",
     "sbom.cdx.json",
     "secret.json",
@@ -36,6 +38,21 @@ _BOUND_INPUTS = (
     "policy/trivyignore.yaml",
     "uv.lock",
 )
+
+
+def _deployment_inputs(root: Path) -> tuple[str, ...]:
+    selected: list[str] = []
+    for path in root.rglob("*"):
+        if not path.is_file() or ".terraform" in path.parts:
+            continue
+        if (
+            path.name.startswith("Dockerfile")
+            or path.name == ".terraform.lock.hcl"
+            or path.suffix == ".tf"
+            or path.name.endswith(".tftest.hcl")
+        ):
+            selected.append(path.relative_to(root).as_posix())
+    return tuple(sorted(selected))
 
 
 def _sha256(path: Path) -> str:
@@ -200,17 +217,27 @@ def prepare_security_evidence(root: Path, output: Path) -> list[Finding]:
     dependency_findings = check_dependencies(root)
     ai_findings = check_ai_policy(root)
     action_findings = check_actions(root)
+    deployment_findings = check_deployment(root)
     sbom, sbom_findings = build_sbom(root)
     _write_json(output / "dependency.json", _policy_report("dependencies", dependency_findings))
     _write_json(output / "ai-runtime.json", _policy_report("ai-policy", ai_findings))
     _write_json(output / "action-pins.json", _policy_report("actions", action_findings))
+    _write_json(output / "deployment.json", _policy_report("deployment", deployment_findings))
     _write_json(output / "runner-isolation.json", _runner_report())
     _write_json(output / "sbom.cdx.json", sbom)
-    return sorted_findings([*dependency_findings, *ai_findings, *action_findings, *sbom_findings])
+    return sorted_findings(
+        [
+            *dependency_findings,
+            *ai_findings,
+            *action_findings,
+            *deployment_findings,
+            *sbom_findings,
+        ]
+    )
 
 
 def _report_status(name: str, document: Any) -> str:
-    if name in {"action-pins.json", "ai-runtime.json", "dependency.json"}:
+    if name in {"action-pins.json", "ai-runtime.json", "dependency.json", "deployment.json"}:
         return "pass" if isinstance(document, dict) and document.get("ok") is True else "fail"
     if name == "secret.json":
         return "pass" if document == [] else "fail"
@@ -326,7 +353,7 @@ def finalize_security_evidence(
                 Finding(name, "security.report.invalid", f"cannot load report: {error}")
             )
     inputs: list[dict[str, Any]] = []
-    for name in _BOUND_INPUTS:
+    for name in (*_BOUND_INPUTS, *_deployment_inputs(root)):
         path = root / name
         if not path.is_file():
             findings.append(Finding(name, "security.input.missing", "bound input is missing"))
