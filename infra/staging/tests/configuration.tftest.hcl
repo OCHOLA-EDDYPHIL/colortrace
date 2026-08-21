@@ -268,7 +268,7 @@ run "database_jobs_cannot_overlap_workloads" {
   variables {
     project_id                    = "colortrace-test-project"
     resource_prefix               = "ct-stg-t0001"
-    workload_services            = ["api"]
+    workload_services             = ["api"]
     enable_database_migration_job = true
     candidate_commit              = "1111111111111111111111111111111111111111"
     candidate_tree                = "2222222222222222222222222222222222222222"
