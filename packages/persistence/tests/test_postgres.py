@@ -10,17 +10,26 @@ from typing import Any, cast
 
 import pg8000.dbapi
 import pytest
+from colortrace_api.hosted_read import (
+    _load_seeded_fixture,
+    bundled_fixture_digest,
+    load_fixture,
+    seed_fixture,
+)
 from colortrace_persistence import (
     CanonicalPostgresStore,
     HostedMetadataStores,
     PersistenceError,
     PostgresMigrationRunner,
+    PostgresReaderVerifier,
+    PostgresRoleBootstrapper,
 )
 from colortrace_persistence.ports import DbConnection
 
 _NOW = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
 _MIGRATION_ROLE = "colortrace_migrator_test"
 _RUNTIME_ROLE = "colortrace_runtime_test"
+_READER_ROLE = "colortrace_reader_test"
 
 
 class LocalPostgresFactory:
@@ -123,7 +132,7 @@ def _quoted_literal(cursor: Any, value: str) -> str:
 def _clean_database(factory: LocalPostgresFactory) -> None:
     with _cursor(factory) as cursor:
         cursor.execute("DROP SCHEMA IF EXISTS colortrace CASCADE")
-        for role in (_MIGRATION_ROLE, _RUNTIME_ROLE):
+        for role in (_MIGRATION_ROLE, _RUNTIME_ROLE, _READER_ROLE):
             cursor.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
             if cursor.fetchone() is not None:
                 cursor.execute(
@@ -138,12 +147,14 @@ class PostgresEnvironment:
     admin: LocalPostgresFactory
     migration: LocalPostgresFactory
     runtime: LocalPostgresFactory
+    reader: LocalPostgresFactory
 
     def runner(self) -> PostgresMigrationRunner:
         return PostgresMigrationRunner(
             self.migration,
             migration_role=_MIGRATION_ROLE,
             runtime_role=_RUNTIME_ROLE,
+            reader_role=_READER_ROLE,
         )
 
 
@@ -153,9 +164,11 @@ def postgres() -> Iterator[PostgresEnvironment]:
     _clean_database(admin)
     migration_password = f"{admin.password}-migration"
     runtime_password = f"{admin.password}-runtime"
+    reader_password = f"{admin.password}-reader"
     with _cursor(admin) as cursor:
         migration_literal = _quoted_literal(cursor, migration_password)
         runtime_literal = _quoted_literal(cursor, runtime_password)
+        reader_literal = _quoted_literal(cursor, reader_password)
         cursor.execute(
             f'CREATE ROLE "{_MIGRATION_ROLE}" LOGIN PASSWORD {migration_literal} '
             "NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS"
@@ -165,13 +178,24 @@ def postgres() -> Iterator[PostgresEnvironment]:
             "NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS"
         )
         cursor.execute(
-            f'GRANT CONNECT, CREATE ON DATABASE colortrace_test TO "{_MIGRATION_ROLE}" '
-            "WITH GRANT OPTION"
+            f'CREATE ROLE "{_READER_ROLE}" LOGIN PASSWORD {reader_literal} '
+            "NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS"
         )
+    bootstrapper = PostgresRoleBootstrapper(
+        admin,
+        database="colortrace_test",
+        admin_role=admin.user,
+        migration_role=_MIGRATION_ROLE,
+        runtime_role=_RUNTIME_ROLE,
+        reader_role=_READER_ROLE,
+    )
+    bootstrapper.apply()
+    bootstrapper.apply()
     environment = PostgresEnvironment(
         admin=admin,
         migration=admin.as_user(_MIGRATION_ROLE, migration_password),
         runtime=admin.as_user(_RUNTIME_ROLE, runtime_password),
+        reader=admin.as_user(_READER_ROLE, reader_password),
     )
     try:
         yield environment
@@ -236,6 +260,53 @@ def test_runtime_role_can_use_store_but_cannot_modify_schema(
     )
 
 
+def test_reader_role_can_read_projection_tables_and_denies_dml_and_ddl(
+    migrated: PostgresEnvironment,
+) -> None:
+    PostgresReaderVerifier(
+        migrated.reader,
+        database="colortrace_test",
+        reader_role=_READER_ROLE,
+    ).validate()
+    writer = CanonicalPostgresStore(migrated.runtime, namespace="incident")
+    expected = writer.create("reader-check", {"state": "created"}, idempotency_key="reader-create")
+
+    assert (
+        CanonicalPostgresStore(migrated.reader, namespace="incident").read("reader-check")
+        == expected
+    )
+    for statement in (
+        "INSERT INTO colortrace.metadata_records "
+        "(namespace, record_id, record_version, document, document_sha256, chain_sha256) "
+        "VALUES ('incident', 'forbidden', 1, '{}'::bytea, 'sha256:' || repeat('0', 64), "
+        "'sha256:' || repeat('0', 64))",
+        "UPDATE colortrace.metadata_records SET updated_at = clock_timestamp()",
+        "DELETE FROM colortrace.metadata_records",
+        "SELECT * FROM colortrace.metadata_idempotency",
+        "CREATE TABLE colortrace.reader_ddl_forbidden (id INTEGER)",
+        "CREATE TEMPORARY TABLE reader_temp_forbidden (id INTEGER)",
+    ):
+        _assert_database_error(migrated.reader, statement)
+
+
+def test_hosted_fixture_seed_replays_and_reader_verifies_readiness(
+    migrated: PostgresEnvironment,
+) -> None:
+    migration_store = CanonicalPostgresStore(migrated.migration, namespace="incident")
+    digest = bundled_fixture_digest()
+
+    first = seed_fixture(migration_store, digest)
+    second = seed_fixture(migration_store, digest)
+
+    assert first == second
+    fixture, readiness = _load_seeded_fixture(
+        CanonicalPostgresStore(migrated.reader, namespace="incident"),
+        load_fixture(digest),
+    )
+    assert fixture.version == 1
+    assert readiness.version == 1
+
+
 @pytest.mark.parametrize(
     "statement",
     [
@@ -264,6 +335,41 @@ def test_migration_repairs_runtime_privilege_drift(migrated: PostgresEnvironment
 
     assert migrated.runner().apply_all() == ()
     _assert_database_error(migrated.runtime, "TRUNCATE colortrace.metadata_records")
+
+
+def test_migration_repairs_reader_privilege_drift(migrated: PostgresEnvironment) -> None:
+    with _cursor(migrated.migration) as cursor:
+        cursor.execute(f'GRANT INSERT ON colortrace.metadata_records TO "{_READER_ROLE}"')
+
+    assert migrated.runner().apply_all() == ()
+    PostgresReaderVerifier(
+        migrated.reader,
+        database="colortrace_test",
+        reader_role=_READER_ROLE,
+    ).validate()
+    _assert_database_error(
+        migrated.reader,
+        "INSERT INTO colortrace.metadata_records "
+        "(namespace, record_id, record_version, document, document_sha256, chain_sha256) "
+        "VALUES ('incident', 'forbidden', 1, '{}'::bytea, 'sha256:' || repeat('0', 64), "
+        "'sha256:' || repeat('0', 64))",
+    )
+
+
+def test_reader_profile_fails_closed_on_out_of_band_schema_create_grant(
+    migrated: PostgresEnvironment,
+) -> None:
+    with _cursor(migrated.admin) as cursor:
+        cursor.execute(f'GRANT CREATE ON SCHEMA public TO "{_READER_ROLE}"')
+
+    with pytest.raises(PersistenceError, match="^postgres-reader-privilege-invalid$"):
+        migrated.runner().apply_all()
+    with pytest.raises(PersistenceError, match="^postgres-reader-privilege-invalid$"):
+        PostgresReaderVerifier(
+            migrated.reader,
+            database="colortrace_test",
+            reader_role=_READER_ROLE,
+        ).validate()
 
 
 def test_rollback_refuses_nonempty_canonical_state(migrated: PostgresEnvironment) -> None:

@@ -61,21 +61,50 @@ def test_migration_runner_fails_closed_on_noncontiguous_input() -> None:
             NeverConnect(),  # type: ignore[arg-type]
             migration_role="colortrace_migrator",
             runtime_role="colortrace_runtime",
+            reader_role="colortrace_reader",
             migrations=(invalid,),
         )
 
 
 @pytest.mark.parametrize(
-    ("migration_role", "runtime_role", "code"),
+    ("migration_role", "runtime_role", "reader_role", "code"),
     [
-        ("bad role", "colortrace_runtime", "postgres-migration-role-invalid"),
-        ("colortrace_migrator", "bad role", "postgres-runtime-role-invalid"),
-        ("colortrace_runtime", "colortrace_runtime", "postgres-role-separation-invalid"),
+        (
+            "bad role",
+            "colortrace_runtime",
+            "colortrace_reader",
+            "postgres-migration-role-invalid",
+        ),
+        (
+            "colortrace_migrator",
+            "bad role",
+            "colortrace_reader",
+            "postgres-runtime-role-invalid",
+        ),
+        (
+            "colortrace_migrator",
+            "colortrace_runtime",
+            "bad role",
+            "postgres-reader-role-invalid",
+        ),
+        (
+            "colortrace_runtime",
+            "colortrace_runtime",
+            "colortrace_reader",
+            "postgres-role-separation-invalid",
+        ),
+        (
+            "colortrace_migrator",
+            "colortrace_runtime",
+            "colortrace_runtime",
+            "postgres-role-separation-invalid",
+        ),
     ],
 )
 def test_migration_runner_requires_distinct_safe_role_names(
     migration_role: str,
     runtime_role: str,
+    reader_role: str,
     code: str,
 ) -> None:
     with pytest.raises(PersistenceError, match=f"^{code}$"):
@@ -83,4 +112,5 @@ def test_migration_runner_requires_distinct_safe_role_names(
             NeverConnect(),  # type: ignore[arg-type]
             migration_role=migration_role,
             runtime_role=runtime_role,
+            reader_role=reader_role,
         )

@@ -410,6 +410,14 @@ _EXPECTED_TABLE_PRIVILEGES: Mapping[str, frozenset[str]] = {
     "metadata_records": frozenset({"INSERT", "SELECT", "UPDATE"}),
     "schema_migrations": frozenset(),
 }
+_EXPECTED_READER_TABLE_PRIVILEGES: Mapping[str, frozenset[str]] = {
+    "metadata_claim_events": frozenset(),
+    "metadata_claims": frozenset(),
+    "metadata_idempotency": frozenset(),
+    "metadata_record_versions": frozenset({"SELECT"}),
+    "metadata_records": frozenset({"SELECT"}),
+    "schema_migrations": frozenset(),
+}
 
 _TABLE_PRIVILEGES = ("DELETE", "INSERT", "REFERENCES", "SELECT", "TRIGGER", "TRUNCATE", "UPDATE")
 
@@ -594,7 +602,90 @@ def _validate_runtime_privileges(cursor: DbCursor, runtime_role: str) -> None:
         raise PersistenceError("postgres-runtime-privilege-invalid")
 
 
-def validate_schema(cursor: DbCursor, *, migration_role: str, runtime_role: str) -> None:
+def validate_reader_privileges(cursor: DbCursor, reader_role: str) -> None:
+    cursor.execute(
+        "SELECT has_schema_privilege(%s, n.oid, 'USAGE') AS usage, "
+        "has_schema_privilege(%s, n.oid, 'CREATE') AS create_privilege "
+        "FROM pg_namespace AS n WHERE n.nspname = 'colortrace'",
+        (reader_role, reader_role),
+    )
+    schema_rows = _rows(cursor)
+    if len(schema_rows) != 1 or schema_rows[0] != {"usage": True, "create_privilege": False}:
+        raise PersistenceError("postgres-reader-privilege-invalid")
+
+    cursor.execute(
+        "SELECT bool_or(has_schema_privilege(%s, n.oid, 'CREATE')) AS can_create "
+        "FROM pg_namespace AS n WHERE n.nspname !~ '^pg_' "
+        "AND n.nspname <> 'information_schema'",
+        (reader_role,),
+    )
+    create_rows = _rows(cursor)
+    if len(create_rows) != 1 or create_rows[0].get("can_create") is not False:
+        raise PersistenceError("postgres-reader-privilege-invalid")
+
+    cursor.execute(
+        "SELECT n.nspname, c.relname, "
+        "has_table_privilege(%s, c.oid, 'DELETE') AS delete_privilege, "
+        "has_table_privilege(%s, c.oid, 'INSERT') AS insert_privilege, "
+        "has_table_privilege(%s, c.oid, 'REFERENCES') AS references_privilege, "
+        "has_table_privilege(%s, c.oid, 'SELECT') AS select_privilege, "
+        "has_table_privilege(%s, c.oid, 'TRIGGER') AS trigger_privilege, "
+        "has_table_privilege(%s, c.oid, 'TRUNCATE') AS truncate_privilege, "
+        "has_table_privilege(%s, c.oid, 'UPDATE') AS update_privilege "
+        "FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+        "WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' "
+        "AND c.relkind = 'r' ORDER BY n.nspname, c.relname",
+        (reader_role,) * len(_TABLE_PRIVILEGES),
+    )
+    observed: dict[str, frozenset[str]] = {}
+    for row in _rows(cursor):
+        schema = str(row["nspname"])
+        relation = str(row["relname"])
+        privileges = frozenset(
+            privilege
+            for privilege in _TABLE_PRIVILEGES
+            if row[f"{privilege.lower()}_privilege"] is True
+        )
+        if schema != "colortrace":
+            if privileges:
+                raise PersistenceError("postgres-reader-privilege-invalid")
+            continue
+        observed[relation] = privileges
+    if observed != _EXPECTED_READER_TABLE_PRIVILEGES:
+        raise PersistenceError("postgres-reader-privilege-invalid")
+
+    cursor.execute(
+        "SELECT bool_or(has_function_privilege(%s, p.oid, 'EXECUTE')) AS can_execute "
+        "FROM pg_proc AS p JOIN pg_namespace AS n ON n.oid = p.pronamespace "
+        "WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'",
+        (reader_role,),
+    )
+    function_rows = _rows(cursor)
+    if len(function_rows) != 1 or function_rows[0].get("can_execute") is not False:
+        raise PersistenceError("postgres-reader-privilege-invalid")
+
+    cursor.execute(
+        "SELECT has_database_privilege(%s, current_database(), 'CONNECT') AS connect, "
+        "has_database_privilege(%s, current_database(), 'CREATE') AS create_privilege, "
+        "has_database_privilege(%s, current_database(), 'TEMPORARY') AS temporary",
+        (reader_role, reader_role, reader_role),
+    )
+    database_rows = _rows(cursor)
+    if len(database_rows) != 1 or database_rows[0] != {
+        "connect": True,
+        "create_privilege": False,
+        "temporary": False,
+    }:
+        raise PersistenceError("postgres-reader-privilege-invalid")
+
+
+def validate_schema(
+    cursor: DbCursor,
+    *,
+    migration_role: str,
+    runtime_role: str,
+    reader_role: str,
+) -> None:
     cursor.execute(
         "SELECT pg_get_userbyid(n.nspowner) AS owner FROM pg_namespace AS n "
         "WHERE n.nspname = 'colortrace'"
@@ -609,3 +700,4 @@ def validate_schema(cursor: DbCursor, *, migration_role: str, runtime_role: str)
     _validate_functions(cursor, migration_role)
     _validate_triggers(cursor)
     _validate_runtime_privileges(cursor, runtime_role)
+    validate_reader_privileges(cursor, reader_role)

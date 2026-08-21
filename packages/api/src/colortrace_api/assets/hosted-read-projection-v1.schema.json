@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.example/schemas/hosted-read-projection-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "fixture_id",
+    "provenance",
+    "incident_id",
+    "summary",
+    "view",
+    "workspace",
+    "replay",
+    "response_plan_draft",
+    "response_plan",
+    "recovery"
+  ],
+  "properties": {
+    "schema": {"const": "hosted-read-projection/v1"},
+    "fixture_id": {"const": "synthetic-hosted-read-v1"},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "origin", "generator"],
+      "properties": {
+        "classification": {"const": "synthetic"},
+        "origin": {"const": "tracked-project-fixture"},
+        "generator": {"const": "deterministic-static-v1"}
+      }
+    },
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "summary": {"$ref": "#/$defs/incidentSummary"},
+    "view": {"$ref": "#/$defs/incidentView"},
+    "workspace": {"$ref": "#/$defs/workspace"},
+    "replay": {"type": "null"},
+    "response_plan_draft": {"type": "null"},
+    "response_plan": {"type": "null"},
+    "recovery": {"type": "null"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "traceId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "incidentSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "incident_id",
+        "alert_id",
+        "status",
+        "version",
+        "trace_id",
+        "packet_id",
+        "created_at",
+        "updated_at",
+        "delayed",
+        "missing"
+      ],
+      "properties": {
+        "schema": {"const": "incident-summary/v1"},
+        "incident_id": {"$ref": "#/$defs/identifier"},
+        "alert_id": {"$ref": "#/$defs/identifier"},
+        "status": {"const": "queued"},
+        "version": {"const": 1},
+        "trace_id": {"$ref": "#/$defs/traceId"},
+        "packet_id": {"type": "null"},
+        "created_at": {"$ref": "#/$defs/timestamp"},
+        "updated_at": {"$ref": "#/$defs/timestamp"},
+        "delayed": {"const": false},
+        "missing": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        }
+      }
+    },
+    "incidentRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "incident_id",
+        "alert_id",
+        "status",
+        "version",
+        "alert_sha256",
+        "trace_id",
+        "packet_id",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "schema": {"const": "incident-record/v1"},
+        "incident_id": {"$ref": "#/$defs/identifier"},
+        "alert_id": {"$ref": "#/$defs/identifier"},
+        "status": {"const": "queued"},
+        "version": {"const": 1},
+        "alert_sha256": {"$ref": "#/$defs/digest"},
+        "trace_id": {"$ref": "#/$defs/traceId"},
+        "packet_id": {"type": "null"},
+        "created_at": {"$ref": "#/$defs/timestamp"},
+        "updated_at": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "taskRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "task_id",
+        "incident_id",
+        "expected_incident_version",
+        "alert_sha256",
+        "trace_id",
+        "status",
+        "packet_id",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "schema": {"const": "incident-task/v1"},
+        "task_id": {
+          "type": "string",
+          "pattern": "^task:[0-9a-f]{64}$"
+        },
+        "incident_id": {"$ref": "#/$defs/identifier"},
+        "expected_incident_version": {"const": 1},
+        "alert_sha256": {"$ref": "#/$defs/digest"},
+        "trace_id": {"$ref": "#/$defs/traceId"},
+        "status": {"const": "queued"},
+        "packet_id": {"type": "null"},
+        "created_at": {"$ref": "#/$defs/timestamp"},
+        "updated_at": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "incidentView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "incident", "task", "packet"],
+      "properties": {
+        "schema": {"const": "incident-view/v1"},
+        "incident": {"$ref": "#/$defs/incidentRecord"},
+        "task": {"$ref": "#/$defs/taskRecord"},
+        "packet": {"type": "null"}
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "view", "replay_state", "human_events", "replay"],
+      "properties": {
+        "schema": {"const": "incident-workspace-source/v1"},
+        "view": {"$ref": "#/$defs/incidentView"},
+        "replay_state": {"const": "pending"},
+        "human_events": {"type": "array", "maxItems": 0},
+        "replay": {"type": "null"}
+      }
+    }
+  }
+}
