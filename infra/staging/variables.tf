@@ -20,9 +20,8 @@ variable "region" {
 }
 
 variable "resource_prefix" {
-  description = "Deterministic prefix for resources owned by this deployment."
+  description = "Unique deterministic prefix for resources owned by one deployment."
   type        = string
-  default     = "colortrace-stg"
 
   validation {
     condition     = can(regex("^[a-z][a-z0-9-]{2,20}[a-z0-9]$", var.resource_prefix))
@@ -37,10 +36,28 @@ variable "workload_services" {
 
   validation {
     condition = (
-      length(setsubtract(var.workload_services, toset(["api", "simulator", "web", "worker"]))) == 0
+      length(setsubtract(var.workload_services, toset(["api", "web"]))) == 0
       && (!contains(var.workload_services, "web") || contains(var.workload_services, "api"))
     )
-    error_message = "workload_services may contain only api, simulator, web, and worker; web requires api."
+    error_message = "The provisional lane may deploy only api and web; web requires api."
+  }
+}
+
+variable "enable_database_migration_job" {
+  description = "Create the private exact-image migration and synthetic-seed job before API admission."
+  type        = bool
+  default     = false
+}
+
+variable "database_bootstrap_secret_version" {
+  description = "Temporary numeric Secret Manager version used only by the private database bootstrap job."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.database_bootstrap_secret_version == null || can(regex("^[1-9][0-9]*$", var.database_bootstrap_secret_version))
+    error_message = "database_bootstrap_secret_version must be an immutable numeric version."
   }
 }
 

@@ -59,7 +59,7 @@ resource "google_sql_database" "workflow" {
 }
 
 locals {
-  database_identities = toset(["api", "migration", "simulator", "worker"])
+  database_identities = toset(["api", "migration", "worker"])
 }
 
 resource "google_sql_user" "iam" {

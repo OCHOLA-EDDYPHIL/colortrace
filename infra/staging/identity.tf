@@ -40,15 +40,12 @@ locals {
     api        = toset(["roles/logging.logWriter"])
     deployment = toset([])
     migration  = toset(["roles/logging.logWriter"])
-    simulator  = toset(["roles/logging.logWriter"])
+    simulator  = toset([])
     task       = toset([])
     web = toset([
       "roles/logging.logWriter",
     ])
-    worker = toset([
-      "roles/aiplatform.user",
-      "roles/logging.logWriter",
-    ])
+    worker = toset([])
   }
 
   project_role_bindings = merge([
@@ -62,7 +59,7 @@ locals {
 }
 
 locals {
-  cloud_sql_identities = toset(["api", "migration", "simulator", "worker"])
+  cloud_sql_identities = toset(["api", "migration"])
   cloud_sql_roles      = toset(["roles/cloudsql.client", "roles/cloudsql.instanceUser"])
   cloud_sql_role_bindings = {
     for binding in setproduct(local.cloud_sql_identities, local.cloud_sql_roles) :
@@ -107,28 +104,10 @@ resource "google_project_iam_member" "service_roles" {
   member  = google_service_account.service[each.value.identity].member
 }
 
-resource "google_service_account_iam_member" "api_task_actor" {
-  service_account_id = google_service_account.service["task"].name
-  role               = "roles/iam.serviceAccountUser"
-  member             = google_service_account.service["api"].member
-}
-
 resource "google_service_account_iam_member" "deployment_runtime_actor" {
-  for_each = toset(["api", "migration", "simulator", "web", "worker"])
+  for_each = toset(["api", "migration", "web"])
 
   service_account_id = google_service_account.service[each.key].name
   role               = "roles/iam.serviceAccountUser"
   member             = google_service_account.service["deployment"].member
-}
-
-data "google_project" "current" {
-  project_id = var.project_id
-}
-
-resource "google_service_account_iam_member" "tasks_token_creator" {
-  service_account_id = google_service_account.service["task"].name
-  role               = "roles/iam.serviceAccountTokenCreator"
-  member             = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-cloudtasks.iam.gserviceaccount.com"
-
-  depends_on = [google_project_service.required["cloudtasks.googleapis.com"]]
 }

@@ -10,7 +10,8 @@ run "foundation_is_bounded" {
   command = plan
 
   variables {
-    project_id = "colortrace-test-project"
+    project_id      = "colortrace-test-project"
+    resource_prefix = "ct-stg-t0001"
   }
 
   assert {
@@ -45,6 +46,7 @@ run "workloads_require_every_binding" {
 
   variables {
     project_id           = "colortrace-test-project"
+    resource_prefix      = "ct-stg-t0001"
     workload_services    = ["api"]
     runtime_image_digest = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
     web_image_digest     = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
@@ -61,6 +63,7 @@ run "api_can_be_admitted_before_the_web_proxy" {
 
   variables {
     project_id           = "colortrace-test-project"
+    resource_prefix      = "ct-stg-t0001"
     workload_services    = ["api"]
     candidate_commit     = "1111111111111111111111111111111111111111"
     candidate_tree       = "2222222222222222222222222222222222222222"
@@ -69,9 +72,6 @@ run "api_can_be_admitted_before_the_web_proxy" {
     fixture_sha256       = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
     model_profile_sha256 = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
     policy_sha256        = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
-    oidc_issuer          = "https://identity.example.test"
-    oidc_audience        = "colortrace-api"
-    oidc_jwks_uri        = "https://identity.example.test/.well-known/jwks.json"
   }
 
   assert {
@@ -89,22 +89,18 @@ run "workload_isolation_is_explicit" {
   command = plan
 
   variables {
-    project_id             = "colortrace-test-project"
-    workload_services      = ["api", "simulator", "web", "worker"]
-    candidate_commit       = "1111111111111111111111111111111111111111"
-    candidate_tree         = "2222222222222222222222222222222222222222"
-    runtime_image_digest   = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    web_image_digest       = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    configuration_sha256   = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    fixture_sha256         = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    model_profile_sha256   = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
-    policy_sha256          = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
-    grafana_secret_version = "1"
-    grafana_url            = "https://example.grafana.net"
-    api_origin             = "https://api.example.run.app"
-    oidc_issuer            = "https://identity.example.test"
-    oidc_audience          = "colortrace-api"
-    oidc_jwks_uri          = "https://identity.example.test/.well-known/jwks.json"
+    project_id           = "colortrace-test-project"
+    resource_prefix      = "ct-stg-t0001"
+    workload_services    = ["api", "web"]
+    candidate_commit     = "1111111111111111111111111111111111111111"
+    candidate_tree       = "2222222222222222222222222222222222222222"
+    runtime_image_digest = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    web_image_digest     = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    configuration_sha256 = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    fixture_sha256       = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    model_profile_sha256 = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    policy_sha256        = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    api_origin           = "https://api.example.run.app"
   }
 
   assert {
@@ -129,16 +125,6 @@ run "workload_isolation_is_explicit" {
   }
 
   assert {
-    condition     = google_cloud_run_v2_service.service["worker"].ingress == "INGRESS_TRAFFIC_INTERNAL_ONLY"
-    error_message = "The worker must remain private."
-  }
-
-  assert {
-    condition     = google_cloud_run_v2_service.service["simulator"].ingress == "INGRESS_TRAFFIC_INTERNAL_ONLY"
-    error_message = "The simulator must remain private."
-  }
-
-  assert {
     condition     = alltrue([for service in google_cloud_run_v2_service.service : service.template[0].scaling[0].min_instance_count == 0])
     error_message = "Every service must scale to zero."
   }
@@ -149,12 +135,50 @@ run "workload_isolation_is_explicit" {
   }
 
   assert {
-    condition     = alltrue([for service in google_cloud_run_v2_service.service : service.template[0].vpc_access[0].egress == "PRIVATE_RANGES_ONLY"])
-    error_message = "Every workload must use direct private-range VPC egress."
+    condition     = google_cloud_run_v2_service.service["api"].template[0].vpc_access[0].egress == "PRIVATE_RANGES_ONLY"
+    error_message = "The hosted API must use direct private-range VPC egress for Cloud SQL."
   }
 
   assert {
     condition     = alltrue([for service in google_cloud_run_v2_service.service : strcontains(service.template[0].containers[0].image, "@sha256:")])
     error_message = "Every deployed image must be digest-addressed."
+  }
+}
+
+run "database_jobs_are_private_single_attempt_and_digest_bound" {
+  command = plan
+
+  variables {
+    project_id                        = "colortrace-test-project"
+    resource_prefix                   = "ct-stg-t0001"
+    enable_database_migration_job     = true
+    database_bootstrap_secret_version = "1"
+    candidate_commit                  = "1111111111111111111111111111111111111111"
+    candidate_tree                    = "2222222222222222222222222222222222222222"
+    runtime_image_digest              = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    configuration_sha256              = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    fixture_sha256                    = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    model_profile_sha256              = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    policy_sha256                     = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+  }
+
+  assert {
+    condition     = toset(keys(google_cloud_run_v2_job.database)) == toset(["bootstrap", "migrate-seed"])
+    error_message = "Only the two private database preparation jobs may be created."
+  }
+
+  assert {
+    condition     = alltrue([for job in google_cloud_run_v2_job.database : job.template[0].task_count == 1 && job.template[0].template[0].max_retries == 0])
+    error_message = "Every database preparation job must run one task without platform retries."
+  }
+
+  assert {
+    condition     = alltrue([for job in google_cloud_run_v2_job.database : strcontains(job.template[0].template[0].containers[0].image, "@sha256:")])
+    error_message = "Every database preparation job must use the exact runtime digest."
+  }
+
+  assert {
+    condition     = length(google_cloud_run_v2_service.service) == 0
+    error_message = "Database preparation must complete before API admission."
   }
 }

@@ -47,16 +47,3 @@ resource "google_cloud_tasks_queue" "simulator" {
 
   depends_on = [google_project_service.required["cloudtasks.googleapis.com"]]
 }
-
-resource "google_cloud_tasks_queue_iam_member" "api_enqueuer" {
-  for_each = {
-    simulator = google_cloud_tasks_queue.simulator.name
-    worker    = google_cloud_tasks_queue.worker.name
-  }
-
-  project  = var.project_id
-  location = var.region
-  name     = each.value
-  role     = "roles/cloudtasks.enqueuer"
-  member   = google_service_account.service["api"].member
-}

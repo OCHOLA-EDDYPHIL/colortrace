@@ -78,18 +78,6 @@ resource "google_storage_bucket" "artifacts" {
   }
 }
 
-resource "google_storage_bucket_iam_member" "simulator_writer" {
-  bucket = google_storage_bucket.artifacts.name
-  role   = "roles/storage.objectUser"
-  member = google_service_account.service["simulator"].member
-}
-
-resource "google_storage_bucket_iam_member" "worker_reader" {
-  bucket = google_storage_bucket.artifacts.name
-  role   = "roles/storage.objectViewer"
-  member = google_service_account.service["worker"].member
-}
-
 resource "google_artifact_registry_repository_iam_member" "deployment_writer" {
   project    = var.project_id
   location   = google_artifact_registry_repository.runtime.location
@@ -114,9 +102,27 @@ resource "google_secret_manager_secret" "grafana_viewer" {
   depends_on = [google_project_service.required["secretmanager.googleapis.com"]]
 }
 
-resource "google_secret_manager_secret_iam_member" "worker_grafana" {
+resource "google_secret_manager_secret" "postgres_bootstrap" {
   project   = var.project_id
-  secret_id = google_secret_manager_secret.grafana_viewer.secret_id
+  secret_id = "${var.resource_prefix}-postgres-bootstrap"
+  labels    = local.labels
+
+  replication {
+    user_managed {
+      replicas {
+        location = var.region
+      }
+    }
+  }
+
+  depends_on = [google_project_service.required["secretmanager.googleapis.com"]]
+}
+
+resource "google_secret_manager_secret_iam_member" "migration_bootstrap" {
+  count = var.database_bootstrap_secret_version == null ? 0 : 1
+
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.postgres_bootstrap.secret_id
   role      = "roles/secretmanager.secretAccessor"
-  member    = google_service_account.service["worker"].member
+  member    = google_service_account.service["migration"].member
 }

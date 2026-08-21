@@ -1,18 +1,11 @@
 locals {
   run_services = {
     api = {
-      arguments   = ["api"]
+      arguments   = ["api-readonly"]
       concurrency = 10
       ingress     = "INGRESS_TRAFFIC_ALL"
       port        = 8080
       timeout     = "60s"
-    }
-    simulator = {
-      arguments   = ["simulator"]
-      concurrency = 1
-      ingress     = "INGRESS_TRAFFIC_INTERNAL_ONLY"
-      port        = 8080
-      timeout     = "180s"
     }
     web = {
       arguments   = []
@@ -21,19 +14,31 @@ locals {
       port        = 8080
       timeout     = "30s"
     }
-    worker = {
-      arguments   = ["worker"]
-      concurrency = 1
-      ingress     = "INGRESS_TRAFFIC_INTERNAL_ONLY"
-      port        = 8080
-      timeout     = "180s"
-    }
   }
 
   selected_run_services = {
     for name, configuration in local.run_services : name => configuration
     if contains(var.workload_services, name)
   }
+
+  database_roles = {
+    migration = google_sql_user.iam["migration"].name
+    reader    = google_sql_user.iam["api"].name
+    runtime   = google_sql_user.iam["worker"].name
+  }
+
+  hosted_database_environment = {
+    COLORTRACE_CLOUD_SQL_DATABASE      = google_sql_database.workflow.name
+    COLORTRACE_CLOUD_SQL_INSTANCE      = google_sql_database_instance.workflow.connection_name
+    COLORTRACE_POSTGRES_MIGRATION_ROLE = local.database_roles.migration
+    COLORTRACE_POSTGRES_API_ROLE       = local.database_roles.reader
+    COLORTRACE_POSTGRES_RUNTIME_ROLE   = local.database_roles.runtime
+  }
+
+  database_jobs = merge(
+    var.database_bootstrap_secret_version == null ? {} : { bootstrap = {} },
+    var.enable_database_migration_job ? { migrate-seed = {} } : {},
+  )
 }
 
 resource "google_cloud_run_v2_service" "service" {
@@ -58,12 +63,16 @@ resource "google_cloud_run_v2_service" "service" {
       max_instance_count = 1
     }
 
-    vpc_access {
-      egress = "PRIVATE_RANGES_ONLY"
+    dynamic "vpc_access" {
+      for_each = each.key == "api" ? [1] : []
 
-      network_interfaces {
-        network    = google_compute_network.staging.name
-        subnetwork = google_compute_subnetwork.staging.name
+      content {
+        egress = "PRIVATE_RANGES_ONLY"
+
+        network_interfaces {
+          network    = google_compute_network.staging.name
+          subnetwork = google_compute_subnetwork.staging.name
+        }
       }
     }
 
@@ -77,8 +86,8 @@ resource "google_cloud_run_v2_service" "service" {
 
       resources {
         limits = {
-          cpu    = each.key == "worker" ? "2" : "1"
-          memory = each.key == "worker" ? "1Gi" : "512Mi"
+          cpu    = "1"
+          memory = "512Mi"
         }
         cpu_idle          = true
         startup_cpu_boost = false
@@ -129,10 +138,7 @@ resource "google_cloud_run_v2_service" "service" {
 
       dynamic "env" {
         for_each = each.key == "api" ? {
-          COLORTRACE_BIND_HOST     = "0.0.0.0"
-          COLORTRACE_OIDC_AUDIENCE = coalesce(var.oidc_audience, "unbound")
-          COLORTRACE_OIDC_ISSUER   = coalesce(var.oidc_issuer, "unbound")
-          COLORTRACE_OIDC_JWKS_URI = coalesce(var.oidc_jwks_uri, "unbound")
+          COLORTRACE_BIND_HOST = "0.0.0.0"
         } : {}
 
         content {
@@ -142,64 +148,11 @@ resource "google_cloud_run_v2_service" "service" {
       }
 
       dynamic "env" {
-        for_each = each.key == "worker" ? {
-          COLORTRACE_GRAFANA_TOKEN_FILE   = "/var/run/colortrace-private/grafana-viewer"
-          COLORTRACE_GRAFANA_TOKEN_SOURCE = "/var/run/secrets/colortrace/grafana-viewer"
-          COLORTRACE_GRAFANA_URL          = coalesce(var.grafana_url, "unbound")
-        } : {}
+        for_each = each.key == "api" ? local.hosted_database_environment : {}
 
         content {
           name  = env.key
           value = env.value
-        }
-      }
-
-      dynamic "volume_mounts" {
-        for_each = contains(["api", "simulator", "worker"], each.key) ? [1] : []
-
-        content {
-          name       = "cloudsql"
-          mount_path = "/cloudsql"
-        }
-      }
-
-      dynamic "volume_mounts" {
-        for_each = each.key == "worker" ? [1] : []
-
-        content {
-          name       = "grafana-viewer"
-          mount_path = "/var/run/secrets/colortrace"
-        }
-      }
-    }
-
-    dynamic "volumes" {
-      for_each = contains(["api", "simulator", "worker"], each.key) ? [1] : []
-
-      content {
-        name = "cloudsql"
-
-        cloud_sql_instance {
-          instances = [google_sql_database_instance.workflow.connection_name]
-        }
-      }
-    }
-
-    dynamic "volumes" {
-      for_each = each.key == "worker" ? [1] : []
-
-      content {
-        name = "grafana-viewer"
-
-        secret {
-          secret       = google_secret_manager_secret.grafana_viewer.secret_id
-          default_mode = 292
-
-          items {
-            version = coalesce(var.grafana_secret_version, "0")
-            path    = "grafana-viewer"
-            mode    = 292
-          }
         }
       }
     }
@@ -219,7 +172,6 @@ resource "google_cloud_run_v2_service" "service" {
 
   depends_on = [
     google_project_service.required["run.googleapis.com"],
-    google_secret_manager_secret_iam_member.worker_grafana,
     google_service_networking_connection.private_services,
   ]
 }
@@ -244,12 +196,114 @@ resource "google_cloud_run_v2_service_iam_member" "web_api" {
   member   = google_service_account.service["web"].member
 }
 
-resource "google_cloud_run_v2_service_iam_member" "task_private" {
-  for_each = setintersection(var.workload_services, toset(["simulator", "worker"]))
+resource "google_cloud_run_v2_job" "database" {
+  for_each = local.database_jobs
 
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.service[each.key].name
-  role     = "roles/run.invoker"
-  member   = google_service_account.service["task"].member
+  project             = var.project_id
+  name                = "${var.resource_prefix}-${each.key}"
+  location            = var.region
+  deletion_protection = false
+  labels              = local.labels
+
+  template {
+    parallelism = 1
+    task_count  = 1
+
+    template {
+      service_account       = google_service_account.service["migration"].email
+      timeout               = "300s"
+      max_retries           = 0
+      execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
+
+      vpc_access {
+        egress = "PRIVATE_RANGES_ONLY"
+
+        network_interfaces {
+          network    = google_compute_network.staging.name
+          subnetwork = google_compute_subnetwork.staging.name
+        }
+      }
+
+      containers {
+        image = local.runtime_image
+        args  = [each.key]
+
+        resources {
+          limits = {
+            cpu    = "1"
+            memory = "512Mi"
+          }
+        }
+
+        dynamic "env" {
+          for_each = merge(local.candidate_environment, local.hosted_database_environment)
+
+          content {
+            name  = env.key
+            value = env.value
+          }
+        }
+
+        dynamic "env" {
+          for_each = each.key == "bootstrap" ? {
+            COLORTRACE_POSTGRES_ADMIN_PASSWORD_FILE   = "/var/run/colortrace-private/postgres-admin"
+            COLORTRACE_POSTGRES_ADMIN_PASSWORD_SOURCE = "/var/run/secrets/colortrace/postgres-admin"
+            COLORTRACE_POSTGRES_ADMIN_USER            = "postgres"
+          } : {}
+
+          content {
+            name  = env.key
+            value = env.value
+          }
+        }
+
+        dynamic "volume_mounts" {
+          for_each = each.key == "bootstrap" ? [1] : []
+
+          content {
+            name       = "postgres-bootstrap"
+            mount_path = "/var/run/secrets/colortrace"
+          }
+        }
+      }
+
+      dynamic "volumes" {
+        for_each = each.key == "bootstrap" ? [1] : []
+
+        content {
+          name = "postgres-bootstrap"
+
+          secret {
+            secret       = google_secret_manager_secret.postgres_bootstrap.secret_id
+            default_mode = 292
+
+            items {
+              version = coalesce(var.database_bootstrap_secret_version, "0")
+              path    = "postgres-admin"
+              mode    = 292
+            }
+          }
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = local.database_job_bindings_complete
+      error_message = "Every immutable candidate and runtime binding is required before a database job is created."
+    }
+
+    precondition {
+      condition     = strcontains(local.runtime_image, "@sha256:")
+      error_message = "Database jobs require an immutable SHA-256 runtime image."
+    }
+  }
+
+  depends_on = [
+    google_project_service.required["run.googleapis.com"],
+    google_secret_manager_secret_iam_member.migration_bootstrap,
+    google_service_networking_connection.private_services,
+    google_sql_user.iam,
+  ]
 }
