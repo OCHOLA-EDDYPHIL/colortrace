@@ -12,7 +12,7 @@ from colortrace_repo.actions import check_actions
 from colortrace_repo.ai_policy import check_ai_policy
 from colortrace_repo.common import Finding, load_json, sorted_findings
 from colortrace_repo.dependencies import check_dependencies, resolved_locked_packages
-from colortrace_repo.deployment import check_deployment
+from colortrace_repo.deployment import check_deployment, deployment_input_paths
 
 _DIGEST = re.compile(r"^[0-9a-f]{40}$")
 _IMAGE_DIGEST = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}$")
@@ -41,18 +41,7 @@ _BOUND_INPUTS = (
 
 
 def _deployment_inputs(root: Path) -> tuple[str, ...]:
-    selected: list[str] = []
-    for path in root.rglob("*"):
-        if not path.is_file() or ".terraform" in path.parts:
-            continue
-        if (
-            path.name.startswith("Dockerfile")
-            or path.name == ".terraform.lock.hcl"
-            or path.suffix == ".tf"
-            or path.name.endswith(".tftest.hcl")
-        ):
-            selected.append(path.relative_to(root).as_posix())
-    return tuple(sorted(selected))
+    return tuple(path.relative_to(root).as_posix() for path in deployment_input_paths(root))
 
 
 def _sha256(path: Path) -> str:
@@ -353,10 +342,19 @@ def finalize_security_evidence(
                 Finding(name, "security.report.invalid", f"cannot load report: {error}")
             )
     inputs: list[dict[str, Any]] = []
-    for name in (*_BOUND_INPUTS, *_deployment_inputs(root)):
+    for name in dict.fromkeys((*_BOUND_INPUTS, *_deployment_inputs(root))):
         path = root / name
         if not path.is_file():
             findings.append(Finding(name, "security.input.missing", "bound input is missing"))
+            continue
+        if path.is_symlink():
+            findings.append(
+                Finding(
+                    name,
+                    "security.input.invalid",
+                    "bound input must be a regular candidate file",
+                )
+            )
             continue
         inputs.append(
             {
