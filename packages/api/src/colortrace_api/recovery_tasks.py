@@ -27,6 +27,10 @@ RESULT_SCHEMA = "recovery-verification-task-result/v1"
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
 _TASK_KEY = re.compile(r"^recovery-verification-task:[0-9a-f]{64}$")
+_CLOUD_TASK_NAME = re.compile(
+    r"^projects/[a-z][a-z0-9-]{4,29}/locations/[a-z0-9-]{1,63}/"
+    r"queues/[A-Za-z0-9_-]{1,100}/tasks/[A-Za-z0-9_-]{1,500}$"
+)
 _TASK_FIELDS = frozenset(
     {
         "schema",
@@ -355,6 +359,12 @@ class RecoveryVerificationTaskClaim:
     generation: int
 
 
+@dataclass(frozen=True, slots=True)
+class RecoveryVerificationTaskDelivery:
+    task: dict[str, Any]
+    attempt: int
+
+
 class RecoveryVerificationTaskStore(RecoveryVerificationTaskDispatcher, Protocol):
     def claim(
         self,
@@ -370,7 +380,7 @@ class RecoveryVerificationTaskStore(RecoveryVerificationTaskDispatcher, Protocol
     ) -> dict[str, Any]: ...
 
 
-_SCHEMA = """
+_SCHEMA_V1 = """
 CREATE TABLE recovery_verification_tasks (
     task_key TEXT PRIMARY KEY,
     idempotency_key TEXT NOT NULL UNIQUE,
@@ -436,8 +446,63 @@ BEGIN
 END;
 """
 
+_OUTBOX_SCHEMA = """
+CREATE TABLE recovery_verification_task_outbox (
+    task_key TEXT PRIMARY KEY REFERENCES recovery_verification_tasks(task_key),
+    payload_sha256 TEXT NOT NULL,
+    task_document BLOB NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'enqueued', 'exhausted', 'suppressed')),
+    delivery_attempts INTEGER NOT NULL DEFAULT 0 CHECK(delivery_attempts >= 0),
+    cloud_task_name TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK(
+        (status = 'pending' AND cloud_task_name IS NULL)
+        OR (status = 'enqueued' AND delivery_attempts >= 1 AND cloud_task_name IS NOT NULL)
+        OR (status IN ('exhausted', 'suppressed') AND cloud_task_name IS NULL)
+    )
+) STRICT;
+CREATE INDEX recovery_verification_task_outbox_pending
+    ON recovery_verification_task_outbox(status, created_at, task_key);
+CREATE TRIGGER recovery_verification_task_outbox_no_delete
+BEFORE DELETE ON recovery_verification_task_outbox BEGIN
+    SELECT RAISE(ABORT, 'recovery-verification-task-outbox-no-delete');
+END;
+CREATE TRIGGER recovery_verification_task_outbox_identity_immutable
+BEFORE UPDATE ON recovery_verification_task_outbox
+WHEN NEW.task_key != OLD.task_key OR NEW.payload_sha256 != OLD.payload_sha256
+    OR NEW.task_document != OLD.task_document OR NEW.created_at != OLD.created_at
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-verification-task-outbox-identity-immutable');
+END;
+CREATE TRIGGER recovery_verification_task_outbox_valid_transition
+BEFORE UPDATE ON recovery_verification_task_outbox
+WHEN NOT (
+    (OLD.status = 'pending' AND NEW.status = 'pending'
+        AND NEW.delivery_attempts = OLD.delivery_attempts + 1
+        AND NEW.cloud_task_name IS NULL)
+    OR (OLD.status = 'pending' AND NEW.status = 'enqueued'
+        AND NEW.delivery_attempts = OLD.delivery_attempts
+        AND NEW.cloud_task_name IS NOT NULL)
+    OR (OLD.status = 'pending' AND NEW.status IN ('exhausted', 'suppressed')
+        AND NEW.delivery_attempts = OLD.delivery_attempts
+        AND NEW.cloud_task_name IS NULL)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-verification-task-outbox-transition-invalid');
+END;
+CREATE TRIGGER recovery_verification_task_outbox_clock_monotonic
+BEFORE UPDATE ON recovery_verification_task_outbox
+WHEN NEW.updated_at < OLD.updated_at
+BEGIN
+    SELECT RAISE(ABORT, 'recovery-verification-task-outbox-clock-regression');
+END;
+"""
+
+_SCHEMA = _SCHEMA_V1 + _OUTBOX_SCHEMA
+
 _APPLICATION_ID = 0x43545654
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _SchemaManifest = tuple[tuple[str, str, str, str | None], ...]
 
 
@@ -468,17 +533,18 @@ def _schema_sha256(manifest: _SchemaManifest) -> str:
     return f"sha256:{hashlib.sha256(canonical_json_bytes(manifest)).hexdigest()}"
 
 
-def _expected_schema() -> tuple[_SchemaManifest, str]:
+def _expected_schema(schema: str) -> tuple[_SchemaManifest, str]:
     connection = sqlite3.connect(":memory:")
     try:
-        connection.executescript(_SCHEMA)
+        connection.executescript(schema)
         manifest = _schema_manifest(connection)
         return manifest, _schema_sha256(manifest)
     finally:
         connection.close()
 
 
-_EXPECTED_SCHEMA, _EXPECTED_SCHEMA_SHA256 = _expected_schema()
+_EXPECTED_SCHEMA_V1, _EXPECTED_SCHEMA_V1_SHA256 = _expected_schema(_SCHEMA_V1)
+_EXPECTED_SCHEMA, _EXPECTED_SCHEMA_SHA256 = _expected_schema(_SCHEMA)
 
 
 class SQLiteRecoveryVerificationTaskStore:
@@ -642,6 +708,34 @@ class SQLiteRecoveryVerificationTaskStore:
             connection.executescript(_SCHEMA)
             connection.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
             connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        else:
+            application_id = cast(int, connection.execute("PRAGMA application_id").fetchone()[0])
+            version = cast(int, connection.execute("PRAGMA user_version").fetchone()[0])
+            if application_id == _APPLICATION_ID and version == 1:
+                manifest = _schema_manifest(connection)
+                integrity = connection.execute("PRAGMA integrity_check").fetchall()
+                if (
+                    manifest != _EXPECTED_SCHEMA_V1
+                    or _schema_sha256(manifest) != _EXPECTED_SCHEMA_V1_SHA256
+                    or len(integrity) != 1
+                    or integrity[0][0] != "ok"
+                ):
+                    raise RecoveryError("verification-task-store-schema-invalid")
+                try:
+                    connection.executescript(
+                        "BEGIN IMMEDIATE;\n"
+                        + _OUTBOX_SCHEMA
+                        + "\nINSERT INTO recovery_verification_task_outbox("
+                        "task_key, payload_sha256, task_document, status, created_at, updated_at) "
+                        "SELECT task_key, payload_sha256, task_document, 'pending', "
+                        "created_at, updated_at FROM recovery_verification_tasks "
+                        "WHERE status != 'complete';\n"
+                        + f"\nPRAGMA user_version = {_SCHEMA_VERSION};\nCOMMIT;"
+                    )
+                except BaseException:
+                    if connection.in_transaction:
+                        connection.rollback()
+                    raise
         cls._validate_schema_and_integrity(connection)
 
     @contextmanager
@@ -760,6 +854,59 @@ class SQLiteRecoveryVerificationTaskStore:
         return result
 
     @staticmethod
+    def _outbox_row(connection: sqlite3.Connection, task_key: str) -> sqlite3.Row | None:
+        return cast(
+            sqlite3.Row | None,
+            connection.execute(
+                "SELECT * FROM recovery_verification_task_outbox WHERE task_key = ?",
+                (task_key,),
+            ).fetchone(),
+        )
+
+    @classmethod
+    def _stored_outbox(cls, row: sqlite3.Row, task: Mapping[str, Any]) -> dict[str, Any]:
+        document = validate_recovery_verification_task(
+            cls._decode(row["task_document"], code="stored-verification-task-outbox-invalid")
+        )
+        created_at = _parse_timestamp(row["created_at"])
+        updated_at = _parse_timestamp(row["updated_at"])
+        attempts = row["delivery_attempts"]
+        status = row["status"]
+        cloud_task_name = row["cloud_task_name"]
+        if (
+            canonical_json_bytes(document) != canonical_json_bytes(task)
+            or row["task_key"] != task["task_key"]
+            or row["payload_sha256"] != task["payload_sha256"]
+            or updated_at < created_at
+            or not isinstance(attempts, int)
+            or isinstance(attempts, bool)
+            or attempts < 0
+        ):
+            raise RecoveryError("stored-verification-task-outbox-invalid")
+        if status == "pending":
+            if cloud_task_name is not None:
+                raise RecoveryError("stored-verification-task-outbox-invalid")
+        elif status == "enqueued":
+            if (
+                attempts < 1
+                or not isinstance(cloud_task_name, str)
+                or _CLOUD_TASK_NAME.fullmatch(cloud_task_name) is None
+            ):
+                raise RecoveryError("stored-verification-task-outbox-invalid")
+        elif status in {"exhausted", "suppressed"}:
+            if cloud_task_name is not None:
+                raise RecoveryError("stored-verification-task-outbox-invalid")
+        else:
+            raise RecoveryError("stored-verification-task-outbox-invalid")
+        return {
+            "task_key": task["task_key"],
+            "payload_sha256": task["payload_sha256"],
+            "status": status,
+            "delivery_attempts": attempts,
+            "cloud_task_name": cloud_task_name,
+        }
+
+    @staticmethod
     def _row(connection: sqlite3.Connection, task_key: str) -> sqlite3.Row | None:
         return cast(
             sqlite3.Row | None,
@@ -820,7 +967,180 @@ class SQLiteRecoveryVerificationTaskStore:
                     now,
                 ),
             )
+            connection.execute(
+                "INSERT INTO recovery_verification_task_outbox("
+                "task_key, payload_sha256, task_document, status, created_at, updated_at) "
+                "VALUES(?, ?, ?, 'pending', ?, ?)",
+                (
+                    selected["task_key"],
+                    selected["payload_sha256"],
+                    canonical_json_bytes(selected),
+                    now,
+                    now,
+                ),
+            )
         return build_recovery_verification_admission(selected, duplicate=False, state="queued")
+
+    @staticmethod
+    def _delivery_bounds(*, limit: int, max_attempts: int) -> None:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise ValueError("verification-task-delivery-limit-invalid")
+        if (
+            not isinstance(max_attempts, int)
+            or isinstance(max_attempts, bool)
+            or not 1 <= max_attempts <= 100
+        ):
+            raise ValueError("verification-task-delivery-attempts-invalid")
+
+    def reserve_cloud_task_deliveries(
+        self,
+        *,
+        limit: int = 10,
+        max_attempts: int = 5,
+    ) -> list[RecoveryVerificationTaskDelivery]:
+        self._delivery_bounds(limit=limit, max_attempts=max_attempts)
+        now = _timestamp(self._clock())
+        deliveries: list[RecoveryVerificationTaskDelivery] = []
+        with self._transaction(write=True) as connection:
+            rows = connection.execute(
+                "SELECT o.task_key FROM recovery_verification_task_outbox AS o "
+                "JOIN recovery_verification_tasks AS t ON t.task_key = o.task_key "
+                "WHERE o.status = 'pending' AND t.status != 'complete' "
+                "ORDER BY o.created_at, o.task_key LIMIT ?",
+                (limit,),
+            ).fetchall()
+            for selected_row in rows:
+                task_key = cast(str, selected_row["task_key"])
+                task_row = self._row(connection, task_key)
+                outbox_row = self._outbox_row(connection, task_key)
+                if task_row is None or outbox_row is None:
+                    raise RecoveryError("stored-verification-task-outbox-invalid")
+                task = self._stored_task(task_row)
+                state = self._stored_outbox(outbox_row, task)
+                attempts = cast(int, state["delivery_attempts"])
+                if attempts >= max_attempts:
+                    updated = connection.execute(
+                        "UPDATE recovery_verification_task_outbox "
+                        "SET status = 'exhausted', updated_at = ? "
+                        "WHERE task_key = ? AND status = 'pending' "
+                        "AND delivery_attempts = ?",
+                        (now, task_key, attempts),
+                    )
+                    if updated.rowcount != 1:
+                        raise RecoveryError("verification-task-delivery-claim-conflict")
+                    continue
+                attempt = attempts + 1
+                updated = connection.execute(
+                    "UPDATE recovery_verification_task_outbox "
+                    "SET delivery_attempts = ?, updated_at = ? "
+                    "WHERE task_key = ? AND status = 'pending' "
+                    "AND delivery_attempts = ?",
+                    (attempt, now, task_key, attempts),
+                )
+                if updated.rowcount != 1:
+                    raise RecoveryError("verification-task-delivery-claim-conflict")
+                deliveries.append(RecoveryVerificationTaskDelivery(task=task, attempt=attempt))
+        return deliveries
+
+    @staticmethod
+    def _validated_delivery(
+        delivery: RecoveryVerificationTaskDelivery,
+    ) -> tuple[dict[str, Any], int]:
+        if not isinstance(delivery, RecoveryVerificationTaskDelivery):
+            raise RecoveryError("verification-task-delivery-invalid")
+        task = validate_recovery_verification_task(delivery.task)
+        attempt = delivery.attempt
+        if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+            raise RecoveryError("verification-task-delivery-invalid")
+        return task, attempt
+
+    def mark_cloud_task_enqueued(
+        self,
+        delivery: RecoveryVerificationTaskDelivery,
+        *,
+        cloud_task_name: str,
+    ) -> dict[str, Any]:
+        task, attempt = self._validated_delivery(delivery)
+        if (
+            not isinstance(cloud_task_name, str)
+            or _CLOUD_TASK_NAME.fullmatch(cloud_task_name) is None
+        ):
+            raise RecoveryError("verification-cloud-task-name-invalid")
+        now = _timestamp(self._clock())
+        with self._transaction(write=True) as connection:
+            task_row = self._row(connection, cast(str, task["task_key"]))
+            outbox_row = self._outbox_row(connection, cast(str, task["task_key"]))
+            if task_row is None or outbox_row is None:
+                raise RecoveryError("verification-task-not-found")
+            stored_task = self._stored_task(task_row)
+            if canonical_json_bytes(stored_task) != canonical_json_bytes(task):
+                raise RecoveryError("verification-task-payload-conflict")
+            state = self._stored_outbox(outbox_row, stored_task)
+            if state["status"] == "enqueued":
+                if state["cloud_task_name"] != cloud_task_name:
+                    raise RecoveryError("verification-cloud-task-name-conflict")
+                return state
+            if state["status"] != "pending" or state["delivery_attempts"] != attempt:
+                raise RecoveryError("verification-task-delivery-fenced")
+            updated = connection.execute(
+                "UPDATE recovery_verification_task_outbox "
+                "SET status = 'enqueued', cloud_task_name = ?, updated_at = ? "
+                "WHERE task_key = ? AND status = 'pending' AND delivery_attempts = ?",
+                (cloud_task_name, now, task["task_key"], attempt),
+            )
+            if updated.rowcount != 1:
+                raise RecoveryError("verification-task-delivery-fenced")
+            return {
+                **state,
+                "status": "enqueued",
+                "cloud_task_name": cloud_task_name,
+            }
+
+    def fail_cloud_task_delivery(
+        self,
+        delivery: RecoveryVerificationTaskDelivery,
+        *,
+        max_attempts: int,
+    ) -> dict[str, Any]:
+        self._delivery_bounds(limit=1, max_attempts=max_attempts)
+        task, attempt = self._validated_delivery(delivery)
+        now = _timestamp(self._clock())
+        with self._transaction(write=True) as connection:
+            task_row = self._row(connection, cast(str, task["task_key"]))
+            outbox_row = self._outbox_row(connection, cast(str, task["task_key"]))
+            if task_row is None or outbox_row is None:
+                raise RecoveryError("verification-task-not-found")
+            stored_task = self._stored_task(task_row)
+            if canonical_json_bytes(stored_task) != canonical_json_bytes(task):
+                raise RecoveryError("verification-task-payload-conflict")
+            state = self._stored_outbox(outbox_row, stored_task)
+            if state["status"] == "enqueued":
+                return state
+            if state["status"] != "pending" or state["delivery_attempts"] != attempt:
+                raise RecoveryError("verification-task-delivery-fenced")
+            if attempt < max_attempts:
+                return state
+            updated = connection.execute(
+                "UPDATE recovery_verification_task_outbox "
+                "SET status = 'exhausted', updated_at = ? "
+                "WHERE task_key = ? AND status = 'pending' AND delivery_attempts = ?",
+                (now, task["task_key"], attempt),
+            )
+            if updated.rowcount != 1:
+                raise RecoveryError("verification-task-delivery-fenced")
+            return {**state, "status": "exhausted"}
+
+    def cloud_task_outbox_state(self, task_key: str) -> dict[str, Any]:
+        selected_key = _identifier(task_key, code="verification-task-key-invalid")
+        if _TASK_KEY.fullmatch(selected_key) is None:
+            raise RecoveryError("verification-task-key-invalid")
+        with self._transaction(write=False) as connection:
+            task_row = self._row(connection, selected_key)
+            outbox_row = self._outbox_row(connection, selected_key)
+            if task_row is None or outbox_row is None:
+                raise RecoveryError("verification-task-not-found")
+            task = self._stored_task(task_row)
+            return self._stored_outbox(outbox_row, task)
 
     def pending_tasks(self, *, limit: int = 100) -> list[dict[str, Any]]:
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
@@ -923,6 +1243,12 @@ class SQLiteRecoveryVerificationTaskStore:
             )
             if updated.rowcount != 1:
                 raise RecoveryError("verification-task-claim-fenced")
+            connection.execute(
+                "UPDATE recovery_verification_task_outbox "
+                "SET status = 'suppressed', updated_at = ? "
+                "WHERE task_key = ? AND status = 'pending'",
+                (now, claim.task["task_key"]),
+            )
             return selected
 
 
@@ -931,6 +1257,7 @@ __all__ = [
     "RESULT_SCHEMA",
     "TASK_SCHEMA",
     "RecoveryVerificationTaskClaim",
+    "RecoveryVerificationTaskDelivery",
     "RecoveryVerificationTaskDispatcher",
     "RecoveryVerificationTaskStore",
     "SQLiteRecoveryVerificationTaskStore",

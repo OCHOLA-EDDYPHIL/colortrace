@@ -2,6 +2,30 @@
 
 from .app import IncidentService, create_app
 from .auth import Principal, PrincipalKind, TokenVerifier
+from .cloud_tasks import (
+    CloudTaskAlreadyExists,
+    CloudTaskPublishError,
+    CloudTasksPublisherConfig,
+    CloudTasksPublishReport,
+    GoogleCloudTasksRestClient,
+    RecoveryCloudTasksPublisher,
+    cloud_task_id,
+    cloud_task_name,
+)
+from .google_identity import (
+    GoogleAuthIdTokenClaimsVerifier,
+    GoogleOidcTokenVerifier,
+    GoogleServiceIdentity,
+    GoogleServiceTokenError,
+    ServerOwnedServiceBinding,
+)
+from .hosted_services import (
+    CanonicalSimulatorTaskResolver,
+    HostedPrivateServiceApps,
+    create_hosted_private_service_apps,
+    create_hosted_recovery_worker_app,
+    create_hosted_simulator_app,
+)
 from .oidc import HttpsJwksResolver, JwksResolver, OidcTokenVerifier, OidcVerificationError
 from .recovery import (
     SCHEDULER_ROLE,
@@ -11,6 +35,7 @@ from .recovery import (
 )
 from .recovery_tasks import (
     RecoveryVerificationTaskClaim,
+    RecoveryVerificationTaskDelivery,
     RecoveryVerificationTaskDispatcher,
     RecoveryVerificationTaskStore,
     SQLiteRecoveryVerificationTaskStore,
@@ -36,6 +61,17 @@ from .stored_service import StoredIncidentService, StoredIncidentStore
 __all__ = [
     "ApiRuntimeConfig",
     "ApiRuntimeConfigurationError",
+    "CanonicalSimulatorTaskResolver",
+    "CloudTaskAlreadyExists",
+    "CloudTaskPublishError",
+    "CloudTasksPublishReport",
+    "CloudTasksPublisherConfig",
+    "GoogleAuthIdTokenClaimsVerifier",
+    "GoogleCloudTasksRestClient",
+    "GoogleOidcTokenVerifier",
+    "GoogleServiceIdentity",
+    "GoogleServiceTokenError",
+    "HostedPrivateServiceApps",
     "HttpsJwksResolver",
     "IncidentService",
     "JwksResolver",
@@ -48,12 +84,15 @@ __all__ = [
     "RecoveryCoordinator",
     "RecoveryVerificationAdmissionApi",
     "RecoveryVerificationTaskClaim",
+    "RecoveryVerificationTaskDelivery",
     "RecoveryVerificationTaskDispatcher",
     "RecoveryVerificationTaskStore",
     "RecoveryVerificationWorker",
     "RecoveryWorkflowRunner",
     "ResponsePlanApi",
     "ResponsePlanCoordinator",
+    "RecoveryCloudTasksPublisher",
+    "ServerOwnedServiceBinding",
     "SimulatorActionCoordinator",
     "StoredIncidentService",
     "StoredIncidentStore",
@@ -61,9 +100,14 @@ __all__ = [
     "TokenVerifier",
     "LocalRecoveryVerificationBoundary",
     "build_recovery_verification_task",
+    "cloud_task_id",
+    "cloud_task_name",
     "create_app",
     "create_application",
+    "create_hosted_private_service_apps",
     "create_local_recovery_verification_boundary",
+    "create_hosted_recovery_worker_app",
+    "create_hosted_simulator_app",
     "create_recovery_worker_app",
     "create_runtime_app",
 ]

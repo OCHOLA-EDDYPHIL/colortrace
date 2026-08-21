@@ -14,6 +14,7 @@ dependencies = [
     "colortrace-telemetry",
     "colortrace-vertical-slice",
     "fastapi==0.141.1",
+    "google-auth[requests]==2.56.3",
     "pyjwt[crypto]==2.13.0",
     "uvicorn==0.52.1",
 ]
