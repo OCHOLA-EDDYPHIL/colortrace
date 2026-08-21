@@ -108,7 +108,7 @@ resource "google_cloud_run_v2_service" "service" {
         failure_threshold     = 30
 
         http_get {
-          path = "/health/startup"
+          path = each.key == "web" ? "/" : "/health/startup"
         }
       }
 
@@ -119,7 +119,7 @@ resource "google_cloud_run_v2_service" "service" {
         failure_threshold     = 3
 
         http_get {
-          path = "/health/live"
+          path = each.key == "web" ? "/" : "/health/live"
         }
       }
 

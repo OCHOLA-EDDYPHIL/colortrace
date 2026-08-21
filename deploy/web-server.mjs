@@ -221,10 +221,7 @@ export function createApplication(configuration, dependencies = {}) {
         return;
       }
       const requestUrl = new URL(request.url, "https://colortrace.invalid");
-      if (requestUrl.pathname === "/health/startup" || requestUrl.pathname === "/health/live") {
-        response.writeHead(200, responseHeaders("application/json; charset=utf-8"));
-        response.end(`${JSON.stringify({ status: "ready" })}\n`);
-      } else if (requestUrl.pathname.startsWith("/v1/") || request.method !== "GET") {
+      if (requestUrl.pathname.startsWith("/v1/") || request.method !== "GET") {
         await proxyApi(request, response, requestUrl, configuration, fetchImplementation);
       } else {
         await serveStatic(response, requestUrl.pathname);

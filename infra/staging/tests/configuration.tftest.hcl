@@ -152,6 +152,16 @@ run "workload_isolation_is_explicit" {
 
   assert {
     condition = (
+      google_cloud_run_v2_service.service["web"].template[0].containers[0].startup_probe[0].http_get[0].path == "/"
+      && google_cloud_run_v2_service.service["web"].template[0].containers[0].liveness_probe[0].http_get[0].path == "/"
+      && google_cloud_run_v2_service.service["api"].template[0].containers[0].startup_probe[0].http_get[0].path == "/health/startup"
+      && google_cloud_run_v2_service.service["api"].template[0].containers[0].liveness_probe[0].http_get[0].path == "/health/live"
+    )
+    error_message = "Only the private API may expose diagnostic health paths; public web probes must use the intended read surface."
+  }
+
+  assert {
+    condition = (
       output.candidate_bindings.operator_oidc.deployed == false
       && output.candidate_bindings.operator_oidc.issuer == null
       && output.candidate_bindings.operator_oidc.audience == null

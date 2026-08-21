@@ -188,6 +188,8 @@ test("blocked routes, queries, and methods never reach metadata or the API", asy
     ["GET", "/v1/incidents/example%2F..%2Fsession/workspace", 404],
     ["POST", "/v1/incidents", 405],
     ["PUT", "/v1/incidents/example/response-plan", 405],
+    ["POST", "/health/startup", 405],
+    ["PUT", "/health/live", 405],
   ];
   await withApplication(
     () => {
@@ -199,6 +201,24 @@ test("blocked routes, queries, and methods never reach metadata or the API", asy
         const response = await fetch(`${origin}${path}`, { method });
         assert.equal(response.status, expectedStatus, `${method} ${path}`);
         assert.deepEqual(await response.json(), { code: "request-not-allowed" });
+      }
+    },
+  );
+  assert.equal(fetches, 0);
+});
+
+test("health-looking paths are not public diagnostic endpoints", async () => {
+  let fetches = 0;
+  await withApplication(
+    () => {
+      fetches += 1;
+      throw new Error("unexpected-network-fetch");
+    },
+    async (origin) => {
+      for (const path of ["/health/startup", "/health/live"]) {
+        const response = await fetch(`${origin}${path}`);
+        assert.equal(response.status, 404);
+        assert.deepEqual(await response.json(), { code: "asset-not-found" });
       }
     },
   );
