@@ -311,7 +311,7 @@ class GcsPublicationPort:
                 if_generation_match=generation,
                 timeout=self.policy.request_timeout_seconds,
             )
-        except BaseException as error:
+        except Exception as error:
             if _status_code(error) == 404:
                 raise SimulatorBundleError("gcs-object-unavailable") from error
             if _status_code(error) == 412:
@@ -351,7 +351,7 @@ class GcsPublicationPort:
             )
             blob.reload(timeout=self.policy.request_timeout_seconds)
             return int(cast(int | str, blob.generation))
-        except BaseException as error:
+        except Exception as error:
             if _status_code(error) == 412:
                 raise SimulatorBundleError("gcs-precondition-failed") from error
             raise SimulatorBundleError("gcs-object-write-failed") from error
