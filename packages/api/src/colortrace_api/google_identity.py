@@ -207,12 +207,15 @@ class GoogleServiceIdentityVerifier(Protocol):
 @dataclass(frozen=True, slots=True)
 class ServerOwnedServiceBinding:
     caller_email: str
+    caller_subject: str
     audience: str
     role: str
 
     def __post_init__(self) -> None:
         if _SERVICE_ACCOUNT_EMAIL.fullmatch(self.caller_email) is None:
             raise ValueError("caller_email must identify one Google service account")
+        if _SUBJECT.fullmatch(self.caller_subject) is None:
+            raise ValueError("caller_subject must identify one Google service account")
         object.__setattr__(self, "audience", _audience(self.audience))
         if _ROLE.fullmatch(self.role) is None:
             raise ValueError("role must be a bounded server-owned role")
@@ -222,6 +225,7 @@ class ServerOwnedServiceBinding:
             not isinstance(identity, GoogleServiceIdentity)
             or identity.issuer not in _GOOGLE_ISSUERS
             or identity.email != self.caller_email
+            or identity.subject != self.caller_subject
             or identity.audience != self.audience
             or _INCIDENT_ID.fullmatch(incident_id) is None
         ):

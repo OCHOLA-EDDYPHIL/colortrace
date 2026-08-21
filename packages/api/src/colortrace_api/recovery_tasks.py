@@ -363,6 +363,7 @@ class RecoveryVerificationTaskClaim:
 class RecoveryVerificationTaskDelivery:
     task: dict[str, Any]
     attempt: int
+    reconciliation_only: bool = False
 
 
 class RecoveryVerificationTaskStore(RecoveryVerificationTaskDispatcher, Protocol):
@@ -1019,15 +1020,13 @@ class SQLiteRecoveryVerificationTaskStore:
                 state = self._stored_outbox(outbox_row, task)
                 attempts = cast(int, state["delivery_attempts"])
                 if attempts >= max_attempts:
-                    updated = connection.execute(
-                        "UPDATE recovery_verification_task_outbox "
-                        "SET status = 'exhausted', updated_at = ? "
-                        "WHERE task_key = ? AND status = 'pending' "
-                        "AND delivery_attempts = ?",
-                        (now, task_key, attempts),
+                    deliveries.append(
+                        RecoveryVerificationTaskDelivery(
+                            task=task,
+                            attempt=attempts,
+                            reconciliation_only=True,
+                        )
                     )
-                    if updated.rowcount != 1:
-                        raise RecoveryError("verification-task-delivery-claim-conflict")
                     continue
                 attempt = attempts + 1
                 updated = connection.execute(
@@ -1050,7 +1049,12 @@ class SQLiteRecoveryVerificationTaskStore:
             raise RecoveryError("verification-task-delivery-invalid")
         task = validate_recovery_verification_task(delivery.task)
         attempt = delivery.attempt
-        if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+        if (
+            not isinstance(attempt, int)
+            or isinstance(attempt, bool)
+            or attempt < 1
+            or not isinstance(delivery.reconciliation_only, bool)
+        ):
             raise RecoveryError("verification-task-delivery-invalid")
         return task, attempt
 

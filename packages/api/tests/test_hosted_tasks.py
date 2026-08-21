@@ -12,7 +12,8 @@ from typing import Any, cast
 import pytest
 from colortrace_api import (
     CloudTaskAlreadyExists,
-    CloudTaskPublishError,
+    CloudTaskNotFound,
+    CloudTaskRequestError,
     CloudTasksPublisherConfig,
     GoogleCloudTasksRestClient,
     GoogleOidcTokenVerifier,
@@ -44,6 +45,9 @@ SIMULATOR_AUDIENCE = "https://simulator.example.test"
 RECOVERY_CALLER = "recovery-tasks@test-project.iam.gserviceaccount.com"
 SIMULATOR_CALLER = "simulator-tasks@test-project.iam.gserviceaccount.com"
 OTHER_CALLER = "other-invoker@test-project.iam.gserviceaccount.com"
+RECOVERY_SUBJECT = "123456789012345678901"
+SIMULATOR_SUBJECT = "123456789012345678902"
+OTHER_SUBJECT = "123456789012345678999"
 QUEUE_PATH = "projects/test-project/locations/us-central1/queues/private-tasks"
 INCIDENT_ID = "incident-hosted-task"
 OUTCOME_SHA256 = f"sha256:{'a' * 64}"
@@ -68,7 +72,7 @@ class StaticClaimsVerifier(GoogleIdTokenClaimsVerifier):
 def google_claims(**updates: object) -> dict[str, object]:
     values: dict[str, object] = {
         "iss": ISSUER,
-        "sub": "123456789012345678901",
+        "sub": RECOVERY_SUBJECT,
         "email": RECOVERY_CALLER,
         "email_verified": True,
         "aud": RECOVERY_AUDIENCE,
@@ -85,10 +89,11 @@ def service_identity(
     *,
     email: str = RECOVERY_CALLER,
     audience: str = RECOVERY_AUDIENCE,
+    subject: str = RECOVERY_SUBJECT,
 ) -> GoogleServiceIdentity:
     return GoogleServiceIdentity(
         issuer=ISSUER,
-        subject="123456789012345678901",
+        subject=subject,
         email=email,
         audience=audience,
         credential_sha256=f"sha256:{'d' * 64}",
@@ -173,16 +178,29 @@ def test_google_oidc_rejects_untrusted_claims_without_detail(
 
 
 class FakeCloudTasksClient:
-    def __init__(self, outcomes: list[BaseException | None] | None = None) -> None:
-        self.outcomes = [] if outcomes is None else list(outcomes)
+    def __init__(
+        self,
+        create_outcomes: list[BaseException | None] | None = None,
+        lookup_outcomes: list[BaseException | None] | None = None,
+    ) -> None:
+        self.create_outcomes = [] if create_outcomes is None else list(create_outcomes)
+        self.lookup_outcomes = [] if lookup_outcomes is None else list(lookup_outcomes)
         self.requests: list[tuple[str, Mapping[str, Any]]] = []
+        self.lookups: list[str] = []
 
     def create_task(self, *, parent: str, task: Mapping[str, Any]) -> object:
         self.requests.append((parent, task))
-        outcome = self.outcomes.pop(0) if self.outcomes else None
+        outcome = self.create_outcomes.pop(0) if self.create_outcomes else None
         if outcome is not None:
             raise outcome
         return object()
+
+    def get_task(self, *, name: str) -> object:
+        self.lookups.append(name)
+        outcome = self.lookup_outcomes.pop(0) if self.lookup_outcomes else CloudTaskNotFound()
+        if outcome is not None:
+            raise outcome
+        return {"name": name}
 
 
 def publisher(
@@ -243,7 +261,7 @@ def canonical_task_bytes(task: Mapping[str, Any]) -> bytes:
     return canonical_json_bytes(task)
 
 
-def test_outbox_recovers_ambiguous_create_and_exhausts_bounded_failures(
+def test_outbox_reconciles_ambiguous_create_and_exhausts_only_after_exact_absence(
     tmp_path: Path,
 ) -> None:
     ambiguous_store = SQLiteRecoveryVerificationTaskStore(
@@ -253,18 +271,18 @@ def test_outbox_recovers_ambiguous_create_and_exhausts_bounded_failures(
     ambiguous_task = recovery_task(key="ambiguous-create")
     ambiguous_store.dispatch(ambiguous_task)
     ambiguous_client = FakeCloudTasksClient(
-        [RuntimeError("response lost"), CloudTaskAlreadyExists()]
+        [CloudTaskRequestError("response-lost")],
+        [None],
     )
     subject = publisher(ambiguous_store, ambiguous_client)
 
     first = subject.publish_pending()
-    second = subject.publish_pending()
 
-    assert (first.failed, second.already_exists) == (1, 1)
+    assert (first.failed, first.already_exists) == (0, 1)
     assert ambiguous_store.cloud_task_outbox_state(ambiguous_task["task_key"])["status"] == (
         "enqueued"
     )
-    assert ambiguous_client.requests[0][1]["name"] == ambiguous_client.requests[1][1]["name"]
+    assert ambiguous_client.lookups == [ambiguous_client.requests[0][1]["name"]]
 
     failed_store = SQLiteRecoveryVerificationTaskStore(
         tmp_path / "failed.sqlite3",
@@ -272,7 +290,10 @@ def test_outbox_recovers_ambiguous_create_and_exhausts_bounded_failures(
     )
     failed_task = recovery_task(key="bounded-failure")
     failed_store.dispatch(failed_task)
-    failing_client = FakeCloudTasksClient([RuntimeError("one"), RuntimeError("two")])
+    failing_client = FakeCloudTasksClient(
+        [CloudTaskRequestError("one"), CloudTaskRequestError("two")],
+        [CloudTaskNotFound(), CloudTaskNotFound(), CloudTaskNotFound()],
+    )
     failing = publisher(failed_store, failing_client, max_attempts=2)
 
     assert failing.publish_pending().failed == 1
@@ -280,6 +301,68 @@ def test_outbox_recovers_ambiguous_create_and_exhausts_bounded_failures(
     assert failing.publish_pending().reserved == 0
     assert failed_store.cloud_task_outbox_state(failed_task["task_key"])["status"] == ("exhausted")
     assert len(failing_client.requests) == 2
+    assert len(failing_client.lookups) == 3
+
+
+def test_outbox_final_ambiguity_remains_pending_until_exact_task_is_visible(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteRecoveryVerificationTaskStore(tmp_path / "final.sqlite3", clock=lambda: NOW)
+    task = recovery_task(key="final-ambiguity")
+    store.dispatch(task)
+    client = FakeCloudTasksClient(
+        [CloudTaskRequestError("response-lost")],
+        [CloudTaskRequestError("lookup-unavailable"), None],
+    )
+    subject = publisher(store, client, max_attempts=1)
+
+    first = subject.publish_pending()
+    pending = store.cloud_task_outbox_state(task["task_key"])
+    second = subject.publish_pending()
+
+    assert first.failed == 1
+    assert pending["status"] == "pending"
+    assert pending["delivery_attempts"] == 1
+    assert (second.already_exists, second.failed) == (1, 0)
+    assert store.cloud_task_outbox_state(task["task_key"])["status"] == "enqueued"
+    assert len(client.requests) == 1
+    assert client.lookups == [cloud_task_name(QUEUE_PATH, task["task_key"])] * 2
+
+
+@pytest.mark.parametrize("task_visible", [True, False])
+def test_outbox_recovers_a_crash_after_the_final_delivery_reservation(
+    tmp_path: Path,
+    task_visible: bool,
+) -> None:
+    store = SQLiteRecoveryVerificationTaskStore(tmp_path / f"crash-{task_visible}.sqlite3")
+    task = recovery_task(key=f"crash-{task_visible}")
+    store.dispatch(task)
+    reserved = store.reserve_cloud_task_deliveries(limit=1, max_attempts=1)
+    assert len(reserved) == 1
+    lookup = None if task_visible else CloudTaskNotFound()
+    client = FakeCloudTasksClient(lookup_outcomes=[lookup])
+
+    report = publisher(store, client, max_attempts=1).publish_pending()
+
+    assert client.requests == []
+    assert client.lookups == [cloud_task_name(QUEUE_PATH, task["task_key"])]
+    state = store.cloud_task_outbox_state(task["task_key"])
+    assert state["status"] == ("enqueued" if task_visible else "exhausted")
+    assert (report.already_exists, report.failed) == ((1, 0) if task_visible else (0, 1))
+
+
+def test_outbox_does_not_hide_programming_errors_as_delivery_failures(tmp_path: Path) -> None:
+    store = SQLiteRecoveryVerificationTaskStore(tmp_path / "programming-error.sqlite3")
+    task = recovery_task(key="programming-error")
+    store.dispatch(task)
+    client = FakeCloudTasksClient([AssertionError("broken client")])
+
+    with pytest.raises(AssertionError, match="broken client"):
+        publisher(store, client).publish_pending()
+
+    state = store.cloud_task_outbox_state(task["task_key"])
+    assert state["status"] == "pending"
+    assert state["delivery_attempts"] == 1
 
 
 def test_v1_task_store_migration_preserves_pending_authorized_tasks(tmp_path: Path) -> None:
@@ -337,12 +420,25 @@ def test_local_completion_suppresses_a_pending_cloud_delivery(tmp_path: Path) ->
 @dataclass
 class HttpResponse:
     status_code: int
+    document: object
+
+    def json(self) -> object:
+        if isinstance(self.document, BaseException):
+            raise self.document
+        return self.document
 
 
 class HttpSession:
-    def __init__(self, status_code: int) -> None:
-        self.status_code = status_code
-        self.requests: list[tuple[str, Mapping[str, Any], float]] = []
+    def __init__(
+        self,
+        *,
+        post_response: HttpResponse | BaseException | None = None,
+        get_response: HttpResponse | BaseException | None = None,
+    ) -> None:
+        self.post_response = post_response
+        self.get_response = get_response
+        self.posts: list[tuple[str, Mapping[str, Any], float]] = []
+        self.gets: list[tuple[str, float]] = []
 
     def post(
         self,
@@ -351,34 +447,125 @@ class HttpSession:
         json: Mapping[str, Any],
         timeout: float,
     ) -> HttpResponse:
-        self.requests.append((url, json, timeout))
-        return HttpResponse(self.status_code)
+        self.posts.append((url, json, timeout))
+        if isinstance(self.post_response, BaseException):
+            raise self.post_response
+        assert self.post_response is not None
+        return self.post_response
+
+    def get(self, url: str, *, timeout: float) -> HttpResponse:
+        self.gets.append((url, timeout))
+        if isinstance(self.get_response, BaseException):
+            raise self.get_response
+        assert self.get_response is not None
+        return self.get_response
 
 
 @pytest.mark.parametrize(
-    ("status", "error"),
-    [(201, None), (409, CloudTaskAlreadyExists), (500, CloudTaskPublishError)],
+    ("status", "canonical_status", "error"),
+    [
+        (201, None, None),
+        (409, "ALREADY_EXISTS", CloudTaskAlreadyExists),
+        (409, "ABORTED", CloudTaskRequestError),
+        (409, None, CloudTaskRequestError),
+        (500, "INTERNAL", CloudTaskRequestError),
+    ],
 )
 def test_cloud_tasks_rest_client_classifies_only_expected_responses(
     status: int,
-    error: type[BaseException] | None,
+    canonical_status: str | None,
+    error: type[CloudTaskRequestError] | None,
 ) -> None:
-    session = HttpSession(status)
+    task = recovery_task(key="rest-create")
+    name = cloud_task_name(QUEUE_PATH, task["task_key"])
+    document: object
+    if status in {200, 201}:
+        document = {"name": name}
+    else:
+        document = {"error": {"status": canonical_status}} if canonical_status else {}
+    session = HttpSession(post_response=HttpResponse(status, document))
     client = GoogleCloudTasksRestClient(session=session, timeout_seconds=7)
-    task = {"name": f"{QUEUE_PATH}/tasks/test-task"}
+    cloud_task = {"name": name}
 
     if error is None:
-        client.create_task(parent=QUEUE_PATH, task=task)
+        client.create_task(parent=QUEUE_PATH, task=cloud_task)
     else:
-        with pytest.raises(error):
-            client.create_task(parent=QUEUE_PATH, task=task)
-    assert session.requests == [
+        with pytest.raises(error) as caught:
+            client.create_task(parent=QUEUE_PATH, task=cloud_task)
+        if error is CloudTaskRequestError:
+            assert type(caught.value) is CloudTaskRequestError
+    assert session.posts == [
         (
             f"https://cloudtasks.googleapis.com/v2/{QUEUE_PATH}/tasks",
-            {"task": task},
+            {"task": cloud_task},
             7.0,
         )
     ]
+
+
+def test_cloud_tasks_rest_client_validates_success_and_lookup_names() -> None:
+    expected = cloud_task_name(QUEUE_PATH, recovery_task(key="rest-names")["task_key"])
+    wrong = cloud_task_name(QUEUE_PATH, recovery_task(key="wrong-name")["task_key"])
+    create_session = HttpSession(post_response=HttpResponse(201, {"name": wrong}))
+
+    with pytest.raises(CloudTaskRequestError, match="cloud-task-create-response-invalid"):
+        GoogleCloudTasksRestClient(session=create_session).create_task(
+            parent=QUEUE_PATH,
+            task={"name": expected},
+        )
+
+    lookup_session = HttpSession(get_response=HttpResponse(200, {"name": wrong}))
+    with pytest.raises(CloudTaskRequestError, match="cloud-task-get-response-invalid"):
+        GoogleCloudTasksRestClient(session=lookup_session).get_task(name=expected)
+
+
+@pytest.mark.parametrize(
+    ("status", "canonical_status", "error"),
+    [
+        (200, None, None),
+        (404, "NOT_FOUND", CloudTaskNotFound),
+        (404, "PERMISSION_DENIED", CloudTaskRequestError),
+        (503, "UNAVAILABLE", CloudTaskRequestError),
+    ],
+)
+def test_cloud_tasks_rest_client_gets_only_an_exact_canonical_task(
+    status: int,
+    canonical_status: str | None,
+    error: type[CloudTaskRequestError] | None,
+) -> None:
+    expected = cloud_task_name(QUEUE_PATH, recovery_task(key="rest-get")["task_key"])
+    document: object
+    if status == 200:
+        document = {"name": expected}
+    else:
+        document = {"error": {"status": canonical_status}}
+    session = HttpSession(get_response=HttpResponse(status, document))
+    client = GoogleCloudTasksRestClient(session=session, timeout_seconds=9)
+
+    if error is None:
+        client.get_task(name=expected)
+    else:
+        with pytest.raises(error) as caught:
+            client.get_task(name=expected)
+        if error is CloudTaskRequestError:
+            assert type(caught.value) is CloudTaskRequestError
+    assert session.gets == [(f"https://cloudtasks.googleapis.com/v2/{expected}", 9.0)]
+
+
+@pytest.mark.parametrize("method", ["create", "get"])
+def test_cloud_tasks_rest_client_bounds_transport_failures(method: str) -> None:
+    expected = cloud_task_name(QUEUE_PATH, recovery_task(key=f"transport-{method}")["task_key"])
+    session = HttpSession(
+        post_response=OSError("network unavailable"),
+        get_response=OSError("network unavailable"),
+    )
+    client = GoogleCloudTasksRestClient(session=session)
+
+    with pytest.raises(CloudTaskRequestError, match=f"cloud-task-{method}-request-failed"):
+        if method == "create":
+            client.create_task(parent=QUEUE_PATH, task={"name": expected})
+        else:
+            client.get_task(name=expected)
 
 
 class IncidentReader:
@@ -453,6 +640,7 @@ def hosted_recovery_app(
         identity_verifier=StaticIdentityVerifier(caller or service_identity()),
         service_binding=ServerOwnedServiceBinding(
             caller_email=RECOVERY_CALLER,
+            caller_subject=RECOVERY_SUBJECT,
             audience=RECOVERY_AUDIENCE,
             role="recovery.verifier",
         ),
@@ -495,6 +683,7 @@ def test_hosted_worker_binds_server_authority_and_replays_once(tmp_path: Path) -
     ("caller", "headers_update", "body_update", "status"),
     [
         (service_identity(email=OTHER_CALLER), {}, {}, 401),
+        (service_identity(subject=OTHER_SUBJECT), {}, {}, 401),
         (service_identity(audience="https://wrong.example.test"), {}, {}, 401),
         (service_identity(), {"X-CloudTasks-TaskName": "wrong"}, {}, 403),
         (service_identity(), {"X-CloudTasks-TaskRetryCount": "5"}, {}, 403),
@@ -623,13 +812,25 @@ def simulator_task(identity: DispatchIdentity, *, version: int = 7) -> dict[str,
     }
 
 
-def test_hosted_composition_requires_separate_service_identities() -> None:
-    with pytest.raises(ValueError, match="caller identities must be separate"):
+@pytest.mark.parametrize(
+    ("simulator_email", "simulator_subject", "error"),
+    [
+        (RECOVERY_CALLER, SIMULATOR_SUBJECT, "caller identities must be separate"),
+        (SIMULATOR_CALLER, RECOVERY_SUBJECT, "caller subjects must be separate"),
+    ],
+)
+def test_hosted_composition_requires_separate_service_identities(
+    simulator_email: str,
+    simulator_subject: str,
+    error: str,
+) -> None:
+    with pytest.raises(ValueError, match=error):
         create_hosted_private_service_apps(
             recovery_worker=cast(Any, object()),
             recovery_identity_verifier=StaticIdentityVerifier(service_identity()),
             recovery_service_binding=ServerOwnedServiceBinding(
                 caller_email=RECOVERY_CALLER,
+                caller_subject=RECOVERY_SUBJECT,
                 audience=RECOVERY_AUDIENCE,
                 role="recovery.verifier",
             ),
@@ -639,10 +840,15 @@ def test_hosted_composition_requires_separate_service_identities() -> None:
             simulator_authority_resolver=cast(Any, object()),
             simulator_executor_boundary=SimulatorExecutorBoundary(),
             simulator_identity_verifier=StaticIdentityVerifier(
-                service_identity(email=RECOVERY_CALLER, audience=SIMULATOR_AUDIENCE)
+                service_identity(
+                    email=simulator_email,
+                    audience=SIMULATOR_AUDIENCE,
+                    subject=simulator_subject,
+                )
             ),
             simulator_service_binding=ServerOwnedServiceBinding(
-                caller_email=RECOVERY_CALLER,
+                caller_email=simulator_email,
+                caller_subject=simulator_subject,
                 audience=SIMULATOR_AUDIENCE,
                 role="simulator.executor",
             ),
@@ -676,10 +882,15 @@ def test_hosted_simulator_derives_object_scope_and_replays_terminal_outcome() ->
         authority_resolver=cast(Any, resolver),
         executor_boundary=boundary,
         identity_verifier=StaticIdentityVerifier(
-            service_identity(email=SIMULATOR_CALLER, audience=SIMULATOR_AUDIENCE)
+            service_identity(
+                email=SIMULATOR_CALLER,
+                audience=SIMULATOR_AUDIENCE,
+                subject=SIMULATOR_SUBJECT,
+            )
         ),
         service_binding=ServerOwnedServiceBinding(
             caller_email=SIMULATOR_CALLER,
+            caller_subject=SIMULATOR_SUBJECT,
             audience=SIMULATOR_AUDIENCE,
             role="simulator.executor",
         ),
@@ -737,10 +948,15 @@ def test_hosted_simulator_fails_closed_before_admission(
         authority_resolver=cast(Any, AuthorityResolver(action)),
         executor_boundary=boundary,
         identity_verifier=StaticIdentityVerifier(
-            service_identity(email=SIMULATOR_CALLER, audience=SIMULATOR_AUDIENCE)
+            service_identity(
+                email=SIMULATOR_CALLER,
+                audience=SIMULATOR_AUDIENCE,
+                subject=SIMULATOR_SUBJECT,
+            )
         ),
         service_binding=ServerOwnedServiceBinding(
             caller_email=SIMULATOR_CALLER,
+            caller_subject=SIMULATOR_SUBJECT,
             audience=SIMULATOR_AUDIENCE,
             role="simulator.executor",
         ),

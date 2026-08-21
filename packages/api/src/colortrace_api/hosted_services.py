@@ -453,6 +453,8 @@ def create_hosted_private_service_apps(
 ) -> HostedPrivateServiceApps:
     if recovery_service_binding.caller_email == simulator_service_binding.caller_email:
         raise ValueError("hosted service caller identities must be separate")
+    if recovery_service_binding.caller_subject == simulator_service_binding.caller_subject:
+        raise ValueError("hosted service caller subjects must be separate")
     if recovery_service_binding.audience == simulator_service_binding.audience:
         raise ValueError("hosted service audiences must be separate")
     if recovery_queue_path == simulator_queue_path:

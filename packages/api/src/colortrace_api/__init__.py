@@ -4,7 +4,9 @@ from .app import IncidentService, create_app
 from .auth import Principal, PrincipalKind, TokenVerifier
 from .cloud_tasks import (
     CloudTaskAlreadyExists,
+    CloudTaskNotFound,
     CloudTaskPublishError,
+    CloudTaskRequestError,
     CloudTasksPublisherConfig,
     CloudTasksPublishReport,
     GoogleCloudTasksRestClient,
@@ -63,7 +65,9 @@ __all__ = [
     "ApiRuntimeConfigurationError",
     "CanonicalSimulatorTaskResolver",
     "CloudTaskAlreadyExists",
+    "CloudTaskNotFound",
     "CloudTaskPublishError",
+    "CloudTaskRequestError",
     "CloudTasksPublishReport",
     "CloudTasksPublisherConfig",
     "GoogleAuthIdTokenClaimsVerifier",

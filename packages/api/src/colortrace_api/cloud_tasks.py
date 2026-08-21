@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from urllib.parse import quote, urlsplit
 
 from colortrace_recovery import RecoveryError, canonical_json_bytes
+from google.auth.exceptions import GoogleAuthError
 
 from .recovery_tasks import (
     RecoveryVerificationTaskDelivery,
@@ -23,6 +24,10 @@ _SERVICE_ACCOUNT_EMAIL = re.compile(
     r"[a-z0-9][a-z0-9-]{0,62}@[a-z0-9][a-z0-9.-]{0,200}\.iam\.gserviceaccount\.com\Z"
 )
 _TASK_KEY = re.compile(r"(?:recovery-verification-task|dispatch-task):[0-9a-f]{64}\Z")
+_CLOUD_TASK_NAME = re.compile(
+    r"projects/[a-z][a-z0-9-]{4,29}/locations/[a-z0-9-]{1,63}/"
+    r"queues/[A-Za-z0-9_-]{1,100}/tasks/colortrace-[0-9a-f]{64}\Z"
+)
 _MAX_URL_LENGTH = 2_048
 _CLOUD_TASKS_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
@@ -33,13 +38,24 @@ class CloudTaskPublishError(RuntimeError):
         super().__init__(code)
 
 
-class CloudTaskAlreadyExists(CloudTaskPublishError):
+class CloudTaskRequestError(CloudTaskPublishError):
+    pass
+
+
+class CloudTaskAlreadyExists(CloudTaskRequestError):
     def __init__(self) -> None:
         super().__init__("cloud-task-already-exists")
 
 
+class CloudTaskNotFound(CloudTaskRequestError):
+    def __init__(self) -> None:
+        super().__init__("cloud-task-not-found")
+
+
 class CloudTasksResponse(Protocol):
     status_code: int
+
+    def json(self) -> object: ...
 
 
 class CloudTasksHttpSession(Protocol):
@@ -51,6 +67,13 @@ class CloudTasksHttpSession(Protocol):
         timeout: float,
     ) -> CloudTasksResponse: ...
 
+    def get(
+        self,
+        url: str,
+        *,
+        timeout: float,
+    ) -> CloudTasksResponse: ...
+
 
 class CloudTasksClient(Protocol):
     def create_task(
@@ -59,6 +82,8 @@ class CloudTasksClient(Protocol):
         parent: str,
         task: Mapping[str, Any],
     ) -> object: ...
+
+    def get_task(self, *, name: str) -> object: ...
 
 
 class CloudTaskOutbox(Protocol):
@@ -159,6 +184,40 @@ def cloud_task_name(queue_path: str, task_key: str) -> str:
     return f"{queue_path}/tasks/{cloud_task_id(task_key)}"
 
 
+def _task_resource_name(value: object, *, code: str) -> str:
+    if not isinstance(value, str) or _CLOUD_TASK_NAME.fullmatch(value) is None:
+        raise CloudTaskPublishError(code)
+    return value
+
+
+def _canonical_error_status(response: CloudTasksResponse) -> str | None:
+    try:
+        document = response.json()
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(document, Mapping):
+        return None
+    error = document.get("error")
+    if not isinstance(error, Mapping):
+        return None
+    status = error.get("status")
+    return status if isinstance(status, str) else None
+
+
+def _validate_response_name(
+    response: CloudTasksResponse,
+    *,
+    expected_name: str,
+    code: str,
+) -> None:
+    try:
+        document = response.json()
+    except (TypeError, ValueError):
+        raise CloudTaskRequestError(code) from None
+    if not isinstance(document, Mapping) or document.get("name") != expected_name:
+        raise CloudTaskRequestError(code)
+
+
 class GoogleCloudTasksRestClient:
     def __init__(
         self,
@@ -189,15 +248,49 @@ class GoogleCloudTasksRestClient:
     ) -> object:
         if _QUEUE_PATH.fullmatch(parent) is None:
             raise CloudTaskPublishError("cloud-task-parent-invalid")
-        response = self._session.post(
-            f"https://cloudtasks.googleapis.com/v2/{parent}/tasks",
-            json={"task": dict(task)},
-            timeout=self._timeout_seconds,
+        expected_name = _task_resource_name(
+            task.get("name"),
+            code="cloud-task-name-invalid",
         )
-        if response.status_code == 409:
+        if not expected_name.startswith(f"{parent}/tasks/"):
+            raise CloudTaskPublishError("cloud-task-name-invalid")
+        try:
+            response = self._session.post(
+                f"https://cloudtasks.googleapis.com/v2/{parent}/tasks",
+                json={"task": dict(task)},
+                timeout=self._timeout_seconds,
+            )
+        except (GoogleAuthError, OSError):
+            raise CloudTaskRequestError("cloud-task-create-request-failed") from None
+        if response.status_code == 409 and _canonical_error_status(response) == "ALREADY_EXISTS":
             raise CloudTaskAlreadyExists
         if response.status_code not in {200, 201}:
-            raise CloudTaskPublishError("cloud-task-create-failed")
+            raise CloudTaskRequestError("cloud-task-create-failed")
+        _validate_response_name(
+            response,
+            expected_name=expected_name,
+            code="cloud-task-create-response-invalid",
+        )
+        return response
+
+    def get_task(self, *, name: str) -> object:
+        expected_name = _task_resource_name(name, code="cloud-task-name-invalid")
+        try:
+            response = self._session.get(
+                f"https://cloudtasks.googleapis.com/v2/{expected_name}",
+                timeout=self._timeout_seconds,
+            )
+        except (GoogleAuthError, OSError):
+            raise CloudTaskRequestError("cloud-task-get-request-failed") from None
+        if response.status_code == 404 and _canonical_error_status(response) == "NOT_FOUND":
+            raise CloudTaskNotFound
+        if response.status_code != 200:
+            raise CloudTaskRequestError("cloud-task-get-failed")
+        _validate_response_name(
+            response,
+            expected_name=expected_name,
+            code="cloud-task-get-response-invalid",
+        )
         return response
 
 
@@ -269,23 +362,49 @@ class RecoveryCloudTasksPublisher:
             task_name = task_document["name"]
             if not isinstance(task_name, str):
                 raise CloudTaskPublishError("cloud-task-name-invalid")
+            if delivery.attempt > 1 or delivery.reconciliation_only:
+                try:
+                    self._client.get_task(name=task_name)
+                except CloudTaskNotFound:
+                    if delivery.reconciliation_only:
+                        self._outbox.fail_cloud_task_delivery(
+                            delivery,
+                            max_attempts=self._config.max_publish_attempts,
+                        )
+                        failed += 1
+                        continue
+                except CloudTaskRequestError:
+                    failed += 1
+                    continue
+                else:
+                    self._outbox.mark_cloud_task_enqueued(
+                        delivery,
+                        cloud_task_name=task_name,
+                    )
+                    already_exists += 1
+                    continue
             try:
                 self._client.create_task(
                     parent=self._config.queue_path,
                     task=task_document,
                 )
-            except CloudTaskAlreadyExists:
-                self._outbox.mark_cloud_task_enqueued(
-                    delivery,
-                    cloud_task_name=task_name,
-                )
-                already_exists += 1
-            except Exception:
-                self._outbox.fail_cloud_task_delivery(
-                    delivery,
-                    max_attempts=self._config.max_publish_attempts,
-                )
-                failed += 1
+            except CloudTaskRequestError:
+                try:
+                    self._client.get_task(name=task_name)
+                except CloudTaskNotFound:
+                    self._outbox.fail_cloud_task_delivery(
+                        delivery,
+                        max_attempts=self._config.max_publish_attempts,
+                    )
+                    failed += 1
+                except CloudTaskRequestError:
+                    failed += 1
+                else:
+                    self._outbox.mark_cloud_task_enqueued(
+                        delivery,
+                        cloud_task_name=task_name,
+                    )
+                    already_exists += 1
             else:
                 self._outbox.mark_cloud_task_enqueued(
                     delivery,
@@ -359,8 +478,10 @@ def validate_cloud_tasks_delivery_config(
 
 __all__ = [
     "CloudTaskAlreadyExists",
+    "CloudTaskNotFound",
     "CloudTaskOutbox",
     "CloudTaskPublishError",
+    "CloudTaskRequestError",
     "CloudTasksClient",
     "CloudTasksDeliveryMetadata",
     "CloudTasksPublishReport",
