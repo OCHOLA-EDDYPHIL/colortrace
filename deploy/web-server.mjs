@@ -10,15 +10,9 @@ const API_TIMEOUT_MS = 10_000;
 const METADATA_IDENTITY_URL =
   "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity";
 const PUBLIC_ROOT = fileURLToPath(new URL("./public/", import.meta.url));
-const INCIDENT_ID = "[A-Za-z0-9][A-Za-z0-9._:-]{0,255}";
-const API_PATHS = [
-  /^\/v1\/incidents$/,
-  new RegExp(`^/v1/incidents/${INCIDENT_ID}$`),
-  new RegExp(`^/v1/incidents/${INCIDENT_ID}/replay$`),
-  new RegExp(`^/v1/incidents/${INCIDENT_ID}/workspace$`),
-  new RegExp(`^/v1/incidents/${INCIDENT_ID}/response-plan(?:/draft)?$`),
-  new RegExp(`^/v1/incidents/${INCIDENT_ID}/recovery$`),
-];
+const INCIDENT_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
+const INCIDENT_PROJECTION_PATH = /^\/v1\/incidents\/([^/]+)\/(workspace|response-plan|recovery)$/;
+const LIST_QUERY_FIELDS = new Set(["cursor", "limit"]);
 
 const CONTENT_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
@@ -31,8 +25,47 @@ const CONTENT_TYPES = new Map([
   [".woff2", "font/woff2"],
 ]);
 
-export function isPublicApiRequest(method, pathname) {
-  return method === "GET" && API_PATHS.some((pattern) => pattern.test(pathname));
+function hasOnlyQueryFields(requestUrl, allowedFields) {
+  const observed = new Set();
+  for (const field of requestUrl.searchParams.keys()) {
+    if (!allowedFields.has(field) || observed.has(field)) return false;
+    observed.add(field);
+  }
+  return true;
+}
+
+function decodeIncidentIdentifier(segment) {
+  let identifier;
+  try {
+    identifier = decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+  if (!INCIDENT_IDENTIFIER.test(identifier)) return null;
+  if (identifier.split("/").some((part) => part === "." || part === "..")) return null;
+  return identifier;
+}
+
+function publicApiTarget(method, requestUrl) {
+  if (method !== "GET") return null;
+  if (requestUrl.pathname === "/v1/incidents") {
+    if (!hasOnlyQueryFields(requestUrl, LIST_QUERY_FIELDS)) return null;
+    return `${requestUrl.pathname}${requestUrl.search}`;
+  }
+  if (requestUrl.searchParams.size !== 0) return null;
+  const match = INCIDENT_PROJECTION_PATH.exec(requestUrl.pathname);
+  if (match === null) return null;
+  const identifier = decodeIncidentIdentifier(match[1]);
+  if (identifier === null) return null;
+  return `/v1/incidents/${encodeURIComponent(identifier)}/${match[2]}`;
+}
+
+export function isPublicApiRequest(method, requestTarget) {
+  try {
+    return publicApiTarget(method, new URL(requestTarget, "https://colortrace.invalid")) !== null;
+  } catch {
+    return false;
+  }
 }
 
 export function loadConfiguration(environment) {
@@ -77,12 +110,13 @@ function jsonResponse(response, status, code) {
   response.end(`${JSON.stringify({ code })}\n`);
 }
 
-async function identityToken(audience) {
+async function identityToken(audience, fetchImplementation) {
   const url = new URL(METADATA_IDENTITY_URL);
   url.searchParams.set("audience", audience);
   url.searchParams.set("format", "full");
-  const response = await fetch(url, {
+  const response = await fetchImplementation(url, {
     headers: { "Metadata-Flavor": "Google" },
+    redirect: "error",
     signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
   const token = await response.text();
@@ -98,18 +132,42 @@ async function identityToken(audience) {
   return token;
 }
 
-async function proxyApi(request, response, requestUrl, configuration) {
+async function readBoundedBody(upstream) {
+  if (upstream.body === null) return Buffer.alloc(0);
+  const reader = upstream.body.getReader();
+  const body = Buffer.allocUnsafe(MAX_API_RESPONSE_BYTES);
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return body.subarray(0, length);
+      if (value.byteLength > MAX_API_RESPONSE_BYTES - length) {
+        throw new Error("api-response-invalid");
+      }
+      body.set(value, length);
+      length += value.byteLength;
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function proxyApi(request, response, requestUrl, configuration, fetchImplementation) {
   if (request.method === "GET" && requestUrl.pathname === "/v1/session") {
     jsonResponse(response, 401, "authentication-required");
     return;
   }
-  if (!isPublicApiRequest(request.method, requestUrl.pathname)) {
+  const targetPath = publicApiTarget(request.method, requestUrl);
+  if (targetPath === null) {
     jsonResponse(response, request.method === "GET" ? 404 : 405, "request-not-allowed");
     return;
   }
-  const token = await identityToken(configuration.apiAudience);
-  const target = new URL(`${requestUrl.pathname}${requestUrl.search}`, configuration.apiOrigin);
-  const upstream = await fetch(target, {
+  const token = await identityToken(configuration.apiAudience, fetchImplementation);
+  const target = new URL(targetPath, configuration.apiOrigin);
+  const upstream = await fetchImplementation(target, {
     headers: {
       Accept: "application/json",
       Authorization: `Bearer ${token}`,
@@ -119,10 +177,11 @@ async function proxyApi(request, response, requestUrl, configuration) {
     signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
   const contentType = upstream.headers.get("content-type") ?? "";
-  const body = Buffer.from(await upstream.arrayBuffer());
-  if (!contentType.toLowerCase().startsWith("application/json") || body.length > MAX_API_RESPONSE_BYTES) {
+  if (contentType.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+    await upstream.body?.cancel();
     throw new Error("api-response-invalid");
   }
+  const body = await readBoundedBody(upstream);
   response.writeHead(upstream.status, responseHeaders("application/json; charset=utf-8"));
   response.end(body);
 }
@@ -145,11 +204,15 @@ async function serveStatic(response, pathname) {
     jsonResponse(response, 404, "asset-not-found");
     return;
   }
-  response.writeHead(200, responseHeaders(CONTENT_TYPES.get(extname(path)) ?? "application/octet-stream"));
+  response.writeHead(
+    200,
+    responseHeaders(CONTENT_TYPES.get(extname(path)) ?? "application/octet-stream"),
+  );
   createReadStream(path).pipe(response);
 }
 
-export function createApplication(configuration) {
+export function createApplication(configuration, dependencies = {}) {
+  const fetchImplementation = dependencies.fetch ?? fetch;
   return createServer(async (request, response) => {
     try {
       if (request.url === undefined || Buffer.byteLength(request.url) > MAX_REQUEST_URL_BYTES) {
@@ -161,7 +224,7 @@ export function createApplication(configuration) {
         response.writeHead(200, responseHeaders("application/json; charset=utf-8"));
         response.end(`${JSON.stringify({ status: "ready" })}\n`);
       } else if (requestUrl.pathname.startsWith("/v1/") || request.method !== "GET") {
-        await proxyApi(request, response, requestUrl, configuration);
+        await proxyApi(request, response, requestUrl, configuration, fetchImplementation);
       } else {
         await serveStatic(response, requestUrl.pathname);
       }
