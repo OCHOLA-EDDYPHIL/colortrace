@@ -20,6 +20,7 @@ from colortrace_api.hosted_read import (
     POSTGRES_MIGRATION_ROLE_ENV,
     POSTGRES_RUNTIME_ROLE_ENV,
     HostedBootstrapConfig,
+    HostedMigrationConfig,
     HostedProjectionService,
     HostedReadConfigurationError,
     HostedServeConfig,
@@ -30,6 +31,7 @@ from colortrace_api.hosted_read import (
     create_hosted_read_app,
     load_fixture,
     main,
+    migrate_and_seed,
     seed_fixture,
 )
 from colortrace_persistence import MetadataSnapshot
@@ -217,7 +219,7 @@ def test_hosted_app_validates_reader_binding_and_closes_connector(
 ) -> None:
     store = MemoryStore()
     seed_fixture(store, _EXPECTED_FIXTURE_DIGEST)  # type: ignore[arg-type]
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, bool] | tuple[str, str]] = []
 
     class Factory:
         closed = False
@@ -236,8 +238,15 @@ def test_hosted_app_validates_reader_binding_and_closes_connector(
         return factory
 
     class Verifier:
-        def __init__(self, _factory: object, *, database: str, reader_role: str) -> None:
-            calls.append((database, reader_role))
+        def __init__(
+            self,
+            _factory: object,
+            *,
+            database: str,
+            reader_role: str,
+            cloud_sql_iam_service_account: bool,
+        ) -> None:
+            calls.append((database, reader_role, cloud_sql_iam_service_account))
 
         def validate(self) -> None:
             calls.append(("validated", "validated"))
@@ -256,7 +265,7 @@ def test_hosted_app_validates_reader_binding_and_closes_connector(
         assert client.get("/v1/incidents").status_code == 200
 
     assert calls == [
-        ("colortrace", "colortrace-api@project.iam"),
+        ("colortrace", "colortrace-api@project.iam", True),
         ("validated", "validated"),
     ]
     assert factory.closed is True
@@ -292,6 +301,7 @@ def test_bootstrap_reads_private_file_and_never_places_password_in_command(
     }
     config = HostedBootstrapConfig.from_environment(environment)
     calls: list[dict[str, str]] = []
+    bootstrap_options: list[dict[str, object]] = []
 
     class Factory:
         closed = False
@@ -306,8 +316,8 @@ def test_bootstrap_reads_private_file_and_never_places_password_in_command(
         return factory
 
     class Bootstrapper:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
+        def __init__(self, *_args: object, **options: object) -> None:
+            bootstrap_options.append(options)
 
         def apply(self) -> None:
             pass
@@ -322,6 +332,16 @@ def test_bootstrap_reads_private_file_and_never_places_password_in_command(
             "database": "colortrace",
             "user": "postgres",
             "password": "synthetic-admin-password",
+        }
+    ]
+    assert bootstrap_options == [
+        {
+            "database": "colortrace",
+            "admin_role": "postgres",
+            "migration_role": "colortrace-migration@project.iam",
+            "runtime_role": "colortrace-worker@project.iam",
+            "reader_role": "colortrace-api@project.iam",
+            "cloud_sql_iam_service_account": True,
         }
     ]
     assert factory.closed is True
@@ -353,6 +373,71 @@ def test_bootstrap_rejects_nonprivate_or_linked_password_file(tmp_path: Path) ->
         match="^postgres-admin-password-file-invalid$",
     ):
         bootstrap_database(HostedBootstrapConfig.from_environment(environment))
+
+
+def test_migration_uses_cloud_sql_iam_membership_profile_and_closes_connector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = HostedMigrationConfig.from_environment(_environment())
+    runner_options: list[dict[str, object]] = []
+    factory_calls: list[dict[str, str]] = []
+    seed_calls: list[tuple[object, str]] = []
+
+    class Factory:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    factory = Factory()
+
+    def build(**values: str) -> Factory:
+        factory_calls.append(values)
+        return factory
+
+    class Runner:
+        def __init__(self, _factory: object, **options: object) -> None:
+            runner_options.append(options)
+
+        def apply_all(self) -> tuple[int, ...]:
+            return (1, 2)
+
+    store = object()
+    expected = object()
+
+    def seed(selected_store: object, fixture_sha256: str) -> object:
+        seed_calls.append((selected_store, fixture_sha256))
+        return expected
+
+    monkeypatch.setattr("colortrace_api.hosted_read.PostgresMigrationRunner", Runner)
+    monkeypatch.setattr(
+        "colortrace_api.hosted_read.CanonicalPostgresStore",
+        lambda selected_factory, *, namespace: (
+            store if selected_factory is factory and namespace == "incident" else None
+        ),
+    )
+    monkeypatch.setattr("colortrace_api.hosted_read.seed_fixture", seed)
+
+    report = migrate_and_seed(config, factory_builder=build)  # type: ignore[arg-type]
+
+    assert report is expected
+    assert factory_calls == [
+        {
+            "instance_connection_name": "project:us-central1:colortrace-staging",
+            "database": "colortrace",
+            "user": "colortrace-migration@project.iam",
+        }
+    ]
+    assert runner_options == [
+        {
+            "migration_role": "colortrace-migration@project.iam",
+            "runtime_role": "colortrace-worker@project.iam",
+            "reader_role": "colortrace-api@project.iam",
+            "cloud_sql_iam_service_account": True,
+        }
+    ]
+    assert seed_calls == [(store, _EXPECTED_FIXTURE_DIGEST)]
+    assert factory.closed is True
 
 
 def test_module_cli_admits_only_explicit_serve_command(
