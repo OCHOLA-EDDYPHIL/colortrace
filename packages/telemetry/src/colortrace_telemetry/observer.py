@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import time
@@ -39,6 +40,13 @@ CORRELATION_FIELDS = (
     "transform_id",
 )
 _PRIVATE_FIXTURE_MOUNT = "/isolated-fixture-private"
+_GRAFANA_READINESS_PATHS = (
+    "/api/health",
+    "/api/ruler/grafana/api/v1/rules",
+)
+_GRAFANA_READINESS_TIMEOUT_SECONDS = 60.0
+_GRAFANA_READINESS_POLL_SECONDS = 1.0
+_GRAFANA_READINESS_REQUEST_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +144,49 @@ def _json_get(
         json.JSONDecodeError,
     ) as error:
         raise BackendUnavailable(f"backend query unavailable: {url}") from error
+
+
+def _grafana_readiness_probe(
+    endpoints: BackendEndpoints,
+    *,
+    deadline: float,
+    monotonic: Callable[[], float],
+) -> bool:
+    for path in _GRAFANA_READINESS_PATHS:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            _json_get(
+                endpoints.grafana,
+                path,
+                timeout_seconds=min(_GRAFANA_READINESS_REQUEST_TIMEOUT_SECONDS, remaining),
+            )
+        except BackendUnavailable:
+            return False
+    return True
+
+
+def wait_for_grafana_readiness(
+    endpoints: BackendEndpoints,
+    *,
+    timeout_seconds: float = _GRAFANA_READINESS_TIMEOUT_SECONDS,
+    poll_seconds: float = _GRAFANA_READINESS_POLL_SECONDS,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("Grafana readiness timeout must be positive and finite")
+    if not math.isfinite(poll_seconds) or poll_seconds <= 0:
+        raise ValueError("Grafana readiness poll interval must be positive and finite")
+    deadline = monotonic() + timeout_seconds
+    while monotonic() < deadline:
+        if _grafana_readiness_probe(endpoints, deadline=deadline, monotonic=monotonic):
+            return
+        remaining = deadline - monotonic()
+        if remaining > 0:
+            sleep(min(poll_seconds, remaining))
+    raise BackendUnavailable("Grafana readiness gate timed out")
 
 
 def _http_reachable(base: str, path: str) -> bool:

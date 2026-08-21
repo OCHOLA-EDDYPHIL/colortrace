@@ -22,6 +22,7 @@ from colortrace_telemetry.observer import (
     telemetry_isolation_receipt,
     validated_isolation_receipt,
     verify_real_backends,
+    wait_for_grafana_readiness,
 )
 
 
@@ -123,11 +124,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if arguments.command == "emit":
         runtime, plans = _plans(arguments.scenario, arguments.runs)
+        wait_for_grafana_readiness(endpoints)
         receipt = emit_plans(runtime, plans, OtelSink(endpoints.otlp))
         _write(arguments.receipt, receipt)
         return 0
     if arguments.command == "verify":
         receipt = strict_json(arguments.receipt)
+        wait_for_grafana_readiness(endpoints)
         report = verify_real_backends(
             receipt,
             endpoints,
@@ -140,6 +143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if arguments.command == "integration":
         runtime, plans = _plans(arguments.scenario, 50)
+        wait_for_grafana_readiness(endpoints)
         receipt = emit_plans(runtime, plans, OtelSink(endpoints.otlp))
         _write(arguments.receipt, receipt)
         report = verify_real_backends(
