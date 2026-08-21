@@ -1,39 +1,39 @@
 FROM ghcr.io/astral-sh/uv@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc AS uv
 
-FROM python@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2 AS mcp-grafana
+FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS mcp-grafana
 ADD --checksum=sha256:8468b1e159412eb1ab738786cf0d2755a1ea0a44103ca8c0040849a227746e07 \
     https://github.com/grafana/mcp-grafana/releases/download/v1.1.0/mcp-grafana_Linux_x86_64.tar.gz \
     /tmp/mcp-grafana.tar.gz
-RUN tar --extract --gzip --file /tmp/mcp-grafana.tar.gz --directory /tmp mcp-grafana \
-    && echo "7b4f978ee4e31053cad3392626b6896d3da2315d5e6b2bcbba815c9b04872236  /tmp/mcp-grafana" | sha256sum --check --strict \
-    && install --mode 0755 /tmp/mcp-grafana /usr/local/bin/mcp-grafana \
+RUN tar -xzf /tmp/mcp-grafana.tar.gz -C /tmp mcp-grafana \
+    && echo "7b4f978ee4e31053cad3392626b6896d3da2315d5e6b2bcbba815c9b04872236  /tmp/mcp-grafana" | sha256sum -c - \
+    && install -m 0755 /tmp/mcp-grafana /usr/local/bin/mcp-grafana \
     && test "$(/usr/local/bin/mcp-grafana --version)" = 1.1.0
 
-FROM python@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2 AS build
+FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS build
 COPY --from=uv /uv /uvx /usr/local/bin/
+RUN apk add --no-cache build-base=0.5-r3 cmake=3.31.7-r1 git=2.49.1-r0 \
+    libcrypto3=3.5.7-r0 libssl3=3.5.7-r0
 WORKDIR /source
 COPY pyproject.toml uv.lock ./
 COPY packages/ packages/
 RUN uv sync --frozen --no-dev --no-editable --package colortrace-api \
     && /source/.venv/bin/python -c "import colortrace_api, colortrace_grafana_mcp, colortrace_simulator"
 
-FROM python@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2
+FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS runtime-base
 ARG SOURCE_COMMIT
 ARG SOURCE_TREE
-RUN case "$SOURCE_COMMIT" in (*[!0-9a-f]*|'') exit 1;; esac \
+RUN apk add --no-cache libcrypto3=3.5.7-r0 libssl3=3.5.7-r0 libstdc++=14.2.0-r6 \
+    && case "$SOURCE_COMMIT" in (*[!0-9a-f]*|'') exit 1;; esac \
     && test "${#SOURCE_COMMIT}" = 40 \
     && case "$SOURCE_TREE" in (*[!0-9a-f]*|'') exit 1;; esac \
     && test "${#SOURCE_TREE}" = 40 \
-    && groupadd --gid 65532 colortrace \
-    && useradd --uid 65532 --gid 65532 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin colortrace \
-    && install --directory --owner 65532 --group 65532 --mode 0700 /var/run/colortrace-private /tmp/colortrace
+    && addgroup -g 65532 -S colortrace \
+    && adduser -u 65532 -S -D -H -h /nonexistent -s /sbin/nologin -G colortrace colortrace \
+    && install -d -o 65532 -g 65532 -m 0700 /var/run/colortrace-private /tmp/colortrace
 COPY --from=build /source/.venv /opt/colortrace
-COPY --from=mcp-grafana /usr/local/bin/mcp-grafana /usr/local/bin/mcp-grafana
 COPY config/grafana-mcp/ /opt/colortrace-config/grafana-mcp/
 COPY deploy/runtime-entrypoint.py /usr/local/libexec/colortrace-entrypoint.py
 RUN chmod 0555 /usr/local/libexec/colortrace-entrypoint.py \
-    && test "$(/usr/local/bin/mcp-grafana --version)" = 1.1.0 \
-    && echo "7b4f978ee4e31053cad3392626b6896d3da2315d5e6b2bcbba815c9b04872236  /usr/local/bin/mcp-grafana" | sha256sum --check --strict \
     && /opt/colortrace/bin/python -c "import colortrace_api, colortrace_grafana_mcp, colortrace_simulator"
 LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
       org.colortrace.source-tree="${SOURCE_TREE}"
@@ -45,3 +45,14 @@ USER colortrace
 EXPOSE 8080
 ENTRYPOINT ["python", "/usr/local/libexec/colortrace-entrypoint.py"]
 CMD ["api"]
+
+FROM runtime-base AS runtime
+USER root
+COPY --from=mcp-grafana /usr/local/bin/mcp-grafana /usr/local/bin/mcp-grafana
+RUN test "$(/usr/local/bin/mcp-grafana --version)" = 1.1.0 \
+    && echo "7b4f978ee4e31053cad3392626b6896d3da2315d5e6b2bcbba815c9b04872236  /usr/local/bin/mcp-grafana" | sha256sum -c -
+LABEL org.colortrace.runtime-profile="private-full"
+USER colortrace
+
+FROM runtime-base AS hosted-runtime
+LABEL org.colortrace.runtime-profile="hosted-readonly"

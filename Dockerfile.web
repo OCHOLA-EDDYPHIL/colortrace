@@ -1,4 +1,4 @@
-FROM node@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS build
+FROM node@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS build
 RUN corepack disable \
     && npm install --global pnpm@11.21.0 \
     && pnpm --version | grep -Fx 11.21.0
@@ -11,17 +11,24 @@ COPY packages/workspace-model/ packages/workspace-model/
 RUN pnpm install --frozen-lockfile \
     && pnpm --filter @colortrace/web build
 
-FROM node@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
+FROM node@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
 ARG SOURCE_COMMIT
 ARG SOURCE_TREE
 RUN case "$SOURCE_COMMIT" in (*[!0-9a-f]*|'') exit 1;; esac \
     && test "${#SOURCE_COMMIT}" = 40 \
     && case "$SOURCE_TREE" in (*[!0-9a-f]*|'') exit 1;; esac \
-    && test "${#SOURCE_TREE}" = 40
+    && test "${#SOURCE_TREE}" = 40 \
+    && rm -rf /usr/local/lib/node_modules \
+        /usr/local/bin/corepack \
+        /usr/local/bin/npm \
+        /usr/local/bin/npx \
+        /usr/local/bin/yarn \
+        /usr/local/bin/yarnpkg
 COPY --chown=node:node --from=build /source/packages/web/dist /app/public
 COPY --chown=node:node deploy/web-server.mjs /app/server.mjs
 LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
-      org.colortrace.source-tree="${SOURCE_TREE}"
+      org.colortrace.source-tree="${SOURCE_TREE}" \
+      org.colortrace.runtime-profile="public-readonly"
 ENV NODE_ENV=production \
     PORT=8080
 USER node
