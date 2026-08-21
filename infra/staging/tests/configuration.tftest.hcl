@@ -51,6 +51,25 @@ run "foundation_is_bounded" {
     error_message = "Cloud SQL must not receive a public IP address."
   }
 
+  assert {
+    condition = (
+      length(google_cloud_tasks_queue.worker.stackdriver_logging_config) == 0
+      && length(google_cloud_tasks_queue.simulator.stackdriver_logging_config) == 0
+    )
+    error_message = "Cloud Tasks logging must remain disabled without a non-convergent zero-sampling block."
+  }
+
+  assert {
+    condition = alltrue([
+      for queue in [google_cloud_tasks_queue.worker, google_cloud_tasks_queue.simulator] :
+      queue.rate_limits[0].max_concurrent_dispatches == 1
+      && queue.rate_limits[0].max_dispatches_per_second == 1
+      && queue.retry_config[0].max_attempts == 3
+      && queue.retry_config[0].max_retry_duration == "300s"
+    ])
+    error_message = "Cloud Tasks queues must preserve bounded dispatch and retry behavior."
+  }
+
 }
 
 run "workloads_require_every_binding" {
