@@ -1342,6 +1342,7 @@ class McpSession(Protocol):
 
 
 SessionFactory = Callable[[OfficialMcpRuntime], AbstractAsyncContextManager[McpSession]]
+InventoryLoader = Callable[[McpSession], Awaitable[FrozenInventory]]
 
 
 @asynccontextmanager
@@ -2759,6 +2760,7 @@ class EvidenceAdapter:
         runtime: OfficialMcpRuntime,
         catalog: QueryCatalog,
         session_factory: SessionFactory = official_session,
+        inventory_loader: InventoryLoader | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         if runtime._verification is not _RUNTIME_VERIFICATION:
@@ -2766,7 +2768,12 @@ class EvidenceAdapter:
         self._runtime = runtime
         self._catalog = catalog
         self._session_factory = session_factory
+        self._inventory_loader = inventory_loader
         self._clock = clock or (lambda: datetime.now(UTC))
+
+    async def _inventory(self, session: McpSession) -> FrozenInventory:
+        loader = _load_inventory if self._inventory_loader is None else self._inventory_loader
+        return await loader(session)
 
     @property
     def simulator_action_catalog_sha256(self) -> str:
@@ -2777,7 +2784,7 @@ class EvidenceAdapter:
     async def verify_inventory(self) -> FrozenInventory:
         try:
             async with self._session_factory(self._runtime) as session:
-                return await _load_inventory(session)
+                return await self._inventory(session)
         except asyncio.CancelledError:
             raise
         except AdapterError:
@@ -2814,7 +2821,7 @@ class EvidenceAdapter:
         execution_controls = controls or ExecutionControls()
         try:
             async with self._session_factory(self._runtime) as session:
-                inventory = await _load_inventory(session)
+                inventory = await self._inventory(session)
                 raw_results = await asyncio.gather(
                     *(
                         _collect_one(
@@ -2877,7 +2884,7 @@ class EvidenceAdapter:
         execution_controls = controls or ExecutionControls()
         try:
             async with self._session_factory(self._runtime) as session:
-                inventory = await _load_inventory(session)
+                inventory = await self._inventory(session)
                 collected = await asyncio.gather(
                     *(
                         _collect_one(
