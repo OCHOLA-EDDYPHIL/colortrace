@@ -60,6 +60,13 @@ output "candidate_bindings" {
     fixture       = var.fixture_sha256
     model_profile = var.model_profile_sha256
     policy        = var.policy_sha256
+    operator_oidc = {
+      deployed          = false
+      issuer            = null
+      audience          = null
+      jwks_uri          = null
+      mutations_exposed = false
+    }
     api_origin    = contains(var.workload_services, "web") ? data.google_cloud_run_v2_service.api[0].uri : null
     services      = sort(tolist(var.workload_services))
     database_jobs = sort(keys(google_cloud_run_v2_job.database))

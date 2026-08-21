@@ -180,39 +180,3 @@ variable "grafana_url" {
     error_message = "grafana_url must be one HTTPS origin without credentials, path, query, or fragment."
   }
 }
-
-variable "oidc_issuer" {
-  description = "Exact trusted human-operator OIDC issuer."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition     = var.oidc_issuer == null || can(regex("^https://[^?#]+$", var.oidc_issuer))
-    error_message = "oidc_issuer must be a bounded HTTPS issuer without query or fragment."
-  }
-}
-
-variable "oidc_audience" {
-  description = "Exact trusted human-operator OIDC audience."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition     = var.oidc_audience == null || (length(var.oidc_audience) > 0 && length(var.oidc_audience) <= 4096)
-    error_message = "oidc_audience must be a bounded non-empty value."
-  }
-}
-
-variable "oidc_jwks_uri" {
-  description = "Exact trusted JWKS endpoint for human-operator tokens."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition     = var.oidc_jwks_uri == null || can(regex("^https://[^#]+$", var.oidc_jwks_uri))
-    error_message = "oidc_jwks_uri must be a bounded HTTPS URL without a fragment."
-  }
-}

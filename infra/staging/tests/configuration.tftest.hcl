@@ -152,6 +152,17 @@ run "workload_isolation_is_explicit" {
 
   assert {
     condition = (
+      output.candidate_bindings.operator_oidc.deployed == false
+      && output.candidate_bindings.operator_oidc.issuer == null
+      && output.candidate_bindings.operator_oidc.audience == null
+      && output.candidate_bindings.operator_oidc.jwks_uri == null
+      && output.candidate_bindings.operator_oidc.mutations_exposed == false
+    )
+    error_message = "The provisional read-only topology must bind operator OIDC as absent and expose no mutations."
+  }
+
+  assert {
+    condition = (
       length([
         for env in google_cloud_run_v2_service.service["web"].template[0].containers[0].env : env
         if contains(["COLORTRACE_API_AUDIENCE", "COLORTRACE_API_ORIGIN"], env.name)
