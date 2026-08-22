@@ -1,11 +1,16 @@
 *
 !Dockerfile.web
+!LICENSE
 !package.json
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
 !deploy/
 !deploy/web-server.mjs
 !packages/
+!packages/repo-tools/
+!packages/repo-tools/src/
+!packages/repo-tools/src/colortrace_repo/
+!packages/repo-tools/src/colortrace_repo/image_licenses.py
 !packages/api-client/
 !packages/api-client/**
 !packages/contracts/
