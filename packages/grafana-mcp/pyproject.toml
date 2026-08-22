@@ -22,4 +22,3 @@ packages = ["src/colortrace_grafana_mcp"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "../../LICENSE" = "colortrace_grafana_mcp/LICENSE"
-"src/colortrace_grafana_mcp/schemas" = "colortrace_grafana_mcp/schemas"

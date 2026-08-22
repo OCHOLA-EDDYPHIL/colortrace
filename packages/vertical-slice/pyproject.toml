@@ -29,4 +29,3 @@ packages = ["src/colortrace_vertical_slice"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "../../LICENSE" = "colortrace_vertical_slice/LICENSE"
-"src/colortrace_vertical_slice/schemas" = "colortrace_vertical_slice/schemas"
