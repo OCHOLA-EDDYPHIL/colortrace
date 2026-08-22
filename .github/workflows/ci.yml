@@ -11,6 +11,14 @@ on:
         required: true
         type: boolean
         default: false
+      image_runner:
+        description: Isolated runner lane for final-image evidence
+        required: true
+        type: choice
+        default: colortrace-secret
+        options:
+          - colortrace-secret
+          - colortrace-docker
 
 permissions:
   contents: read
@@ -21,12 +29,17 @@ concurrency:
 
 jobs:
   secret-scan:
-    name: Secret scan
-    runs-on: [self-hosted, Linux, X64, colortrace-secret]
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && 60 || 10 }}
+    name: ${{ github.event_name == 'workflow_dispatch' && (inputs.final_image_evidence && format('Final image evidence - {0}', inputs.image_runner) || 'Manual secret scan') || 'Secret scan' }}
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && inputs.image_runner || 'colortrace-secret' }}
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && 70 || 10 }}
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       CACHE_ROOT: ${{ github.workspace }}/../../_colortrace-cache
+      EVIDENCE_ARTIFACT_PREFIX: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && format('final-image-evidence-{0}', inputs.image_runner) || 'security-evidence' }}
       SECURITY_REQUIRE_IMAGES: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && 'true' || 'false' }}
     steps:
       - name: Check out repository history
@@ -50,14 +63,14 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: security-evidence-${{ env.CANDIDATE_SHA }}
+          name: ${{ env.EVIDENCE_ARTIFACT_PREFIX }}-${{ env.CANDIDATE_SHA }}
           path: .cache/security-evidence
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 90
 
   quality:
-    name: Quality
+    name: ${{ github.event_name == 'workflow_dispatch' && (inputs.final_image_evidence && 'Final image dispatch - quality not applicable' || 'Manual quality') || 'Quality' }}
     if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.final_image_evidence) }}
     runs-on: [self-hosted, Linux, X64, colortrace-docker]
     timeout-minutes: 45
