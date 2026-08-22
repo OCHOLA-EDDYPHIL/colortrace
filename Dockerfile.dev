@@ -26,6 +26,10 @@ RUN python -m zipfile --extract /tmp/terraform.zip /tmp/terraform \
 
 FROM python@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2
 
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends git=1:2.39.5-0+deb12u3 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=uv /uv /uvx /usr/local/bin/
 COPY --from=gitleaks /usr/bin/gitleaks /usr/local/bin/gitleaks
 COPY --from=node /usr/local/ /usr/local/
@@ -42,6 +46,7 @@ RUN python --version | grep -F 'Python 3.12.13' \
     && node --version | grep -Fx v24.19.0 \
     && pnpm --version | grep -Fx 11.21.0 \
     && uv --version | grep -F 'uv 0.12.3 ' \
+    && git --version | grep -Fx 'git version 2.39.5' \
     && gitleaks version | grep -Fx v8.30.1 \
     && test "$(mcp-grafana --version)" = 1.1.0 \
     && echo "7b4f978ee4e31053cad3392626b6896d3da2315d5e6b2bcbba815c9b04872236  /usr/local/bin/mcp-grafana" | sha256sum --check --strict \

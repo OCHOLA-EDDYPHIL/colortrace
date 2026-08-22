@@ -1,110 +1,406 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
+  "capture_environments": {
+    "playwright-1.62.1-noble-dcc5531e": {
+      "browser": {
+        "automation": {
+          "name": "@playwright/test",
+          "version": "1.62.1"
+        },
+        "binary": "/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell",
+        "engine": "chromium",
+        "revision": "1234",
+        "sha256": "e11fc9ce65c96313476f7ee9844b6fb6a9220fb048693cfe9eee00acf4170a9f",
+        "status": "exact",
+        "version": "151.0.7922.34"
+      },
+      "fonts": {
+        "selected_inputs": [
+          "font-wqy-zenhei",
+          "font-liberation-mono"
+        ],
+        "selection_method": "Chromium CDP CSS.getPlatformFontsForNode across every rendered body element",
+        "status": "exact"
+      },
+      "render_environment": {
+        "architecture": "linux/amd64",
+        "browser_locale": "en-US",
+        "color_profile": "sRGB",
+        "color_scheme": "light",
+        "device_scale_factor": 1,
+        "external_calls": 0,
+        "graphics": "SwiftShader",
+        "headless": true,
+        "image": "mcr.microsoft.com/playwright@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e",
+        "network": "none",
+        "operating_system": "Ubuntu 24.04.4 LTS",
+        "process_locale": "C.UTF-8",
+        "retries": 0,
+        "status": "exact",
+        "timezone": "UTC",
+        "workers": 1
+      }
+    }
+  },
+  "capture_inputs": {
+    "test-workspace": {
+      "path": "packages/web/e2e/incident-workspace.spec.ts",
+      "role": "test",
+      "sha256": "70c476a6359d28ca52398d7ed3163472077195c4fa96475bd03d6610dc5514df"
+    },
+    "fixture-api": {
+      "path": "packages/web/e2e/api-fixtures.ts",
+      "role": "fixture",
+      "sha256": "a07af1000756a700c7a6341fb87a0c309e31567123a6bc5b4e049265e26f0259"
+    },
+    "fixture-workspace": {
+      "path": "packages/workspace-model/test/fixtures.ts",
+      "role": "fixture",
+      "sha256": "975377e95916b7a96a471ecce24c30de380245a7dbdaf75097eb3bdeb3c872ac"
+    },
+    "fixture-response-plan": {
+      "path": "packages/web/test/response-plan-fixture.ts",
+      "role": "fixture",
+      "sha256": "b7005d90d2d51b182d4b0c5118a758e9f0400082f469df425161692d1173af3d"
+    },
+    "fixture-recovery": {
+      "path": "packages/workspace-model/test/recovery-fixture.ts",
+      "role": "fixture",
+      "sha256": "35954c58d4b68829f3a54c0921d45cc92768c0243b59a58f40e9ea89e95c96c3"
+    },
+    "config-playwright": {
+      "path": "packages/web/playwright.config.ts",
+      "role": "config",
+      "sha256": "8d49e61ce887f113d0baa9da3ec910cb4f3b97d1b046690377f4f40cc458246f"
+    },
+    "config-vite": {
+      "path": "packages/web/vite.config.ts",
+      "role": "config",
+      "sha256": "83bb6b89a2edfd05f036e8156714e73ee50e3f2317376ad79b995f3818882504"
+    },
+    "package-web": {
+      "path": "packages/web/package.json",
+      "role": "package",
+      "sha256": "6639a069333157ed7a8e766cff7919f985b08e7978f2e42c988d3c165cff855c"
+    },
+    "lock-pnpm": {
+      "path": "pnpm-lock.yaml",
+      "role": "lockfile",
+      "sha256": "0c18abd881fee603a17641874d41b19422bcdc6b569220c4bc2c4fe9a55d8d7c"
+    },
+    "font-declarations": {
+      "path": "packages/web/src/styles.css",
+      "role": "font-declaration",
+      "sha256": "463d1f79aa97fa69999a0c7fb9c9161f6f007b2a1c7cf48295e6e037f1430857"
+    },
+    "font-wqy-zenhei": {
+      "family": "WenQuanYi Zen Hei",
+      "path": "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+      "postscript_name": "WenQuanYiZenHei",
+      "role": "font",
+      "sha256": "79c18ebe7b811951e8311bad7103ebeae8c337ed9988ea69e8a78a66cfe029b9"
+    },
+    "font-liberation-mono": {
+      "family": "Liberation Mono",
+      "path": "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+      "postscript_name": "LiberationMono",
+      "role": "font",
+      "sha256": "395fa5ab8d40c8eba390ced528744ea75a7f69aabf3e68b6f925ca0e39a27370"
+    }
+  },
+  "capture_profiles": {
+    "source-095792f": {
+      "candidate": {
+        "commit": "095792f65c71ed095ed04fdb2a59001edfc5b7e9",
+        "tree": "c7f5675a612d671c0988da7df85300bc0f4e5be1"
+      },
+      "environment": "playwright-1.62.1-noble-dcc5531e",
+      "inputs": [
+        "test-workspace",
+        "fixture-api",
+        "fixture-workspace",
+        "fixture-response-plan",
+        "fixture-recovery",
+        "config-playwright",
+        "config-vite",
+        "package-web",
+        "lock-pnpm",
+        "font-declarations"
+      ],
+      "invocations": [
+        {
+          "capture_outputs": [
+            {
+              "capture_output": "attachment:prepared-investigation-1440x900",
+              "path": "packages/web/evidence/issue-20/incident-workspace-1440x900.png"
+            },
+            {
+              "capture_output": "attachment:prepared-investigation-small-viewport",
+              "path": "packages/web/evidence/issue-20/incident-workspace-390x844.png"
+            },
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/issue-21/evidence-scope-1440x900.png"
+            },
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/issue-21/evidence-scope-390x844.png"
+            },
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/issue-22/response-plan-actions-1440x900.png"
+            },
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/issue-22/response-plan-review-1440x900.png"
+            },
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/issue-24/recovery-unresolved-390x844.png"
+            },
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/issue-24/recovery-verified-1440x900.png"
+            },
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/ux-accessibility/evidence-comparison-1440x900.png"
+            },
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/ux-accessibility/impact-report-1440x900.png"
+            },
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/ux-accessibility/impact-report-390x844.png"
+            },
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/ux-accessibility/workspace-1440x900.png"
+            },
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/ux-accessibility/workspace-390x844.png"
+            }
+          ],
+          "command": "node_modules/.bin/playwright test e2e/incident-workspace.spec.ts --workers=1 --reporter=html",
+          "environment_variables": [
+            "CI=true",
+            "COLORTRACE_CAPTURE_EVIDENCE=1",
+            "COLORTRACE_CAPTURE_ISSUE_22_EVIDENCE=1",
+            "COLORTRACE_CAPTURE_ISSUE_24_EVIDENCE=1",
+            "COLORTRACE_CAPTURE_UX_EVIDENCE=1",
+            "LANG=C.UTF-8",
+            "LC_ALL=C.UTF-8",
+            "PLAYWRIGHT_HTML_OUTPUT_DIR=/workspace/.cache/issue-137-report-a1",
+            "TZ=UTC"
+          ],
+          "expected_result": {
+            "allowed_failures": [
+              "renders the canonical evidence and exact supported scope at 1440x900",
+              "keeps the investigation legible without page-level horizontal overflow on a small viewport"
+            ],
+            "exit_code": 1,
+            "failed": 2,
+            "passed": 23,
+            "skipped": 0,
+            "status": "expected-post-write-assertion-failure"
+          },
+          "id": "all-evidence"
+        },
+        {
+          "capture_outputs": [
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/issue-22/response-plan-actions-1440x900.png"
+            },
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/issue-22/response-plan-actions-390x844.png"
+            },
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/issue-22/response-plan-review-1440x900.png"
+            },
+            {
+              "capture_output": "path",
+              "path": "packages/web/evidence/issue-22/response-plan-review-390x844.png"
+            }
+          ],
+          "command": "node_modules/.bin/playwright test e2e/incident-workspace.spec.ts --workers=1 --reporter=html",
+          "environment_variables": [
+            "CI=true",
+            "COLORTRACE_CAPTURE_ISSUE_22_EVIDENCE=1",
+            "LANG=C.UTF-8",
+            "LC_ALL=C.UTF-8",
+            "PLAYWRIGHT_HTML_OUTPUT_DIR=/workspace/.cache/issue-137-report-a2",
+            "TZ=UTC"
+          ],
+          "expected_result": {
+            "allowed_failures": [],
+            "exit_code": 0,
+            "failed": 0,
+            "passed": 24,
+            "skipped": 1,
+            "status": "pass"
+          },
+          "id": "issue-22-completion"
+        }
+      ],
+      "reproduction_receipt_sha256": "6c2ef0a7adcb36d82d0bf4055fb3d3046ec81a7684cf8520a3db36bc7ab78102",
+      "reproducibility": "pixel-reproducible"
+    }
+  },
   "assets": [
     {
+      "capture_output": "attachment:prepared-investigation-1440x900",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/issue-20/incident-workspace-1440x900.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic prepared incident at a 1440x900 viewport",
-      "sha256": "3f2376870d7c3feaa6644981949c810e285ef89d814ae9f1d5c7c6defba01ad7",
-      "redistribution_review": "owner-review-required"
+      "redistribution_review": "owner-review-required",
+      "sha256": "43056c0b08a7216886a70a13d23ee5640f72cb0b702dd57c708a42714c39d7e0",
+      "viewport": "1440x900"
     },
     {
+      "capture_output": "attachment:prepared-investigation-small-viewport",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/issue-20/incident-workspace-390x844.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic prepared incident at a 390x844 viewport",
-      "sha256": "c51a2d17c00bf11c2f21029f7be352f041a7613eb37de499e53336b45c36e0a3",
-      "redistribution_review": "owner-review-required"
+      "redistribution_review": "owner-review-required",
+      "sha256": "a402b8cb67d342e3ef6a584047432e95201f7783e123e8cadff7f610e0979983",
+      "viewport": "390x844"
     },
     {
+      "capture_output": "path",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/issue-21/evidence-scope-1440x900.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic current API fixture after scrolling the evidence-linked scope region into an exact 1440x900 viewport",
-      "sha256": "ebfd353c8471a59cbe208123a6b8c612c2f6e7d97a206bc5e70c4a8d6bbe447f",
-      "redistribution_review": "owner-review-required"
+      "redistribution_review": "owner-review-required",
+      "sha256": "ab94ebc000d8126eefcebca777dff3569ac032d3105d4a6db954b8cff749bd02",
+      "viewport": "1440x900"
     },
     {
+      "capture_output": "path",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/issue-21/evidence-scope-390x844.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic current API fixture after scrolling the evidence-linked scope region into an exact 390x844 viewport",
-      "sha256": "8d611ecd7243df429befcbfce6125b0c12ff2e8edad76de4cf9f021542b5b60c",
-      "redistribution_review": "owner-review-required"
+      "redistribution_review": "owner-review-required",
+      "sha256": "90669a677c484ef66776bf3532a5c604ff81cfa5ea0ec598c4f6150959ef7fc6",
+      "viewport": "390x844"
     },
     {
+      "capture_output": "path",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/issue-22/response-plan-review-1440x900.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic prepared response-plan review after scrolling the human-authority panel into an exact 1440x900 viewport",
-      "sha256": "f07ead312a99ccbba419bf9b1c5b67c8f86cc9329709d701d1b8802cdc7797a5",
-      "redistribution_review": "owner-review-required"
+      "redistribution_review": "owner-review-required",
+      "sha256": "44f2d262dd5f4e8ccabaf750023ecc4cffb2928a279e3213ea86bfdbd51c7aeb",
+      "viewport": "1440x900"
     },
     {
+      "capture_output": "path",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/issue-22/response-plan-review-390x844.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic prepared response-plan review after scrolling the human-authority panel into an exact 390x844 viewport",
-      "sha256": "475a5b4205ed8d13a12044bdb714133564b20ecbc862276f169eeff98dd40522",
-      "redistribution_review": "owner-review-required"
+      "redistribution_review": "owner-review-required",
+      "sha256": "0627ccb7be0d7245e2b77bcd67539fdd1f10ad1016c1ca76a99528f7427557a1",
+      "viewport": "390x844"
     },
     {
+      "capture_output": "path",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/issue-22/response-plan-actions-1440x900.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic prepared response-plan review after scrolling the exact typed-command and decision-control surface into an exact 1440x900 viewport",
-      "sha256": "b13f6edc90fb926257d0fdd698f6efe321fbc351746e42323dc8ae8a13230176",
-      "redistribution_review": "owner-review-required"
+      "redistribution_review": "owner-review-required",
+      "sha256": "137a1d0700a330b14b3f6280d2c969ee648fdb3c692623dbd14f88c6f5ac18bc",
+      "viewport": "1440x900"
     },
     {
+      "capture_output": "path",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/issue-22/response-plan-actions-390x844.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic prepared response-plan review after scrolling the exact typed-command and decision-control surface into an exact 390x844 viewport",
-      "sha256": "9811417f182a5c012eccd7396f43561e223a8a838fb75c4194c87d88ff7b8959",
-      "redistribution_review": "owner-review-required"
+      "redistribution_review": "owner-review-required",
+      "sha256": "2695c7cec8e1d9798c5fff651096fc2f4d558a390e95b915ccd04f283ca22022",
+      "viewport": "390x844"
     },
     {
+      "capture_output": "path",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/issue-24/recovery-unresolved-390x844.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic unresolved recovery review after scrolling the fail-closed verification surface into an exact 390x844 viewport",
-      "sha256": "d6fbdad7ccdab9603fb8f6699165733763c66a8ae9eb44a78cb8ecf0ec1dd2af",
-      "redistribution_review": "owner-review-required"
+      "redistribution_review": "owner-review-required",
+      "sha256": "693fd47cfb23384df2af58d4fa99ac425bb33b28f968bf04ff58d9e5e5152f8f",
+      "viewport": "390x844"
     },
     {
+      "capture_output": "path",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/issue-24/recovery-verified-1440x900.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic verified recovery review after scrolling the post-action authority and safe-work evidence surface into an exact 1440x900 viewport",
-      "sha256": "50a2fd0fe92377ef6e2c1824c07707f85b1f3245516eed1103f2080b64ad2261",
-      "redistribution_review": "owner-review-required"
+      "redistribution_review": "owner-review-required",
+      "sha256": "bdc3624962bfa4fb9323d817911f898bd820f023247f39b28075c9d26eb0ae21",
+      "viewport": "1440x900"
     },
     {
+      "capture_output": "path",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/ux-accessibility/evidence-comparison-1440x900.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic prepared incident after scrolling the evidence-linked scope and bounded evidence preview into an exact 1440x900 viewport",
+      "redistribution_review": "owner-review-required",
       "sha256": "ab94ebc000d8126eefcebca777dff3569ac032d3105d4a6db954b8cff749bd02",
-      "redistribution_review": "owner-review-required"
+      "viewport": "1440x900"
     },
     {
+      "capture_output": "path",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/ux-accessibility/workspace-1440x900.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic verified-recovery incident and synthetic-data controls at an exact 1440x900 viewport",
+      "redistribution_review": "owner-review-required",
       "sha256": "8c28759d6a45680e83af1bbcd644ffcf35c890b453b40f0e3c3807e564e49b35",
-      "redistribution_review": "owner-review-required"
+      "viewport": "1440x900"
     },
     {
+      "capture_output": "path",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/ux-accessibility/workspace-390x844.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic verified-recovery incident and synthetic-data controls at an exact 390x844 viewport",
+      "redistribution_review": "owner-review-required",
       "sha256": "157176027e7cc9da9fae42740b0769c18054ded503ec6cd95ce1fb2280f77797",
-      "redistribution_review": "owner-review-required"
+      "viewport": "390x844"
     },
     {
+      "capture_output": "path",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/ux-accessibility/impact-report-1440x900.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic verified-recovery incident after scrolling the synthetic fixture impact report into an exact 1440x900 viewport",
+      "redistribution_review": "owner-review-required",
       "sha256": "f621652a4023742f6b58d565eed137885f7d397a15c520f17a3b53f836c69921",
-      "redistribution_review": "owner-review-required"
+      "viewport": "1440x900"
     },
     {
+      "capture_output": "path",
+      "capture_profile": "source-095792f",
       "license": "Apache-2.0",
       "path": "packages/web/evidence/ux-accessibility/impact-report-390x844.png",
       "provenance": "Generated by packages/web/e2e/incident-workspace.spec.ts from the deterministic verified-recovery incident after scrolling the synthetic fixture impact report into an exact 390x844 viewport",
+      "redistribution_review": "owner-review-required",
       "sha256": "82560fc4a50eabcbdd7e0bc6aec06daa0941e2f39c77779be61e2dcb0054de1d",
-      "redistribution_review": "owner-review-required"
+      "viewport": "390x844"
     }
   ]
 }
