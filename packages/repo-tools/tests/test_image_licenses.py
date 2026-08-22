@@ -457,6 +457,32 @@ class ImageLicenseBundleTest(unittest.TestCase):
                 {"@colortrace/api-client", "@colortrace/web", "@colortrace/workspace-model"}
                 <= names
             )
+            components_by_name = {item["name"]: item for item in components}
+            package_inputs = {
+                "@colortrace/api-client": web_inputs["first_party_web_manifests"]
+                / "api-client"
+                / "package.json",
+                "@colortrace/web": web_inputs["first_party_web_manifests"] / "web" / "package.json",
+                "@colortrace/workspace-model": web_inputs["first_party_web_manifests"]
+                / "workspace-model"
+                / "package.json",
+                **{name: web_inputs["web_packages"] / name / "package.json" for name in versions},
+            }
+            for name, original in package_inputs.items():
+                component = components_by_name[name]
+                package_source = component["package_source"]
+                self.assertIn("sources/web/package-metadata/", package_source["path"])
+                self.assertTrue(package_source["path"].endswith(".metadata.txt"))
+                self.assertNotIn("/package.json", package_source["path"])
+                copied = (output / package_source["path"]).read_bytes()
+                self.assertEqual(copied, original.read_bytes())
+                self.assertEqual(hashlib.sha256(copied).hexdigest(), package_source["sha256"])
+                self.assertEqual(
+                    component["kind"],
+                    "bundled-first-party-javascript"
+                    if name.startswith("@colortrace/")
+                    else "bundled-javascript",
+                )
             checksum_paths = [
                 line.split("  ", 1)[1] for line in (output / "SHA256SUMS").read_text().splitlines()
             ]

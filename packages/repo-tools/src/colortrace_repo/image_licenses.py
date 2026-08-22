@@ -648,7 +648,8 @@ def build_web_bundle(args: argparse.Namespace) -> None:
         package_source = _copy_source(
             package_json,
             output,
-            f"sources/web/first-party/{name.removeprefix('@colortrace/')}/package.json",
+            "sources/web/package-metadata/first-party/"
+            f"{name.removeprefix('@colortrace/')}.metadata.txt",
         )
         components.append(
             {
@@ -685,7 +686,11 @@ def build_web_bundle(args: argparse.Namespace) -> None:
         license_path = _require_contained_file(
             args.web_packages, package_dir / "LICENSE", f"{name} license"
         )
-        package_source = _copy_source(package_json, output, f"sources/web/{name}/package.json")
+        package_source = _copy_source(
+            package_json,
+            output,
+            f"sources/web/package-metadata/third-party/{name}.metadata.txt",
+        )
         license_source = _copy_source(license_path, output, f"sources/web/{name}/LICENSE")
         repository = document.get("repository")
         source_url = repository.get("url") if isinstance(repository, dict) else repository

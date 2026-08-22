@@ -499,11 +499,18 @@ class FinalImageEvidenceTest(unittest.TestCase):
                     binding["image"]["platform_manifest_digest"],
                 )
                 self.assertTrue(coverage["source_inputs"])
-            self.assertEqual(
-                json.loads((output / "images" / "web" / "coverage.json").read_text())["counts"][
-                    "bundle_only"
-                ],
-                8,
+            web_coverage = json.loads((output / "images" / "web" / "coverage.json").read_text())
+            self.assertEqual(web_coverage["counts"]["bundle_only"], 8)
+            self.assertTrue(
+                {
+                    "@colortrace/api-client",
+                    "@colortrace/web",
+                    "@colortrace/workspace-model",
+                    "react",
+                    "react-dom",
+                    "scheduler",
+                }
+                <= {value["name"] for value in web_coverage["bundle_only"]}
             )
             web_enriched = json.loads(
                 (output / "images" / "web" / "enriched-sbom.cdx.json").read_text()
