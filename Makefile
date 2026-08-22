@@ -72,7 +72,7 @@ TOOL_RUN_HOST := docker run --rm \
 	check-format check-lint check-typecheck check-unit check-contract \
 	check-generated check-license check-policy check-postgres check-secret check-secret-fixture check-telemetry \
 	check-terraform check-wheel-license \
-	check-bootstrap security-evidence
+	check-bootstrap final-image-evidence security-evidence
 
 prepare-cache:
 	@mkdir -p "$(WORKSPACE)/.cache" "$(CACHE_HOME)" "$(UV_CACHE)" "$(PNPM_STORE)" "$(TERRAFORM_PLUGIN_CACHE)" "$(UV_PROJECT_ENVIRONMENT)"
@@ -344,11 +344,154 @@ check-secret:
 		$(GITLEAKS_IMAGE) git --no-banner --redact \
 		--config /policy/.gitleaks.toml --log-opts=--all
 
+final-image-evidence: prepare-cache
+	@set -eu; \
+	test "$$(git rev-parse HEAD)" = "$(SECURITY_CANDIDATE_SHA)"; \
+	git diff --quiet; \
+	git diff --cached --quiet; \
+	test -z "$$(git ls-files --others --exclude-standard)"; \
+	candidate_tree="$$(git rev-parse HEAD^{tree})"; \
+	image_root="$(WORKSPACE)/.cache/security-images/$(SECURITY_CANDIDATE_SHA)"; \
+	case "$$image_root" in ("$(WORKSPACE)/.cache/security-images/"*) ;; (*) exit 1;; esac; \
+	runtime_ref="colortrace-security-runtime:$(SECURITY_CANDIDATE_SHA)"; \
+	hosted_ref="colortrace-security-hosted-runtime:$(SECURITY_CANDIDATE_SHA)"; \
+	web_ref="colortrace-security-web:$(SECURITY_CANDIDATE_SHA)"; \
+	cleanup() { \
+		docker rm --force \
+			"colortrace-sbom-runtime-$(SECURITY_CANDIDATE_SHA)" \
+			"colortrace-sbom-hosted-runtime-$(SECURITY_CANDIDATE_SHA)" \
+			"colortrace-sbom-web-$(SECURITY_CANDIDATE_SHA)" \
+			"colortrace-smoke-runtime-$(SECURITY_CANDIDATE_SHA)" \
+			"colortrace-smoke-hosted-runtime-$(SECURITY_CANDIDATE_SHA)" \
+			"colortrace-smoke-web-$(SECURITY_CANDIDATE_SHA)" >/dev/null 2>&1 || true; \
+		docker image rm "$$runtime_ref" "$$hosted_ref" "$$web_ref" >/dev/null 2>&1 || true; \
+		rm -rf "$$image_root" || true; \
+	}; \
+	verify_cleanup() { \
+		cleanup_failed=0; \
+		if ! docker info >/dev/null 2>&1; then \
+			echo "cleanup cannot verify the Docker daemon" >&2; return 1; \
+		fi; \
+		for resource in \
+			"colortrace-sbom-runtime-$(SECURITY_CANDIDATE_SHA)" \
+			"colortrace-sbom-hosted-runtime-$(SECURITY_CANDIDATE_SHA)" \
+			"colortrace-sbom-web-$(SECURITY_CANDIDATE_SHA)" \
+			"colortrace-smoke-runtime-$(SECURITY_CANDIDATE_SHA)" \
+			"colortrace-smoke-hosted-runtime-$(SECURITY_CANDIDATE_SHA)" \
+			"colortrace-smoke-web-$(SECURITY_CANDIDATE_SHA)"; do \
+			if docker container inspect "$$resource" >/dev/null 2>&1; then \
+				echo "cleanup retained container $$resource" >&2; cleanup_failed=1; \
+			fi; \
+		done; \
+		for resource in "$$runtime_ref" "$$hosted_ref" "$$web_ref"; do \
+			if docker image inspect "$$resource" >/dev/null 2>&1; then \
+				echo "cleanup retained image $$resource" >&2; cleanup_failed=1; \
+			fi; \
+		done; \
+		if test -e "$$image_root"; then \
+			echo "cleanup retained the private image archive directory" >&2; cleanup_failed=1; \
+		fi; \
+		test "$$cleanup_failed" -eq 0; \
+	}; \
+	finish() { \
+		command_status=$$?; \
+		trap - EXIT HUP INT TERM; \
+		cleanup; \
+		if ! verify_cleanup; then command_status=1; fi; \
+		exit "$$command_status"; \
+	}; \
+	trap finish EXIT; \
+	trap 'exit 129' HUP; \
+	trap 'exit 130' INT; \
+	trap 'exit 143' TERM; \
+	cleanup; \
+	verify_cleanup; \
+	install -d -m 0700 "$$image_root"; \
+	install -d -m 0700 "$$image_root/context"; \
+	git archive --format=tar --output "$$image_root/context.tar" HEAD; \
+	tar -xf "$$image_root/context.tar" -C "$$image_root/context"; \
+	rm "$$image_root/context.tar"; \
+	docker build --pull=false \
+		--file "$$image_root/context/Dockerfile.runtime" --target runtime \
+		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
+		--build-arg SOURCE_TREE="$$candidate_tree" --tag "$$runtime_ref" \
+		"$$image_root/context"; \
+	docker build --pull=false \
+		--file "$$image_root/context/Dockerfile.runtime" --target hosted-runtime \
+		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
+		--build-arg SOURCE_TREE="$$candidate_tree" --tag "$$hosted_ref" \
+		"$$image_root/context"; \
+	docker build --pull=false \
+		--file "$$image_root/context/Dockerfile.web" \
+		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
+		--build-arg SOURCE_TREE="$$candidate_tree" --tag "$$web_ref" \
+		"$$image_root/context"; \
+	capture() { \
+		name="$$1"; reference="$$2"; \
+		archive="$$image_root/$$name.tar"; \
+		bundle="$(SECURITY_EVIDENCE_HOST)/images/$$name/bundle"; \
+		container="colortrace-sbom-$$name-$(SECURITY_CANDIDATE_SHA)"; \
+		install -d -m 0700 "$$bundle"; \
+		docker image save --output "$$archive" "$$reference"; \
+		chmod 0600 "$$archive"; \
+		docker create --name "$$container" "$$reference" >/dev/null; \
+		docker cp "$$container:/usr/share/colortrace/licenses/." "$$bundle"; \
+		chmod -R u+rwX,go-rwx "$$bundle"; \
+		if test "$$name" = web; then \
+			docker export "$$container" | tar -tf - > "$$image_root/web-rootfs-paths"; \
+			if grep -i yarn "$$image_root/web-rootfs-paths"; then \
+				echo "Yarn remains in the exported web rootfs" >&2; exit 1; \
+			fi; \
+		fi; \
+		docker rm "$$container" >/dev/null; \
+		docker run --rm --network none --pull=never \
+			--user $(HOST_UID):$(HOST_GID) \
+			--volume "$$archive:/image.tar:ro" \
+			--volume "$(WORKSPACE)/.cache/trivy:/trivy-cache" \
+			--volume "$(SECURITY_EVIDENCE_HOST):/evidence" \
+			$(TRIVY_IMAGE) image --cache-dir /trivy-cache --offline-scan \
+				--skip-db-update --skip-java-db-update --skip-version-check \
+				--format cyclonedx --output "/evidence/images/$$name/raw-sbom.cdx.json" \
+				--input /image.tar; \
+	}; \
+	capture runtime "$$runtime_ref"; \
+	docker run --rm --name "colortrace-smoke-runtime-$(SECURITY_CANDIDATE_SHA)" \
+		--network none --pull=never \
+		--entrypoint /opt/colortrace/bin/python "$$runtime_ref" \
+		-c 'import os; assert os.geteuid() != 0; import colortrace_api'; \
+	capture hosted-runtime "$$hosted_ref"; \
+	docker run --rm --name "colortrace-smoke-hosted-runtime-$(SECURITY_CANDIDATE_SHA)" \
+		--network none --pull=never \
+		--entrypoint /opt/colortrace/bin/python "$$hosted_ref" \
+		-c 'import os; assert os.geteuid() != 0; import colortrace_api'; \
+	capture web "$$web_ref"; \
+	docker run --rm --name "colortrace-smoke-web-$(SECURITY_CANDIDATE_SHA)" \
+		--network none --pull=never --entrypoint node "$$web_ref" \
+		-e 'if (process.getuid() === 0) process.exit(1)'; \
+	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo image-evidence \
+		--output "$(SECURITY_EVIDENCE_CONTAINER)" \
+		--candidate-sha "$(SECURITY_CANDIDATE_SHA)" \
+		--candidate-tree "$$candidate_tree" \
+		--scanner-image "$(TRIVY_IMAGE)" \
+		--runtime-archive "/workspace/.cache/security-images/$(SECURITY_CANDIDATE_SHA)/runtime.tar" \
+		--runtime-bundle "$(SECURITY_EVIDENCE_CONTAINER)/images/runtime/bundle" \
+		--runtime-sbom "$(SECURITY_EVIDENCE_CONTAINER)/images/runtime/raw-sbom.cdx.json" \
+		--runtime-reference "$$runtime_ref" \
+		--hosted-runtime-archive "/workspace/.cache/security-images/$(SECURITY_CANDIDATE_SHA)/hosted-runtime.tar" \
+		--hosted-runtime-bundle "$(SECURITY_EVIDENCE_CONTAINER)/images/hosted-runtime/bundle" \
+		--hosted-runtime-sbom "$(SECURITY_EVIDENCE_CONTAINER)/images/hosted-runtime/raw-sbom.cdx.json" \
+		--hosted-runtime-reference "$$hosted_ref" \
+		--web-archive "/workspace/.cache/security-images/$(SECURITY_CANDIDATE_SHA)/web.tar" \
+		--web-bundle "$(SECURITY_EVIDENCE_CONTAINER)/images/web/bundle" \
+		--web-sbom "$(SECURITY_EVIDENCE_CONTAINER)/images/web/raw-sbom.cdx.json" \
+		--web-reference "$$web_ref"
+
 security-evidence: prepare-cache
 	@set -eu; \
 	test "$$(git rev-parse HEAD)" = "$(SECURITY_CANDIDATE_SHA)"; \
 	git diff --quiet; \
 	git diff --cached --quiet; \
+	test -z "$$(git ls-files --others --exclude-standard)"; \
 	mkdir -p "$(SECURITY_EVIDENCE_HOST)" "$(WORKSPACE)/.cache/trivy"; \
 	docker run --rm --network none --pull=never \
 		--user $(HOST_UID):$(HOST_GID) \
@@ -388,6 +531,9 @@ security-evidence: prepare-cache
 			--skip-java-db-update --skip-version-check \
 			--format json --output /evidence/vulnerability.json \
 			/evidence/sbom.cdx.json; \
+	$(MAKE) final-image-evidence \
+		SECURITY_CANDIDATE_SHA="$(SECURITY_CANDIDATE_SHA)" \
+		CACHE_ROOT="$(CACHE_ROOT)"; \
 	scanner_metadata="$$(docker run --rm --network none --pull=never \
 		--user $(HOST_UID):$(HOST_GID) \
 		--volume "$(WORKSPACE)/.cache/trivy:/trivy-cache:ro" \

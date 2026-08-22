@@ -14,6 +14,10 @@ from colortrace_repo.contracts import check_contracts
 from colortrace_repo.dependencies import check_dependencies
 from colortrace_repo.deployment import check_deployment
 from colortrace_repo.distribution import check_distribution_wheels, check_package_metadata
+from colortrace_repo.final_image_evidence import (
+    ImageEvidenceInput,
+    build_final_image_evidence,
+)
 from colortrace_repo.generated import check_generated_manifest, compare_generated_trees
 from colortrace_repo.security_evidence import (
     finalize_security_evidence,
@@ -127,6 +131,20 @@ def _parser() -> argparse.ArgumentParser:
     security_finalize.add_argument("--scanner-metadata", required=True)
     security_finalize.add_argument("--secret-scanner-image", required=True)
 
+    image_evidence = subparsers.add_parser(
+        "image-evidence", help="verify and enrich exact final-image evidence"
+    )
+    _add_common_arguments(image_evidence)
+    image_evidence.add_argument("--output", required=True, metavar="PATH")
+    image_evidence.add_argument("--candidate-sha", required=True)
+    image_evidence.add_argument("--candidate-tree", required=True)
+    image_evidence.add_argument("--scanner-image", required=True)
+    for name in ("runtime", "hosted-runtime", "web"):
+        image_evidence.add_argument(f"--{name}-archive", required=True, metavar="PATH")
+        image_evidence.add_argument(f"--{name}-bundle", required=True, metavar="PATH")
+        image_evidence.add_argument(f"--{name}-sbom", required=True, metavar="PATH")
+        image_evidence.add_argument(f"--{name}-reference", required=True)
+
     check = subparsers.add_parser("check", help="run every repository policy check")
     _add_common_arguments(check)
     return parser
@@ -182,6 +200,25 @@ def _run(args: argparse.Namespace, root: Path) -> list[Finding]:
             scanner_image=args.scanner_image,
             scanner_metadata=args.scanner_metadata,
             secret_scanner_image=args.secret_scanner_image,
+        )
+    if args.command == "image-evidence":
+        images = tuple(
+            ImageEvidenceInput(
+                name=name,
+                archive=_unresolved_path(root, getattr(args, name.replace("-", "_") + "_archive")),
+                bundle=_unresolved_path(root, getattr(args, name.replace("-", "_") + "_bundle")),
+                raw_sbom=_unresolved_path(root, getattr(args, name.replace("-", "_") + "_sbom")),
+                expected_reference=getattr(args, name.replace("-", "_") + "_reference"),
+            )
+            for name in ("runtime", "hosted-runtime", "web")
+        )
+        return build_final_image_evidence(
+            root,
+            _path(root, args.output),  # type: ignore[arg-type]
+            candidate_sha=args.candidate_sha,
+            candidate_tree=args.candidate_tree,
+            scanner_image=args.scanner_image,
+            images=images,
         )
     if args.command == "check":
         findings: list[Finding] = []

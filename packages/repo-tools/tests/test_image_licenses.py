@@ -386,6 +386,13 @@ class ImageLicenseBundleTest(unittest.TestCase):
             self.assertEqual(go_module["name"], "example.invalid/module")
             self.assertEqual(go_module["source_checksum"], "h1:exact=")
             self.assertEqual(go_module["license_evidence_status"], "unresolved")
+            main_module = next(
+                item
+                for item in components
+                if item["kind"] == "go-module" and item["name"] == "github.com/grafana/mcp-grafana"
+            )
+            self.assertEqual(main_module["version"], "v1.1.0")
+            self.assertEqual(main_module["license_evidence_status"], "delivered-text")
 
     def test_web_bundle_covers_exact_first_and_third_party_runtime_graph(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -17,7 +17,7 @@ jobs:
   secret-scan:
     name: Secret scan
     runs-on: [self-hosted, Linux, X64, colortrace-secret]
-    timeout-minutes: 10
+    timeout-minutes: 30
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       CACHE_ROOT: ${{ github.workspace }}/../../_colortrace-cache

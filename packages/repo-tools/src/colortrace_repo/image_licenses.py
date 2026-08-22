@@ -149,7 +149,11 @@ def _go_build_info(binary: Path) -> tuple[str, str]:
     return version, module_text
 
 
-def _go_components(module_text: str, lock: dict[str, Any]) -> list[dict[str, Any]]:
+def _go_components(
+    module_text: str,
+    lock: dict[str, Any],
+    license_source: dict[str, str],
+) -> list[dict[str, Any]]:
     records = [line.split("\t") for line in module_text.splitlines() if line]
     module = next((record for record in records if record[0] == "mod"), None)
     if module is None or len(module) < 3:
@@ -169,10 +173,24 @@ def _go_components(module_text: str, lock: dict[str, Any]) -> list[dict[str, Any
     )
     if vcs_revision != lock["source_commit"]:
         raise BundleError("mcp-grafana source revision does not match its runtime lock")
-    components: list[dict[str, Any]] = []
+    components: list[dict[str, Any]] = [
+        {
+            "kind": "go-module",
+            "license_evidence_status": "delivered-text",
+            "license_expression": "Apache-2.0",
+            "license_sources": [license_source],
+            "name": module[1],
+            "owner_legal_status": "pending",
+            "source_commit": vcs_revision,
+            "source_url": lock["source_repository"],
+            "version": module[2],
+        }
+    ]
+    dependency_count = 0
     for record in records:
         if record[0] != "dep" or len(record) not in (3, 4):
             continue
+        dependency_count += 1
         name, version = record[1:3]
         components.append(
             {
@@ -186,7 +204,7 @@ def _go_components(module_text: str, lock: dict[str, Any]) -> list[dict[str, Any
                 "version": version,
             }
         )
-    if not components:
+    if dependency_count == 0:
         raise BundleError("mcp-grafana build info has no dependency closure")
     return components
 
@@ -558,7 +576,7 @@ def build_runtime_bundle(args: argparse.Namespace) -> None:
                 },
             ]
         )
-        components.extend(_go_components(module_text, lock))
+        components.extend(_go_components(module_text, lock, mcp_license))
     _finish_bundle(args, output, components)
 
 
