@@ -220,11 +220,17 @@ check-license: prepare-cache
 check-wheel-license: prepare-cache
 	$(TOOL_RUN_OFFLINE) sh -eu -c '\
 		wheel_root="$$(mktemp -d /workspace/.cache/distribution-wheels.XXXXXX)"; \
-		trap '\''chmod -R u+w "$$wheel_root" 2>/dev/null || true; rm -rf "$$wheel_root"'\'' EXIT HUP INT TERM; \
+		install_root="$$(mktemp -d /workspace/.cache/distribution-install.XXXXXX)"; \
+		trap '\''chmod -R u+w "$$wheel_root" "$$install_root" 2>/dev/null || true; rm -rf "$$wheel_root" "$$install_root"'\'' EXIT HUP INT TERM; \
 		for package in $(PYTHON_DISTRIBUTIONS); do \
 			uv build --offline --wheel --package "$$package" --out-dir "$$wheel_root"; \
 		done; \
-		uv run --offline colortrace-repo distribution-wheels --directory "$$wheel_root"'
+		uv run --offline colortrace-repo distribution-wheels --directory "$$wheel_root"; \
+		uv pip install --offline --python "$(UV_PROJECT_ENVIRONMENT)/bin/python" \
+			--target "$$install_root" --no-deps "$$wheel_root"/*.whl; \
+		cd /tmp; \
+		PYTHONPATH="$$install_root" "$(UV_PROJECT_ENVIRONMENT)/bin/python" -P \
+			/workspace/packages/repo-tools/tests/installed_wheel_schemas.py "$$install_root"'
 
 check-policy: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo ai-policy

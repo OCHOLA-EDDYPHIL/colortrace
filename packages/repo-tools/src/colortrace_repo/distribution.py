@@ -5,6 +5,7 @@ import json
 import re
 import tomllib
 import zipfile
+from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -70,6 +71,25 @@ _NPM_PROJECTS: dict[str, str] = {
     "packages/contracts/package.json": "@colortrace/contracts",
     "packages/web/package.json": "@colortrace/web",
     "packages/workspace-model/package.json": "@colortrace/workspace-model",
+}
+
+_WHEEL_SCHEMA_ROOTS: dict[str, tuple[str, str]] = {
+    "colortrace-evaluation": (
+        "packages/evaluation/src/colortrace_evaluation/schemas",
+        "colortrace_evaluation/schemas",
+    ),
+    "colortrace-grafana-mcp": (
+        "packages/grafana-mcp/src/colortrace_grafana_mcp/schemas",
+        "colortrace_grafana_mcp/schemas",
+    ),
+    "colortrace-investigation": (
+        "packages/investigation/src/colortrace_investigation/schemas",
+        "colortrace_investigation/schemas",
+    ),
+    "colortrace-vertical-slice": (
+        "packages/vertical-slice/src/colortrace_vertical_slice/schemas",
+        "colortrace_vertical_slice/schemas",
+    ),
 }
 
 
@@ -297,6 +317,98 @@ def _expected_wheels() -> dict[str, str]:
     }
 
 
+def _schema_member_findings(
+    root: Path,
+    wheel_name: str,
+    project_name: str,
+    archive: zipfile.ZipFile,
+    member_counts: Counter[str],
+) -> list[Finding]:
+    configured = _WHEEL_SCHEMA_ROOTS.get(project_name)
+    if configured is None:
+        return []
+    source_relative, archive_root = configured
+    source_root = root / source_relative
+    if source_root.is_symlink() or not source_root.is_dir():
+        return [
+            Finding(
+                source_relative,
+                "distribution.schema.source",
+                "schema source must be a regular, non-symlink directory",
+            )
+        ]
+    try:
+        source_paths = sorted(source_root.rglob("*.schema.json"))
+    except OSError as error:
+        return [Finding(source_relative, "distribution.schema.source", str(error))]
+    if not source_paths:
+        return [
+            Finding(
+                source_relative,
+                "distribution.schema.source",
+                "schema source must contain at least one schema",
+            )
+        ]
+
+    findings: list[Finding] = []
+    expected: dict[str, Path] = {}
+    for source in source_paths:
+        source_display = _lexical_relative_path(root, source)
+        if source.is_symlink() or not source.is_file():
+            findings.append(
+                Finding(
+                    source_display,
+                    "distribution.schema.source",
+                    "schema source must be a regular, non-symlink file",
+                )
+            )
+            continue
+        relative = source.relative_to(source_root).as_posix()
+        expected[f"{archive_root}/{relative}"] = source
+
+    archive_prefix = f"{archive_root}/"
+    observed = {
+        member
+        for member in member_counts
+        if member.startswith(archive_prefix) and not member.endswith("/")
+    }
+    for member in sorted(observed - expected.keys()):
+        findings.append(
+            Finding(
+                wheel_name,
+                "distribution.wheel.schema-unexpected",
+                f"unexpected schema archive member {member}",
+            )
+        )
+    for member, source in sorted(expected.items()):
+        count = member_counts.get(member, 0)
+        if count != 1:
+            findings.append(
+                Finding(
+                    wheel_name,
+                    "distribution.wheel.schema-member",
+                    f"required schema archive member {member} must occur exactly once; "
+                    f"found {count}",
+                )
+            )
+            continue
+        try:
+            source_bytes = source.read_bytes()
+            archive_bytes = archive.read(member)
+        except (OSError, KeyError, RuntimeError) as error:
+            findings.append(Finding(wheel_name, "distribution.wheel.schema-member", str(error)))
+            continue
+        if archive_bytes != source_bytes:
+            findings.append(
+                Finding(
+                    wheel_name,
+                    "distribution.wheel.schema-stale",
+                    f"schema archive member {member} differs from its source",
+                )
+            )
+    return findings
+
+
 def check_distribution_wheels(root: Path, directory: Path) -> list[Finding]:
     root = root.resolve()
     canonical_license, findings = _canonical_license(root)
@@ -332,6 +444,16 @@ def check_distribution_wheels(root: Path, directory: Path) -> list[Finding]:
         try:
             with zipfile.ZipFile(wheel) as archive:
                 names = archive.namelist()
+                member_counts = Counter(names)
+                for member, count in sorted(member_counts.items()):
+                    if count > 1:
+                        findings.append(
+                            Finding(
+                                wheel.name,
+                                "distribution.wheel.member-duplicate",
+                                f"archive member {member} occurs {count} times",
+                            )
+                        )
                 metadata_names = [name for name in names if name.endswith(".dist-info/METADATA")]
                 if len(metadata_names) != 1:
                     raise DistributionMetadataError(
@@ -362,6 +484,9 @@ def check_distribution_wheels(root: Path, directory: Path) -> list[Finding]:
                         )
                     )
                 observed.add(name)
+                findings.extend(
+                    _schema_member_findings(root, wheel.name, name, archive, member_counts)
+                )
                 if metadata.get_all("License-Expression", []) != [_LICENSE_EXPRESSION]:
                     findings.append(
                         Finding(

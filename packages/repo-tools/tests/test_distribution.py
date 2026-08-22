@@ -6,7 +6,9 @@ import shutil
 import tempfile
 import tomllib
 import unittest
+import warnings
 import zipfile
+from collections.abc import Mapping
 from pathlib import Path
 
 from colortrace_repo.common import Finding
@@ -53,6 +55,7 @@ class DistributionTest(unittest.TestCase):
         license_expression: str = "Apache-2.0",
         license_text: bytes | None = None,
         include_license_file: bool = True,
+        schema_overrides: Mapping[str, bytes | None] | None = None,
     ) -> Path:
         normalized = re.sub(r"[-_.]+", "_", project_name)
         dist_info = f"{normalized}-1.0.0.dist-info"
@@ -66,10 +69,20 @@ class DistributionTest(unittest.TestCase):
         ).encode()
         if license_text is None:
             license_text = (REPOSITORY_ROOT / "LICENSE").read_bytes()
+        namespace = re.sub(r"[-_.]+", "_", project_name)
+        schema_roots = sorted((REPOSITORY_ROOT / "packages").glob(f"*/src/{namespace}/schemas"))
+        if len(schema_roots) > 1:
+            raise AssertionError(f"multiple schema roots for {project_name}")
         with zipfile.ZipFile(wheel, "w") as archive:
             archive.writestr(f"{dist_info}/METADATA", metadata)
             if include_license_file:
                 archive.writestr(license_path, license_text)
+            if schema_roots:
+                for source in sorted(schema_roots[0].rglob("*.schema.json")):
+                    member = f"{namespace}/schemas/{source.relative_to(schema_roots[0]).as_posix()}"
+                    override = (schema_overrides or {}).get(member, source.read_bytes())
+                    if override is not None:
+                        archive.writestr(member, override)
         return wheel
 
     def test_repository_metadata_is_complete(self) -> None:
@@ -197,6 +210,51 @@ class DistributionTest(unittest.TestCase):
                 {finding.code for finding in findings},
                 {"distribution.wheel.directory"},
             )
+
+    def test_wheel_check_rejects_duplicate_missing_stale_and_unexpected_schemas(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            projects = self._wheel_projects()
+            wheels = {
+                name: self._write_wheel(directory, name, license_path)
+                for name, license_path in projects.items()
+            }
+            duplicate_member = (
+                "colortrace_evaluation/schemas/manual-no-gemini-observation-v1.schema.json"
+            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                with zipfile.ZipFile(wheels["colortrace-evaluation"], "a") as archive:
+                    archive.writestr(duplicate_member, archive.read(duplicate_member))
+                    archive.writestr(
+                        "colortrace_evaluation/schemas/unregistered.schema.json",
+                        b"{}\n",
+                    )
+            self._write_wheel(
+                directory,
+                "colortrace-investigation",
+                projects["colortrace-investigation"],
+                schema_overrides={
+                    "colortrace_investigation/schemas/alert-intake-v1.schema.json": None,
+                },
+            )
+            self._write_wheel(
+                directory,
+                "colortrace-vertical-slice",
+                projects["colortrace-vertical-slice"],
+                schema_overrides={
+                    "colortrace_vertical_slice/schemas/incident-task-v1.schema.json": b"{}\n",
+                },
+            )
+
+            codes = {
+                finding.code for finding in check_distribution_wheels(REPOSITORY_ROOT, directory)
+            }
+
+            self.assertIn("distribution.wheel.member-duplicate", codes)
+            self.assertIn("distribution.wheel.schema-member", codes)
+            self.assertIn("distribution.wheel.schema-stale", codes)
+            self.assertIn("distribution.wheel.schema-unexpected", codes)
 
 
 if __name__ == "__main__":
