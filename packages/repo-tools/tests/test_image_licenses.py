@@ -48,7 +48,7 @@ def _common_inputs(root: Path) -> dict[str, Any]:
         "root_license": _write(root / "LICENSE", "project license\n"),
         "apk_database": _write(
             root / "installed",
-            "P:base\nV:1-r0\nA:x86_64\nL:GPL-2.0-only\n"
+            "P:base\nV:1-r0\nA:x86_64\nL:gpl-2.0-only\n"
             "U:https://example.invalid/base\no:base\nc:" + "4" * 40 + "\n\n"
             "P:.runtime-deps\nV:1\nA:noarch\nL:\nU:\n\n",
         ),
@@ -174,6 +174,14 @@ class ImageLicenseBundleTest(unittest.TestCase):
                 "unresolved",
             )
             self.assertEqual(
+                components[("apk", ".runtime-deps")]["owner_legal_status"],
+                "pending",
+            )
+            self.assertEqual(
+                components[("apk", ".runtime-deps")]["license_source"]["path"],
+                "sources/alpine/installed",
+            )
+            self.assertEqual(
                 components[("python-distribution", "licensed")]["license_evidence_status"],
                 "delivered-text",
             )
@@ -182,11 +190,43 @@ class ImageLicenseBundleTest(unittest.TestCase):
                 "unresolved",
             )
             self.assertEqual(
+                components[("python-distribution", "unresolved")]["owner_legal_status"],
+                "pending",
+            )
+            self.assertEqual(
                 components[("python-distribution", "pip")]["provenance"],
                 {"kind": "base-image", "reference": common["base_image"]},
             )
             self.assertEqual(components[("embedded-python-wheel", "pip")]["version"], "25.0.1")
-            for line in (first_output / "SHA256SUMS").read_text().splitlines():
+            installed_metadata = components[("python-distribution", "licensed")]["license_sources"][
+                0
+            ]
+            embedded_metadata = components[("embedded-python-wheel", "pip")]["license_sources"][0]
+            with zipfile.ZipFile(python_inputs["ensurepip_wheel"]) as archive:
+                embedded_metadata_bytes = archive.read("pip-25.0.1.dist-info/METADATA")
+            for source, original in (
+                (
+                    installed_metadata,
+                    python_inputs["python_site_packages"] / "licensed-1.0.dist-info" / "METADATA",
+                ),
+                (embedded_metadata, embedded_metadata_bytes),
+            ):
+                self.assertTrue(source["path"].endswith("/metadata.txt"))
+                self.assertNotIn(".dist-info", source["path"])
+                self.assertEqual(
+                    hashlib.sha256((first_output / source["path"]).read_bytes()).hexdigest(),
+                    source["sha256"],
+                )
+                if isinstance(original, Path):
+                    self.assertEqual(
+                        (first_output / source["path"]).read_bytes(), original.read_bytes()
+                    )
+                else:
+                    self.assertEqual((first_output / source["path"]).read_bytes(), original)
+            checksum_lines = (first_output / "SHA256SUMS").read_text().splitlines()
+            checksum_paths = [line.split("  ", 1)[1] for line in checksum_lines]
+            self.assertEqual(checksum_paths, sorted(checksum_paths))
+            for line in checksum_lines:
                 expected, relative = line.split("  ", 1)
                 self.assertEqual(
                     hashlib.sha256((first_output / relative).read_bytes()).hexdigest(), expected
@@ -417,6 +457,10 @@ class ImageLicenseBundleTest(unittest.TestCase):
                 {"@colortrace/api-client", "@colortrace/web", "@colortrace/workspace-model"}
                 <= names
             )
+            checksum_paths = [
+                line.split("  ", 1)[1] for line in (output / "SHA256SUMS").read_text().splitlines()
+            ]
+            self.assertEqual(checksum_paths, sorted(checksum_paths))
 
     def test_web_bundle_rejects_symlinked_metadata_parents(self) -> None:
         for input_name, child in (

@@ -234,7 +234,9 @@ def _parse_apk_database(path: Path, source: dict[str, str]) -> list[dict[str, An
                 "license_source": source,
                 "name": fields["P"],
                 "owner_legal_status": (
-                    "pending" if license_expression and "GPL" in license_expression else None
+                    "pending"
+                    if not license_expression or "GPL" in license_expression.upper()
+                    else None
                 ),
                 "source_commit": source_commit,
                 "source_commit_url": (
@@ -289,8 +291,9 @@ def _python_components(
         version = message.get("Version")
         if not name or not version:
             raise BundleError(f"Python metadata has no Name/Version: {metadata_path}")
-        destination_root = f"sources/python/{source_group}/{dist_info.name}"
-        sources = [_copy_source(metadata_path, output, f"{destination_root}/METADATA")]
+        distribution_name = dist_info.name.removesuffix(".dist-info")
+        destination_root = f"sources/python/{source_group}/distributions/{distribution_name}"
+        sources = [_copy_source(metadata_path, output, f"{destination_root}/metadata.txt")]
         license_files: set[Path] = set()
         for value in message.get_all("License-File", []) or []:
             source = _safe_metadata_license(site_packages, dist_info, value)
@@ -330,9 +333,13 @@ def _python_components(
                 "license_expression": license_expression,
                 "license_sources": sources,
                 "name": name,
-                "owner_legal_status": "pending"
-                if "GPL" in (license_expression or "") or "GPL" in (legacy_license or "")
-                else None,
+                "owner_legal_status": (
+                    "pending"
+                    if not license_expression
+                    or "GPL" in license_expression.upper()
+                    or "GPL" in (legacy_license or "").upper()
+                    else None
+                ),
                 "provenance": provenance,
                 "project_urls": sorted(message.get_all("Project-URL", []) or []),
                 "version": version,
@@ -386,8 +393,11 @@ def _embedded_python_wheel(
                 if not matches:
                     raise BundleError(f"embedded Python License-File is missing: {value}")
                 license_names.update(matches)
-            destination_root = f"sources/python/base-image/ensurepip/{dist_info.name}"
-            sources = [_write_source(output, f"{destination_root}/METADATA", metadata_content)]
+            distribution_name = dist_info.name.removesuffix(".dist-info")
+            destination_root = (
+                f"sources/python/base-image/ensurepip/distributions/{distribution_name}"
+            )
+            sources = [_write_source(output, f"{destination_root}/metadata.txt", metadata_content)]
             sources.extend(
                 _write_source(
                     output,
@@ -409,9 +419,13 @@ def _embedded_python_wheel(
         "license_expression": license_expression,
         "license_sources": sources,
         "name": name,
-        "owner_legal_status": "pending"
-        if "GPL" in (license_expression or "") or "GPL" in (legacy_license or "")
-        else None,
+        "owner_legal_status": (
+            "pending"
+            if not license_expression
+            or "GPL" in license_expression.upper()
+            or "GPL" in (legacy_license or "").upper()
+            else None
+        ),
         "package_source": wheel_source,
         "provenance": provenance,
         "version": version,
@@ -720,11 +734,15 @@ def _finish_bundle(
         "source_tree": args.source_tree,
     }
     _write_json(output / "manifest.json", manifest)
-    lines = [
-        f"{_sha256(path)}  {path.relative_to(output).as_posix()}"
-        for path in sorted(output.rglob("*"))
-        if path.is_file() and path.name != "SHA256SUMS"
-    ]
+    bundle_files = sorted(
+        (
+            (path.relative_to(output).as_posix(), path)
+            for path in output.rglob("*")
+            if path.is_file() and path.name != "SHA256SUMS"
+        ),
+        key=lambda value: value[0],
+    )
+    lines = [f"{_sha256(path)}  {relative}" for relative, path in bundle_files]
     (output / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (output / "SHA256SUMS").chmod(0o644)
 

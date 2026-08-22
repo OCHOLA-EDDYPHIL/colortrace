@@ -11,12 +11,19 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
+from packaging.licenses import InvalidLicenseExpression, canonicalize_license_expression
+
 from colortrace_repo.common import Finding, sorted_findings
 from colortrace_repo.security_evidence import _sha256, _write_json
 
 _HEX40 = re.compile(r"[0-9a-f]{40}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _IMAGE_REFERENCE = re.compile(r"[^@\s]+@sha256:[0-9a-f]{64}")
+_SCANNER_SPDX_ALIASES = {
+    "X-11": "X11",
+    "bzip-2-1.0.6": "bzip2-1.0.6",
+}
+_SPDX_TOKEN_ALIASES = {"Public-Domain": "LicenseRef-Public-Domain"}
 _PROFILES = {
     "runtime": "private-full",
     "hosted-runtime": "hosted-readonly",
@@ -505,8 +512,17 @@ def _verify_bundle(
         }:
             _fail("image.bundle.invalid", f"invalid license evidence status: {identity}")
         declared_licenses = _declared_licenses(component)
-        requires_owner_review = status == "unresolved" or any(
-            "gpl" in value.casefold() for value in declared_licenses
+        license_expression = component.get("license_expression")
+        legacy_license = component.get("legacy_license")
+        legacy_only = (
+            isinstance(legacy_license, str)
+            and bool(legacy_license.strip())
+            and not (isinstance(license_expression, str) and license_expression.strip())
+        )
+        requires_owner_review = (
+            status == "unresolved"
+            or legacy_only
+            or any("gpl" in value.casefold() for value in declared_licenses)
         )
         if requires_owner_review and component.get("owner_legal_status") != "pending":
             findings.append(
@@ -662,9 +678,226 @@ def _normalized_licenses(values: set[str]) -> set[str]:
     return {re.sub(r"\s+", " ", value.strip()).casefold() for value in values}
 
 
+def _spdx_ast(expression: str) -> tuple[Any, ...] | None:
+    expression_tokens = re.findall(r"\(|\)|[^\s()]+", expression)
+    parseable_expression = " ".join(
+        _SPDX_TOKEN_ALIASES.get(token, token) for token in expression_tokens
+    )
+    try:
+        canonical = str(canonicalize_license_expression(parseable_expression))
+    except InvalidLicenseExpression:
+        return None
+    tokens = re.findall(r"\(|\)|[^\s()]+", canonical)
+    position = 0
+
+    def combine(operator: str, values: list[tuple[Any, ...]]) -> tuple[Any, ...]:
+        flattened: list[tuple[Any, ...]] = []
+        for value in values:
+            if value[0] == operator:
+                flattened.extend(value[1:])
+            else:
+                flattened.append(value)
+        return (operator, *sorted(flattened, key=repr))
+
+    def primary() -> tuple[Any, ...]:
+        nonlocal position
+        if position >= len(tokens):
+            raise ValueError
+        if tokens[position] == "(":
+            position += 1
+            value = disjunction()
+            if position >= len(tokens) or tokens[position] != ")":
+                raise ValueError
+            position += 1
+            return value
+        identifier = tokens[position]
+        if identifier in {"AND", "OR", "WITH", ")"}:
+            raise ValueError
+        position += 1
+        if position < len(tokens) and tokens[position] == "WITH":
+            position += 1
+            if position >= len(tokens):
+                raise ValueError
+            exception = tokens[position]
+            position += 1
+            return ("WITH", identifier, exception)
+        return ("ID", identifier)
+
+    def conjunction() -> tuple[Any, ...]:
+        nonlocal position
+        values = [primary()]
+        while position < len(tokens) and tokens[position] == "AND":
+            position += 1
+            values.append(primary())
+        return values[0] if len(values) == 1 else combine("AND", values)
+
+    def disjunction() -> tuple[Any, ...]:
+        nonlocal position
+        values = [conjunction()]
+        while position < len(tokens) and tokens[position] == "OR":
+            position += 1
+            values.append(conjunction())
+        return values[0] if len(values) == 1 else combine("OR", values)
+
+    try:
+        result = disjunction()
+    except ValueError:
+        return None
+    return result if position == len(tokens) else None
+
+
+def _spdx_conjunction_identifiers(expression: tuple[Any, ...]) -> frozenset[str] | None:
+    if expression[0] == "ID":
+        return frozenset({str(expression[1])})
+    if expression[0] != "AND":
+        return None
+    identifiers: set[str] = set()
+    for child in expression[1:]:
+        closure = _spdx_conjunction_identifiers(child)
+        if closure is None:
+            return None
+        identifiers.update(closure)
+    return frozenset(identifiers)
+
+
+def _scanner_spdx_matches(values: set[str], bundle: tuple[Any, ...]) -> bool:
+    expressions: list[tuple[Any, ...]] = []
+    for value in sorted(values):
+        expression = _spdx_ast(_SCANNER_SPDX_ALIASES.get(value, value))
+        if expression is None:
+            return False
+        expressions.append(expression)
+    if len(expressions) == 1:
+        return expressions[0] == bundle
+    if not expressions or any(expression[0] != "ID" for expression in expressions):
+        return False
+    identifiers = [str(expression[1]) for expression in expressions]
+    scanner_identifiers = frozenset(identifiers)
+    if len(scanner_identifiers) != len(identifiers):
+        return False
+    return scanner_identifiers == _spdx_conjunction_identifiers(bundle)
+
+
+def _license_difference_status(
+    scanner: set[str],
+    component: dict[str, Any],
+    bundle_record: dict[str, Any],
+) -> str:
+    license_expression = component.get("license_expression")
+    if isinstance(license_expression, str) and license_expression.strip():
+        bundle_ast = _spdx_ast(license_expression)
+        if bundle_ast is not None and _scanner_spdx_matches(scanner, bundle_ast):
+            return "normalized-same-identifiers"
+        return "unexplained"
+    legacy_license = component.get("legacy_license")
+    has_verified_legacy_evidence = (
+        isinstance(legacy_license, str)
+        and bool(legacy_license.strip())
+        and component.get("owner_legal_status") == "pending"
+        and component.get("license_evidence_status") in {"declared-in-metadata", "delivered-text"}
+        and bool(_source_records(component.get("license_sources")))
+        and isinstance(bundle_record.get("verified_file_count"), int)
+        and bundle_record["verified_file_count"] > 0
+    )
+    return "legacy-declaration-vs-scanner" if has_verified_legacy_evidence else "unexplained"
+
+
 def _bundle_bom_ref(component: dict[str, Any]) -> str:
     identity = f"{component['kind']}:{component['name']}:{component['version']}"
     return "urn:colortrace:image-bundle:" + hashlib.sha256(identity.encode()).hexdigest()
+
+
+def _deterministic_scanner_ref(profile: str, kind: str, identity: Any) -> str:
+    value = json.dumps(
+        {"identity": identity, "kind": kind, "profile": profile},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "urn:colortrace:scanner:" + hashlib.sha256(value.encode()).hexdigest()
+
+
+def _scanner_reference_map(raw: dict[str, Any], profile: str) -> dict[str, str]:
+    raw_components = raw.get("components")
+    metadata = raw.get("metadata")
+    metadata_component = metadata.get("component") if isinstance(metadata, dict) else None
+    if not isinstance(raw_components, list) or not isinstance(metadata_component, dict):
+        _fail("image.coverage.invalid", "scanner reference owners are missing")
+
+    references: dict[str, str] = {}
+
+    def add_reference(source: Any, target: str) -> None:
+        if not isinstance(source, str) or not source:
+            _fail("image.coverage.invalid", "scanner reference owner lacks a bom-ref")
+        if source in references:
+            _fail("image.coverage.duplicate", "scanner reference owner is not unique")
+        references[source] = target
+
+    add_reference(
+        metadata_component.get("bom-ref"),
+        _deterministic_scanner_ref(profile, "root", "metadata.component"),
+    )
+    for component in raw_components:
+        if not isinstance(component, dict):
+            _fail("image.scanner.invalid", "scanner component is not an object")
+        add_reference(
+            component.get("bom-ref"),
+            _deterministic_scanner_ref(profile, "component", _scanner_identity(component)),
+        )
+
+    dependencies = raw.get("dependencies")
+    if not isinstance(dependencies, list):
+        _fail("image.coverage.invalid", "scanner dependency graph is missing")
+    dependency_owners: set[str] = set()
+    for dependency in dependencies:
+        if not isinstance(dependency, dict):
+            _fail("image.coverage.invalid", "scanner dependency is not an object")
+        owner = dependency.get("ref")
+        if not isinstance(owner, str) or owner not in references:
+            _fail("image.coverage.invalid", "scanner dependency owner is unmapped")
+        if owner in dependency_owners:
+            _fail("image.coverage.duplicate", "scanner dependency owner is duplicated")
+        dependency_owners.add(owner)
+        for key in ("dependsOn", "provides"):
+            targets = dependency.get(key, [])
+            if not isinstance(targets, list) or any(
+                not isinstance(target, str) or target not in references for target in targets
+            ):
+                _fail("image.coverage.invalid", f"scanner dependency {key} is unmapped")
+            if len(targets) != len(set(targets)):
+                _fail("image.coverage.duplicate", f"scanner dependency {key} is duplicated")
+    if dependency_owners != set(references):
+        _fail("image.coverage.invalid", "scanner dependency owners are incomplete")
+
+    vulnerabilities = raw.get("vulnerabilities", [])
+    if not isinstance(vulnerabilities, list):
+        _fail("image.coverage.invalid", "scanner vulnerabilities are not a list")
+    for vulnerability in vulnerabilities:
+        if not isinstance(vulnerability, dict):
+            _fail("image.coverage.invalid", "scanner vulnerability is not an object")
+        affects = vulnerability.get("affects", [])
+        if not isinstance(affects, list):
+            _fail("image.coverage.invalid", "scanner vulnerability affects are not a list")
+        for affected in affects:
+            if (
+                not isinstance(affected, dict)
+                or not isinstance(affected.get("ref"), str)
+                or affected["ref"] not in references
+            ):
+                _fail("image.coverage.invalid", "scanner vulnerability reference is unmapped")
+    return references
+
+
+def _remap_internal_references(document: dict[str, Any], references: dict[str, str]) -> None:
+    metadata = document["metadata"]
+    metadata["component"]["bom-ref"] = references[metadata["component"]["bom-ref"]]
+    for dependency in document["dependencies"]:
+        dependency["ref"] = references[dependency["ref"]]
+        for key in ("dependsOn", "provides"):
+            if key in dependency:
+                dependency[key] = [references[value] for value in dependency[key]]
+    for vulnerability in document.get("vulnerabilities", []):
+        for affected in vulnerability.get("affects", []):
+            affected["ref"] = references[affected["ref"]]
 
 
 def _enrich(raw: dict[str, Any], bundle: dict[str, Any], manifest_digest: str) -> dict[str, Any]:
@@ -732,6 +965,7 @@ def _reconcile(
     raw_components = raw.get("components")
     if raw.get("bomFormat") != "CycloneDX" or not isinstance(raw_components, list):
         _fail("image.scanner.invalid", "raw output is not a CycloneDX SBOM")
+    reference_map = _scanner_reference_map(raw, profile)
     scanner: dict[tuple[str, str, str], dict[str, Any]] = {}
     matchable: dict[tuple[str, str, str], dict[str, Any]] = {}
     bundle_only: list[dict[str, Any]] = []
@@ -796,7 +1030,9 @@ def _reconcile(
                     "scanner record has no exact bundle match",
                 )
             )
-            enriched.append(copy.deepcopy(component))
+            unmatched = copy.deepcopy(component)
+            unmatched["bom-ref"] = reference_map[component["bom-ref"]]
+            enriched.append(unmatched)
             continue
         raw_licenses = _licenses(component)
         bundle_licenses = _declared_licenses(matched)
@@ -805,25 +1041,33 @@ def _reconcile(
             and bundle_licenses
             and _normalized_licenses(raw_licenses) != _normalized_licenses(bundle_licenses)
         ):
+            difference_status = _license_difference_status(raw_licenses, matched, bundle_record)
             conflicts.append(
                 {
                     "bundle": sorted(bundle_licenses),
                     "identity": list(identity),
                     "scanner": sorted(raw_licenses),
-                    "status": "unexplained",
+                    "status": difference_status,
                 }
             )
-            findings.append(
-                Finding(str(identity), "image.coverage.conflict", "license evidence conflicts")
-            )
+            if difference_status == "unexplained":
+                findings.append(
+                    Finding(
+                        str(identity),
+                        "image.coverage.conflict",
+                        "license evidence conflicts",
+                    )
+                )
         matches.append(
             {
                 "bundle_kind": matched["kind"],
                 "identity": list(identity),
-                "scanner_bom_ref": component.get("bom-ref"),
+                "scanner_bom_ref": reference_map[component["bom-ref"]],
             }
         )
-        enriched.append(_enrich(component, matched, bundle_record["manifest_sha256"]))
+        enriched_component = _enrich(component, matched, bundle_record["manifest_sha256"])
+        enriched_component["bom-ref"] = reference_map[component["bom-ref"]]
+        enriched.append(enriched_component)
     for identity in sorted(set(matchable) - set(scanner)):
         findings.append(
             Finding(str(identity), "image.coverage.missing", "bundle record has no scanner match")
@@ -840,6 +1084,7 @@ def _reconcile(
     ):
         findings.append(Finding("", "image.coverage.duplicate", "enriched BOM refs are invalid"))
     result = copy.deepcopy(raw)
+    _remap_internal_references(result, reference_map)
     result.pop("serialNumber", None)
     if isinstance(result.get("metadata"), dict):
         result["metadata"].pop("timestamp", None)

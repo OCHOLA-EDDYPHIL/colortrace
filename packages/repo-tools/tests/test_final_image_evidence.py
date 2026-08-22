@@ -8,6 +8,7 @@ import json
 import tarfile
 import tempfile
 import unittest
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,6 @@ from colortrace_repo.final_image_evidence import (
     EvidenceError,
     ImageEvidenceInput,
     _archive_binding,
-    _bundle_bom_ref,
     _reconcile,
     _verify_bundle,
     build_final_image_evidence,
@@ -311,10 +311,16 @@ def _bundle_components(
 
 
 def _refresh_bundle_checksums(root: Path) -> None:
+    files = sorted(
+        (
+            (path.relative_to(root).as_posix(), path)
+            for path in root.rglob("*")
+            if path.is_file() and path.name != "SHA256SUMS"
+        ),
+        key=lambda value: value[0],
+    )
     lines = [
-        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root).as_posix()}"
-        for path in sorted(root.rglob("*"))
-        if path.is_file() and path.name != "SHA256SUMS"
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {relative}" for relative, path in files
     ]
     (root / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -419,11 +425,22 @@ def _raw_sbom(profile: str) -> dict[str, Any]:
             ]
         )
     references = [value["bom-ref"] for value in components]
+    root_reference = "scanner-root"
     return {
         "bomFormat": "CycloneDX",
         "components": components,
-        "dependencies": [{"dependsOn": list(reversed(references)), "ref": "root"}],
-        "metadata": {"timestamp": "2026-08-22T00:00:00Z"},
+        "dependencies": [
+            {"dependsOn": list(reversed(references)), "ref": root_reference},
+            *({"dependsOn": [], "ref": reference} for reference in references),
+        ],
+        "metadata": {
+            "component": {
+                "bom-ref": root_reference,
+                "name": "fixture-image",
+                "type": "container",
+            },
+            "timestamp": "2026-08-22T00:00:00Z",
+        },
         "serialNumber": "urn:uuid:00000000-0000-0000-0000-000000000000",
         "specVersion": "1.6",
         "version": 1,
@@ -525,14 +542,211 @@ class FinalImageEvidenceTest(unittest.TestCase):
             self.assertEqual(other_enriched, enriched)
             self.assertEqual(other_coverage, coverage)
 
+            randomized_refs = copy.deepcopy(raw)
+            reference_owners = [
+                randomized_refs["metadata"]["component"],
+                *randomized_refs["components"],
+            ]
+            replacement_refs = {
+                owner["bom-ref"]: str(uuid.UUID(int=index + 1))
+                for index, owner in enumerate(reference_owners)
+            }
+            for owner in reference_owners:
+                owner["bom-ref"] = replacement_refs[owner["bom-ref"]]
+            for dependency in randomized_refs["dependencies"]:
+                dependency["ref"] = replacement_refs[dependency["ref"]]
+                dependency["dependsOn"] = [
+                    replacement_refs[value] for value in dependency["dependsOn"]
+                ]
+            randomized_enriched, randomized_coverage, randomized_findings = _reconcile(
+                randomized_refs, bundle, bundle_record, profile
+            )
+            self.assertEqual(randomized_findings, [])
+            self.assertEqual(_json_bytes(randomized_enriched), _json_bytes(enriched))
+            self.assertEqual(_json_bytes(randomized_coverage), _json_bytes(coverage))
+
+            normalized_bundle = copy.deepcopy(bundle)
+            next(
+                value
+                for value in normalized_bundle["components"]
+                if value["name"] == "Demo_Package"
+            )["license_expression"] = "MIT AND Apache-2.0"
+            split_scanner = copy.deepcopy(raw)
+            split_component = split_scanner["components"][-1]
+            split_component["licenses"] = [
+                {"license": {"id": "MIT"}},
+                {"license": {"id": "Apache-2.0"}},
+            ]
+            normalized_enriched, normalized_coverage, normalized_findings = _reconcile(
+                split_scanner, normalized_bundle, bundle_record, profile
+            )
+            self.assertEqual(normalized_findings, [])
+            self.assertEqual(normalized_coverage["status"], "pass")
+            self.assertEqual(
+                normalized_coverage["conflicts"],
+                [
+                    {
+                        "bundle": ["MIT AND Apache-2.0"],
+                        "identity": ["python", "demo-package", "1.0"],
+                        "scanner": ["Apache-2.0", "MIT"],
+                        "status": "normalized-same-identifiers",
+                    }
+                ],
+            )
+            normalized_component = next(
+                value
+                for value in normalized_enriched["components"]
+                if value["name"] == "demo-package"
+            )
+            self.assertCountEqual(normalized_component["licenses"], split_component["licenses"])
+
+            operatorless_bundle = copy.deepcopy(normalized_bundle)
+            next(
+                value
+                for value in operatorless_bundle["components"]
+                if value["name"] == "Demo_Package"
+            )["license_expression"] = "MIT OR Apache-2.0"
+            _, operatorless_coverage, operatorless_findings = _reconcile(
+                split_scanner, operatorless_bundle, bundle_record, profile
+            )
+            self.assertIn(
+                "image.coverage.conflict",
+                {value.code for value in operatorless_findings},
+            )
+            self.assertEqual(operatorless_coverage["status"], "fail")
+            self.assertEqual(
+                operatorless_coverage["conflicts"][0]["status"],
+                "unexplained",
+            )
+
+            for scanner_alias, bundle_identifier in (
+                ("X-11", "X11"),
+                ("bzip-2-1.0.6", "bzip2-1.0.6"),
+            ):
+                with self.subTest(scanner_alias=scanner_alias):
+                    alias_bundle = copy.deepcopy(bundle)
+                    next(
+                        value
+                        for value in alias_bundle["components"]
+                        if value["name"] == "Demo_Package"
+                    )["license_expression"] = bundle_identifier
+                    alias_raw = copy.deepcopy(raw)
+                    alias_raw["components"][-1]["licenses"] = [{"license": {"id": scanner_alias}}]
+                    _, alias_coverage, alias_findings = _reconcile(
+                        alias_raw, alias_bundle, bundle_record, profile
+                    )
+                    self.assertEqual(alias_findings, [])
+                    self.assertEqual(
+                        alias_coverage["conflicts"][0]["status"],
+                        "normalized-same-identifiers",
+                    )
+
+            public_domain_bundle = copy.deepcopy(bundle)
+            next(
+                value
+                for value in public_domain_bundle["components"]
+                if value["name"] == "Demo_Package"
+            )["license_expression"] = "MIT AND Public-Domain"
+            public_domain_raw = copy.deepcopy(raw)
+            public_domain_raw["components"][-1]["licenses"] = [
+                {"license": {"id": "MIT"}},
+                {"license": {"id": "Public-Domain"}},
+            ]
+            _, public_domain_coverage, public_domain_findings = _reconcile(
+                public_domain_raw, public_domain_bundle, bundle_record, profile
+            )
+            self.assertEqual(public_domain_findings, [])
+            self.assertEqual(
+                public_domain_coverage["conflicts"][0]["status"],
+                "normalized-same-identifiers",
+            )
+
+            collapsed_alias_bundle = copy.deepcopy(bundle)
+            next(
+                value
+                for value in collapsed_alias_bundle["components"]
+                if value["name"] == "Demo_Package"
+            )["license_expression"] = "X11"
+            collapsed_alias_raw = copy.deepcopy(raw)
+            collapsed_alias_raw["components"][-1]["licenses"] = [
+                {"license": {"id": "X11"}},
+                {"license": {"id": "X-11"}},
+            ]
+            _, collapsed_alias_coverage, collapsed_alias_findings = _reconcile(
+                collapsed_alias_raw, collapsed_alias_bundle, bundle_record, profile
+            )
+            self.assertIn(
+                "image.coverage.conflict",
+                {value.code for value in collapsed_alias_findings},
+            )
+            self.assertEqual(collapsed_alias_coverage["conflicts"][0]["status"], "unexplained")
+
+            def legacy_declaration(value: dict[str, Any]) -> None:
+                component = next(
+                    item for item in value["components"] if item["name"] == "Demo_Package"
+                )
+                component["license_expression"] = None
+                component["legacy_license"] = "MIT OR Apache-2.0"
+                component["owner_legal_status"] = "pending"
+
+            legacy_path, legacy_bundle = _write_bundle(
+                root, "legacy-declaration", profile, legacy_declaration
+            )
+            _, legacy_record, legacy_bundle_findings = _verify_bundle(
+                legacy_path,
+                candidate_sha=CANDIDATE,
+                candidate_tree=TREE,
+                profile=profile,
+            )
+            self.assertEqual(legacy_bundle_findings, [])
+            legacy_raw = copy.deepcopy(raw)
+            legacy_raw["components"][-1]["licenses"] = [
+                {"license": {"id": "MIT"}},
+                {"license": {"id": "Apache-2.0"}},
+            ]
+            legacy_enriched, legacy_coverage, legacy_findings = _reconcile(
+                legacy_raw, legacy_bundle, legacy_record, profile
+            )
+            self.assertEqual(legacy_findings, [])
+            self.assertEqual(
+                legacy_coverage["conflicts"][0]["status"],
+                "legacy-declaration-vs-scanner",
+            )
+            legacy_component = next(
+                value for value in legacy_enriched["components"] if value["name"] == "demo-package"
+            )
+            self.assertCountEqual(
+                legacy_component["licenses"], legacy_raw["components"][-1]["licenses"]
+            )
+
+            legacy_without_review = copy.deepcopy(legacy_bundle)
+            next(
+                value
+                for value in legacy_without_review["components"]
+                if value["name"] == "Demo_Package"
+            )["owner_legal_status"] = None
+            _, pending_coverage, pending_findings = _reconcile(
+                legacy_raw, legacy_without_review, legacy_record, profile
+            )
+            self.assertIn("image.coverage.conflict", {value.code for value in pending_findings})
+            self.assertEqual(pending_coverage["conflicts"][0]["status"], "unexplained")
+
             missing = copy.deepcopy(raw)
-            missing["components"].pop()
+            missing_ref = missing["components"].pop()["bom-ref"]
+            missing["dependencies"] = [
+                dependency
+                for dependency in missing["dependencies"]
+                if dependency["ref"] != missing_ref
+            ]
+            missing["dependencies"][0]["dependsOn"].remove(missing_ref)
             _, _, findings = _reconcile(missing, bundle, bundle_record, profile)
             self.assertIn("image.coverage.missing", {value.code for value in findings})
 
             duplicate = copy.deepcopy(raw)
             duplicate["components"].append(copy.deepcopy(duplicate["components"][1]))
             duplicate["components"][-1]["bom-ref"] = "duplicate"
+            duplicate["dependencies"].append({"dependsOn": [], "ref": "duplicate"})
+            duplicate["dependencies"][0]["dependsOn"].append("duplicate")
             _, _, findings = _reconcile(duplicate, bundle, bundle_record, profile)
             self.assertIn("image.coverage.duplicate", {value.code for value in findings})
 
@@ -546,10 +760,17 @@ class FinalImageEvidenceTest(unittest.TestCase):
             _, _, findings = _reconcile(raw, duplicate_only, bundle_record, profile)
             self.assertIn("image.coverage.duplicate", {value.code for value in findings})
 
-            colliding_ref = copy.deepcopy(raw)
-            colliding_ref["components"][0]["bom-ref"] = _bundle_bom_ref(first_party)
-            _, _, findings = _reconcile(colliding_ref, bundle, bundle_record, profile)
-            self.assertIn("image.coverage.duplicate", {value.code for value in findings})
+            duplicate_ref = copy.deepcopy(raw)
+            duplicate_ref["components"][0]["bom-ref"] = duplicate_ref["components"][1]["bom-ref"]
+            with self.assertRaises(EvidenceError) as raised:
+                _reconcile(duplicate_ref, bundle, bundle_record, profile)
+            self.assertEqual(raised.exception.code, "image.coverage.duplicate")
+
+            unmapped_ref = copy.deepcopy(raw)
+            unmapped_ref["dependencies"][0]["dependsOn"].append("unmapped")
+            with self.assertRaises(EvidenceError) as raised:
+                _reconcile(unmapped_ref, bundle, bundle_record, profile)
+            self.assertEqual(raised.exception.code, "image.coverage.invalid")
 
             version = copy.deepcopy(raw)
             version["components"][-1]["version"] = "2.0"
@@ -612,6 +833,17 @@ class FinalImageEvidenceTest(unittest.TestCase):
                 )
             self.assertEqual(raised.exception.code, "image.bundle.checksum")
 
+            unsorted, _ = _write_bundle(root, "unsorted", profile)
+            checksum_lines = (unsorted / "SHA256SUMS").read_text().splitlines()
+            (unsorted / "SHA256SUMS").write_text(
+                "\n".join(reversed(checksum_lines)) + "\n", encoding="utf-8"
+            )
+            with self.assertRaises(EvidenceError) as raised:
+                _verify_bundle(
+                    unsorted, candidate_sha=CANDIDATE, candidate_tree=TREE, profile=profile
+                )
+            self.assertEqual(raised.exception.code, "image.bundle.stale")
+
             def metadata_is_not_a_license(value: dict[str, Any]) -> None:
                 component = next(
                     item for item in value["components"] if item["kind"] == "embedded-python-wheel"
@@ -672,6 +904,37 @@ class FinalImageEvidenceTest(unittest.TestCase):
             gpl, _ = _write_bundle(root, "gpl", profile, missing_gpl_review)
             _, _, findings = _verify_bundle(
                 gpl, candidate_sha=CANDIDATE, candidate_tree=TREE, profile=profile
+            )
+            self.assertIn("image.bundle.unresolved", {value.code for value in findings})
+
+            def missing_legacy_review(value: dict[str, Any]) -> None:
+                component = next(
+                    item for item in value["components"] if item["name"] == "Demo_Package"
+                )
+                component["license_expression"] = None
+                component["legacy_license"] = "MIT"
+                component["owner_legal_status"] = None
+
+            legacy, _ = _write_bundle(root, "legacy", profile, missing_legacy_review)
+            _, _, findings = _verify_bundle(
+                legacy, candidate_sha=CANDIDATE, candidate_tree=TREE, profile=profile
+            )
+            self.assertIn("image.bundle.unresolved", {value.code for value in findings})
+
+            def missing_unresolved_apk_review(value: dict[str, Any]) -> None:
+                component = next(
+                    item for item in value["components"] if item["name"] == ".python-rundeps"
+                )
+                component["owner_legal_status"] = None
+
+            unresolved_apk, _ = _write_bundle(
+                root, "unresolved-apk", profile, missing_unresolved_apk_review
+            )
+            _, _, findings = _verify_bundle(
+                unresolved_apk,
+                candidate_sha=CANDIDATE,
+                candidate_tree=TREE,
+                profile=profile,
             )
             self.assertIn("image.bundle.unresolved", {value.code for value in findings})
 
