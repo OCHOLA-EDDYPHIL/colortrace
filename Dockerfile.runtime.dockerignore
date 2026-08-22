@@ -1,5 +1,6 @@
 *
 !Dockerfile.runtime
+!LICENSE
 !pyproject.toml
 !uv.lock
 !config/

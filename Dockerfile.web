@@ -1,4 +1,6 @@
-FROM node@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS build
+FROM node@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS node-base
+
+FROM node-base AS build
 RUN corepack disable \
     && npm install --global pnpm@11.21.0 \
     && pnpm --version | grep -Fx 11.21.0
@@ -9,9 +11,48 @@ COPY packages/contracts/ packages/contracts/
 COPY packages/web/ packages/web/
 COPY packages/workspace-model/ packages/workspace-model/
 RUN pnpm install --frozen-lockfile \
-    && pnpm --filter @colortrace/web build
+    && pnpm --filter @colortrace/web build \
+    && install -d /notice-input/react /notice-input/react-dom /notice-input/scheduler \
+    && cp node_modules/.pnpm/react@19.2.8/node_modules/react/package.json \
+        node_modules/.pnpm/react@19.2.8/node_modules/react/LICENSE \
+        /notice-input/react/ \
+    && cp node_modules/.pnpm/react-dom@19.2.8_react@19.2.8/node_modules/react-dom/package.json \
+        node_modules/.pnpm/react-dom@19.2.8_react@19.2.8/node_modules/react-dom/LICENSE \
+        /notice-input/react-dom/ \
+    && cp node_modules/.pnpm/scheduler@0.27.0/node_modules/scheduler/package.json \
+        node_modules/.pnpm/scheduler@0.27.0/node_modules/scheduler/LICENSE \
+        /notice-input/scheduler/ \
+    && node --version > /notice-input/node-version
 
-FROM node@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
+FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS notices
+ARG SOURCE_COMMIT
+ARG SOURCE_TREE
+COPY packages/repo-tools/src/colortrace_repo/image_licenses.py /image_licenses.py
+COPY LICENSE /inputs/LICENSE
+COPY pnpm-lock.yaml /inputs/pnpm-lock.yaml
+COPY packages/api-client/package.json /inputs/first-party/api-client/package.json
+COPY packages/web/package.json /inputs/first-party/web/package.json
+COPY packages/workspace-model/package.json /inputs/first-party/workspace-model/package.json
+COPY --from=node-base /lib/apk/db/installed /inputs/alpine-installed
+COPY --from=node-base /usr/lib/os-release /inputs/os-release
+COPY --from=node-base /usr/local/LICENSE /inputs/node.LICENSE
+COPY --from=build /notice-input /inputs/web-packages
+RUN python /image_licenses.py web \
+        --output /bundle \
+        --profile public-readonly \
+        --source-commit "$SOURCE_COMMIT" \
+        --source-tree "$SOURCE_TREE" \
+        --base-image node@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 \
+        --root-license /inputs/LICENSE \
+        --apk-database /inputs/alpine-installed \
+        --os-release /inputs/os-release \
+        --node-license /inputs/node.LICENSE \
+        --node-version /inputs/web-packages/node-version \
+        --pnpm-lock /inputs/pnpm-lock.yaml \
+        --first-party-web-manifests /inputs/first-party \
+        --web-packages /inputs/web-packages
+
+FROM node-base AS runtime-rootfs
 ARG SOURCE_COMMIT
 ARG SOURCE_TREE
 RUN case "$SOURCE_COMMIT" in (*[!0-9a-f]*|'') exit 1;; esac \
@@ -20,16 +61,27 @@ RUN case "$SOURCE_COMMIT" in (*[!0-9a-f]*|'') exit 1;; esac \
     && test "${#SOURCE_TREE}" = 40 \
     && rm -rf /usr/local/lib/node_modules \
         /usr/local/bin/corepack \
+        /usr/local/bin/docker-entrypoint.sh \
         /usr/local/bin/npm \
         /usr/local/bin/npx \
         /usr/local/bin/yarn \
-        /usr/local/bin/yarnpkg
+        /usr/local/bin/yarnpkg \
+        /opt/yarn-v1.22.22 \
+    && test -z "$(find /opt /usr/local -xdev -iname '*yarn*' -print -quit)"
 COPY --chown=node:node --from=build /source/packages/web/dist /app/public
 COPY --chown=node:node deploy/web-server.mjs /app/server.mjs
+COPY LICENSE /usr/share/licenses/colortrace/LICENSE
+COPY --from=notices /bundle /usr/share/colortrace/licenses
+
+FROM scratch
+ARG SOURCE_COMMIT
+ARG SOURCE_TREE
+COPY --from=runtime-rootfs / /
 LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
       org.colortrace.source-tree="${SOURCE_TREE}" \
       org.colortrace.runtime-profile="public-readonly"
-ENV NODE_ENV=production \
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    NODE_ENV=production \
     PORT=8080
 USER node
 EXPOSE 8080
