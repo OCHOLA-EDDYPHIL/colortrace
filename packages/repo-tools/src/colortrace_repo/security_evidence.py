@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -16,7 +17,13 @@ from colortrace_repo.deployment import check_deployment, deployment_input_paths
 
 _DIGEST = re.compile(r"^[0-9a-f]{40}$")
 _IMAGE_DIGEST = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}$")
-_REPORTS = (
+_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+_IMAGE_PROFILES = {
+    "hosted-runtime": "hosted-readonly",
+    "runtime": "private-full",
+    "web": "public-readonly",
+}
+_SOURCE_REPORTS = (
     "action-pins.json",
     "ai-runtime.json",
     "dependency.json",
@@ -27,15 +34,32 @@ _REPORTS = (
     "vulnerability.json",
     "vulnerability-scanner.json",
 )
+_IMAGE_REPORTS = tuple(
+    f"images/{image}/{report}"
+    for image in ("hosted-runtime", "runtime", "web")
+    for report in (
+        "coverage.json",
+        "enriched-sbom.cdx.json",
+        "image-binding.json",
+        "raw-sbom.cdx.json",
+    )
+)
+_REPORTS = (*_SOURCE_REPORTS, "images/summary.json", *_IMAGE_REPORTS)
 _BOUND_INPUTS = (
     ".github/workflows/ci.yml",
     ".gitleaks.toml",
     "Makefile",
+    "Dockerfile.runtime",
+    "Dockerfile.runtime.dockerignore",
+    "Dockerfile.web",
+    "Dockerfile.web.dockerignore",
     "pnpm-lock.yaml",
     "policy/ai-boundary.json",
     "policy/dependency-inventory.json",
     "policy/dependency-policy.json",
     "policy/trivyignore.yaml",
+    "packages/repo-tools/src/colortrace_repo/final_image_evidence.py",
+    "packages/repo-tools/src/colortrace_repo/image_licenses.py",
     "uv.lock",
 )
 
@@ -201,6 +225,11 @@ def _runner_report() -> dict[str, Any]:
 def prepare_security_evidence(root: Path, output: Path) -> list[Finding]:
     root = root.resolve()
     output = output.resolve()
+    images = output / "images"
+    if images.exists():
+        if images.is_symlink() or not images.is_dir():
+            return [Finding("images", "security.output.invalid", "image output is invalid")]
+        shutil.rmtree(images)
     for name in (*_REPORTS, "manifest.json"):
         (output / name).unlink(missing_ok=True)
     dependency_findings = check_dependencies(root)
@@ -266,7 +295,7 @@ def _report_status(name: str, document: Any) -> str:
                 else "fail"
             )
         return "informational"
-    if name == "sbom.cdx.json":
+    if name == "sbom.cdx.json" or name.endswith(("raw-sbom.cdx.json", "enriched-sbom.cdx.json")):
         return (
             "pass"
             if isinstance(document, dict)
@@ -275,7 +304,154 @@ def _report_status(name: str, document: Any) -> str:
             and bool(document["components"])
             else "fail"
         )
+    image_schemas = {
+        "images/summary.json": "colortrace-final-image-evidence/v1",
+        "coverage.json": "colortrace-final-image-coverage/v1",
+        "image-binding.json": "colortrace-final-image-binding/v1",
+    }
+    schema = image_schemas.get(name) or next(
+        (value for suffix, value in image_schemas.items() if name.endswith(suffix)), None
+    )
+    if schema is not None:
+        return (
+            "pass"
+            if isinstance(document, dict)
+            and document.get("status") == "pass"
+            and document.get("schema") == schema
+            else "fail"
+        )
     return "fail"
+
+
+def _image_report_findings(
+    output: Path,
+    documents: dict[str, Any],
+    candidate_sha: str,
+    candidate_tree: str,
+    scanner_image: str,
+) -> list[Finding]:
+    findings: list[Finding] = []
+    expected_candidate = {"commit": candidate_sha, "tree": candidate_tree}
+    summary = documents.get("images/summary.json")
+    if not isinstance(summary, dict):
+        return findings
+    if (
+        summary.get("candidate") != expected_candidate
+        or summary.get("scanner_image") != scanner_image
+        or summary.get("findings") != []
+    ):
+        findings.append(
+            Finding(
+                "images/summary.json",
+                "security.image.binding",
+                "image summary differs from the finalized candidate or scanner",
+            )
+        )
+    summary_images = summary.get("images")
+    records: dict[str, dict[str, Any]] = {}
+    if isinstance(summary_images, list):
+        for value in summary_images:
+            if isinstance(value, dict) and isinstance(value.get("name"), str):
+                if value["name"] in records:
+                    records.clear()
+                    break
+                records[value["name"]] = value
+    if set(records) != set(_IMAGE_PROFILES):
+        findings.append(
+            Finding(
+                "images/summary.json",
+                "security.image.binding",
+                "image summary does not contain one record per required image",
+            )
+        )
+        return findings
+    for image, profile in _IMAGE_PROFILES.items():
+        prefix = f"images/{image}"
+        coverage = documents.get(f"{prefix}/coverage.json")
+        binding = documents.get(f"{prefix}/image-binding.json")
+        if not isinstance(coverage, dict) or not isinstance(binding, dict):
+            continue
+        image_record = binding.get("image")
+        coverage_image = coverage.get("image")
+        report_hashes = binding.get("reports")
+        bundle = binding.get("bundle")
+        inputs = binding.get("inputs")
+        digests_are_valid = isinstance(image_record, dict) and all(
+            isinstance(image_record.get(key), str)
+            and _SHA256.fullmatch(image_record[key]) is not None
+            for key in (
+                "archive_index_sha256",
+                "archive_sha256",
+                "config_digest",
+                "image_digest",
+                "platform_manifest_digest",
+            )
+        )
+        bundle_is_valid = isinstance(bundle, dict) and all(
+            isinstance(bundle.get(key), str) and _SHA256.fullmatch(bundle[key]) is not None
+            for key in ("manifest_sha256", "sha256sums_sha256")
+        )
+        inputs_are_valid = (
+            isinstance(inputs, list)
+            and bool(inputs)
+            and all(
+                isinstance(value, dict)
+                and isinstance(value.get("path"), str)
+                and isinstance(value.get("sha256"), str)
+                and _SHA256.fullmatch(value["sha256"]) is not None
+                and isinstance(value.get("size_bytes"), int)
+                for value in inputs
+            )
+        )
+        expected_hashes = {
+            "coverage_sha256": _sha256(output / prefix / "coverage.json"),
+            "enriched_sbom_sha256": _sha256(output / prefix / "enriched-sbom.cdx.json"),
+            "raw_sbom_sha256": _sha256(output / prefix / "raw-sbom.cdx.json"),
+        }
+        expected_image = (
+            {
+                key: image_record.get(key)
+                for key in (
+                    "archive_index_sha256",
+                    "archive_sha256",
+                    "config_digest",
+                    "image_digest",
+                    "platform_manifest_digest",
+                    "reference",
+                )
+            }
+            if isinstance(image_record, dict)
+            else None
+        )
+        if any(
+            (
+                records[image].get("profile") != profile,
+                records[image].get("reference")
+                != (image_record.get("reference") if isinstance(image_record, dict) else None),
+                coverage.get("candidate") != expected_candidate,
+                binding.get("candidate") != expected_candidate,
+                coverage.get("profile") != profile,
+                binding.get("profile") != profile,
+                coverage.get("scanner_image") != scanner_image,
+                binding.get("scanner_image") != scanner_image,
+                coverage.get("findings") != [],
+                coverage.get("bundle") != binding.get("bundle"),
+                coverage.get("source_inputs") != binding.get("inputs"),
+                coverage_image != expected_image,
+                report_hashes != expected_hashes,
+                not digests_are_valid,
+                not bundle_is_valid,
+                not inputs_are_valid,
+            )
+        ):
+            findings.append(
+                Finding(
+                    prefix,
+                    "security.image.binding",
+                    "image reports are stale, substituted, or internally inconsistent",
+                )
+            )
+    return findings
 
 
 def finalize_security_evidence(
@@ -287,6 +463,7 @@ def finalize_security_evidence(
     scanner_image: str,
     scanner_metadata: str,
     secret_scanner_image: str,
+    require_images: bool,
 ) -> list[Finding]:
     root = root.resolve()
     output = output.resolve()
@@ -320,10 +497,15 @@ def finalize_security_evidence(
         )
     _write_json(output / "vulnerability-scanner.json", parsed_scanner_metadata)
     reports: list[dict[str, Any]] = []
-    for name in _REPORTS:
+    documents: dict[str, Any] = {}
+    expected_reports = _REPORTS if require_images else _SOURCE_REPORTS
+    for name in expected_reports:
         path = output / name
         try:
+            if path.is_symlink() or not path.is_file():
+                raise OSError("report must be a regular, non-symlink file")
             document = load_json(path)
+            documents[name] = document
             status = _report_status(name, document)
             reports.append(
                 {
@@ -340,6 +522,25 @@ def finalize_security_evidence(
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             findings.append(
                 Finding(name, "security.report.invalid", f"cannot load report: {error}")
+            )
+    if require_images:
+        try:
+            findings.extend(
+                _image_report_findings(
+                    output,
+                    documents,
+                    candidate_sha,
+                    candidate_tree,
+                    scanner_image,
+                )
+            )
+        except OSError as error:
+            findings.append(
+                Finding(
+                    "images",
+                    "security.image.binding",
+                    f"cannot verify image report hashes: {error}",
+                )
             )
     inputs: list[dict[str, Any]] = []
     for name in dict.fromkeys((*_BOUND_INPUTS, *_deployment_inputs(root))):
@@ -368,6 +569,7 @@ def finalize_security_evidence(
         "inputs": inputs,
         "reports": reports,
         "schema": "colortrace-security-evidence-manifest/v1",
+        "scope": "final-images" if require_images else "source",
         "status": "pass" if not findings else "fail",
         "tools": {
             "secret_scanner_image": secret_scanner_image,
