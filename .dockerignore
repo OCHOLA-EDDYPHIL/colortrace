@@ -1,7 +1,9 @@
 *
 !Dockerfile.dev
+!Dockerfile.demo
 !Dockerfile.runtime
 !Dockerfile.web
+!LICENSE
 !package.json
 !pnpm-lock.yaml
 !pnpm-workspace.yaml

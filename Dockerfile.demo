@@ -1,0 +1,42 @@
+FROM ghcr.io/astral-sh/uv@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc AS uv
+
+FROM python@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2 AS build
+COPY --from=uv /uv /uvx /usr/local/bin/
+WORKDIR /source
+COPY pyproject.toml uv.lock LICENSE ./
+COPY packages/ packages/
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    UV_COMPILE_BYTECODE=0 \
+    UV_CONCURRENT_BUILDS=1 \
+    UV_LINK_MODE=copy
+RUN --mount=type=cache,id=colortrace-demo-uv,target=/root/.cache/uv,sharing=locked \
+    uv sync --frozen --no-dev --no-editable --package colortrace-api \
+    && /source/.venv/bin/python -c "import colortrace_api, colortrace_fixture, colortrace_simulator" \
+    && test -z "$(find /source/.venv -type f -name '*.py[co]' -print -quit)"
+
+FROM python@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2 AS demo-runtime
+ARG SOURCE_COMMIT
+ARG SOURCE_TREE
+ARG SOURCE_DATE_EPOCH
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOME=/tmp/colortrace \
+    PATH=/opt/colortrace/bin:/usr/local/bin:/usr/bin:/bin
+RUN case "$SOURCE_COMMIT" in (*[!0-9a-f]*|'') exit 1;; esac \
+    && test "${#SOURCE_COMMIT}" = 40 \
+    && case "$SOURCE_TREE" in (*[!0-9a-f]*|'') exit 1;; esac \
+    && test "${#SOURCE_TREE}" = 40 \
+    && case "$SOURCE_DATE_EPOCH" in (*[!0-9]*|'') exit 1;; esac \
+    && /usr/sbin/groupadd --gid 65532 colortrace \
+    && /usr/sbin/useradd --uid 65532 --gid 65532 --no-create-home \
+        --home-dir /nonexistent --shell /usr/sbin/nologin colortrace \
+    && install -d -o 65532 -g 65532 -m 0700 /tmp/colortrace
+COPY --from=build /source/.venv /opt/colortrace
+COPY LICENSE /usr/share/licenses/colortrace/LICENSE
+RUN /opt/colortrace/bin/python -c "import colortrace_api, colortrace_fixture, colortrace_simulator" \
+    && test ! -e /usr/local/bin/mcp-grafana
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      org.colortrace.source-tree="${SOURCE_TREE}" \
+      org.colortrace.runtime-profile="local-demo"
+USER colortrace
+ENTRYPOINT ["/opt/colortrace/bin/python", "-m", "colortrace_api.demo"]

@@ -162,14 +162,14 @@ demo-image:
 	source_date_epoch="$$(git show -s --format=%ct HEAD)"; \
 	image_ref="colortrace-demo:$$candidate"; \
 	docker buildx build --pull=false --provenance=false --load \
-		--file Dockerfile.runtime --target hosted-runtime \
+		--file Dockerfile.demo --target demo-runtime \
 		--build-arg SOURCE_COMMIT="$$candidate" \
 		--build-arg SOURCE_TREE="$$candidate_tree" \
 		--build-arg SOURCE_DATE_EPOCH="$$source_date_epoch" \
 		--tag "$$image_ref" .; \
 	test "$$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$$image_ref")" = "$$candidate"; \
 	test "$$(docker image inspect --format '{{ index .Config.Labels "org.colortrace.source-tree" }}' "$$image_ref")" = "$$candidate_tree"; \
-	test "$$(docker image inspect --format '{{ index .Config.Labels "org.colortrace.runtime-profile" }}' "$$image_ref")" = hosted-readonly; \
+	test "$$(docker image inspect --format '{{ index .Config.Labels "org.colortrace.runtime-profile" }}' "$$image_ref")" = local-demo; \
 	docker run --rm --network none --read-only --cap-drop ALL \
 		--entrypoint /bin/sh "$$image_ref" -ceu \
 		'test ! -e /usr/local/bin/mcp-grafana'
@@ -183,7 +183,7 @@ demo: demo-image prepare-cache
 	case "$$image_digest" in (sha256:[0-9a-f][0-9a-f]*) ;; (*) exit 1;; esac; \
 	test "$$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$$image_digest")" = "$$candidate"; \
 	test "$$(docker image inspect --format '{{ index .Config.Labels "org.colortrace.source-tree" }}' "$$image_digest")" = "$$candidate_tree"; \
-	test "$$(docker image inspect --format '{{ index .Config.Labels "org.colortrace.runtime-profile" }}' "$$image_digest")" = hosted-readonly; \
+	test "$$(docker image inspect --format '{{ index .Config.Labels "org.colortrace.runtime-profile" }}' "$$image_digest")" = local-demo; \
 	container="colortrace-demo-$$candidate"; \
 	if docker container inspect "$$container" >/dev/null 2>&1; then \
 		echo "demo container name is already in use" >&2; \
@@ -257,7 +257,7 @@ demo-clean:
 		label="$$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$$image_ref")"; \
 		profile="$$(docker image inspect --format '{{ index .Config.Labels "org.colortrace.runtime-profile" }}' "$$image_ref")"; \
 		test "$$label" = "$$candidate"; \
-		test "$$profile" = hosted-readonly; \
+		test "$$profile" = local-demo; \
 		docker image rm "$$image_ref" >/dev/null; \
 	fi; \
 	! docker container inspect "$$container" >/dev/null 2>&1; \
