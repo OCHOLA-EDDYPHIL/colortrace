@@ -19,6 +19,11 @@ SECURITY_EVIDENCE_HOST := $(WORKSPACE)/.cache/security-evidence
 SECURITY_EVIDENCE_CONTAINER := /workspace/.cache/security-evidence
 SECURITY_CANDIDATE_SHA ?= $(shell git rev-parse HEAD)
 SECURITY_REQUIRE_IMAGES ?= false
+DEMO_CONFIG := config/demo/local-demo.json
+DEMO_APPROVAL ?=
+DEMO_REMOVE_IMAGE ?= false
+export DEMO_APPROVAL
+export DEMO_REMOVE_IMAGE
 TOOL_INPUT_SHA256 := $(shell test ! -f Dockerfile.dev || sha256sum Dockerfile.dev | cut -d ' ' -f 1)
 PYTEST_WORKERS ?= 2
 PYTHON_DISTRIBUTIONS := colortrace-api colortrace-evaluation colortrace-fixture \
@@ -73,7 +78,8 @@ TOOL_RUN_HOST := docker run --rm \
 	check-format check-lint check-typecheck check-unit check-contract \
 	check-generated check-license check-policy check-postgres check-secret check-secret-fixture check-telemetry \
 	check-terraform check-wheel-license \
-	check-bootstrap final-image-cleanup final-image-evidence security-evidence
+	check-bootstrap demo demo-clean demo-image demo-smoke final-image-cleanup final-image-evidence \
+	security-evidence
 
 prepare-cache:
 	@mkdir -p "$(WORKSPACE)/.cache" "$(CACHE_HOME)" "$(UV_CACHE)" "$(PNPM_STORE)" "$(TERRAFORM_PLUGIN_CACHE)" "$(UV_PROJECT_ENVIRONMENT)"
@@ -143,6 +149,120 @@ generate-fixture: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-validator validate \
 		--bundle $(FIXTURE_BUNDLE) --request $(FIXTURE_VALIDATION)/request.json \
 		--output $(FIXTURE_VALIDATION)/result.json
+
+demo-image:
+	@set -eu; \
+	candidate="$$(git rev-parse HEAD)"; \
+	test "$${#candidate}" -eq 40; \
+	case "$$candidate" in (*[!0-9a-f]*) exit 1;; esac; \
+	git diff --quiet; \
+	git diff --cached --quiet; \
+	test -z "$$(git ls-files --others --exclude-standard)"; \
+	candidate_tree="$$(git rev-parse HEAD^{tree})"; \
+	source_date_epoch="$$(git show -s --format=%ct HEAD)"; \
+	image_ref="colortrace-demo:$$candidate"; \
+	docker buildx build --pull=false --provenance=false --load \
+		--file Dockerfile.runtime --target hosted-runtime \
+		--build-arg SOURCE_COMMIT="$$candidate" \
+		--build-arg SOURCE_TREE="$$candidate_tree" \
+		--build-arg SOURCE_DATE_EPOCH="$$source_date_epoch" \
+		--tag "$$image_ref" .; \
+	test "$$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$$image_ref")" = "$$candidate"; \
+	test "$$(docker image inspect --format '{{ index .Config.Labels "org.colortrace.source-tree" }}' "$$image_ref")" = "$$candidate_tree"; \
+	test "$$(docker image inspect --format '{{ index .Config.Labels "org.colortrace.runtime-profile" }}' "$$image_ref")" = hosted-readonly; \
+	docker run --rm --network none --read-only --cap-drop ALL \
+		--entrypoint /bin/sh "$$image_ref" -ceu \
+		'test ! -e /usr/local/bin/mcp-grafana'
+
+demo: demo-image prepare-cache
+	@set -eu; \
+	candidate="$$(git rev-parse HEAD)"; \
+	candidate_tree="$$(git rev-parse HEAD^{tree})"; \
+	image_ref="colortrace-demo:$$candidate"; \
+	image_digest="$$(docker image inspect --format '{{.Id}}' "$$image_ref")"; \
+	case "$$image_digest" in (sha256:[0-9a-f][0-9a-f]*) ;; (*) exit 1;; esac; \
+	test "$$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$$image_digest")" = "$$candidate"; \
+	test "$$(docker image inspect --format '{{ index .Config.Labels "org.colortrace.source-tree" }}' "$$image_digest")" = "$$candidate_tree"; \
+	test "$$(docker image inspect --format '{{ index .Config.Labels "org.colortrace.runtime-profile" }}' "$$image_digest")" = hosted-readonly; \
+	container="colortrace-demo-$$candidate"; \
+	if docker container inspect "$$container" >/dev/null 2>&1; then \
+		echo "demo container name is already in use" >&2; \
+		exit 1; \
+	fi; \
+	evidence_root="$$(mktemp -d "$(CACHE_ROOT)/demo-$$candidate.XXXXXX")"; \
+	chmod 0700 "$$evidence_root"; \
+	install -m 0444 "$(WORKSPACE)/$(DEMO_CONFIG)" "$$evidence_root/local-demo.json"; \
+	cleanup() { docker rm --force "$$container" >/dev/null 2>&1 || true; }; \
+	trap cleanup EXIT HUP INT TERM; \
+	run_demo() { \
+		docker run --rm --interactive --name "$$container" \
+			--network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+			--pids-limit 256 --memory 1g \
+			--tmpfs /tmp/colortrace:rw,nosuid,nodev,size=512m,uid=65532,gid=65532,mode=0700 \
+			--mount type=bind,src="$$evidence_root/local-demo.json",dst=/config/local-demo.json,readonly \
+			--entrypoint /opt/colortrace/bin/python \
+			"$$image_digest" -m colortrace_api.demo \
+				--config /config/local-demo.json \
+				--workspace /tmp/colortrace/workspace \
+				--source-commit "$$candidate" \
+				--source-tree "$$candidate_tree" \
+				--image-digest "$$image_digest" "$$@"; \
+	}; \
+	if test -n "$${DEMO_APPROVAL}"; then \
+		run_demo --approval "$${DEMO_APPROVAL}" > "$$evidence_root/run.json"; \
+	else \
+		run_demo > "$$evidence_root/run.json"; \
+	fi; \
+	if docker container inspect "$$container" >/dev/null 2>&1; then \
+		echo "demo container cleanup failed" >&2; \
+		exit 1; \
+	fi; \
+	image_removed=false; \
+	if test "$${DEMO_REMOVE_IMAGE}" = true; then \
+		docker image rm "$$image_ref" >/dev/null; \
+		if docker image inspect "$$image_ref" >/dev/null 2>&1; then \
+			echo "demo image cleanup failed" >&2; \
+			exit 1; \
+		fi; \
+		image_removed=true; \
+	elif test "$${DEMO_REMOVE_IMAGE}" != false; then \
+		echo "DEMO_REMOVE_IMAGE must be true or false" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' \
+		"{\"schema\":\"colortrace-demo-cleanup/v1\",\"container_absent\":true,\"ephemeral_workspace_removed\":true,\"image_reference_removed\":$$image_removed}" \
+		> "$$evidence_root/cleanup.json"; \
+	(cd "$$evidence_root" && sha256sum cleanup.json run.json > SHA256SUMS); \
+	trap - EXIT HUP INT TERM; \
+	sed -n '1p' "$$evidence_root/run.json"; \
+	echo "Evidence: $$evidence_root"
+
+demo-smoke:
+	@$(MAKE) --no-print-directory demo \
+		DEMO_APPROVAL=APPROVE_COLORTRACE_SIMULATOR_ACTION \
+		DEMO_REMOVE_IMAGE=true \
+		CACHE_ROOT="$(CACHE_ROOT)"
+
+demo-clean:
+	@set -eu; \
+	candidate="$$(git rev-parse HEAD)"; \
+	container="colortrace-demo-$$candidate"; \
+	image_ref="colortrace-demo:$$candidate"; \
+	if docker container inspect "$$container" >/dev/null 2>&1; then \
+		label="$$(docker container inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$$container")"; \
+		test "$$label" = "$$candidate"; \
+		docker rm --force "$$container" >/dev/null; \
+	fi; \
+	if docker image inspect "$$image_ref" >/dev/null 2>&1; then \
+		label="$$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$$image_ref")"; \
+		profile="$$(docker image inspect --format '{{ index .Config.Labels "org.colortrace.runtime-profile" }}' "$$image_ref")"; \
+		test "$$label" = "$$candidate"; \
+		test "$$profile" = hosted-readonly; \
+		docker image rm "$$image_ref" >/dev/null; \
+	fi; \
+	! docker container inspect "$$container" >/dev/null 2>&1; \
+	! docker image inspect "$$image_ref" >/dev/null 2>&1; \
+	echo "demo container and image reference cleanup verified"
 
 check-format: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline ruff format --check .

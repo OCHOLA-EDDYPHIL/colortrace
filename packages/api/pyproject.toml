@@ -10,6 +10,7 @@ license = "Apache-2.0"
 license-files = []
 requires-python = ">=3.12"
 dependencies = [
+    "colortrace-fixture",
     "colortrace-persistence",
     "colortrace-recovery",
     "colortrace-response-plans",
@@ -23,7 +24,11 @@ dependencies = [
     "uvicorn==0.52.1",
 ]
 
+[project.scripts]
+colortrace-demo = "colortrace_api.demo:main"
+
 [tool.uv.sources]
+colortrace-fixture = {workspace = true}
 colortrace-persistence = {workspace = true}
 colortrace-recovery = {workspace = true}
 colortrace-response-plans = {workspace = true}
