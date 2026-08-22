@@ -6,6 +6,8 @@ build-backend = "hatchling.build"
 name = "colortrace-telemetry"
 version = "0.1.0"
 description = "Correlated simulator telemetry and local Grafana verification"
+license = "Apache-2.0"
+license-files = []
 requires-python = ">=3.12"
 dependencies = [
     "colortrace-fixture",
@@ -24,3 +26,6 @@ colortrace-fixture = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/colortrace_telemetry"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"../../LICENSE" = "colortrace_telemetry/LICENSE"

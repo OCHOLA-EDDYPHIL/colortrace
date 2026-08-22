@@ -13,6 +13,7 @@ from colortrace_repo.common import Finding, sorted_findings
 from colortrace_repo.contracts import check_contracts
 from colortrace_repo.dependencies import check_dependencies
 from colortrace_repo.deployment import check_deployment
+from colortrace_repo.distribution import check_distribution_wheels, check_package_metadata
 from colortrace_repo.generated import check_generated_manifest, compare_generated_trees
 from colortrace_repo.security_evidence import (
     finalize_security_evidence,
@@ -25,6 +26,11 @@ def _path(root: Path, value: str | None) -> Path | None:
         return None
     path = Path(value)
     return path.resolve() if path.is_absolute() else (root / path).resolve()
+
+
+def _unresolved_path(root: Path, value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else root / path
 
 
 def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
@@ -93,6 +99,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     _add_common_arguments(deployment)
 
+    distribution = subparsers.add_parser(
+        "distribution", help="validate first-party license metadata"
+    )
+    _add_common_arguments(distribution)
+
+    distribution_wheels = subparsers.add_parser(
+        "distribution-wheels", help="verify first-party wheel license payloads"
+    )
+    _add_common_arguments(distribution_wheels)
+    distribution_wheels.add_argument("--directory", required=True, metavar="PATH")
+
     security_prepare = subparsers.add_parser(
         "security-prepare", help="create deterministic security evidence inputs"
     )
@@ -145,6 +162,13 @@ def _run(args: argparse.Namespace, root: Path) -> list[Finding]:
         return check_binary_assets(root, _path(root, args.policy))
     if args.command == "deployment":
         return check_deployment(root)
+    if args.command == "distribution":
+        return check_package_metadata(root)
+    if args.command == "distribution-wheels":
+        return check_distribution_wheels(
+            root,
+            _unresolved_path(root, args.directory),
+        )
     if args.command == "security-prepare":
         return prepare_security_evidence(root, _path(root, args.output))  # type: ignore[arg-type]
     if args.command == "security-finalize":
@@ -166,6 +190,7 @@ def _run(args: argparse.Namespace, root: Path) -> list[Finding]:
         findings.extend(check_actions(root))
         findings.extend(check_binary_assets(root))
         findings.extend(check_deployment(root))
+        findings.extend(check_package_metadata(root))
         return sorted_findings(findings)
     raise AssertionError(f"unhandled command {args.command!r}")
 

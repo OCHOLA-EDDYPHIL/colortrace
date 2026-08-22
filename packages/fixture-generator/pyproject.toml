@@ -6,6 +6,8 @@ build-backend = "hatchling.build"
 name = "colortrace-fixture"
 version = "0.1.0"
 description = "Deterministic ColorTrace incident and output fixtures"
+license = "Apache-2.0"
+license-files = []
 requires-python = ">=3.12"
 dependencies = ["jsonschema==4.25.1", "OpenColorIO==2.5.2"]
 
@@ -14,3 +16,6 @@ colortrace-fixture = "colortrace_fixture.fixture:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/colortrace_fixture"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"../../LICENSE" = "colortrace_fixture/LICENSE"
