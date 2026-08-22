@@ -28,6 +28,7 @@
       "opentelemetry-api",
       "opentelemetry-exporter-otlp-proto-http",
       "opentelemetry-sdk",
+      "packaging",
       "pg8000",
       "pyjwt",
       "pyyaml",

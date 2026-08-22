@@ -147,7 +147,8 @@ def _run(args: argparse.Namespace, root: Path) -> list[Finding]:
                     "--expected requires --actual",
                 )
             ]
-        return check_generated_manifest(root, _path(root, args.manifest))
+        manifest = _unresolved_path(root, args.manifest) if args.manifest is not None else None
+        return check_generated_manifest(root, manifest)
     if args.command == "dependencies":
         return check_dependencies(
             root,
@@ -159,7 +160,8 @@ def _run(args: argparse.Namespace, root: Path) -> list[Finding]:
     if args.command == "actions":
         return check_actions(root)
     if args.command == "binary-assets":
-        return check_binary_assets(root, _path(root, args.policy))
+        policy = _unresolved_path(root, args.policy) if args.policy is not None else None
+        return check_binary_assets(root, policy)
     if args.command == "deployment":
         return check_deployment(root)
     if args.command == "distribution":
