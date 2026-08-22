@@ -1,6 +1,9 @@
+ARG SOURCE_DATE_EPOCH
+
 FROM node@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS node-base
 
 FROM node-base AS build
+ARG SOURCE_DATE_EPOCH
 RUN corepack disable \
     && npm install --global pnpm@11.21.0 \
     && pnpm --version | grep -Fx 11.21.0
@@ -27,6 +30,7 @@ RUN pnpm install --frozen-lockfile \
 FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS notices
 ARG SOURCE_COMMIT
 ARG SOURCE_TREE
+ARG SOURCE_DATE_EPOCH
 COPY packages/repo-tools/src/colortrace_repo/image_licenses.py /image_licenses.py
 COPY LICENSE /inputs/LICENSE
 COPY pnpm-lock.yaml /inputs/pnpm-lock.yaml
@@ -55,6 +59,7 @@ RUN python /image_licenses.py web \
 FROM node-base AS runtime-rootfs
 ARG SOURCE_COMMIT
 ARG SOURCE_TREE
+ARG SOURCE_DATE_EPOCH
 RUN case "$SOURCE_COMMIT" in (*[!0-9a-f]*|'') exit 1;; esac \
     && test "${#SOURCE_COMMIT}" = 40 \
     && case "$SOURCE_TREE" in (*[!0-9a-f]*|'') exit 1;; esac \
@@ -76,6 +81,7 @@ COPY --from=notices /bundle /usr/share/colortrace/licenses
 FROM scratch
 ARG SOURCE_COMMIT
 ARG SOURCE_TREE
+ARG SOURCE_DATE_EPOCH
 COPY --from=runtime-rootfs / /
 LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
       org.colortrace.source-tree="${SOURCE_TREE}" \

@@ -48,7 +48,7 @@ def _common_inputs(root: Path) -> dict[str, Any]:
         "root_license": _write(root / "LICENSE", "project license\n"),
         "apk_database": _write(
             root / "installed",
-            "P:base\nV:1-r0\nA:x86_64\nL:GPL-2.0-only\n"
+            "P:base\nV:1-r0\nA:x86_64\nL:gpl-2.0-only\n"
             "U:https://example.invalid/base\no:base\nc:" + "4" * 40 + "\n\n"
             "P:.runtime-deps\nV:1\nA:noarch\nL:\nU:\n\n",
         ),
@@ -174,6 +174,14 @@ class ImageLicenseBundleTest(unittest.TestCase):
                 "unresolved",
             )
             self.assertEqual(
+                components[("apk", ".runtime-deps")]["owner_legal_status"],
+                "pending",
+            )
+            self.assertEqual(
+                components[("apk", ".runtime-deps")]["license_source"]["path"],
+                "sources/alpine/installed",
+            )
+            self.assertEqual(
                 components[("python-distribution", "licensed")]["license_evidence_status"],
                 "delivered-text",
             )
@@ -182,11 +190,43 @@ class ImageLicenseBundleTest(unittest.TestCase):
                 "unresolved",
             )
             self.assertEqual(
+                components[("python-distribution", "unresolved")]["owner_legal_status"],
+                "pending",
+            )
+            self.assertEqual(
                 components[("python-distribution", "pip")]["provenance"],
                 {"kind": "base-image", "reference": common["base_image"]},
             )
             self.assertEqual(components[("embedded-python-wheel", "pip")]["version"], "25.0.1")
-            for line in (first_output / "SHA256SUMS").read_text().splitlines():
+            installed_metadata = components[("python-distribution", "licensed")]["license_sources"][
+                0
+            ]
+            embedded_metadata = components[("embedded-python-wheel", "pip")]["license_sources"][0]
+            with zipfile.ZipFile(python_inputs["ensurepip_wheel"]) as archive:
+                embedded_metadata_bytes = archive.read("pip-25.0.1.dist-info/METADATA")
+            for source, original in (
+                (
+                    installed_metadata,
+                    python_inputs["python_site_packages"] / "licensed-1.0.dist-info" / "METADATA",
+                ),
+                (embedded_metadata, embedded_metadata_bytes),
+            ):
+                self.assertTrue(source["path"].endswith("/metadata.txt"))
+                self.assertNotIn(".dist-info", source["path"])
+                self.assertEqual(
+                    hashlib.sha256((first_output / source["path"]).read_bytes()).hexdigest(),
+                    source["sha256"],
+                )
+                if isinstance(original, Path):
+                    self.assertEqual(
+                        (first_output / source["path"]).read_bytes(), original.read_bytes()
+                    )
+                else:
+                    self.assertEqual((first_output / source["path"]).read_bytes(), original)
+            checksum_lines = (first_output / "SHA256SUMS").read_text().splitlines()
+            checksum_paths = [line.split("  ", 1)[1] for line in checksum_lines]
+            self.assertEqual(checksum_paths, sorted(checksum_paths))
+            for line in checksum_lines:
                 expected, relative = line.split("  ", 1)
                 self.assertEqual(
                     hashlib.sha256((first_output / relative).read_bytes()).hexdigest(), expected
@@ -386,6 +426,13 @@ class ImageLicenseBundleTest(unittest.TestCase):
             self.assertEqual(go_module["name"], "example.invalid/module")
             self.assertEqual(go_module["source_checksum"], "h1:exact=")
             self.assertEqual(go_module["license_evidence_status"], "unresolved")
+            main_module = next(
+                item
+                for item in components
+                if item["kind"] == "go-module" and item["name"] == "github.com/grafana/mcp-grafana"
+            )
+            self.assertEqual(main_module["version"], "v1.1.0")
+            self.assertEqual(main_module["license_evidence_status"], "delivered-text")
 
     def test_web_bundle_covers_exact_first_and_third_party_runtime_graph(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -410,6 +457,36 @@ class ImageLicenseBundleTest(unittest.TestCase):
                 {"@colortrace/api-client", "@colortrace/web", "@colortrace/workspace-model"}
                 <= names
             )
+            components_by_name = {item["name"]: item for item in components}
+            package_inputs = {
+                "@colortrace/api-client": web_inputs["first_party_web_manifests"]
+                / "api-client"
+                / "package.json",
+                "@colortrace/web": web_inputs["first_party_web_manifests"] / "web" / "package.json",
+                "@colortrace/workspace-model": web_inputs["first_party_web_manifests"]
+                / "workspace-model"
+                / "package.json",
+                **{name: web_inputs["web_packages"] / name / "package.json" for name in versions},
+            }
+            for name, original in package_inputs.items():
+                component = components_by_name[name]
+                package_source = component["package_source"]
+                self.assertIn("sources/web/package-metadata/", package_source["path"])
+                self.assertTrue(package_source["path"].endswith(".metadata.txt"))
+                self.assertNotIn("/package.json", package_source["path"])
+                copied = (output / package_source["path"]).read_bytes()
+                self.assertEqual(copied, original.read_bytes())
+                self.assertEqual(hashlib.sha256(copied).hexdigest(), package_source["sha256"])
+                self.assertEqual(
+                    component["kind"],
+                    "bundled-first-party-javascript"
+                    if name.startswith("@colortrace/")
+                    else "bundled-javascript",
+                )
+            checksum_paths = [
+                line.split("  ", 1)[1] for line in (output / "SHA256SUMS").read_text().splitlines()
+            ]
+            self.assertEqual(checksum_paths, sorted(checksum_paths))
 
     def test_web_bundle_rejects_symlinked_metadata_parents(self) -> None:
         for input_name, child in (
