@@ -1,7 +1,7 @@
 {
   "schema": "colortrace-accessibility-evidence/v1",
   "issue": 22,
-  "generated_at": "2026-08-13T19:33:48.232Z",
+  "generated_at": "2026-08-22T06:05:53.556Z",
   "source_test": "packages/web/e2e/incident-workspace.spec.ts",
   "engine": {
     "name": "axe-core",
@@ -21,23 +21,23 @@
   "violations": 0,
   "incomplete": 0,
   "serious_or_critical_color_contrast_incomplete": 0,
-  "passes": 26,
+  "passes": 29,
   "screenshots": [
     {
       "path": "packages/web/evidence/issue-22/response-plan-review-1440x900.png",
-      "sha256": "f07ead312a99ccbba419bf9b1c5b67c8f86cc9329709d701d1b8802cdc7797a5"
+      "sha256": "44f2d262dd5f4e8ccabaf750023ecc4cffb2928a279e3213ea86bfdbd51c7aeb"
     },
     {
       "path": "packages/web/evidence/issue-22/response-plan-review-390x844.png",
-      "sha256": "475a5b4205ed8d13a12044bdb714133564b20ecbc862276f169eeff98dd40522"
+      "sha256": "0627ccb7be0d7245e2b77bcd67539fdd1f10ad1016c1ca76a99528f7427557a1"
     },
     {
       "path": "packages/web/evidence/issue-22/response-plan-actions-1440x900.png",
-      "sha256": "b13f6edc90fb926257d0fdd698f6efe321fbc351746e42323dc8ae8a13230176"
+      "sha256": "137a1d0700a330b14b3f6280d2c969ee648fdb3c692623dbd14f88c6f5ac18bc"
     },
     {
       "path": "packages/web/evidence/issue-22/response-plan-actions-390x844.png",
-      "sha256": "9811417f182a5c012eccd7396f43561e223a8a838fb75c4194c87d88ff7b8959"
+      "sha256": "2695c7cec8e1d9798c5fff651096fc2f4d558a390e95b915ccd04f283ca22022"
     }
   ]
 }
