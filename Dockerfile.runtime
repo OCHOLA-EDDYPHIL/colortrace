@@ -1,6 +1,9 @@
+ARG SOURCE_DATE_EPOCH
+
 FROM ghcr.io/astral-sh/uv@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc AS uv
 
 FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS mcp-grafana
+ARG SOURCE_DATE_EPOCH
 ADD --checksum=sha256:8468b1e159412eb1ab738786cf0d2755a1ea0a44103ca8c0040849a227746e07 \
     https://github.com/grafana/mcp-grafana/releases/download/v1.1.0/mcp-grafana_Linux_x86_64.tar.gz \
     /tmp/mcp-grafana.tar.gz
@@ -16,6 +19,7 @@ RUN tar -xzf /tmp/mcp-grafana.tar.gz -C /tmp mcp-grafana \
     && test "$(/usr/local/bin/mcp-grafana --version)" = 1.1.0
 
 FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS build
+ARG SOURCE_DATE_EPOCH
 COPY --from=uv /uv /uvx /usr/local/bin/
 RUN apk add --no-cache build-base=0.5-r3 cmake=3.31.7-r1 git=2.49.1-r0 \
     libcrypto3=3.5.7-r0 libssl3=3.5.7-r0
@@ -35,25 +39,40 @@ COPY packages/telemetry/pyproject.toml packages/telemetry/pyproject.toml
 COPY packages/validators/pyproject.toml packages/validators/pyproject.toml
 COPY packages/vertical-slice/pyproject.toml packages/vertical-slice/pyproject.toml
 ENV CMAKE_BUILD_PARALLEL_LEVEL=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
     UV_CONCURRENT_BUILDS=1 \
+    UV_COMPILE_BYTECODE=0 \
     UV_LINK_MODE=copy
 RUN --mount=type=cache,id=colortrace-runtime-uv,target=/root/.cache/uv,sharing=locked \
     uv sync --frozen --no-dev --no-editable --no-install-workspace --package colortrace-api
 COPY packages/ packages/
 RUN --mount=type=cache,id=colortrace-runtime-uv,target=/root/.cache/uv,sharing=locked \
     uv sync --frozen --no-dev --no-editable --package colortrace-api \
-    && /source/.venv/bin/python -c "import colortrace_api, colortrace_grafana_mcp, colortrace_simulator"
+    && /source/.venv/bin/python \
+        /source/packages/repo-tools/src/colortrace_repo/reproducible_venv.py \
+        --venv /source/.venv \
+    && /source/.venv/bin/python -c "import colortrace_api, colortrace_grafana_mcp, colortrace_simulator" \
+    && /source/.venv/lib/python3.12/site-packages/PyOpenColorIO/bin/ocioconvert --help >/dev/null \
+    && { /source/.venv/lib/python3.12/site-packages/PyOpenColorIO/bin/ociolutimage --help \
+        >/dev/null || test "$?" -eq 1; } \
+    && test -z "$(find /source/.venv -type f -name '*.py[co]' -print -quit)"
 
 FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS runtime-base
 ARG SOURCE_COMMIT
 ARG SOURCE_TREE
+ARG SOURCE_DATE_EPOCH
+ENV PYTHONDONTWRITEBYTECODE=1
 RUN apk add --no-cache libcrypto3=3.5.7-r0 libssl3=3.5.7-r0 libstdc++=14.2.0-r6 \
     && case "$SOURCE_COMMIT" in (*[!0-9a-f]*|'') exit 1;; esac \
     && test "${#SOURCE_COMMIT}" = 40 \
     && case "$SOURCE_TREE" in (*[!0-9a-f]*|'') exit 1;; esac \
     && test "${#SOURCE_TREE}" = 40 \
+    && case "$SOURCE_DATE_EPOCH" in (*[!0-9]*|'') exit 1;; esac \
     && addgroup -g 65532 -S colortrace \
     && adduser -u 65532 -S -D -H -h /nonexistent -s /sbin/nologin -G colortrace colortrace \
+    && source_date_days=$((SOURCE_DATE_EPOCH / 86400)) \
+    && sed -i "s|^colortrace:!:[^:]*:|colortrace:!:${source_date_days}:|" /etc/shadow \
+    && grep -Fqx "colortrace:!:${source_date_days}:0:99999:7:::" /etc/shadow \
     && install -d -o 65532 -g 65532 -m 0700 /var/run/colortrace-private /tmp/colortrace
 COPY --from=build /source/.venv /opt/colortrace
 COPY config/grafana-mcp/ /opt/colortrace-config/grafana-mcp/
@@ -68,7 +87,6 @@ LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
       org.colortrace.source-tree="${SOURCE_TREE}"
 ENV HOME=/tmp/colortrace \
     PATH=/opt/colortrace/bin:/usr/local/bin:/usr/bin:/bin \
-    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 USER colortrace
 EXPOSE 8080
@@ -78,6 +96,7 @@ CMD ["api"]
 FROM runtime-base AS runtime
 ARG SOURCE_COMMIT
 ARG SOURCE_TREE
+ARG SOURCE_DATE_EPOCH
 USER root
 COPY --from=mcp-grafana /usr/local/bin/mcp-grafana /usr/local/bin/mcp-grafana
 COPY --from=mcp-grafana /tmp/mcp-grafana.LICENSE /usr/share/licenses/mcp-grafana/LICENSE
@@ -108,6 +127,7 @@ USER colortrace
 FROM runtime-base AS hosted-runtime
 ARG SOURCE_COMMIT
 ARG SOURCE_TREE
+ARG SOURCE_DATE_EPOCH
 USER root
 RUN python /usr/local/libexec/colortrace-image-licenses.py runtime \
         --output /usr/share/colortrace/licenses \

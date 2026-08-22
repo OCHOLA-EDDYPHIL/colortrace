@@ -397,6 +397,8 @@ final-image-evidence: prepare-cache
 	git diff --cached --quiet; \
 	test -z "$$(git ls-files --others --exclude-standard)"; \
 	candidate_tree="$$(git rev-parse HEAD^{tree})"; \
+	source_date_epoch="$$(git show -s --format=%ct "$(SECURITY_CANDIDATE_SHA)")"; \
+	case "$$source_date_epoch" in (*[!0-9]*|'') echo "invalid source date epoch" >&2; exit 1;; esac; \
 	image_root="$(WORKSPACE)/.cache/security-images/$(SECURITY_CANDIDATE_SHA)"; \
 	case "$$image_root" in ("$(WORKSPACE)/.cache/security-images/"*) ;; (*) exit 1;; esac; \
 	runtime_ref="colortrace-security-runtime:$(SECURITY_CANDIDATE_SHA)"; \
@@ -423,29 +425,43 @@ final-image-evidence: prepare-cache
 	git archive --format=tar --output "$$image_root/context.tar" HEAD; \
 	tar -xf "$$image_root/context.tar" -C "$$image_root/context"; \
 	rm "$$image_root/context.tar"; \
-	docker build --pull=false \
+	docker buildx build --pull=false --provenance=false \
 		--file "$$image_root/context/Dockerfile.runtime" --target runtime \
 		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
-		--build-arg SOURCE_TREE="$$candidate_tree" --tag "$$runtime_ref" \
+		--build-arg SOURCE_TREE="$$candidate_tree" \
+		--build-arg SOURCE_DATE_EPOCH="$$source_date_epoch" \
+		--output "type=docker,dest=$$image_root/runtime.tar,rewrite-timestamp=true" \
+		--tag "$$runtime_ref" \
 		"$$image_root/context"; \
-	docker build --pull=false \
+	chmod 0600 "$$image_root/runtime.tar"; \
+	docker load --input "$$image_root/runtime.tar" >/dev/null; \
+	docker buildx build --pull=false --provenance=false \
 		--file "$$image_root/context/Dockerfile.runtime" --target hosted-runtime \
 		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
-		--build-arg SOURCE_TREE="$$candidate_tree" --tag "$$hosted_ref" \
+		--build-arg SOURCE_TREE="$$candidate_tree" \
+		--build-arg SOURCE_DATE_EPOCH="$$source_date_epoch" \
+		--output "type=docker,dest=$$image_root/hosted-runtime.tar,rewrite-timestamp=true" \
+		--tag "$$hosted_ref" \
 		"$$image_root/context"; \
-	docker build --pull=false \
+	chmod 0600 "$$image_root/hosted-runtime.tar"; \
+	docker load --input "$$image_root/hosted-runtime.tar" >/dev/null; \
+	docker buildx build --pull=false --provenance=false \
 		--file "$$image_root/context/Dockerfile.web" \
 		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
-		--build-arg SOURCE_TREE="$$candidate_tree" --tag "$$web_ref" \
+		--build-arg SOURCE_TREE="$$candidate_tree" \
+		--build-arg SOURCE_DATE_EPOCH="$$source_date_epoch" \
+		--output "type=docker,dest=$$image_root/web.tar,rewrite-timestamp=true" \
+		--tag "$$web_ref" \
 		"$$image_root/context"; \
+	chmod 0600 "$$image_root/web.tar"; \
+	docker load --input "$$image_root/web.tar" >/dev/null; \
 	capture() { \
 		name="$$1"; reference="$$2"; \
 		archive="$$image_root/$$name.tar"; \
 		bundle="$(SECURITY_EVIDENCE_HOST)/images/$$name/bundle"; \
 		container="colortrace-sbom-$$name-$(SECURITY_CANDIDATE_SHA)"; \
 		install -d -m 0700 "$$bundle"; \
-		docker image save --output "$$archive" "$$reference"; \
-		chmod 0600 "$$archive"; \
+		test -s "$$archive"; \
 		docker create --name "$$container" "$$reference" >/dev/null; \
 		docker cp "$$container:/usr/share/colortrace/licenses/." "$$bundle"; \
 		chmod -R u+rwX,go-rwx "$$bundle"; \

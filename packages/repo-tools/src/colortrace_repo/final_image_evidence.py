@@ -59,6 +59,7 @@ _IMAGE_INPUTS = {
         "config/grafana-mcp/mcp-grafana.lock.json",
         "deploy/runtime-entrypoint.py",
         "packages/repo-tools/src/colortrace_repo/image_licenses.py",
+        "packages/repo-tools/src/colortrace_repo/reproducible_venv.py",
         "uv.lock",
     ),
     "hosted-runtime": (
@@ -68,6 +69,7 @@ _IMAGE_INPUTS = {
         "config/grafana-mcp/mcp-grafana.lock.json",
         "deploy/runtime-entrypoint.py",
         "packages/repo-tools/src/colortrace_repo/image_licenses.py",
+        "packages/repo-tools/src/colortrace_repo/reproducible_venv.py",
         "uv.lock",
     ),
     "web": (

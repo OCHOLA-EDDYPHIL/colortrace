@@ -945,6 +945,31 @@ class FinalImageEvidenceTest(unittest.TestCase):
             )
             self.assertIn("image.bundle.unresolved", {value.code for value in findings})
 
+    def test_final_image_recipe_normalizes_build_time_state(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text(encoding="utf-8")
+        recipe = makefile.split("\nfinal-image-evidence: prepare-cache\n", maxsplit=1)[1].split(
+            "\nsecurity-evidence: prepare-cache\n", maxsplit=1
+        )[0]
+        self.assertIn('source_date_epoch="$$(git show -s --format=%ct', recipe)
+        self.assertEqual(recipe.count("docker buildx build --pull=false --provenance=false"), 3)
+        self.assertEqual(recipe.count("--build-arg SOURCE_DATE_EPOCH="), 3)
+        self.assertEqual(recipe.count("rewrite-timestamp=true"), 3)
+        self.assertEqual(recipe.count("docker load --input"), 3)
+        self.assertNotIn("docker image save", recipe)
+
+        runtime = (REPOSITORY_ROOT / "Dockerfile.runtime").read_text(encoding="utf-8")
+        self.assertEqual(runtime.count("ARG SOURCE_DATE_EPOCH"), 6)
+        self.assertIn("UV_COMPILE_BYTECODE=0", runtime)
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1", runtime)
+        self.assertIn("colortrace_repo/reproducible_venv.py", runtime)
+        self.assertEqual(runtime.count("PyOpenColorIO/bin/ocioconvert --help"), 1)
+        self.assertEqual(runtime.count("PyOpenColorIO/bin/ociolutimage --help"), 1)
+        self.assertIn("find /source/.venv -type f -name '*.py[co]'", runtime)
+        self.assertIn("source_date_days=$((SOURCE_DATE_EPOCH / 86400))", runtime)
+
+        web = (REPOSITORY_ROOT / "Dockerfile.web").read_text(encoding="utf-8")
+        self.assertEqual(web.count("ARG SOURCE_DATE_EPOCH"), 5)
+
     def test_archive_verifier_rejects_yarn_and_blob_mutations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
