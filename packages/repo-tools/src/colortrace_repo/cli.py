@@ -130,6 +130,7 @@ def _parser() -> argparse.ArgumentParser:
     security_finalize.add_argument("--scanner-image", required=True)
     security_finalize.add_argument("--scanner-metadata", required=True)
     security_finalize.add_argument("--secret-scanner-image", required=True)
+    security_finalize.add_argument("--require-images", action="store_true")
 
     image_evidence = subparsers.add_parser(
         "image-evidence", help="verify and enrich exact final-image evidence"
@@ -200,6 +201,7 @@ def _run(args: argparse.Namespace, root: Path) -> list[Finding]:
             scanner_image=args.scanner_image,
             scanner_metadata=args.scanner_metadata,
             secret_scanner_image=args.secret_scanner_image,
+            require_images=args.require_images,
         )
     if args.command == "image-evidence":
         images = tuple(

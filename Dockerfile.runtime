@@ -21,8 +21,27 @@ RUN apk add --no-cache build-base=0.5-r3 cmake=3.31.7-r1 git=2.49.1-r0 \
     libcrypto3=3.5.7-r0 libssl3=3.5.7-r0
 WORKDIR /source
 COPY pyproject.toml uv.lock LICENSE ./
+COPY packages/api/pyproject.toml packages/api/pyproject.toml
+COPY packages/evaluation/pyproject.toml packages/evaluation/pyproject.toml
+COPY packages/fixture-generator/pyproject.toml packages/fixture-generator/pyproject.toml
+COPY packages/grafana-mcp/pyproject.toml packages/grafana-mcp/pyproject.toml
+COPY packages/investigation/pyproject.toml packages/investigation/pyproject.toml
+COPY packages/persistence/pyproject.toml packages/persistence/pyproject.toml
+COPY packages/recovery/pyproject.toml packages/recovery/pyproject.toml
+COPY packages/repo-tools/pyproject.toml packages/repo-tools/pyproject.toml
+COPY packages/response-plans/pyproject.toml packages/response-plans/pyproject.toml
+COPY packages/simulator/pyproject.toml packages/simulator/pyproject.toml
+COPY packages/telemetry/pyproject.toml packages/telemetry/pyproject.toml
+COPY packages/validators/pyproject.toml packages/validators/pyproject.toml
+COPY packages/vertical-slice/pyproject.toml packages/vertical-slice/pyproject.toml
+ENV CMAKE_BUILD_PARALLEL_LEVEL=1 \
+    UV_CONCURRENT_BUILDS=1 \
+    UV_LINK_MODE=copy
+RUN --mount=type=cache,id=colortrace-runtime-uv,target=/root/.cache/uv,sharing=locked \
+    uv sync --frozen --no-dev --no-editable --no-install-workspace --package colortrace-api
 COPY packages/ packages/
-RUN uv sync --frozen --no-dev --no-editable --package colortrace-api \
+RUN --mount=type=cache,id=colortrace-runtime-uv,target=/root/.cache/uv,sharing=locked \
+    uv sync --frozen --no-dev --no-editable --package colortrace-api \
     && /source/.venv/bin/python -c "import colortrace_api, colortrace_grafana_mcp, colortrace_simulator"
 
 FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS runtime-base

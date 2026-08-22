@@ -463,6 +463,7 @@ def finalize_security_evidence(
     scanner_image: str,
     scanner_metadata: str,
     secret_scanner_image: str,
+    require_images: bool,
 ) -> list[Finding]:
     root = root.resolve()
     output = output.resolve()
@@ -497,7 +498,8 @@ def finalize_security_evidence(
     _write_json(output / "vulnerability-scanner.json", parsed_scanner_metadata)
     reports: list[dict[str, Any]] = []
     documents: dict[str, Any] = {}
-    for name in _REPORTS:
+    expected_reports = _REPORTS if require_images else _SOURCE_REPORTS
+    for name in expected_reports:
         path = output / name
         try:
             if path.is_symlink() or not path.is_file():
@@ -521,24 +523,25 @@ def finalize_security_evidence(
             findings.append(
                 Finding(name, "security.report.invalid", f"cannot load report: {error}")
             )
-    try:
-        findings.extend(
-            _image_report_findings(
-                output,
-                documents,
-                candidate_sha,
-                candidate_tree,
-                scanner_image,
+    if require_images:
+        try:
+            findings.extend(
+                _image_report_findings(
+                    output,
+                    documents,
+                    candidate_sha,
+                    candidate_tree,
+                    scanner_image,
+                )
             )
-        )
-    except OSError as error:
-        findings.append(
-            Finding(
-                "images",
-                "security.image.binding",
-                f"cannot verify image report hashes: {error}",
+        except OSError as error:
+            findings.append(
+                Finding(
+                    "images",
+                    "security.image.binding",
+                    f"cannot verify image report hashes: {error}",
+                )
             )
-        )
     inputs: list[dict[str, Any]] = []
     for name in dict.fromkeys((*_BOUND_INPUTS, *_deployment_inputs(root))):
         path = root / name
@@ -566,6 +569,7 @@ def finalize_security_evidence(
         "inputs": inputs,
         "reports": reports,
         "schema": "colortrace-security-evidence-manifest/v1",
+        "scope": "final-images" if require_images else "source",
         "status": "pass" if not findings else "fail",
         "tools": {
             "secret_scanner_image": secret_scanner_image,

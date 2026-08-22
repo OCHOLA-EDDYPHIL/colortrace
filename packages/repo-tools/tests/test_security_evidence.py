@@ -208,11 +208,13 @@ class SecurityEvidenceTest(unittest.TestCase):
                     }
                 ),
                 secret_scanner_image="secret@sha256:" + "d" * 64,
+                require_images=True,
             )
 
             self.assertEqual(findings, [])
             manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["status"], "pass")
+            self.assertEqual(manifest["scope"], "final-images")
             self.assertEqual(manifest["candidate"]["commit"], CANDIDATE)
             self.assertEqual(
                 {report["path"] for report in manifest["reports"]},
@@ -247,6 +249,90 @@ class SecurityEvidenceTest(unittest.TestCase):
             input_paths = [value["path"] for value in manifest["inputs"]]
             self.assertEqual(len(input_paths), len(set(input_paths)))
             self.assertFalse(any(path.startswith((".cache/", ".git/")) for path in input_paths))
+
+    def test_source_manifest_passes_without_final_image_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            self.assertEqual(prepare_security_evidence(REPOSITORY_ROOT, output), [])
+            (output / "secret.json").write_text("[]\n", encoding="utf-8")
+            (output / "vulnerability.json").write_text(
+                json.dumps({"Results": [{"Vulnerabilities": None}]}) + "\n",
+                encoding="utf-8",
+            )
+
+            findings = finalize_security_evidence(
+                REPOSITORY_ROOT,
+                output,
+                candidate_sha=CANDIDATE,
+                candidate_tree=TREE,
+                scanner_image=SCANNER,
+                scanner_metadata=json.dumps(
+                    {
+                        "Version": "0.69.3",
+                        "VulnerabilityDB": {
+                            "UpdatedAt": "2026-08-18T00:00:00Z",
+                            "Version": 2,
+                        },
+                    }
+                ),
+                secret_scanner_image="secret@sha256:" + "d" * 64,
+                require_images=False,
+            )
+
+            self.assertEqual(findings, [])
+            manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["scope"], "source")
+            self.assertEqual(
+                {report["path"] for report in manifest["reports"]},
+                {
+                    "action-pins.json",
+                    "ai-runtime.json",
+                    "dependency.json",
+                    "deployment.json",
+                    "runner-isolation.json",
+                    "sbom.cdx.json",
+                    "secret.json",
+                    "vulnerability.json",
+                    "vulnerability-scanner.json",
+                },
+            )
+
+    def test_final_image_manifest_fails_closed_when_image_reports_are_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            self.assertEqual(prepare_security_evidence(REPOSITORY_ROOT, output), [])
+            (output / "secret.json").write_text("[]\n", encoding="utf-8")
+            (output / "vulnerability.json").write_text(
+                json.dumps({"Results": [{"Vulnerabilities": None}]}) + "\n",
+                encoding="utf-8",
+            )
+
+            findings = finalize_security_evidence(
+                REPOSITORY_ROOT,
+                output,
+                candidate_sha=CANDIDATE,
+                candidate_tree=TREE,
+                scanner_image=SCANNER,
+                scanner_metadata=json.dumps(
+                    {
+                        "Version": "0.69.3",
+                        "VulnerabilityDB": {
+                            "UpdatedAt": "2026-08-18T00:00:00Z",
+                            "Version": 2,
+                        },
+                    }
+                ),
+                secret_scanner_image="secret@sha256:" + "d" * 64,
+                require_images=True,
+            )
+
+            self.assertEqual(
+                {finding.code for finding in findings},
+                {"security.report.invalid"},
+            )
+            manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["scope"], "final-images")
+            self.assertEqual(manifest["status"], "fail")
 
     def test_manifest_fails_closed_on_a_vulnerability(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -283,6 +369,7 @@ class SecurityEvidenceTest(unittest.TestCase):
                     }
                 ),
                 secret_scanner_image="secret@sha256:" + "d" * 64,
+                require_images=True,
             )
 
             self.assertEqual({finding.code for finding in findings}, {"security.report.failed"})
@@ -320,6 +407,7 @@ class SecurityEvidenceTest(unittest.TestCase):
                     }
                 ),
                 secret_scanner_image="secret@sha256:" + "d" * 64,
+                require_images=True,
             )
 
             self.assertIn("security.image.binding", {finding.code for finding in findings})

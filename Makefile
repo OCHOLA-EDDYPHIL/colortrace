@@ -18,6 +18,7 @@ TERRAFORM_PLUGIN_CACHE := $(CACHE_ROOT)/terraform-plugins
 SECURITY_EVIDENCE_HOST := $(WORKSPACE)/.cache/security-evidence
 SECURITY_EVIDENCE_CONTAINER := /workspace/.cache/security-evidence
 SECURITY_CANDIDATE_SHA ?= $(shell git rev-parse HEAD)
+SECURITY_REQUIRE_IMAGES ?= false
 TOOL_INPUT_SHA256 := $(shell test ! -f Dockerfile.dev || sha256sum Dockerfile.dev | cut -d ' ' -f 1)
 PYTEST_WORKERS ?= 2
 PYTHON_DISTRIBUTIONS := colortrace-api colortrace-evaluation colortrace-fixture \
@@ -72,7 +73,7 @@ TOOL_RUN_HOST := docker run --rm \
 	check-format check-lint check-typecheck check-unit check-contract \
 	check-generated check-license check-policy check-postgres check-secret check-secret-fixture check-telemetry \
 	check-terraform check-wheel-license \
-	check-bootstrap final-image-evidence security-evidence
+	check-bootstrap final-image-cleanup final-image-evidence security-evidence
 
 prepare-cache:
 	@mkdir -p "$(WORKSPACE)/.cache" "$(CACHE_HOME)" "$(UV_CACHE)" "$(PNPM_STORE)" "$(TERRAFORM_PLUGIN_CACHE)" "$(UV_PROJECT_ENVIRONMENT)"
@@ -344,6 +345,51 @@ check-secret:
 		$(GITLEAKS_IMAGE) git --no-banner --redact \
 		--config /policy/.gitleaks.toml --log-opts=--all
 
+final-image-cleanup:
+	@set -eu; \
+	candidate="$(SECURITY_CANDIDATE_SHA)"; \
+	case "$$candidate" in (*[!0-9a-f]*|'') echo "invalid cleanup candidate" >&2; exit 1;; esac; \
+	test "$${#candidate}" -eq 40; \
+	image_root="$(WORKSPACE)/.cache/security-images/$$candidate"; \
+	case "$$image_root" in ("$(WORKSPACE)/.cache/security-images/"*) ;; (*) exit 1;; esac; \
+	runtime_ref="colortrace-security-runtime:$$candidate"; \
+	hosted_ref="colortrace-security-hosted-runtime:$$candidate"; \
+	web_ref="colortrace-security-web:$$candidate"; \
+	docker rm --force \
+		"colortrace-sbom-runtime-$$candidate" \
+		"colortrace-sbom-hosted-runtime-$$candidate" \
+		"colortrace-sbom-web-$$candidate" \
+		"colortrace-smoke-runtime-$$candidate" \
+		"colortrace-smoke-hosted-runtime-$$candidate" \
+		"colortrace-smoke-web-$$candidate" >/dev/null 2>&1 || true; \
+	docker image rm "$$runtime_ref" "$$hosted_ref" "$$web_ref" >/dev/null 2>&1 || true; \
+	rm -rf -- "$$image_root"; \
+	if ! docker info >/dev/null 2>&1; then \
+		echo "cleanup cannot verify the Docker daemon" >&2; exit 1; \
+	fi; \
+	cleanup_failed=0; \
+	for resource in \
+		"colortrace-sbom-runtime-$$candidate" \
+		"colortrace-sbom-hosted-runtime-$$candidate" \
+		"colortrace-sbom-web-$$candidate" \
+		"colortrace-smoke-runtime-$$candidate" \
+		"colortrace-smoke-hosted-runtime-$$candidate" \
+		"colortrace-smoke-web-$$candidate"; do \
+		if docker container inspect "$$resource" >/dev/null 2>&1; then \
+			echo "cleanup retained container $$resource" >&2; cleanup_failed=1; \
+		fi; \
+	done; \
+	for resource in "$$runtime_ref" "$$hosted_ref" "$$web_ref"; do \
+		if docker image inspect "$$resource" >/dev/null 2>&1; then \
+			echo "cleanup retained image $$resource" >&2; cleanup_failed=1; \
+		fi; \
+	done; \
+	if test -e "$$image_root"; then \
+		echo "cleanup retained the private image archive directory" >&2; cleanup_failed=1; \
+	fi; \
+	test "$$cleanup_failed" -eq 0; \
+	echo "exact candidate image cleanup verified: $$candidate"
+
 final-image-evidence: prepare-cache
 	@set -eu; \
 	test "$$(git rev-parse HEAD)" = "$(SECURITY_CANDIDATE_SHA)"; \
@@ -357,47 +403,14 @@ final-image-evidence: prepare-cache
 	hosted_ref="colortrace-security-hosted-runtime:$(SECURITY_CANDIDATE_SHA)"; \
 	web_ref="colortrace-security-web:$(SECURITY_CANDIDATE_SHA)"; \
 	cleanup() { \
-		docker rm --force \
-			"colortrace-sbom-runtime-$(SECURITY_CANDIDATE_SHA)" \
-			"colortrace-sbom-hosted-runtime-$(SECURITY_CANDIDATE_SHA)" \
-			"colortrace-sbom-web-$(SECURITY_CANDIDATE_SHA)" \
-			"colortrace-smoke-runtime-$(SECURITY_CANDIDATE_SHA)" \
-			"colortrace-smoke-hosted-runtime-$(SECURITY_CANDIDATE_SHA)" \
-			"colortrace-smoke-web-$(SECURITY_CANDIDATE_SHA)" >/dev/null 2>&1 || true; \
-		docker image rm "$$runtime_ref" "$$hosted_ref" "$$web_ref" >/dev/null 2>&1 || true; \
-		rm -rf "$$image_root" || true; \
-	}; \
-	verify_cleanup() { \
-		cleanup_failed=0; \
-		if ! docker info >/dev/null 2>&1; then \
-			echo "cleanup cannot verify the Docker daemon" >&2; return 1; \
-		fi; \
-		for resource in \
-			"colortrace-sbom-runtime-$(SECURITY_CANDIDATE_SHA)" \
-			"colortrace-sbom-hosted-runtime-$(SECURITY_CANDIDATE_SHA)" \
-			"colortrace-sbom-web-$(SECURITY_CANDIDATE_SHA)" \
-			"colortrace-smoke-runtime-$(SECURITY_CANDIDATE_SHA)" \
-			"colortrace-smoke-hosted-runtime-$(SECURITY_CANDIDATE_SHA)" \
-			"colortrace-smoke-web-$(SECURITY_CANDIDATE_SHA)"; do \
-			if docker container inspect "$$resource" >/dev/null 2>&1; then \
-				echo "cleanup retained container $$resource" >&2; cleanup_failed=1; \
-			fi; \
-		done; \
-		for resource in "$$runtime_ref" "$$hosted_ref" "$$web_ref"; do \
-			if docker image inspect "$$resource" >/dev/null 2>&1; then \
-				echo "cleanup retained image $$resource" >&2; cleanup_failed=1; \
-			fi; \
-		done; \
-		if test -e "$$image_root"; then \
-			echo "cleanup retained the private image archive directory" >&2; cleanup_failed=1; \
-		fi; \
-		test "$$cleanup_failed" -eq 0; \
+		$(MAKE) --no-print-directory final-image-cleanup \
+			SECURITY_CANDIDATE_SHA="$(SECURITY_CANDIDATE_SHA)" \
+			CACHE_ROOT="$(CACHE_ROOT)"; \
 	}; \
 	finish() { \
 		command_status=$$?; \
 		trap - EXIT HUP INT TERM; \
-		cleanup; \
-		if ! verify_cleanup; then command_status=1; fi; \
+		if ! cleanup; then command_status=1; fi; \
 		exit "$$command_status"; \
 	}; \
 	trap finish EXIT; \
@@ -405,7 +418,6 @@ final-image-evidence: prepare-cache
 	trap 'exit 130' INT; \
 	trap 'exit 143' TERM; \
 	cleanup; \
-	verify_cleanup; \
 	install -d -m 0700 "$$image_root"; \
 	install -d -m 0700 "$$image_root/context"; \
 	git archive --format=tar --output "$$image_root/context.tar" HEAD; \
@@ -531,9 +543,13 @@ security-evidence: prepare-cache
 			--skip-java-db-update --skip-version-check \
 			--format json --output /evidence/vulnerability.json \
 			/evidence/sbom.cdx.json; \
-	$(MAKE) final-image-evidence \
-		SECURITY_CANDIDATE_SHA="$(SECURITY_CANDIDATE_SHA)" \
-		CACHE_ROOT="$(CACHE_ROOT)"; \
+	case "$(SECURITY_REQUIRE_IMAGES)" in \
+		(true) $(MAKE) final-image-evidence \
+			SECURITY_CANDIDATE_SHA="$(SECURITY_CANDIDATE_SHA)" \
+			CACHE_ROOT="$(CACHE_ROOT)"; image_requirement=--require-images ;; \
+		(false) image_requirement= ;; \
+		(*) echo "SECURITY_REQUIRE_IMAGES must be true or false" >&2; exit 1 ;; \
+	esac; \
 	scanner_metadata="$$(docker run --rm --network none --pull=never \
 		--user $(HOST_UID):$(HOST_GID) \
 		--volume "$(WORKSPACE)/.cache/trivy:/trivy-cache:ro" \
@@ -545,7 +561,8 @@ security-evidence: prepare-cache
 		--candidate-tree "$$candidate_tree" \
 		--scanner-image "$(TRIVY_IMAGE)" \
 		--scanner-metadata "$$scanner_metadata" \
-		--secret-scanner-image "$(GITLEAKS_IMAGE)"
+		--secret-scanner-image "$(GITLEAKS_IMAGE)" \
+		$$image_requirement
 
 check-secret-fixture:
 	@set -eu; \
