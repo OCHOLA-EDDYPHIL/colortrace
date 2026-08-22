@@ -20,6 +20,11 @@ SECURITY_EVIDENCE_CONTAINER := /workspace/.cache/security-evidence
 SECURITY_CANDIDATE_SHA ?= $(shell git rev-parse HEAD)
 TOOL_INPUT_SHA256 := $(shell test ! -f Dockerfile.dev || sha256sum Dockerfile.dev | cut -d ' ' -f 1)
 PYTEST_WORKERS ?= 2
+PYTHON_DISTRIBUTIONS := colortrace-api colortrace-evaluation colortrace-fixture \
+	colortrace-grafana-mcp colortrace-investigation colortrace-persistence \
+	colortrace-recovery colortrace-repo colortrace-response-plans \
+	colortrace-simulator colortrace-telemetry colortrace-validator \
+	colortrace-vertical-slice
 
 TOOL_RUN := docker run --rm \
 	--user $(HOST_UID):$(HOST_GID) \
@@ -66,7 +71,7 @@ TOOL_RUN_HOST := docker run --rm \
 	ensure-trivy-image ensure-postgres-image prepare-cache format generate generate-fixture check check-fast \
 	check-format check-lint check-typecheck check-unit check-contract \
 	check-generated check-license check-policy check-postgres check-secret check-secret-fixture check-telemetry \
-	check-terraform \
+	check-terraform check-wheel-license \
 	check-bootstrap security-evidence
 
 prepare-cache:
@@ -210,6 +215,16 @@ check-generated: prepare-cache
 
 check-license: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo dependencies
+	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo distribution
+
+check-wheel-license: prepare-cache
+	$(TOOL_RUN_OFFLINE) sh -eu -c '\
+		wheel_root="$$(mktemp -d /workspace/.cache/distribution-wheels.XXXXXX)"; \
+		trap '\''chmod -R u+w "$$wheel_root" 2>/dev/null || true; rm -rf "$$wheel_root"'\'' EXIT HUP INT TERM; \
+		for package in $(PYTHON_DISTRIBUTIONS); do \
+			uv build --offline --wheel --package "$$package" --out-dir "$$wheel_root"; \
+		done; \
+		uv run --offline colortrace-repo distribution-wheels --directory "$$wheel_root"'
 
 check-policy: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo ai-policy
@@ -401,7 +416,7 @@ check-secret-fixture:
 		exit 1; \
 	fi
 
-check-fast: check-format check-lint check-typecheck check-unit check-postgres check-contract check-generated check-license check-policy check-secret-fixture check-terraform
+check-fast: check-format check-lint check-typecheck check-unit check-postgres check-contract check-generated check-license check-wheel-license check-policy check-secret-fixture check-terraform
 
 check: check-fast check-telemetry check-secret
 

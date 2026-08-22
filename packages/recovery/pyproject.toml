@@ -6,6 +6,8 @@ build-backend = "hatchling.build"
 name = "colortrace-recovery"
 version = "0.1.0"
 description = "Fenced recovery verification and human closure contracts"
+license = "Apache-2.0"
+license-files = []
 requires-python = ">=3.12"
 dependencies = [
     "colortrace-fixture",
@@ -23,3 +25,6 @@ colortrace-telemetry = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/colortrace_recovery"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"../../LICENSE" = "colortrace_recovery/LICENSE"

@@ -6,6 +6,8 @@ build-backend = "hatchling.build"
 name = "colortrace-grafana-mcp"
 version = "1.0.0"
 description = "Bounded read-only Grafana MCP evidence collection"
+license = "Apache-2.0"
+license-files = []
 requires-python = ">=3.12"
 dependencies = [
     "jsonschema==4.25.1",
@@ -19,4 +21,5 @@ colortrace-grafana-mcp = "colortrace_grafana_mcp.cli:main"
 packages = ["src/colortrace_grafana_mcp"]
 
 [tool.hatch.build.targets.wheel.force-include]
+"../../LICENSE" = "colortrace_grafana_mcp/LICENSE"
 "src/colortrace_grafana_mcp/schemas" = "colortrace_grafana_mcp/schemas"
