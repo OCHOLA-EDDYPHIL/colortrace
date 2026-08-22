@@ -41,4 +41,3 @@ packages = ["src/colortrace_evaluation"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "../../LICENSE" = "colortrace_evaluation/LICENSE"
-"src/colortrace_evaluation/schemas" = "colortrace_evaluation/schemas"
