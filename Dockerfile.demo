@@ -1,0 +1,45 @@
+FROM ghcr.io/astral-sh/uv@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc AS uv
+
+FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS build
+COPY --from=uv /uv /uvx /usr/local/bin/
+RUN apk add --no-cache build-base=0.5-r3 cmake=3.31.7-r1 git=2.49.1-r0 \
+    libcrypto3=3.5.7-r0 libssl3=3.5.7-r0
+WORKDIR /source
+COPY pyproject.toml uv.lock LICENSE ./
+COPY packages/ packages/
+ENV CMAKE_BUILD_PARALLEL_LEVEL=4 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_COMPILE_BYTECODE=0 \
+    UV_CONCURRENT_BUILDS=1 \
+    UV_LINK_MODE=copy
+RUN --mount=type=cache,id=colortrace-runtime-uv,target=/root/.cache/uv,sharing=locked \
+    uv sync --frozen --no-dev --no-editable --package colortrace-api \
+    && /source/.venv/bin/python -c "import colortrace_api, colortrace_fixture, colortrace_simulator" \
+    && test -z "$(find /source/.venv -type f -name '*.py[co]' -print -quit)"
+
+FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS demo-runtime
+ARG SOURCE_COMMIT
+ARG SOURCE_TREE
+ARG SOURCE_DATE_EPOCH
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOME=/tmp/colortrace \
+    PATH=/opt/colortrace/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN case "$SOURCE_COMMIT" in (*[!0-9a-f]*|'') exit 1;; esac \
+    && test "${#SOURCE_COMMIT}" = 40 \
+    && case "$SOURCE_TREE" in (*[!0-9a-f]*|'') exit 1;; esac \
+    && test "${#SOURCE_TREE}" = 40 \
+    && case "$SOURCE_DATE_EPOCH" in (*[!0-9]*|'') exit 1;; esac \
+    && apk add --no-cache libcrypto3=3.5.7-r0 libssl3=3.5.7-r0 libstdc++=14.2.0-r6 \
+    && addgroup -g 65532 -S colortrace \
+    && adduser -u 65532 -S -D -H -h /nonexistent -s /sbin/nologin -G colortrace colortrace \
+    && install -d -o 65532 -g 65532 -m 0700 /tmp/colortrace
+COPY --from=build /source/.venv /opt/colortrace
+COPY LICENSE /usr/share/licenses/colortrace/LICENSE
+RUN /opt/colortrace/bin/python -c "import colortrace_api, colortrace_fixture, colortrace_simulator" \
+    && test ! -e /usr/local/bin/mcp-grafana
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      org.colortrace.source-tree="${SOURCE_TREE}" \
+      org.colortrace.runtime-profile="local-demo"
+USER colortrace
+ENTRYPOINT ["/opt/colortrace/bin/python", "-m", "colortrace_api.demo"]

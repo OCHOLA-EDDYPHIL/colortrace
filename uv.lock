@@ -316,6 +316,7 @@ name = "colortrace-api"
 version = "0.1.0"
 source = { editable = "packages/api" }
 dependencies = [
+    { name = "colortrace-fixture" },
     { name = "colortrace-persistence" },
     { name = "colortrace-recovery" },
     { name = "colortrace-response-plans" },
@@ -331,6 +332,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "colortrace-fixture", editable = "packages/fixture-generator" },
     { name = "colortrace-persistence", editable = "packages/persistence" },
     { name = "colortrace-recovery", editable = "packages/recovery" },
     { name = "colortrace-response-plans", editable = "packages/response-plans" },
