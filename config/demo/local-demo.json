@@ -1,0 +1,10 @@
+{
+  "schema": "colortrace-local-demo-config/v1",
+  "incident_id": "incident-local-demo-001",
+  "incident_version": 1,
+  "fixture_variant": "canonical",
+  "fixture_seed": "ct-shadowed-lut-v1:canonical",
+  "issuer": "https://identity.colortrace.invalid",
+  "audience": "colortrace-local-demo",
+  "approval_phrase": "APPROVE_COLORTRACE_SIMULATOR_ACTION"
+}
