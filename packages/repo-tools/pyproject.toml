@@ -9,7 +9,7 @@ description = "Deterministic repository policy checks for ColorTrace"
 license = "Apache-2.0"
 license-files = []
 requires-python = ">=3.12"
-dependencies = ["pyyaml==6.0.3"]
+dependencies = ["packaging==26.3", "pyyaml==6.0.3"]
 
 [project.scripts]
 colortrace-repo = "colortrace_repo.cli:main"

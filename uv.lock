@@ -467,11 +467,15 @@ name = "colortrace-repo"
 version = "0.1.0"
 source = { editable = "packages/repo-tools" }
 dependencies = [
+    { name = "packaging" },
     { name = "pyyaml" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pyyaml", specifier = "==6.0.3" }]
+requires-dist = [
+    { name = "packaging", specifier = "==26.3" },
+    { name = "pyyaml", specifier = "==6.0.3" },
+]
 
 [[package]]
 name = "colortrace-response-plans"

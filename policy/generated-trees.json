@@ -1,4 +1,114 @@
 {
-  "schema_version": 1,
-  "trees": []
+  "schema_version": 2,
+  "trees": [
+    {
+      "path": "packages/api-client/src/generated",
+      "license": "Apache-2.0",
+      "redistribution_review": "owner-review-required",
+      "generator": {
+        "name": "@hey-api/openapi-ts",
+        "version": "0.99.0",
+        "license": "MIT",
+        "source": "https://registry.npmjs.org"
+      },
+      "inputs": [
+        {
+          "role": "config",
+          "path": "packages/api-client/openapi-ts.config.ts",
+          "sha256": "6916d31aa5d1009117d20924e9848cd0f89a6b5401c8169528d9fe1c3ab64e6c"
+        },
+        {
+          "role": "lockfile",
+          "path": "pnpm-lock.yaml",
+          "sha256": "0c18abd881fee603a17641874d41b19422bcdc6b569220c4bc2c4fe9a55d8d7c"
+        },
+        {
+          "role": "openapi",
+          "path": "packages/contracts/openapi.json",
+          "sha256": "19240c775736a0ff94c69917c7c686d86ade0cb0881afcb362fe8832d2a470ef"
+        },
+        {
+          "role": "package",
+          "path": "packages/api-client/package.json",
+          "sha256": "8f6d974f5da6daf4a77e12fc236b12d56217c76bbce39bcd8cca50338a5aee34"
+        }
+      ],
+      "generation_command": "pnpm --filter @colortrace/api-client run generate",
+      "outputs": [
+        {
+          "path": "client.gen.ts",
+          "sha256": "b80e26740cf084386f51813246f67f8463d8b9661aa7fa8d10aca40734f7aa93"
+        },
+        {
+          "path": "client/client.gen.ts",
+          "sha256": "b5fe3f0bf4faa9d15d903b8a873f45696a7d0afff5014028246f3c4d0a375438"
+        },
+        {
+          "path": "client/index.ts",
+          "sha256": "ee5563595bec93a5606b35dd4ae60b8dcc4e81b67f96f18028f557dc4f78df30"
+        },
+        {
+          "path": "client/types.gen.ts",
+          "sha256": "e20ac27fc7c074053950529e910c4744718f00fd80035b0f4fbffd7ada749d52"
+        },
+        {
+          "path": "client/utils.gen.ts",
+          "sha256": "2dd1c16dc1016934f1b0b90c7d4a4e1280cd5b6b4ffa21e6ff4fec6d9c4d6d1c"
+        },
+        {
+          "path": "core/auth.gen.ts",
+          "sha256": "84a90f1903783510a090441a897840a004b2dd9431c053c0cb43d4e1bc10b099"
+        },
+        {
+          "path": "core/bodySerializer.gen.ts",
+          "sha256": "7b802135223b6be843685ae12498ce0be9977171cca06f9119570f2e8f5c2ca1"
+        },
+        {
+          "path": "core/params.gen.ts",
+          "sha256": "1270fc0d700c3153e548e743621dcd73ae6570b765ce31956e8e8a23a81bc71d"
+        },
+        {
+          "path": "core/pathSerializer.gen.ts",
+          "sha256": "cfb2111521e70cce6edb70f6a7f83ae7f51dce26339cfa062dd5926f9a9ffc1c"
+        },
+        {
+          "path": "core/queryKeySerializer.gen.ts",
+          "sha256": "4f7610629081915882251df04363eda03c00c2d85d1fbf1fb4435c14eaa2c480"
+        },
+        {
+          "path": "core/serverSentEvents.gen.ts",
+          "sha256": "7fbbb9e52810f3788b0e94d53241f9326b320714b3ab158abe8fabd5ce04a546"
+        },
+        {
+          "path": "core/types.gen.ts",
+          "sha256": "dfd04f805a65e41c821f0d15388a6804d5a933ddeaf21d61ce8436d2f3cfe305"
+        },
+        {
+          "path": "core/utils.gen.ts",
+          "sha256": "ae81bf74f87dfd392418b9623b129af037c2654589b566f5c2511e24f5153e01"
+        },
+        {
+          "path": "index.ts",
+          "sha256": "d6d03bcb3b49b6dae78fed3a05f9d76cf3c4b5e2071b19b592718ce3e720ef13"
+        },
+        {
+          "path": "sdk.gen.ts",
+          "sha256": "c1342ab5289a5dfb19e81479e35238635cdea94c0b7f32d5f79e8ab07c5d4642"
+        },
+        {
+          "path": "types.gen.ts",
+          "sha256": "e558ad0ff3bdaa0d86d629cac7808a9495377dcd9dcf9d21036ddf9faf7ec390"
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "packages/api/src/colortrace_api/assets/hosted-read-projection-v1.json",
+      "sha256": "2a98862b9fd923466b86fe23624c255df9243014b96232efaf279a344b398873",
+      "provenance_pointer": "#/provenance",
+      "license": "Apache-2.0",
+      "redistribution_review": "owner-review-required"
+    }
+  ]
 }
