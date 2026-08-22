@@ -1,17 +1,80 @@
 from __future__ import annotations
 
-import hashlib
+import contextlib
+import io
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
 from colortrace_repo.actions import check_actions
 from colortrace_repo.binary_assets import check_binary_assets
-from colortrace_repo.generated import compare_generated_trees
+from colortrace_repo.cli import main as cli_main
+from colortrace_repo.common import is_canonical_spdx
+from colortrace_repo.generated import check_generated_manifest, compare_generated_trees
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _copy_file(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+
+
+def _copy_generated_policy_fixture(root: Path) -> None:
+    paths = (
+        "policy/dependency-inventory.json",
+        "policy/generated-trees.json",
+        "packages/api-client/openapi-ts.config.ts",
+        "packages/api-client/package.json",
+        "packages/contracts/openapi.json",
+        "packages/api/src/colortrace_api/assets/hosted-read-projection-v1.json",
+        "pnpm-lock.yaml",
+    )
+    for path in paths:
+        _copy_file(_REPOSITORY_ROOT / path, root / path)
+    shutil.copytree(
+        _REPOSITORY_ROOT / "packages/api-client/src/generated",
+        root / "packages/api-client/src/generated",
+    )
+
+
+def _copy_binary_policy_fixture(root: Path) -> Path:
+    policy = root / "policy/binary-assets.json"
+    _copy_file(_REPOSITORY_ROOT / "policy/binary-assets.json", policy)
+    shutil.copytree(_REPOSITORY_ROOT / "packages/web/evidence", root / "packages/web/evidence")
+    return policy
+
+
+def _at(document: object, path: tuple[str | int, ...]) -> object:
+    current = document
+    for key in path:
+        current = current[key]  # type: ignore[index]
+    return current
+
+
+def _set(document: object, path: tuple[str | int, ...], value: object) -> None:
+    target = _at(document, path[:-1])
+    target[path[-1]] = value  # type: ignore[index]
+
+
+def _cli_findings(root: Path, command: str, option: str, value: str) -> list[dict[str, str]]:
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        result = cli_main(["--root", str(root), "--format", "json", command, option, value])
+    if result != 1:
+        raise AssertionError(f"expected policy rejection, got exit code {result}")
+    return json.loads(output.getvalue())["findings"]
 
 
 class RepositoryChecksTest(unittest.TestCase):
+    def test_spdx_licenses_must_be_known_and_canonical(self) -> None:
+        for value in ("Apache-2.0", "MIT", "Apache-2.0 OR MIT"):
+            self.assertTrue(is_canonical_spdx(value))
+        for value in (None, "", "apache-2.0", "MadeUp-1.0"):
+            self.assertFalse(is_canonical_spdx(value))
+
     def test_generated_tree_comparison_is_byte_exact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -26,6 +89,156 @@ class RepositoryChecksTest(unittest.TestCase):
             (actual / "client.ts").write_bytes(b"export const value = 2;\n")
             codes = {finding.code for finding in compare_generated_trees(root, expected, actual)}
             self.assertEqual(codes, {"generated.content"})
+
+    def test_generated_policy_binds_inputs_outputs_fixture_and_does_not_run_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            _copy_generated_policy_fixture(root)
+            policy = root / "policy" / "generated-trees.json"
+            original = policy.read_text(encoding="utf-8")
+            self.assertEqual(check_generated_manifest(root), [])
+
+            cases = (
+                (("trees", 0, "inputs", 0, "sha256"), "0" * 64, "generated.input.mismatch"),
+                (("trees", 0, "outputs", 0, "sha256"), "0" * 64, "generated.output.mismatch"),
+                (("trees", 0, "license"), "apache-2.0", "generated.license.invalid"),
+                (("files", 0, "provenance_pointer"), "#/missing", "generated.provenance.invalid"),
+                (("files", 0, "sha256"), "0" * 64, "generated.file.mismatch"),
+            )
+            for path, value, code in cases:
+                with self.subTest(binding=code):
+                    document = json.loads(original)
+                    _set(document, path, value)
+                    policy.write_text(json.dumps(document), encoding="utf-8")
+                    self.assertIn(
+                        code, {finding.code for finding in check_generated_manifest(root)}
+                    )
+
+            document = json.loads(original)
+            document["trees"][0]["outputs"][:2] = reversed(document["trees"][0]["outputs"][:2])
+            policy.write_text(json.dumps(document), encoding="utf-8")
+            self.assertIn(
+                "generated.outputs.invalid",
+                {finding.code for finding in check_generated_manifest(root)},
+            )
+
+            for state in ("owner-approved", "owner-review-required", "prohibited"):
+                with self.subTest(review=state):
+                    document = json.loads(original)
+                    document["trees"][0]["redistribution_review"] = state
+                    document["files"][0]["redistribution_review"] = state
+                    policy.write_text(json.dumps(document), encoding="utf-8")
+                    self.assertEqual(check_generated_manifest(root), [])
+
+            document = json.loads(original)
+            sentinel = root / "policy-command-executed"
+            document["trees"][0]["generation_command"] = f"touch {sentinel}"
+            policy.write_text(json.dumps(document), encoding="utf-8")
+            codes = {finding.code for finding in check_generated_manifest(root)}
+            self.assertIn("generated.command.invalid", codes)
+            self.assertFalse(sentinel.exists())
+
+    def test_generated_policy_rejects_unknown_keys_and_symlink_boundaries(self) -> None:
+        locations = (
+            (),
+            ("trees", 0),
+            ("trees", 0, "generator"),
+            ("trees", 0, "inputs", 0),
+            ("trees", 0, "outputs", 0),
+            ("files", 0),
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            _copy_generated_policy_fixture(root)
+            policy = root / "policy" / "generated-trees.json"
+            original = policy.read_text(encoding="utf-8")
+            for location in locations:
+                with self.subTest(schema=location):
+                    document = json.loads(original)
+                    _set(document, location + ("unexpected",), True)
+                    policy.write_text(json.dumps(document), encoding="utf-8")
+                    self.assertNotEqual(check_generated_manifest(root), [])
+
+            for location, key in (
+                (("trees", 0), "redistribution_review"),
+                (("files", 0), "license"),
+            ):
+                with self.subTest(missing=(location, key)):
+                    document = json.loads(original)
+                    _at(document, location).pop(key)  # type: ignore[union-attr]
+                    policy.write_text(json.dumps(document), encoding="utf-8")
+                    self.assertNotEqual(check_generated_manifest(root), [])
+
+        for boundary in ("input", "fixture", "tree", "output"):
+            with (
+                self.subTest(boundary=boundary),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                root = Path(temporary_directory)
+                _copy_generated_policy_fixture(root)
+                outside = root / "outside"
+                outside.write_bytes(b"outside")
+                target = (
+                    root
+                    / {
+                        "input": "packages/contracts/openapi.json",
+                        "fixture": (
+                            "packages/api/src/colortrace_api/assets/hosted-read-projection-v1.json"
+                        ),
+                        "tree": "packages/api-client/src/generated",
+                        "output": "packages/api-client/src/generated/client.gen.ts",
+                    }[boundary]
+                )
+                if boundary == "tree":
+                    outside.unlink()
+                    outside.mkdir()
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+                target.symlink_to(outside, target_is_directory=outside.is_dir())
+                codes = {finding.code for finding in check_generated_manifest(root)}
+                self.assertTrue(
+                    any(code.endswith(("path", "invalid", "symlink")) for code in codes)
+                )
+
+    def test_generated_policy_path_never_escapes_or_follows_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            base = Path(temporary_directory)
+            root = base / "repository"
+            _copy_generated_policy_fixture(root)
+            policy = root / "policy/generated-trees.json"
+            inside = root / "policy/generated-source.json"
+            outside = base / "outside-generated.json"
+            inside.write_bytes(policy.read_bytes())
+            outside.write_bytes(policy.read_bytes())
+
+            policy.unlink()
+            policy.symlink_to(inside)
+            findings = check_generated_manifest(root)
+            self.assertEqual(
+                [(finding.code, finding.path) for finding in findings],
+                [("generated.policy.path", "policy/generated-trees.json")],
+            )
+
+            policy.unlink()
+            shutil.copy2(inside, policy)
+            escape = "../outside-generated.json"
+            findings = _cli_findings(root, "generated", "--manifest", escape)
+            self.assertEqual(
+                [(finding["code"], finding["path"]) for finding in findings],
+                [("generated.policy.path", escape)],
+            )
+
+            linked = root / "policy/custom-generated.json"
+            linked.symlink_to(policy)
+            findings = _cli_findings(
+                root, "generated", "--manifest", "policy/custom-generated.json"
+            )
+            self.assertEqual(
+                [(finding["code"], finding["path"]) for finding in findings],
+                [("generated.policy.path", "policy/custom-generated.json")],
+            )
 
     def test_actions_require_full_commit_sha(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -269,33 +482,100 @@ class RepositoryChecksTest(unittest.TestCase):
     def test_binary_asset_requires_exact_registry_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            (root / "policy").mkdir()
-            binary = root / "image.bin"
-            binary.write_bytes(b"\x89synthetic\x00binary")
-            policy_path = root / "policy" / "binary-assets.json"
-            policy_path.write_text(
-                json.dumps({"schema_version": 1, "assets": []}), encoding="utf-8"
-            )
+            policy = _copy_binary_policy_fixture(root)
+            document = json.loads(policy.read_text(encoding="utf-8"))
+            document["assets"].pop(0)
+            policy.write_text(json.dumps(document), encoding="utf-8")
             codes = {finding.code for finding in check_binary_assets(root)}
             self.assertEqual(codes, {"binary.asset.unregistered"})
 
-            policy_path.write_text(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "assets": [
-                            {
-                                "license": "CC0-1.0",
-                                "path": "image.bin",
-                                "provenance": "generated synthetic test asset",
-                                "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-                            }
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
+    def test_binary_policy_enforces_exact_schema_license_and_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            policy = _copy_binary_policy_fixture(root)
+            original = policy.read_text(encoding="utf-8")
             self.assertEqual(check_binary_assets(root), [])
+
+            locations = ((), ("assets", 0))
+            for location in locations:
+                with self.subTest(location=location):
+                    document = json.loads(original)
+                    _set(document, location + ("unexpected",), True)
+                    policy.write_text(json.dumps(document), encoding="utf-8")
+                    self.assertNotEqual(check_binary_assets(root), [])
+
+            document = json.loads(original)
+            document["assets"][0]["license"] = "MadeUp-1.0"
+            document["assets"][0]["redistribution_review"] = "maybe"
+            policy.write_text(json.dumps(document), encoding="utf-8")
+            codes = {finding.code for finding in check_binary_assets(root)}
+            self.assertTrue({"binary.license.invalid", "binary.redistribution.invalid"} <= codes)
+
+            for key in ("license", "redistribution_review"):
+                with self.subTest(missing=key):
+                    document = json.loads(original)
+                    document["assets"][0].pop(key)
+                    policy.write_text(json.dumps(document), encoding="utf-8")
+                    self.assertIn(
+                        "binary.policy.entry",
+                        {finding.code for finding in check_binary_assets(root)},
+                    )
+
+            for state in ("owner-approved", "owner-review-required", "prohibited"):
+                with self.subTest(review=state):
+                    document = json.loads(original)
+                    document["assets"][0]["redistribution_review"] = state
+                    policy.write_text(json.dumps(document), encoding="utf-8")
+                    self.assertEqual(check_binary_assets(root), [])
+
+    def test_binary_policy_rejects_symlink_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            policy = _copy_binary_policy_fixture(root)
+            document = json.loads(policy.read_text(encoding="utf-8"))
+            image = root / document["assets"][0]["path"]
+            outside = root / "outside.png"
+            outside.write_bytes(image.read_bytes())
+            image.unlink()
+            image.symlink_to(outside)
+            codes = {finding.code for finding in check_binary_assets(root)}
+            self.assertIn("binary.policy.path", codes)
+            self.assertIn("binary.asset.symlink", codes)
+
+    def test_binary_policy_path_never_escapes_or_follows_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            base = Path(temporary_directory)
+            root = base / "repository"
+            policy = _copy_binary_policy_fixture(root)
+            inside = root / "policy/binary-source.json"
+            outside = base / "outside-binary.json"
+            inside.write_bytes(policy.read_bytes())
+            outside.write_bytes(policy.read_bytes())
+
+            policy.unlink()
+            policy.symlink_to(inside)
+            findings = check_binary_assets(root)
+            self.assertEqual(
+                [(finding.code, finding.path) for finding in findings],
+                [("binary.policy.path", "policy/binary-assets.json")],
+            )
+
+            policy.unlink()
+            shutil.copy2(inside, policy)
+            escape = "../outside-binary.json"
+            findings = _cli_findings(root, "binary-assets", "--policy", escape)
+            self.assertEqual(
+                [(finding["code"], finding["path"]) for finding in findings],
+                [("binary.policy.path", escape)],
+            )
+
+            linked = root / "policy/custom-binary.json"
+            linked.symlink_to(policy)
+            findings = _cli_findings(root, "binary-assets", "--policy", "policy/custom-binary.json")
+            self.assertEqual(
+                [(finding["code"], finding["path"]) for finding in findings],
+                [("binary.policy.path", "policy/custom-binary.json")],
+            )
 
 
 if __name__ == "__main__":
