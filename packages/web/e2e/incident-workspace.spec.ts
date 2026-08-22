@@ -38,11 +38,11 @@ const ISSUE_22_EVIDENCE_SCREENSHOTS = [
 const EVIDENCE_SCREENSHOTS = {
   desktop: {
     path: "packages/web/evidence/issue-21/evidence-scope-1440x900.png",
-    sha256: "ebfd353c8471a59cbe208123a6b8c612c2f6e7d97a206bc5e70c4a8d6bbe447f",
+    sha256: "ab94ebc000d8126eefcebca777dff3569ac032d3105d4a6db954b8cff749bd02",
   },
   mobile: {
     path: "packages/web/evidence/issue-21/evidence-scope-390x844.png",
-    sha256: "8d611ecd7243df429befcbfce6125b0c12ff2e8edad76de4cf9f021542b5b60c",
+    sha256: "90669a677c484ef66776bf3532a5c604ff81cfa5ea0ec598c4f6150959ef7fc6",
   },
 } as const;
 
