@@ -8,7 +8,8 @@ import os
 import re
 import secrets
 import stat
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,6 +43,7 @@ from colortrace_simulator.repository import SQLiteSimulatorRepository
 from colortrace_telemetry import ActionOtelSink, emit_action_outcome
 from colortrace_vertical_slice import SqliteIncidentStore, VerticalSliceApi, VerticalSliceWorker
 from fastapi import FastAPI
+from starlette.types import Lifespan
 
 from .app import create_app
 from .demo_facade import (
@@ -901,12 +903,27 @@ def _compose_canonical_demo(
             scenario_reset=local_simulator,
             closure_principal_factory=workflow.closure_principal,
             clock=clock,
+            reconcile_on_startup=False,
         )
     except ApiRuntimeConfigurationError:
         raise
     except Exception:
         raise ApiRuntimeConfigurationError("demo-runtime-configuration-invalid") from None
     return facade, workflow
+
+
+def _runtime_lifespan(
+    local_simulator: LocalSimulatorRuntime,
+    demo_facade: DemoFacade | None,
+) -> Lifespan[FastAPI]:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        async with local_simulator.lifespan(app):
+            if demo_facade is not None:
+                demo_facade.reconcile_startup()
+            yield
+
+    return lifespan
 
 
 def create_runtime_app(
@@ -1082,7 +1099,9 @@ def create_runtime_app(
         recovery=recovery,
         recovery_verifications=None if recovery_task_store is None else recovery,
         demo=demo_facade,
-        lifespan=None if local_simulator is None else local_simulator.lifespan,
+        lifespan=(
+            None if local_simulator is None else _runtime_lifespan(local_simulator, demo_facade)
+        ),
     )
     app.state.local_simulator_runtime = local_simulator
     app.state.recovery_repository = recovery_repository

@@ -4,6 +4,7 @@ import hashlib
 import sqlite3
 import threading
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,10 @@ from colortrace_api import (
     SQLiteDemoRunStore,
     create_app,
 )
+from colortrace_api.runtime import _runtime_lifespan
+from colortrace_api.simulator_runtime import LocalSimulatorRuntime
 from colortrace_recovery import CHECK_NAMES, RecoveryError, document_sha256
+from colortrace_simulator import DispatchIdentity
 from colortrace_simulator.repository import SimulatorRepositoryError
 from fastapi.testclient import TestClient
 
@@ -350,6 +354,96 @@ class FakeScenarioReset:
             "active_pointer_sha256": f"sha256:{'c' * 64}",
             "generation": 1,
         }
+
+
+class ResponseLossScenarioReset(FakeScenarioReset):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_once = True
+
+    def restore_authored_scenario(self, *, operation_id: str) -> Mapping[str, Any]:
+        result = super().restore_authored_scenario(operation_id=operation_id)
+        if self.fail_once:
+            self.fail_once = False
+            raise SystemExit("simulated reset response loss")
+        return result
+
+
+@dataclass
+class QueuedExecutionState:
+    identity: DispatchIdentity
+    pending: bool = True
+    outcome: dict[str, Any] | None = None
+    executed: threading.Event = field(default_factory=threading.Event)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+class QueuedExecutionRepository:
+    def __init__(self, state: QueuedExecutionState) -> None:
+        self.state = state
+
+    def pending_action_identities(self, *, limit: int = 100) -> list[DispatchIdentity]:
+        del limit
+        with self.state.lock:
+            return [self.state.identity] if self.state.pending else []
+
+    def close(self) -> None:
+        return None
+
+
+class QueuedExecutionService:
+    def __init__(self, state: QueuedExecutionState) -> None:
+        self.state = state
+
+    def execute(
+        self,
+        identity: DispatchIdentity,
+        *,
+        owner: str,
+        observe_terminal: bool = True,
+    ) -> dict[str, Any]:
+        del owner, observe_terminal
+        with self.state.lock:
+            assert identity == self.state.identity
+            self.state.pending = False
+            self.state.outcome = {"status": "succeeded"}
+            self.state.executed.set()
+            return self.state.outcome
+
+    def deliver_pending_telemetry(self, *, limit: int = 100) -> int:
+        del limit
+        return 0
+
+
+class QuietTelemetrySink:
+    def shutdown(self) -> None:
+        return None
+
+
+class RunnerAwareProofWorkflow(ProofWorkflow):
+    def __init__(
+        self,
+        visuals: Mapping[str, Mapping[str, str]],
+        state: QueuedExecutionState,
+    ) -> None:
+        super().__init__(visuals)
+        self.state = state
+        self.runtime: LocalSimulatorRuntime | None = None
+
+    def execute(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        self.execute_calls.append(request)
+        raise SystemExit("simulated process stop")
+
+    def reconcile(self, request: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        self.reconcile_calls.append(request)
+        if self.runtime is None or not self.runtime.runner.thread_alive:
+            raise SimulatorRepositoryError("simulator-runner-unavailable")
+        if not self.state.executed.wait(timeout=2):
+            raise SimulatorRepositoryError("simulator-action-in-progress")
+        operation_request = request.get("operation_request")
+        if not isinstance(operation_request, Mapping):
+            raise DemoFacadeError("demo-reconciliation-request-invalid")
+        return self.execution(operation_request)
 
 
 def _principal(run_id: str = RUN_IDS[0]) -> Principal:
@@ -850,6 +944,47 @@ def test_reset_restores_scenario_for_two_complete_runs_and_preserves_first_recei
     assert len(set(scenario_reset.calls)) == 2
 
 
+def test_startup_replays_pending_reset_after_process_response_loss(tmp_path: Path) -> None:
+    scenario_reset = ResponseLossScenarioReset()
+    facade, workflow, recovery, clock, visual_root = _facade(
+        tmp_path,
+        scenario_reset=scenario_reset,
+    )
+    started = _start(facade)
+    recovered = facade.approve(RUN_IDS[0], _approval(started))
+    closed = facade.close(RUN_IDS[0], _closure(recovered))
+    request = {
+        "schema": RESET_REQUEST_SCHEMA,
+        "expected_run_version": closed["version"],
+        "idempotency_key": "reset-response-loss",
+    }
+
+    with pytest.raises(SystemExit, match="simulated reset response loss"):
+        facade.reset(RUN_IDS[0], request)
+
+    pending = SQLiteDemoRunStore(tmp_path / "demo.sqlite3").pending_reset()
+    assert pending is not None
+    resumed = DemoFacade(
+        store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+        workflow=workflow,
+        source_commit=SOURCE_COMMIT,
+        visual_root=visual_root,
+        recovery=recovery,
+        scenario_reset=scenario_reset,
+        closure_principal=_principal(),
+        clock=clock,
+        reconcile_on_startup=False,
+    )
+
+    resumed.reconcile_startup()
+
+    assert resumed.get(RUN_IDS[0])["reset"] is True
+    assert resumed.reset(RUN_IDS[0], request)["reset"] is True
+    assert len(scenario_reset.calls) == 2
+    assert scenario_reset.calls[0] == scenario_reset.calls[1]
+    assert SQLiteDemoRunStore(tmp_path / "demo.sqlite3").pending_reset() is None
+
+
 def test_startup_reconciles_an_interrupted_execution_without_replay(tmp_path: Path) -> None:
     facade, workflow, recovery, clock, visual_root = _facade(tmp_path)
     started = _start(facade)
@@ -1283,6 +1418,73 @@ class IncidentService:
 
     def workspace(self, incident_id: str) -> dict[str, Any]:
         raise AssertionError(incident_id)
+
+
+def test_runtime_starts_worker_before_reconciling_persisted_execution(
+    tmp_path: Path,
+) -> None:
+    visual_root = tmp_path / "visuals"
+    visual_root.mkdir()
+    state = QueuedExecutionState(
+        DispatchIdentity(
+            task_key=f"dispatch-task:{'1' * 64}",
+            operation_id=f"dispatch-operation:{'2' * 64}",
+            payload_sha256=f"sha256:{'3' * 64}",
+        )
+    )
+    workflow = RunnerAwareProofWorkflow(_write_visuals(visual_root), state)
+    clock = ManualClock()
+    recovery = FakeRecovery()
+    facade = DemoFacade(
+        store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+        workflow=workflow,
+        source_commit=SOURCE_COMMIT,
+        visual_root=visual_root,
+        recovery=recovery,
+        scenario_reset=FakeScenarioReset(),
+        closure_principal=_principal(),
+        clock=clock,
+        run_id_factory=iter(RUN_IDS).__next__,
+    )
+    started = _start(facade)
+    with pytest.raises(SystemExit, match="simulated process stop"):
+        facade.approve(RUN_IDS[0], _approval(started))
+    transient = SQLiteDemoRunStore(tmp_path / "demo.sqlite3").transient(now=clock())
+    assert transient is not None and transient["phase"] == "executing"
+
+    runtime = LocalSimulatorRuntime(
+        repository=QueuedExecutionRepository(state),
+        service=QueuedExecutionService(state),
+        telemetry_sink=QuietTelemetrySink(),
+        poll_seconds=0.01,
+        join_timeout_seconds=2,
+    )
+    workflow.runtime = runtime
+    resumed = DemoFacade(
+        store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+        workflow=workflow,
+        source_commit=SOURCE_COMMIT,
+        visual_root=visual_root,
+        recovery=recovery,
+        scenario_reset=FakeScenarioReset(),
+        closure_principal=_principal(),
+        clock=clock,
+        reconcile_on_startup=False,
+    )
+    app = create_app(
+        IncidentService(),
+        demo=resumed,
+        lifespan=_runtime_lifespan(runtime, resumed),
+    )
+
+    with TestClient(app):
+        projection = resumed.get(RUN_IDS[0])
+        assert projection["phase"] == "awaiting-closure"
+        assert state.outcome == {"status": "succeeded"}
+        with pytest.raises(DemoFacadeError, match="demo-receipt-not-ready"):
+            resumed.receipt(RUN_IDS[0])
+
+    assert len(workflow.reconcile_calls) == 1
 
 
 class FailingDemo:

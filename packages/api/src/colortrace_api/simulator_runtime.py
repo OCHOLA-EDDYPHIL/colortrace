@@ -198,6 +198,31 @@ class SimulatorSerialRunner:
             self._closed = True
             self._stopping = False
 
+    def execute(
+        self,
+        identity: DispatchIdentity,
+        *,
+        owner: str,
+        observe_terminal: bool = True,
+    ) -> dict[str, Any]:
+        with self._state_lock:
+            thread = self._thread
+            if (
+                not self._accepting
+                or self._closed
+                or self._stopping
+                or thread is None
+                or not thread.is_alive()
+                or self._worker_exited.is_set()
+            ):
+                raise SimulatorRepositoryError("simulator-runner-unavailable")
+        with self._execution_lock:
+            return self._service.execute(
+                identity,
+                owner=owner,
+                observe_terminal=observe_terminal,
+            )
+
     def _record_error(self, error: Exception) -> None:
         self._last_error = error
 
@@ -339,6 +364,8 @@ class LocalSimulatorRuntime:
         )
 
     def restore_authored_scenario(self, *, operation_id: str) -> Mapping[str, Any]:
+        if not self.runner.thread_alive:
+            raise SimulatorRepositoryError("simulator-runner-unavailable")
         resetter = getattr(self.recovery_publication, "restore_authored_scenario", None)
         if not callable(resetter):
             raise RuntimeError("simulator-authored-reset-unavailable")

@@ -201,6 +201,15 @@ def _nonce_sha256(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('ascii')).hexdigest()}"
 
 
+def _scenario_reset_operation_id(*, run_id: str, request_sha256: str) -> str:
+    operation = {
+        "schema": "colortrace-demo-scenario-reset-operation/v1",
+        "run_id": run_id,
+        "request_sha256": request_sha256,
+    }
+    return f"demo-reset:{hashlib.sha256(canonical_json_bytes(operation)).hexdigest()}"
+
+
 def _validate_scenario_reset(
     value: Mapping[str, Any],
     *,
@@ -2123,6 +2132,41 @@ class SQLiteDemoRunStore:
                 raise DemoFacadeError("demo-reset-state-invalid")
             return result
 
+    def pending_reset(self) -> dict[str, Any] | None:
+        with self._transaction(write=False) as connection:
+            rows = connection.execute(
+                "SELECT run_id, idempotency_key, request_sha256, created_at "
+                "FROM demo_resets WHERE status = 'pending' ORDER BY created_at, run_id"
+            ).fetchall()
+            if not rows:
+                return None
+            if len(rows) != 1:
+                raise DemoFacadeError("stored-demo-reset-invalid")
+            row = rows[0]
+            run = self._run(self._row(connection, cast(str, row["run_id"])))
+            key = row["idempotency_key"]
+            request_sha256 = row["request_sha256"]
+            if (
+                run["phase"] not in _TERMINAL_PHASES
+                or not isinstance(key, str)
+                or _IDEMPOTENCY_KEY.fullmatch(key) is None
+                or not isinstance(request_sha256, str)
+                or _DIGEST.fullmatch(request_sha256) is None
+            ):
+                raise DemoFacadeError("stored-demo-reset-invalid")
+            _parse_timestamp(row["created_at"])
+            request = {
+                "schema": RESET_REQUEST_SCHEMA,
+                "expected_run_version": run["version"],
+                "idempotency_key": key,
+            }
+            if not hmac.compare_digest(document_sha256(request), request_sha256):
+                raise DemoFacadeError("stored-demo-reset-invalid")
+            return {
+                "run_id": run["run_id"],
+                "request_sha256": request_sha256,
+            }
+
     def receipt(self, run_id: str, *, now: datetime) -> dict[str, Any]:
         with self._transaction(write=True) as connection:
             self._expire_active(connection, now=now)
@@ -2729,13 +2773,9 @@ class DemoFacade:
             return replay
         if self._scenario_reset is None:
             raise DemoFacadeError("demo-reset-unavailable")
-        operation_document = {
-            "schema": "colortrace-demo-scenario-reset-operation/v1",
-            "run_id": run_id,
-            "request_sha256": document_sha256(request),
-        }
-        operation_id = (
-            f"demo-reset:{hashlib.sha256(canonical_json_bytes(operation_document)).hexdigest()}"
+        operation_id = _scenario_reset_operation_id(
+            run_id=run_id,
+            request_sha256=document_sha256(request),
         )
         try:
             raw = self._scenario_reset.restore_authored_scenario(operation_id=operation_id)
@@ -2773,6 +2813,29 @@ class DemoFacade:
             self._reconcile_startup()
 
     def _reconcile_startup(self) -> None:
+        pending_reset = self._store.pending_reset()
+        if pending_reset is not None:
+            if self._scenario_reset is None:
+                raise DemoFacadeError("demo-reset-unavailable")
+            run_id = cast(str, pending_reset["run_id"])
+            operation_id = _scenario_reset_operation_id(
+                run_id=run_id,
+                request_sha256=cast(str, pending_reset["request_sha256"]),
+            )
+            try:
+                raw_reset = self._scenario_reset.restore_authored_scenario(
+                    operation_id=operation_id
+                )
+                restoration = _validate_scenario_reset(raw_reset, operation_id=operation_id)
+                self._store.complete_reset(
+                    run_id,
+                    restoration=restoration,
+                    now=self._now(),
+                )
+            except DemoFacadeError:
+                raise
+            except Exception as error:
+                raise DemoFacadeError("demo-reset-uncertain") from error
         run = self._store.transient(now=self._now())
         if run is None:
             return

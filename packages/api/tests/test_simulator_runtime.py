@@ -386,7 +386,11 @@ def test_authored_reset_drains_queued_actions_before_restoring_publication() -> 
         join_timeout_seconds=2,
     )
 
-    result = runtime.restore_authored_scenario(operation_id="demo-reset-operation")
+    runtime.runner.start()
+    try:
+        result = runtime.restore_authored_scenario(operation_id="demo-reset-operation")
+    finally:
+        runtime.runner.close()
 
     assert result == {"operation_id": "demo-reset-operation"}
     assert state.pending == []

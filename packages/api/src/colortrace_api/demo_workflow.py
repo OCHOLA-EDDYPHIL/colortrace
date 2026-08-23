@@ -828,7 +828,7 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
                 "payload_sha256": identity.payload_sha256,
             },
         )
-        outcome = self._simulator_runtime.service.execute(identity, owner="canonical-demo")
+        outcome = self._simulator_runtime.runner.execute(identity, owner="canonical-demo")
         self._simulator_runtime.service.deliver_pending_telemetry(limit=100)
         if outcome.get("status") != "succeeded":
             raise DemoFacadeError("demo-simulator-action-failed")
