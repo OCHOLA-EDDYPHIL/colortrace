@@ -257,6 +257,23 @@ class ProoflessExecutionWorkflow(ProofWorkflow):
         return FakeWorkflow.execution(self, request)
 
 
+class NonCurrentEvidenceWorkflow(ProofWorkflow):
+    def __init__(self, visuals: Mapping[str, Mapping[str, str]], *, freshness: str) -> None:
+        super().__init__(visuals)
+        self.freshness = freshness
+
+    def preparation(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        result = super().preparation(request)
+        investigation = result["investigation"]
+        assert isinstance(investigation, dict)
+        evidence = investigation["evidence"]
+        assert isinstance(evidence, list)
+        first = evidence[0]
+        assert isinstance(first, dict)
+        first["freshness"] = self.freshness
+        return result
+
+
 class BlockingProofWorkflow(ProofWorkflow):
     def __init__(self, visuals: Mapping[str, Mapping[str, str]]) -> None:
         super().__init__(visuals)
@@ -745,6 +762,24 @@ def test_proofless_preparation_is_rejected_and_terminalized(tmp_path: Path) -> N
             idempotency_key="demo-start-2",
         )
     assert conflict.value.run_id == RUN_IDS[0]
+
+
+@pytest.mark.parametrize("freshness", ["stale", "unresolved"])
+def test_preparation_rejects_noncurrent_evidence_and_terminalizes(
+    tmp_path: Path,
+    freshness: str,
+) -> None:
+    visual_root = tmp_path / "visuals"
+    visual_root.mkdir()
+    workflow = NonCurrentEvidenceWorkflow(_write_visuals(visual_root), freshness=freshness)
+    facade, _workflow, _recovery, _clock, _root = _facade(tmp_path, workflow=workflow)
+
+    with pytest.raises(DemoFacadeError, match="demo-investigation-proof-binding-invalid"):
+        _start(facade)
+
+    assert workflow.execute_calls == []
+    assert facade.get(RUN_IDS[0])["phase"] == "unresolved"
+    assert facade.receipt(RUN_IDS[0])["proofs"] == []
 
 
 def test_proofless_execution_is_rejected_and_terminalized(tmp_path: Path) -> None:
