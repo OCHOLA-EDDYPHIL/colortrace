@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
+from urllib.parse import urlsplit
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
@@ -42,6 +43,27 @@ from colortrace_telemetry.action_contract import (
 LOCAL_ACTION_OTLP_ENDPOINT = "http://127.0.0.1:14318"
 ACTION_TELEMETRY_SERVICE = "colortrace-simulator"
 ACTION_TELEMETRY_SERVICE_VERSION = "simulator-action-telemetry/v1"
+
+
+def _validated_otlp_endpoint(value: str) -> str:
+    if not isinstance(value, str) or value != value.strip() or not 1 <= len(value) <= 2_048:
+        raise ValueError("action telemetry endpoint is invalid")
+    parsed = urlsplit(value)
+    try:
+        _port = parsed.port
+    except ValueError:
+        raise ValueError("action telemetry endpoint is invalid") from None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise ValueError("action telemetry endpoint is invalid")
+    return value.rstrip("/")
 
 
 def _utc_now() -> datetime:
@@ -310,15 +332,21 @@ def _metric_action_attributes(event: Mapping[str, Any]) -> dict[str, str | int |
 
 
 class ActionOtelSink:
-    """A local-only OTLP pipeline with no caller-controlled endpoint or attributes."""
+    """An isolated OTLP pipeline with no caller-controlled attributes."""
 
-    def __init__(self, *, timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        endpoint: str = LOCAL_ACTION_OTLP_ENDPOINT,
+        *,
+        timeout_seconds: float = 10.0,
+    ) -> None:
         if (
             not isinstance(timeout_seconds, (int, float))
             or isinstance(timeout_seconds, bool)
             or not 0 < timeout_seconds <= 30
         ):
             raise ValueError("action telemetry timeout is invalid")
+        self.endpoint = _validated_otlp_endpoint(endpoint)
         resource = Resource.create(
             {
                 "service.name": ACTION_TELEMETRY_SERVICE,
@@ -327,7 +355,7 @@ class ActionOtelSink:
             }
         )
         span_exporter = OTLPSpanExporter(
-            endpoint=f"{LOCAL_ACTION_OTLP_ENDPOINT}/v1/traces", timeout=timeout_seconds
+            endpoint=f"{self.endpoint}/v1/traces", timeout=timeout_seconds
         )
         self._tracer_provider = TracerProvider(resource=resource)
         self._tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter))
@@ -336,7 +364,7 @@ class ActionOtelSink:
         )
 
         metric_exporter = OTLPMetricExporter(
-            endpoint=f"{LOCAL_ACTION_OTLP_ENDPOINT}/v1/metrics", timeout=timeout_seconds
+            endpoint=f"{self.endpoint}/v1/metrics", timeout=timeout_seconds
         )
         self._metric_reader = PeriodicExportingMetricReader(
             metric_exporter, export_interval_millis=60_000
@@ -352,9 +380,7 @@ class ActionOtelSink:
             description="Terminal simulator action observations delivered",
         )
 
-        log_exporter = OTLPLogExporter(
-            endpoint=f"{LOCAL_ACTION_OTLP_ENDPOINT}/v1/logs", timeout=timeout_seconds
-        )
+        log_exporter = OTLPLogExporter(endpoint=f"{self.endpoint}/v1/logs", timeout=timeout_seconds)
         self._logger_provider = LoggerProvider(resource=resource)
         self._logger_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
         self._logging_handler = LoggingHandler(

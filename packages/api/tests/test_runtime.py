@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -19,6 +21,8 @@ from colortrace_api.__main__ import main
 from colortrace_vertical_slice import SliceContractError, SqliteIncidentStore
 from fastapi.testclient import TestClient
 from jwt import PyJWK
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +88,86 @@ def environment(database_path: Path) -> dict[str, str]:
         "COLORTRACE_OIDC_JWKS_URI": "https://identity.example.test/jwks",
         "COLORTRACE_OIDC_LEEWAY_SECONDS": "15",
     }
+
+
+def canonical_demo_environment(tmp_path: Path) -> dict[str, str]:
+    values = environment(tmp_path / "incidents.sqlite3")
+    fixture = tmp_path / "fixture"
+    manifest = fixture / "runtime" / "manifests" / "fixture-runtime-manifest.json"
+    receipt = fixture / "reports" / "generation-receipt.json"
+    manifest.parent.mkdir(parents=True)
+    receipt.parent.mkdir(parents=True)
+    manifest.write_bytes(b'{"schema":"fixture-runtime-manifest/v1"}\n')
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    receipt.write_text(
+        json.dumps(
+            {
+                "fixture_runtime_manifest": "runtime/manifests/fixture-runtime-manifest.json",
+                "fixture_runtime_manifest_sha256": digest,
+            }
+        ),
+        encoding="utf-8",
+    )
+    ca_file = tmp_path / "grafana-ca.pem"
+    token_file = tmp_path / "grafana-token"
+    binary = tmp_path / "mcp-grafana"
+    build_binding = tmp_path / "build-binding.json"
+    ca_file.write_text("synthetic-ca", encoding="utf-8")
+    token_file.write_text("synthetic-token", encoding="utf-8")
+    token_file.chmod(0o600)
+    binary.write_text("synthetic-binary", encoding="utf-8")
+    binary.chmod(0o555)
+    build_binding.write_text(
+        json.dumps(
+            {
+                "schema": "colortrace-runtime-build-binding/v1",
+                "source_commit": "a" * 40,
+                "source_tree": "b" * 40,
+            }
+        ),
+        encoding="utf-8",
+    )
+    values.update(
+        {
+            "COLORTRACE_SIMULATOR_MODE": "local",
+            "COLORTRACE_SIMULATOR_DATABASE_PATH": str(tmp_path / "simulator.sqlite3"),
+            "COLORTRACE_SIMULATOR_WORKSPACE_PATH": str(tmp_path / "simulator-workspace"),
+            "COLORTRACE_SIMULATOR_FIXTURE_BUNDLE_PATH": str(fixture),
+            "COLORTRACE_DEMO_MODE": "canonical",
+            "COLORTRACE_DEMO_DATABASE_PATH": str(tmp_path / "demo.sqlite3"),
+            "COLORTRACE_DEMO_VISUAL_ROOT": str(tmp_path / "demo-visuals"),
+            "COLORTRACE_DEMO_CONFIG_PATH": str(
+                REPOSITORY_ROOT / "config" / "demo" / "local-demo.json"
+            ),
+            "COLORTRACE_SOURCE_COMMIT": "a" * 40,
+            "COLORTRACE_SOURCE_TREE": "b" * 40,
+            "COLORTRACE_RUNTIME_IMAGE": f"registry.example.test/colortrace@sha256:{'c' * 64}",
+            "COLORTRACE_PUBLIC_URL": "https://demo.example.test",
+            "COLORTRACE_STAGING_GENERATION": "generation-1",
+            "COLORTRACE_VERTEX_PROJECT_ID": "colortrace-project",
+            "COLORTRACE_VERTEX_LOCATION": "global",
+            "COLORTRACE_GRAFANA_URL": "https://grafana.internal.test",
+            "COLORTRACE_GRAFANA_CA_FILE": str(ca_file),
+            "COLORTRACE_GRAFANA_TOKEN_FILE": str(token_file),
+            "COLORTRACE_MCP_BINARY": str(binary),
+            "COLORTRACE_MCP_LOCK_PATH": str(
+                REPOSITORY_ROOT / "config" / "grafana-mcp" / "mcp-grafana.lock.json"
+            ),
+            "COLORTRACE_QUERY_CATALOG_PATH": str(
+                REPOSITORY_ROOT / "config" / "grafana-mcp" / "query-catalog.json"
+            ),
+            "COLORTRACE_INVESTIGATION_POLICY_PATH": str(
+                REPOSITORY_ROOT / "config" / "investigation" / "investigation-policy.json"
+            ),
+            "COLORTRACE_MODEL_PROFILE_PATH": str(
+                REPOSITORY_ROOT / "config" / "investigation" / "model-profile.json"
+            ),
+            "COLORTRACE_BUILD_BINDING_PATH": str(build_binding),
+            "COLORTRACE_FIXTURE_BUNDLE_SHA256": f"sha256:{digest}",
+            "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel-lgtm:4318",
+        }
+    )
+    return values
 
 
 def fixed_clock() -> datetime:
@@ -239,6 +323,49 @@ def test_factory_rejects_overlapping_authority_databases(tmp_path: Path) -> None
     with pytest.raises(ApiRuntimeConfigurationError) as error:
         ApiRuntimeConfig.from_environment(values)
     assert error.value.code == "database-path-overlap"
+
+
+def test_canonical_demo_environment_binds_deployment_inputs(tmp_path: Path) -> None:
+    values = canonical_demo_environment(tmp_path)
+
+    config = ApiRuntimeConfig.from_environment(values)
+
+    assert config.simulator_mode == "local"
+    assert config.simulator_fixture_bundle_path == tmp_path / "fixture"
+    assert config.demo is not None
+    assert config.demo.database_path == tmp_path / "demo.sqlite3"
+    assert config.demo.visual_root == tmp_path / "demo-visuals"
+    assert config.demo.source_commit == "a" * 40
+    assert config.demo.source_tree == "b" * 40
+    assert config.demo.fixture_bundle_sha256 == values["COLORTRACE_FIXTURE_BUNDLE_SHA256"]
+    assert config.demo.grafana_ca_file == tmp_path / "grafana-ca.pem"
+    assert config.demo.otlp_endpoint == "http://otel-lgtm:4318"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "code"),
+    [
+        ({"COLORTRACE_SIMULATOR_MODE": "disabled"}, "simulator-configuration-invalid"),
+        ({"COLORTRACE_VERTEX_LOCATION": "us-central1"}, "demo-vertex-location-invalid"),
+        (
+            {"COLORTRACE_FIXTURE_BUNDLE_SHA256": f"sha256:{'f' * 64}"},
+            "demo-fixture-digest-conflict",
+        ),
+        ({"COLORTRACE_PUBLIC_URL": "http://demo.example.test"}, "demo-public-url-invalid"),
+    ],
+)
+def test_canonical_demo_environment_rejects_drift(
+    tmp_path: Path,
+    mutation: Mapping[str, str],
+    code: str,
+) -> None:
+    values = canonical_demo_environment(tmp_path)
+    values.update(mutation)
+
+    with pytest.raises(ApiRuntimeConfigurationError) as error:
+        ApiRuntimeConfig.from_environment(values)
+
+    assert error.value.code == code
 
 
 def test_default_sqlite_composition_when_read_methods_are_available(tmp_path: Path) -> None:

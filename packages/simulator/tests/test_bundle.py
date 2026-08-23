@@ -267,6 +267,35 @@ def test_canonical_targeted_recovery_promotes_once_and_preserves_safe_work(
     assert inspected.prepared.candidate_seal_sha256 == prepared.candidate_seal_sha256
 
 
+def test_authored_scenario_reset_is_response_loss_safe_and_replay_exact(
+    tmp_path: Path,
+    canonical_bundle: Path,
+) -> None:
+    port = _port(tmp_path, canonical_bundle)
+    _action_value, _snapshot, prepared = _prepare(port)
+    assert port.compare_and_swap(prepared).state == "promoted"
+    with pytest.raises(SimulatorBundleError, match="canonical-causal-resource-ambiguous"):
+        port.canonical_plan_inputs()
+
+    def lose_response(point: str) -> None:
+        if point == "active-pointer-replaced":
+            raise RuntimeError("simulated reset response loss")
+
+    port.fault_hook = lose_response
+    with pytest.raises(RuntimeError, match="simulated reset response loss"):
+        port.restore_authored_scenario(operation_id="reset-operation-1")
+    port.fault_hook = lambda _point: None
+
+    replayed = port.restore_authored_scenario(operation_id="reset-operation-1")
+    repeated = port.restore_authored_scenario(operation_id="reset-operation-1")
+
+    assert replayed == repeated
+    assert replayed["previous_pointer_sha256"] == prepared.candidate_pointer_sha256
+    assert replayed["active_pointer_sha256"] == prepared.predecessor_pointer_sha256
+    assert replayed["generation"] == 1
+    assert len(port.canonical_plan_inputs()["commands"]) == 5
+
+
 @pytest.mark.parametrize(
     ("fault_point", "expected_state"),
     [

@@ -317,6 +317,8 @@ version = "0.1.0"
 source = { editable = "packages/api" }
 dependencies = [
     { name = "colortrace-fixture" },
+    { name = "colortrace-grafana-mcp" },
+    { name = "colortrace-investigation" },
     { name = "colortrace-persistence" },
     { name = "colortrace-recovery" },
     { name = "colortrace-response-plans" },
@@ -333,6 +335,8 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "colortrace-fixture", editable = "packages/fixture-generator" },
+    { name = "colortrace-grafana-mcp", editable = "packages/grafana-mcp" },
+    { name = "colortrace-investigation", editable = "packages/investigation" },
     { name = "colortrace-persistence", editable = "packages/persistence" },
     { name = "colortrace-recovery", editable = "packages/recovery" },
     { name = "colortrace-response-plans", editable = "packages/response-plans" },

@@ -78,6 +78,24 @@ RUN --mount=type=cache,id=colortrace-runtime-uv,target=/root/.cache/uv,sharing=l
     && { /source/.venv/lib/python3.12/site-packages/PyOpenColorIO/bin/ociolutimage --help \
         >/dev/null || test "$?" -eq 1; } \
     && test -z "$(find /source/.venv -type f -name '*.py[co]' -print -quit)"
+RUN /source/.venv/bin/colortrace-fixture generate \
+        --bundle /tmp/colortrace-fixture-a \
+        --oracle /tmp/colortrace-oracle-a \
+        --variant canonical \
+        --seed ct-shadowed-lut-v1:canonical \
+    && /source/.venv/bin/colortrace-fixture generate \
+        --bundle /tmp/colortrace-fixture-b \
+        --oracle /tmp/colortrace-oracle-b \
+        --variant canonical \
+        --seed ct-shadowed-lut-v1:canonical \
+    && /source/.venv/bin/colortrace-fixture validate \
+        --scenario /tmp/colortrace-fixture-a \
+    && /source/.venv/bin/colortrace-fixture validate \
+        --scenario /tmp/colortrace-fixture-b \
+    && diff -qr /tmp/colortrace-fixture-a /tmp/colortrace-fixture-b \
+    && test -z "$(find /tmp/colortrace-fixture-a -iname '*oracle*' -print -quit)" \
+    && mv /tmp/colortrace-fixture-a /opt/colortrace-fixture \
+    && rm -rf /tmp/colortrace-fixture-b /tmp/colortrace-oracle-a /tmp/colortrace-oracle-b
 
 FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS runtime-base
 ARG SOURCE_COMMIT
@@ -95,17 +113,37 @@ RUN apk add --no-cache libcrypto3=3.5.7-r0 libssl3=3.5.7-r0 libstdc++=14.2.0-r6 
     && source_date_days=$((SOURCE_DATE_EPOCH / 86400)) \
     && sed -i "s|^colortrace:!:[^:]*:|colortrace:!:${source_date_days}:|" /etc/shadow \
     && grep -Fqx "colortrace:!:${source_date_days}:0:99999:7:::" /etc/shadow \
-    && install -d -o 65532 -g 65532 -m 0700 /var/run/colortrace-private /tmp/colortrace
+    && install -d -o 65532 -g 65532 -m 0700 /var/run/colortrace-private /tmp/colortrace \
+    && install -d -o 0 -g 0 -m 0555 /opt/colortrace-config \
+    && printf '%s\n' \
+        "{\"schema\":\"colortrace-runtime-build-binding/v1\",\"source_commit\":\"${SOURCE_COMMIT}\",\"source_tree\":\"${SOURCE_TREE}\"}" \
+        > /opt/colortrace-config/build-binding.json \
+    && chmod 0444 /opt/colortrace-config/build-binding.json
 COPY --from=build /source/.venv /opt/colortrace
+COPY --from=build /opt/colortrace-fixture /opt/colortrace/fixture
+COPY config/demo/local-demo.json /opt/colortrace-config/demo/local-demo.json
 COPY config/grafana-mcp/mcp-grafana.lock.json \
     config/grafana-mcp/query-catalog.json \
     /opt/colortrace-config/grafana-mcp/
+COPY config/investigation/investigation-policy.json \
+    config/investigation/model-profile.json \
+    /opt/colortrace-config/investigation/
 COPY uv.lock /opt/colortrace-config/uv.lock
 COPY deploy/runtime-entrypoint.py /usr/local/libexec/colortrace-entrypoint.py
 COPY packages/repo-tools/src/colortrace_repo/image_licenses.py /usr/local/libexec/colortrace-image-licenses.py
 COPY LICENSE /usr/share/licenses/colortrace/LICENSE
 RUN chmod 0555 /usr/local/libexec/colortrace-entrypoint.py \
     /usr/local/libexec/colortrace-image-licenses.py \
+    && chmod 0444 \
+        /opt/colortrace-config/demo/local-demo.json \
+        /opt/colortrace-config/build-binding.json \
+        /opt/colortrace-config/grafana-mcp/mcp-grafana.lock.json \
+        /opt/colortrace-config/grafana-mcp/query-catalog.json \
+        /opt/colortrace-config/investigation/investigation-policy.json \
+        /opt/colortrace-config/investigation/model-profile.json \
+        /opt/colortrace-config/uv.lock \
+    && find /opt/colortrace/fixture -type d -exec chmod 0555 {} + \
+    && find /opt/colortrace/fixture -type f -exec chmod 0444 {} + \
     && /opt/colortrace/bin/python -c "import colortrace_api, colortrace_grafana_mcp, colortrace_simulator"
 LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
       org.colortrace.source-tree="${SOURCE_TREE}"

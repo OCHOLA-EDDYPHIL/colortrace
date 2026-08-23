@@ -174,6 +174,16 @@ class TelemetrySink:
         self.state.lifecycle.append("sink.shutdown")
 
 
+class ResetPublication:
+    def __init__(self, state: DurableState) -> None:
+        self.state = state
+
+    def restore_authored_scenario(self, *, operation_id: str) -> Mapping[str, Any]:
+        assert self.state.pending == []
+        self.state.lifecycle.append("publication.reset")
+        return {"operation_id": operation_id}
+
+
 class IncidentService:
     def accept_alert(self, alert: Mapping[str, Any], principal: Principal) -> dict[str, Any]:
         raise AssertionError("not used")
@@ -363,6 +373,29 @@ def test_startup_scan_executes_a_durably_queued_action() -> None:
         assert state.outcomes[IDENTITY]["status"] == "succeeded"
         assert len(state.execution_owners) == 1
     assert not runtime.runner.thread_alive
+
+
+def test_authored_reset_drains_queued_actions_before_restoring_publication() -> None:
+    state = DurableState(pending=[IDENTITY])
+    publication = ResetPublication(state)
+    runtime = LocalSimulatorRuntime(
+        repository=RuntimeRepository(state),
+        service=RuntimeService(state, telemetry_available=True),
+        telemetry_sink=TelemetrySink(state),
+        recovery_publication=publication,
+        join_timeout_seconds=2,
+    )
+
+    runtime.runner.start()
+    try:
+        result = runtime.restore_authored_scenario(operation_id="demo-reset-operation")
+    finally:
+        runtime.runner.close()
+
+    assert result == {"operation_id": "demo-reset-operation"}
+    assert state.pending == []
+    assert state.outcomes[IDENTITY]["status"] == "succeeded"
+    assert state.lifecycle.index("action.execute") < state.lifecycle.index("publication.reset")
 
 
 class FatalRepository(RuntimeRepository):
@@ -586,6 +619,7 @@ def test_application_factory_requires_complete_explicit_local_configuration(
     assert observed["database_path"] == tmp_path / "simulator.sqlite3"
     assert observed["workspace_path"] == tmp_path / "simulator-workspace"
     assert observed["fixture_bundle_path"] == tmp_path / "fixture"
+    assert observed["otlp_endpoint"] is None
 
     disabled = {key: value for key, value in values.items() if key.startswith("COLORTRACE_OIDC")}
     disabled.update(
