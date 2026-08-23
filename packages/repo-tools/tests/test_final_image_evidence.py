@@ -951,10 +951,14 @@ class FinalImageEvidenceTest(unittest.TestCase):
             "\nsecurity-evidence: prepare-cache\n", maxsplit=1
         )[0]
         self.assertIn('source_date_epoch="$$(git show -s --format=%ct', recipe)
-        self.assertEqual(recipe.count("docker buildx build --pull=false --provenance=false"), 3)
-        self.assertEqual(recipe.count("--build-arg SOURCE_DATE_EPOCH="), 3)
-        self.assertEqual(recipe.count("rewrite-timestamp=true"), 3)
-        self.assertEqual(recipe.count("docker load --input"), 3)
+        self.assertEqual(recipe.count("docker buildx build --pull=false --provenance=false"), 4)
+        self.assertEqual(recipe.count("--build-arg SOURCE_DATE_EPOCH="), 4)
+        self.assertEqual(recipe.count("rewrite-timestamp=true"), 4)
+        self.assertEqual(recipe.count("docker load --input"), 4)
+        self.assertEqual(recipe.count("--provenance=false --no-cache"), 2)
+        self.assertEqual(recipe.count('images/$$name/vulnerability.json"'), 1)
+        self.assertIn("--scanners vuln --severity HIGH,CRITICAL --exit-code 1", recipe)
+        self.assertNotIn("--ignorefile", recipe)
         self.assertNotIn("docker image save", recipe)
 
         runtime = (REPOSITORY_ROOT / "Dockerfile.runtime").read_text(encoding="utf-8")

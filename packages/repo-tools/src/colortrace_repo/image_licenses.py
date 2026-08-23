@@ -159,8 +159,11 @@ def _go_components(
     if module is None or len(module) < 3:
         raise BundleError("Go build info has no main module")
     if (
-        module[1] != "github.com/grafana/mcp-grafana"
-        or module[2].removeprefix("v") != lock["release_version"]
+        len(module) != 4
+        or module[1] != lock.get("source_module")
+        or module[2] != lock.get("source_module_version")
+        or module[2].removeprefix("v") != lock.get("release_version")
+        or module[3] != lock.get("source_module_sum")
     ):
         raise BundleError("mcp-grafana build info does not match its runtime lock")
     vcs_revision = next(
@@ -171,7 +174,7 @@ def _go_components(
         ),
         None,
     )
-    if vcs_revision != lock["source_commit"]:
+    if vcs_revision is not None and vcs_revision != lock.get("source_commit"):
         raise BundleError("mcp-grafana source revision does not match its runtime lock")
     components: list[dict[str, Any]] = [
         {
@@ -181,7 +184,9 @@ def _go_components(
             "license_sources": [license_source],
             "name": module[1],
             "owner_legal_status": "pending",
-            "source_commit": vcs_revision,
+            "source_checksum": module[3],
+            "source_commit": lock.get("source_commit"),
+            "source_tree": lock.get("source_tree"),
             "source_url": lock["source_repository"],
             "version": module[2],
         }
@@ -552,13 +557,16 @@ def build_runtime_bundle(args: argparse.Namespace) -> None:
         if binary_sha256 != lock.get("binary_sha256"):
             raise BundleError("mcp-grafana binary hash does not match its runtime lock")
         go_version, module_text = _go_build_info(mcp_binary)
+        if lock.get("schema") != "mcp-grafana-runtime-lock/v2":
+            raise BundleError("unsupported mcp-grafana runtime lock")
+        if go_version != lock.get("toolchain_version"):
+            raise BundleError("mcp-grafana toolchain does not match its runtime lock")
         mcp_lock = _copy_source(args.mcp_lock, output, "sources/mcp-grafana/runtime-lock.json")
         mcp_license = _copy_source(args.mcp_license, output, "sources/mcp-grafana/LICENSE")
         go_license = _copy_source(args.go_license, output, "sources/language-runtimes/go/LICENSE")
         components.extend(
             [
                 {
-                    "archive_sha256": lock.get("archive_sha256"),
                     "binary_sha256": binary_sha256,
                     "kind": "application",
                     "license_evidence_status": "delivered-text",
@@ -571,7 +579,9 @@ def build_runtime_bundle(args: argparse.Namespace) -> None:
                     "name": "mcp-grafana",
                     "owner_legal_status": "pending",
                     "runtime_lock": mcp_lock,
+                    "source_checksum": lock.get("source_module_sum"),
                     "source_commit": lock.get("source_commit"),
+                    "source_tree": lock.get("source_tree"),
                     "source_url": lock.get("source_repository"),
                     "version": lock.get("release_version"),
                 },

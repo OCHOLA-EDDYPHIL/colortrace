@@ -473,16 +473,19 @@ final-image-cleanup:
 	image_root="$(WORKSPACE)/.cache/security-images/$$candidate"; \
 	case "$$image_root" in ("$(WORKSPACE)/.cache/security-images/"*) ;; (*) exit 1;; esac; \
 	runtime_ref="colortrace-security-runtime:$$candidate"; \
+	runtime_repro_ref="colortrace-security-runtime-repro:$$candidate"; \
 	hosted_ref="colortrace-security-hosted-runtime:$$candidate"; \
 	web_ref="colortrace-security-web:$$candidate"; \
 	docker rm --force \
 		"colortrace-sbom-runtime-$$candidate" \
 		"colortrace-sbom-hosted-runtime-$$candidate" \
 		"colortrace-sbom-web-$$candidate" \
+		"colortrace-repro-runtime-a-$$candidate" \
+		"colortrace-repro-runtime-b-$$candidate" \
 		"colortrace-smoke-runtime-$$candidate" \
 		"colortrace-smoke-hosted-runtime-$$candidate" \
 		"colortrace-smoke-web-$$candidate" >/dev/null 2>&1 || true; \
-	docker image rm "$$runtime_ref" "$$hosted_ref" "$$web_ref" >/dev/null 2>&1 || true; \
+	docker image rm "$$runtime_ref" "$$runtime_repro_ref" "$$hosted_ref" "$$web_ref" >/dev/null 2>&1 || true; \
 	rm -rf -- "$$image_root"; \
 	if ! docker info >/dev/null 2>&1; then \
 		echo "cleanup cannot verify the Docker daemon" >&2; exit 1; \
@@ -492,6 +495,8 @@ final-image-cleanup:
 		"colortrace-sbom-runtime-$$candidate" \
 		"colortrace-sbom-hosted-runtime-$$candidate" \
 		"colortrace-sbom-web-$$candidate" \
+		"colortrace-repro-runtime-a-$$candidate" \
+		"colortrace-repro-runtime-b-$$candidate" \
 		"colortrace-smoke-runtime-$$candidate" \
 		"colortrace-smoke-hosted-runtime-$$candidate" \
 		"colortrace-smoke-web-$$candidate"; do \
@@ -499,7 +504,7 @@ final-image-cleanup:
 			echo "cleanup retained container $$resource" >&2; cleanup_failed=1; \
 		fi; \
 	done; \
-	for resource in "$$runtime_ref" "$$hosted_ref" "$$web_ref"; do \
+	for resource in "$$runtime_ref" "$$runtime_repro_ref" "$$hosted_ref" "$$web_ref"; do \
 		if docker image inspect "$$resource" >/dev/null 2>&1; then \
 			echo "cleanup retained image $$resource" >&2; cleanup_failed=1; \
 		fi; \
@@ -522,6 +527,7 @@ final-image-evidence: prepare-cache
 	image_root="$(WORKSPACE)/.cache/security-images/$(SECURITY_CANDIDATE_SHA)"; \
 	case "$$image_root" in ("$(WORKSPACE)/.cache/security-images/"*) ;; (*) exit 1;; esac; \
 	runtime_ref="colortrace-security-runtime:$(SECURITY_CANDIDATE_SHA)"; \
+	runtime_repro_ref="colortrace-security-runtime-repro:$(SECURITY_CANDIDATE_SHA)"; \
 	hosted_ref="colortrace-security-hosted-runtime:$(SECURITY_CANDIDATE_SHA)"; \
 	web_ref="colortrace-security-web:$(SECURITY_CANDIDATE_SHA)"; \
 	cleanup() { \
@@ -545,7 +551,7 @@ final-image-evidence: prepare-cache
 	git archive --format=tar --output "$$image_root/context.tar" HEAD; \
 	tar -xf "$$image_root/context.tar" -C "$$image_root/context"; \
 	rm "$$image_root/context.tar"; \
-	docker buildx build --pull=false --provenance=false \
+	docker buildx build --pull=false --provenance=false --no-cache \
 		--file "$$image_root/context/Dockerfile.runtime" --target runtime \
 		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
 		--build-arg SOURCE_TREE="$$candidate_tree" \
@@ -555,6 +561,37 @@ final-image-evidence: prepare-cache
 		"$$image_root/context"; \
 	chmod 0600 "$$image_root/runtime.tar"; \
 	docker load --input "$$image_root/runtime.tar" >/dev/null; \
+	docker buildx build --pull=false --provenance=false --no-cache \
+		--file "$$image_root/context/Dockerfile.runtime" --target runtime \
+		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
+		--build-arg SOURCE_TREE="$$candidate_tree" \
+		--build-arg SOURCE_DATE_EPOCH="$$source_date_epoch" \
+		--output "type=docker,dest=$$image_root/runtime-repro.tar,rewrite-timestamp=true" \
+		--tag "$$runtime_repro_ref" \
+		"$$image_root/context"; \
+	chmod 0600 "$$image_root/runtime-repro.tar"; \
+	docker load --input "$$image_root/runtime-repro.tar" >/dev/null; \
+	docker create --name "colortrace-repro-runtime-a-$(SECURITY_CANDIDATE_SHA)" \
+		"$$runtime_ref" >/dev/null; \
+	docker cp "colortrace-repro-runtime-a-$(SECURITY_CANDIDATE_SHA):/usr/local/bin/mcp-grafana" \
+		"$$image_root/mcp-grafana-a"; \
+	docker rm "colortrace-repro-runtime-a-$(SECURITY_CANDIDATE_SHA)" >/dev/null; \
+	docker create --name "colortrace-repro-runtime-b-$(SECURITY_CANDIDATE_SHA)" \
+		"$$runtime_repro_ref" >/dev/null; \
+	docker cp "colortrace-repro-runtime-b-$(SECURITY_CANDIDATE_SHA):/usr/local/bin/mcp-grafana" \
+		"$$image_root/mcp-grafana-b"; \
+	docker rm "colortrace-repro-runtime-b-$(SECURITY_CANDIDATE_SHA)" >/dev/null; \
+	chmod 0600 "$$image_root/mcp-grafana-a" "$$image_root/mcp-grafana-b"; \
+	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo mcp-build-evidence \
+		--output "$(SECURITY_EVIDENCE_CONTAINER)/mcp-grafana-reproducibility.json" \
+		--candidate-sha "$(SECURITY_CANDIDATE_SHA)" \
+		--candidate-tree "$$candidate_tree" \
+		--first-binary "/workspace/.cache/security-images/$(SECURITY_CANDIDATE_SHA)/mcp-grafana-a" \
+		--second-binary "/workspace/.cache/security-images/$(SECURITY_CANDIDATE_SHA)/mcp-grafana-b" \
+		--first-archive "/workspace/.cache/security-images/$(SECURITY_CANDIDATE_SHA)/runtime.tar" \
+		--second-archive "/workspace/.cache/security-images/$(SECURITY_CANDIDATE_SHA)/runtime-repro.tar" \
+		--first-reference "$$runtime_ref" \
+		--second-reference "$$runtime_repro_ref"; \
 	docker buildx build --pull=false --provenance=false \
 		--file "$$image_root/context/Dockerfile.runtime" --target hosted-runtime \
 		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
@@ -601,6 +638,15 @@ final-image-evidence: prepare-cache
 				--skip-db-update --skip-java-db-update --skip-version-check \
 				--format cyclonedx --output "/evidence/images/$$name/raw-sbom.cdx.json" \
 				--input /image.tar; \
+		docker run --rm --network none --pull=never \
+			--user $(HOST_UID):$(HOST_GID) \
+			--volume "$(WORKSPACE)/.cache/trivy:/trivy-cache" \
+			--volume "$(SECURITY_EVIDENCE_HOST):/evidence" \
+			$(TRIVY_IMAGE) sbom --cache-dir /trivy-cache --offline-scan \
+				--scanners vuln --severity HIGH,CRITICAL --exit-code 1 \
+				--skip-db-update --skip-java-db-update --skip-version-check \
+				--format json --output "/evidence/images/$$name/vulnerability.json" \
+				"/evidence/images/$$name/raw-sbom.cdx.json"; \
 	}; \
 	capture runtime "$$runtime_ref"; \
 	docker run --rm --name "colortrace-smoke-runtime-$(SECURITY_CANDIDATE_SHA)" \
