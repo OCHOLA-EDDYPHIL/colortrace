@@ -482,6 +482,8 @@ class OfficialMcpRuntime:
     binary: Path
     token: bytes = field(repr=False)
     _verification: object = field(default=None, repr=False, compare=False)
+    tls_ca_file: Path | None = None
+    _tls_ca_sha256: str | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def verify(
@@ -491,6 +493,7 @@ class OfficialMcpRuntime:
         token_file: Path,
         binary: Path,
         lock_path: Path,
+        tls_ca_file: Path | None = None,
     ) -> OfficialMcpRuntime:
         lock = strict_json_file(lock_path.resolve(strict=True))
         if lock != _EXPECTED_LOCK:
@@ -525,12 +528,18 @@ class OfficialMcpRuntime:
             raise AdapterError("mcp_binary_drift")
 
         token = cls._read_token_file(token_file)
+        tls_ca_sha256 = None
+        if tls_ca_file is not None:
+            cls._validate_regular_file(tls_ca_file, private=False)
+            tls_ca_sha256 = _file_sha256(tls_ca_file)
         return cls(
-            grafana_url.rstrip("/"),
-            token_file,
-            binary,
-            token,
-            _RUNTIME_VERIFICATION,
+            grafana_url=grafana_url.rstrip("/"),
+            token_file=token_file,
+            binary=binary,
+            token=token,
+            _verification=_RUNTIME_VERIFICATION,
+            tls_ca_file=tls_ca_file,
+            _tls_ca_sha256=tls_ca_sha256,
         )
 
     @classmethod
@@ -560,6 +569,15 @@ class OfficialMcpRuntime:
         current_token = self._read_token_file(self.token_file)
         if not hmac.compare_digest(current_token, self.token):
             raise AdapterError("credential_file_changed")
+        if self.tls_ca_file is None:
+            if self._tls_ca_sha256 is not None:
+                raise AdapterError("runtime_unverified")
+        else:
+            self._validate_regular_file(self.tls_ca_file, private=False)
+            if self._tls_ca_sha256 is None or not hmac.compare_digest(
+                _file_sha256(self.tls_ca_file), self._tls_ca_sha256
+            ):
+                raise AdapterError("tls_ca_file_changed")
 
     @staticmethod
     def _validate_regular_file(path: Path, *, private: bool) -> None:
@@ -1387,25 +1405,32 @@ SessionFactory = Callable[[OfficialMcpRuntime], AbstractAsyncContextManager[McpS
 InventoryLoader = Callable[[McpSession], Awaitable[FrozenInventory]]
 
 
-@asynccontextmanager
-async def _official_session_transport(runtime: OfficialMcpRuntime) -> AsyncIterator[McpSession]:
-    runtime.assert_unchanged()
-    parameters = StdioServerParameters(
+def _official_server_parameters(runtime: OfficialMcpRuntime) -> StdioServerParameters:
+    arguments = [
+        "--transport=stdio",
+        "--disable-write",
+        f"--enabled-tools={','.join(MCP_ENABLED_CATEGORIES)}",
+        f"--grafana-timeout={MCP_GRAFANA_TIMEOUT_SECONDS}s",
+        "--max-loki-log-limit=200",
+        "--log-level=error",
+    ]
+    if runtime.tls_ca_file is not None:
+        arguments.append(f"--tls-ca-file={runtime.tls_ca_file}")
+    return StdioServerParameters(
         command=str(runtime.binary),
-        args=[
-            "--transport=stdio",
-            "--disable-write",
-            f"--enabled-tools={','.join(MCP_ENABLED_CATEGORIES)}",
-            f"--grafana-timeout={MCP_GRAFANA_TIMEOUT_SECONDS}s",
-            "--max-loki-log-limit=200",
-            "--log-level=error",
-        ],
+        args=arguments,
         env={
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             "GRAFANA_URL": runtime.grafana_url,
             "GRAFANA_SERVICE_ACCOUNT_TOKEN_FILE": str(runtime.token_file),
         },
     )
+
+
+@asynccontextmanager
+async def _official_session_transport(runtime: OfficialMcpRuntime) -> AsyncIterator[McpSession]:
+    runtime.assert_unchanged()
+    parameters = _official_server_parameters(runtime)
     with Path(os.devnull).open("w", encoding="utf-8") as error_log:
         async with stdio_client(parameters, errlog=error_log) as (read, write):
             async with ClientSession(

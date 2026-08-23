@@ -1990,6 +1990,56 @@ def test_runtime_rejects_public_or_symlinked_credentials(tmp_path: Path) -> None
         subject.EvidenceAdapter(runtime=unverified, catalog=catalog())
 
 
+def test_verified_tls_ca_is_passed_to_child_and_change_is_rejected(tmp_path: Path) -> None:
+    ca_file = tmp_path / "caddy-root.crt"
+    ca_file.write_text("test-ca-v1", encoding="utf-8")
+    token_file = tmp_path / "viewer.token"
+    token_file.write_bytes(TOKEN)
+    token_file.chmod(0o600)
+    binary = tmp_path / "mcp-grafana"
+    binary.write_bytes(b"test-binary")
+    binary.chmod(0o755)
+    verified = subject.OfficialMcpRuntime(
+        grafana_url="https://grafana.invalid",
+        token_file=token_file,
+        binary=binary,
+        token=TOKEN,
+        _verification=subject._RUNTIME_VERIFICATION,
+        tls_ca_file=ca_file,
+        _tls_ca_sha256=subject._file_sha256(ca_file),
+    )
+
+    parameters = subject._official_server_parameters(verified)
+
+    assert parameters.args is not None
+    assert f"--tls-ca-file={ca_file}" in parameters.args
+    assert parameters.env is not None
+    assert "SSL_CERT_FILE" not in parameters.env
+    ca_file.write_text("test-ca-v2", encoding="utf-8")
+    actual_file_sha256 = subject._file_sha256
+
+    def pinned_binary(path: Path) -> str:
+        if path == binary:
+            return subject.MCP_GRAFANA_BINARY_SHA256
+        return actual_file_sha256(path)
+
+    with patch.object(subject, "_file_sha256", side_effect=pinned_binary):
+        with pytest.raises(subject.AdapterError, match="tls_ca_file_changed"):
+            verified.assert_unchanged()
+
+
+def test_tls_ca_must_be_an_absolute_regular_non_symlink(tmp_path: Path) -> None:
+    ca_file = tmp_path / "caddy-root.crt"
+    ca_file.write_text("test-ca", encoding="utf-8")
+    link = tmp_path / "caddy-root-link.crt"
+    link.symlink_to(ca_file)
+
+    with pytest.raises(subject.AdapterError, match="runtime_path_invalid"):
+        subject.OfficialMcpRuntime._validate_regular_file(link, private=False)
+    with pytest.raises(subject.AdapterError, match="runtime_path_invalid"):
+        subject.OfficialMcpRuntime._validate_regular_file(Path("relative-ca.crt"), private=False)
+
+
 def test_write_capability_cannot_be_selected() -> None:
     invalid = request("alert.rule")
     invalid["query_keys"] = ["alerting.update-rule"]

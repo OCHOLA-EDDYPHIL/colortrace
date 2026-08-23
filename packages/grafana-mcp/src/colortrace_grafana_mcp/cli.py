@@ -27,6 +27,7 @@ def _parser() -> argparse.ArgumentParser:
     def runtime_arguments(command: argparse.ArgumentParser) -> None:
         command.add_argument("--grafana-url", required=True)
         command.add_argument("--token-file", required=True, type=Path)
+        command.add_argument("--tls-ca-file", type=Path)
         command.add_argument("--binary", type=Path, default=Path("/usr/local/bin/mcp-grafana"))
         command.add_argument(
             "--lock",
@@ -75,6 +76,7 @@ def _runtime(args: argparse.Namespace) -> OfficialMcpRuntime:
         token_file=args.token_file,
         binary=args.binary,
         lock_path=args.lock,
+        tls_ca_file=args.tls_ca_file,
     )
 
 
