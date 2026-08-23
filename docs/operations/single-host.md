@@ -22,16 +22,20 @@ organizational separation or independent approval. The owner impersonates the re
 account only for the guarded start command and removes impersonation before host verification.
 
 The module grants `operator_member` Cloud Build editor and Service Usage Consumer at project scope,
-plus `serviceAccountUser` on the exact builder service account. For SSH it grants a custom project
-role containing only `compute.instances.list` and `compute.projects.get`, OS Admin on the exact VM,
-IAP on the exact VM conditioned on destination port 22, and `serviceAccountUser` on the exact host
+`serviceAccountUser` on the exact builder service account, and Artifact Registry Reader on only the
+single-host image repository. On the dedicated build-source bucket, it grants the operator Object
+Creator and bucket-reader roles and grants the builder Object Viewer. These bucket grants do not
+apply to Terraform state or other project buckets. For SSH it grants a custom project role
+containing only `compute.instances.list` and `compute.projects.get`, OS Admin on the exact VM, IAP
+on the exact VM conditioned on destination port 22, and `serviceAccountUser` on the exact host
 service account.
 
 ## Safety rules
 
 - Use a clean checkout of the exact source revision that will run.
 - Use a dedicated Terraform state prefix and single-host resource prefix.
-- Do not reuse resources, networks, state, or names from `infra/staging`.
+- Do not reuse resources, networks, state, build-source storage, or names from `infra/staging`.
+- Never use the Terraform state bucket as the Cloud Build source bucket.
 - Review every plan before applying it.
 - Keep `enable_instance` false until every immutable input is available.
 - Deploy only the generated admission binding; do not hand-copy image references into Terraform.
@@ -41,9 +45,11 @@ service account.
 
 ## Required tools and access
 
-Install Docker, GNU Make, Git, `gcloud`, `jq`, `curl`, `sha256sum`, and the Terraform version declared
-in `infra/single-host/versions.tf`. Configure `gcloud` and Application Default Credentials for the
-owner/deployer. Do not create or download a key for the resume service account.
+Use a Linux AMD64 operator host. Install Bash, Docker Engine, GNU Make and core utilities, Git,
+Python 3, OpenSSH, `gcloud`, `jq`, `curl`, `tar`, `awk`, `sha256sum`, and the Terraform version
+declared in `infra/single-host/versions.tf`. The operator must have non-root access to the local
+Docker Unix socket. Configure `gcloud` and Application Default Credentials for the owner/deployer.
+Do not create or download a key for the resume service account.
 
 The project must permit the APIs declared in `infra/single-host/services.tf`, including
 `iamcredentials.googleapis.com` for keyless resume-service-account impersonation. The
@@ -136,8 +142,9 @@ terraform -chdir=infra/single-host apply ../../.cache/single-host/foundation.tfp
 ```
 
 The foundation creates the dedicated network, runtime and builder service accounts, image
-repository, access-verifier secret container, and required service bindings. It does not create the
-VM, disk, external address, or externally managed resume service account.
+repository, short-retention build-source bucket, access-verifier secret container, and required
+service bindings. It does not create the VM, disk, external address, or externally managed resume
+service account.
 
 After the foundation has enabled the required IAM API, create the resume service account. Grant the
 owner Token Creator only on that service account so `gcloud` can impersonate it without a key. Do
@@ -154,15 +161,18 @@ gcloud iam service-accounts add-iam-policy-binding "$CT_RESUME_ACCOUNT" \
 ```
 
 Inspect `terraform -chdir=infra/single-host output -json resource_inventory` after applying. Confirm
-that the network, subnetwork, secret container, repository, and service accounts use the selected
-prefix. Confirm that the instance, disk, and public address are absent.
+that the network, subnetwork, secret container, image repository, build-source bucket, and service
+accounts use the selected project and prefix. Confirm that the instance, disk, and public address
+are absent. Confirm that the build-source bucket is not the Terraform state bucket.
 
 ## Build, scan, and bind the images
 
 Use the owner/deployer's `operator_member` identity for the build. The build script rejects a dirty
-worktree or a commit other than checked-out `HEAD`. It submits an archive of that commit with the
-dedicated builder identity and writes a private v2 manifest containing the exact source, build,
-fixture, and six private image digests.
+worktree or a commit other than checked-out `HEAD`. It stages the archive only in the module-owned
+build-source bucket, submits that archive with the dedicated builder identity, verifies the
+described staging location, and writes a private v2 manifest containing the exact source, build,
+fixture, and six private image digests. A bucket lifecycle removes staged source objects after one
+day.
 
 ```sh
 gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
@@ -248,6 +258,11 @@ the VM starts and charges that continue while it is stopped.
 The estimate must be positive, no greater than `cost_ceiling_usd`, and strictly below USD 100.
 Terraform checks the recorded number but does not enforce actual billing. Billing reports can lag,
 and budget alerts do not stop resources.
+
+Record a maximum count of new workflows in the private cost estimate. This profile permits only one
+active workflow but does not enforce a lifetime count. Keep a private run ledger, do not share the
+access credential, and stop admitting new workflows when the allowance is reached. Require a new
+cost review before increasing the allowance.
 
 Resolve one exact Debian 12 boot image. Use a new 8-32 character lowercase pre-acceptance lifecycle
 generation while performing deployment, restart, browser, and stop-resume testing. Its clock is a
@@ -430,6 +445,11 @@ terraform -chdir=infra/single-host output -json >"$CT_OUTPUTS"
 chmod 0600 "$CT_OUTPUTS"
 export CT_GENERATION="$CT_FINAL_GENERATION"
 ```
+
+Before the final apply, inspect the saved plan. The existing VM and persistent disk must have no
+destroy or replacement action. The generation and startup program must update as ordinary instance
+metadata. Stop if the plan contains a replacement; replacement can activate the generation early
+and invalidate exact-instance IAM bindings.
 
 Force one stop and guarded resume after the apply so startup activates the final generation at this
 boundary. Use the owner/deployer for the stop and the impersonated resume service account only for
