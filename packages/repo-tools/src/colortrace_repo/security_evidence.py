@@ -511,7 +511,7 @@ def _mcp_reproducibility_findings(
         (
             document.get("candidate") != {"commit": candidate_sha, "tree": candidate_tree},
             document.get("findings") != [],
-            document.get("method") != "two-buildx-no-cache-builds",
+            document.get("method") != "two-buildx-mcp-no-cache-builds",
             document.get("runtime_lock_sha256") != _sha256(lock_path),
             not valid_builds,
         )

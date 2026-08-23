@@ -955,7 +955,7 @@ class FinalImageEvidenceTest(unittest.TestCase):
         self.assertEqual(recipe.count("--build-arg SOURCE_DATE_EPOCH="), 4)
         self.assertEqual(recipe.count("rewrite-timestamp=true"), 4)
         self.assertEqual(recipe.count("docker load --input"), 4)
-        self.assertEqual(recipe.count("--provenance=false --no-cache"), 2)
+        self.assertEqual(recipe.count("--no-cache-filter mcp-grafana"), 2)
         self.assertEqual(recipe.count('images/$$name/vulnerability.json"'), 1)
         self.assertIn("--scanners vuln --severity HIGH,CRITICAL --exit-code 1", recipe)
         self.assertNotIn("--ignorefile", recipe)

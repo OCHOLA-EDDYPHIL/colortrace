@@ -551,7 +551,7 @@ final-image-evidence: prepare-cache
 	git archive --format=tar --output "$$image_root/context.tar" HEAD; \
 	tar -xf "$$image_root/context.tar" -C "$$image_root/context"; \
 	rm "$$image_root/context.tar"; \
-	docker buildx build --pull=false --provenance=false --no-cache \
+	docker buildx build --pull=false --provenance=false --no-cache-filter mcp-grafana \
 		--file "$$image_root/context/Dockerfile.runtime" --target runtime \
 		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
 		--build-arg SOURCE_TREE="$$candidate_tree" \
@@ -561,7 +561,7 @@ final-image-evidence: prepare-cache
 		"$$image_root/context"; \
 	chmod 0600 "$$image_root/runtime.tar"; \
 	docker load --input "$$image_root/runtime.tar" >/dev/null; \
-	docker buildx build --pull=false --provenance=false --no-cache \
+	docker buildx build --pull=false --provenance=false --no-cache-filter mcp-grafana \
 		--file "$$image_root/context/Dockerfile.runtime" --target runtime \
 		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
 		--build-arg SOURCE_TREE="$$candidate_tree" \

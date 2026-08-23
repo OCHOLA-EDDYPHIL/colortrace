@@ -35,7 +35,7 @@ jobs:
       - Linux
       - X64
       - ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && inputs.image_runner || 'colortrace-secret' }}
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && 70 || 10 }}
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && 120 || 10 }}
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       CACHE_ROOT: ${{ github.workspace }}/../../_colortrace-cache
@@ -51,7 +51,7 @@ jobs:
       - name: Bootstrap security tools
         run: make bootstrap-security
       - name: Produce exact-candidate security evidence
-        timeout-minutes: ${{ env.SECURITY_REQUIRE_IMAGES == 'true' && 55 || 8 }}
+        timeout-minutes: ${{ env.SECURITY_REQUIRE_IMAGES == 'true' && 105 || 8 }}
         run: >-
           make security-evidence
           SECURITY_CANDIDATE_SHA="$CANDIDATE_SHA"

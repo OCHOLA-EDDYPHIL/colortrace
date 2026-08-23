@@ -170,7 +170,7 @@ def build_mcp_reproducibility_evidence(
         "builds": builds,
         "candidate": {"commit": candidate_sha, "tree": candidate_tree},
         "findings": [finding.as_dict() for finding in sorted_findings(findings)],
-        "method": "two-buildx-no-cache-builds",
+        "method": "two-buildx-mcp-no-cache-builds",
         "runtime_lock_sha256": _sha256(lock_path) if _regular_file(lock_path) else None,
         "schema": "colortrace-mcp-build-reproducibility/v1",
         "status": "pass" if not findings else "fail",

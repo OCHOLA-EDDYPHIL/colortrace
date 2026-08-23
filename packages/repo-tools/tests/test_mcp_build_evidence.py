@@ -78,7 +78,7 @@ class McpBuildEvidenceTest(unittest.TestCase):
             self.assertEqual(findings, [])
             report = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(report["status"], "pass")
-            self.assertEqual(report["method"], "two-buildx-no-cache-builds")
+            self.assertEqual(report["method"], "two-buildx-mcp-no-cache-builds")
             self.assertEqual([build["ordinal"] for build in report["builds"]], [1, 2])
             self.assertEqual(
                 len({build["binary_sha256"] for build in report["builds"]}),

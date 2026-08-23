@@ -138,7 +138,7 @@ class SecurityEvidenceTest(unittest.TestCase):
                     ],
                     "candidate": {"commit": CANDIDATE, "tree": TREE},
                     "findings": [],
-                    "method": "two-buildx-no-cache-builds",
+                    "method": "two-buildx-mcp-no-cache-builds",
                     "runtime_lock_sha256": _sha256(lock_path),
                     "schema": "colortrace-mcp-build-reproducibility/v1",
                     "status": "pass",
