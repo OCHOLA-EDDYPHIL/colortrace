@@ -103,6 +103,7 @@ run "foundation_has_no_billable_host" {
       && length(google_project_iam_member.operator_build) == 0
       && length(google_service_account_iam_member.operator_build) == 0
       && length(google_artifact_registry_repository_iam_member.operator_reader) == 0
+      && length(google_storage_bucket_iam_member.operator_build_source) == 0
       && length(google_secret_manager_secret_iam_member.host_access_gate) == 0
     )
     error_message = "Runtime and operator authority must remain absent before VM admission."
@@ -124,10 +125,16 @@ run "foundation_has_no_billable_host" {
   assert {
     condition = (
       google_artifact_registry_repository.images.repository_id == "ct-singlehost-images"
+      && google_storage_bucket.build_source.name == "colortrace-test-project-ct-singlehost-build-source"
+      && google_storage_bucket.build_source.public_access_prevention == "enforced"
+      && google_storage_bucket.build_source.uniform_bucket_level_access
+      && google_storage_bucket_iam_member.builder_build_source.role == "roles/storage.objectViewer"
+      && strcontains(file("${path.module}/build-source.tf"), "member = google_service_account.builder.member")
       && google_service_account.builder.account_id == "ct-singlehost-builder"
       && google_artifact_registry_repository_iam_member.builder_writer.role == "roles/artifactregistry.writer"
       && google_project_iam_member.builder_logs.role == "roles/logging.logWriter"
       && contains(keys(google_project_service.required), "cloudbuild.googleapis.com")
+      && contains(keys(google_project_service.required), "storage.googleapis.com")
       && !contains(keys(google_project_service.required), "monitoring.googleapis.com")
     )
     error_message = "Private images must have a dedicated repository, builder identity, and minimal build services."
@@ -159,10 +166,20 @@ run "image_builder_precedes_host_admission" {
       && google_service_account_iam_member.operator_build[0].member == "user:operator@example.test"
       && google_artifact_registry_repository_iam_member.operator_reader[0].role == "roles/artifactregistry.reader"
       && google_artifact_registry_repository_iam_member.operator_reader[0].member == "user:operator@example.test"
+      && toset(keys(google_storage_bucket_iam_member.operator_build_source)) == toset([
+        "roles/storage.legacyBucketReader",
+        "roles/storage.objectCreator",
+      ])
+      && alltrue([
+        for binding in google_storage_bucket_iam_member.operator_build_source :
+        binding.bucket == "colortrace-test-project-ct-singlehost-build-source"
+        && binding.member == "user:operator@example.test"
+      ])
       && output.resource_inventory.operator_artifact_reader.member == "user:operator@example.test"
       && output.resource_inventory.operator_artifact_reader.repository == "ct-singlehost-images"
       && output.resource_inventory.operator_artifact_reader.role == "roles/artifactregistry.reader"
       && output.image_build_identity.registry == "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images"
+      && output.image_build_identity.source_staging == "gs://colortrace-test-project-ct-singlehost-build-source/source"
     )
     error_message = "The operator must be able to build immutable images without admitting the VM."
   }
