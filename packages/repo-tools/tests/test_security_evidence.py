@@ -49,6 +49,10 @@ class SecurityEvidenceTest(unittest.TestCase):
                     + "\n",
                     encoding="utf-8",
                 )
+            (image_output / "vulnerability.json").write_text(
+                json.dumps({"Results": [{"Vulnerabilities": None}]}) + "\n",
+                encoding="utf-8",
+            )
             reference = f"fixture-{image}:{CANDIDATE}"
             image_record = {
                 "archive_index_sha256": "sha256:" + "0" * 64,
@@ -109,6 +113,34 @@ class SecurityEvidenceTest(unittest.TestCase):
                     "images": summary_images,
                     "scanner_image": SCANNER,
                     "schema": "colortrace-final-image-evidence/v1",
+                    "status": "pass",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        lock_path = REPOSITORY_ROOT / "config" / "grafana-mcp" / "mcp-grafana.lock.json"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        binary_sha256 = "sha256:" + lock["binary_sha256"]
+        image_identity = "sha256:" + "8" * 64
+        (output / "mcp-grafana-reproducibility.json").write_text(
+            json.dumps(
+                {
+                    "builds": [
+                        {
+                            "archive_sha256": "sha256:" + str(ordinal) * 64,
+                            "binary_sha256": binary_sha256,
+                            "config_digest": "sha256:" + "9" * 64,
+                            "image_identity": image_identity,
+                            "ordinal": ordinal,
+                        }
+                        for ordinal in (1, 2)
+                    ],
+                    "candidate": {"commit": CANDIDATE, "tree": TREE},
+                    "findings": [],
+                    "method": "two-buildx-mcp-no-cache-builds",
+                    "runtime_lock_sha256": _sha256(lock_path),
+                    "schema": "colortrace-mcp-build-reproducibility/v1",
                     "status": "pass",
                 }
             )
@@ -227,20 +259,24 @@ class SecurityEvidenceTest(unittest.TestCase):
                     "images/hosted-runtime/enriched-sbom.cdx.json",
                     "images/hosted-runtime/image-binding.json",
                     "images/hosted-runtime/raw-sbom.cdx.json",
+                    "images/hosted-runtime/vulnerability.json",
                     "images/runtime/coverage.json",
                     "images/runtime/enriched-sbom.cdx.json",
                     "images/runtime/image-binding.json",
                     "images/runtime/raw-sbom.cdx.json",
+                    "images/runtime/vulnerability.json",
                     "images/summary.json",
                     "images/web/coverage.json",
                     "images/web/enriched-sbom.cdx.json",
                     "images/web/image-binding.json",
                     "images/web/raw-sbom.cdx.json",
+                    "images/web/vulnerability.json",
                     "runner-isolation.json",
                     "sbom.cdx.json",
                     "secret.json",
                     "vulnerability.json",
                     "vulnerability-scanner.json",
+                    "mcp-grafana-reproducibility.json",
                 },
             )
             self.assertTrue(
@@ -411,6 +447,55 @@ class SecurityEvidenceTest(unittest.TestCase):
             )
 
             self.assertIn("security.image.binding", {finding.code for finding in findings})
+            manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["status"], "fail")
+
+    def test_manifest_fails_closed_on_an_image_vulnerability(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            self.assertEqual(prepare_security_evidence(REPOSITORY_ROOT, output), [])
+            (output / "secret.json").write_text("[]\n", encoding="utf-8")
+            (output / "vulnerability.json").write_text(
+                json.dumps({"Results": [{"Vulnerabilities": None}]}) + "\n",
+                encoding="utf-8",
+            )
+            self._write_passing_image_reports(output)
+            (output / "images" / "runtime" / "vulnerability.json").write_text(
+                json.dumps(
+                    {
+                        "Results": [
+                            {
+                                "Vulnerabilities": [
+                                    {"Severity": "HIGH", "VulnerabilityID": "CVE-test"}
+                                ]
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            findings = finalize_security_evidence(
+                REPOSITORY_ROOT,
+                output,
+                candidate_sha=CANDIDATE,
+                candidate_tree=TREE,
+                scanner_image=SCANNER,
+                scanner_metadata=json.dumps(
+                    {
+                        "Version": "0.69.3",
+                        "VulnerabilityDB": {
+                            "UpdatedAt": "2026-08-18T00:00:00Z",
+                            "Version": 2,
+                        },
+                    }
+                ),
+                secret_scanner_image="secret@sha256:" + "d" * 64,
+                require_images=True,
+            )
+
+            self.assertIn("security.report.failed", {finding.code for finding in findings})
             manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["status"], "fail")
 

@@ -42,9 +42,15 @@ _IMAGE_REPORTS = tuple(
         "enriched-sbom.cdx.json",
         "image-binding.json",
         "raw-sbom.cdx.json",
+        "vulnerability.json",
     )
 )
-_REPORTS = (*_SOURCE_REPORTS, "images/summary.json", *_IMAGE_REPORTS)
+_REPORTS = (
+    *_SOURCE_REPORTS,
+    "mcp-grafana-reproducibility.json",
+    "images/summary.json",
+    *_IMAGE_REPORTS,
+)
 _BOUND_INPUTS = (
     ".github/workflows/ci.yml",
     ".gitleaks.toml",
@@ -53,6 +59,10 @@ _BOUND_INPUTS = (
     "Dockerfile.runtime.dockerignore",
     "Dockerfile.web",
     "Dockerfile.web.dockerignore",
+    "config/grafana-mcp/build/go.mod",
+    "config/grafana-mcp/build/go.sum",
+    "config/grafana-mcp/build/modules.txt",
+    "config/grafana-mcp/mcp-grafana.lock.json",
     "pnpm-lock.yaml",
     "policy/ai-boundary.json",
     "policy/dependency-inventory.json",
@@ -60,6 +70,7 @@ _BOUND_INPUTS = (
     "policy/trivyignore.yaml",
     "packages/repo-tools/src/colortrace_repo/final_image_evidence.py",
     "packages/repo-tools/src/colortrace_repo/image_licenses.py",
+    "packages/repo-tools/src/colortrace_repo/mcp_build_evidence.py",
     "uv.lock",
 )
 
@@ -259,7 +270,7 @@ def _report_status(name: str, document: Any) -> str:
         return "pass" if isinstance(document, dict) and document.get("ok") is True else "fail"
     if name == "secret.json":
         return "pass" if document == [] else "fail"
-    if name == "vulnerability.json":
+    if name == "vulnerability.json" or name.endswith("/vulnerability.json"):
         if not isinstance(document, dict) or not isinstance(document.get("Results"), list):
             return "fail"
         vulnerabilities = [
@@ -306,6 +317,7 @@ def _report_status(name: str, document: Any) -> str:
         )
     image_schemas = {
         "images/summary.json": "colortrace-final-image-evidence/v1",
+        "mcp-grafana-reproducibility.json": "colortrace-mcp-build-reproducibility/v1",
         "coverage.json": "colortrace-final-image-coverage/v1",
         "image-binding.json": "colortrace-final-image-binding/v1",
     }
@@ -454,6 +466,66 @@ def _image_report_findings(
     return findings
 
 
+def _mcp_reproducibility_findings(
+    root: Path,
+    document: Any,
+    candidate_sha: str,
+    candidate_tree: str,
+) -> list[Finding]:
+    path = "mcp-grafana-reproducibility.json"
+    if not isinstance(document, dict):
+        return [Finding(path, "security.mcp.reproducibility", "MCP report is invalid")]
+    lock_path = root / "config" / "grafana-mcp" / "mcp-grafana.lock.json"
+    try:
+        lock = load_json(lock_path)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return [
+            Finding(
+                path,
+                "security.mcp.reproducibility",
+                f"cannot load the MCP runtime lock: {error}",
+            )
+        ]
+    expected_binary = f"sha256:{lock.get('binary_sha256')}" if isinstance(lock, dict) else None
+    builds = document.get("builds")
+    valid_builds = (
+        isinstance(builds, list)
+        and len(builds) == 2
+        and [build.get("ordinal") for build in builds if isinstance(build, dict)] == [1, 2]
+        and len({build.get("binary_sha256") for build in builds if isinstance(build, dict)}) == 1
+        and len({build.get("image_identity") for build in builds if isinstance(build, dict)}) == 1
+        and all(
+            isinstance(build, dict)
+            and build.get("binary_sha256") == expected_binary
+            and isinstance(build.get("archive_sha256"), str)
+            and _SHA256.fullmatch(build["archive_sha256"]) is not None
+            and isinstance(build.get("config_digest"), str)
+            and _SHA256.fullmatch(build["config_digest"]) is not None
+            and isinstance(build.get("image_identity"), str)
+            and _SHA256.fullmatch(build["image_identity"]) is not None
+            for build in builds
+        )
+        and len({build.get("config_digest") for build in builds}) == 1
+    )
+    if any(
+        (
+            document.get("candidate") != {"commit": candidate_sha, "tree": candidate_tree},
+            document.get("findings") != [],
+            document.get("method") != "two-buildx-mcp-no-cache-builds",
+            document.get("runtime_lock_sha256") != _sha256(lock_path),
+            not valid_builds,
+        )
+    ):
+        return [
+            Finding(
+                path,
+                "security.mcp.reproducibility",
+                "MCP build evidence is stale, substituted, or internally inconsistent",
+            )
+        ]
+    return []
+
+
 def finalize_security_evidence(
     root: Path,
     output: Path,
@@ -524,6 +596,16 @@ def finalize_security_evidence(
                 Finding(name, "security.report.invalid", f"cannot load report: {error}")
             )
     if require_images:
+        mcp_reproducibility = documents.get("mcp-grafana-reproducibility.json")
+        if mcp_reproducibility is not None:
+            findings.extend(
+                _mcp_reproducibility_findings(
+                    root,
+                    mcp_reproducibility,
+                    candidate_sha,
+                    candidate_tree,
+                )
+            )
         try:
             findings.extend(
                 _image_report_findings(

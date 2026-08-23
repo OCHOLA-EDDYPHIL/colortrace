@@ -380,14 +380,14 @@ class ImageLicenseBundleTest(unittest.TestCase):
             python_inputs = _python_inputs(root)
             module_text = (
                 "path\tgithub.com/grafana/mcp-grafana/cmd/mcp-grafana\n"
-                "mod\tgithub.com/grafana/mcp-grafana\tv1.1.0\t\n"
+                "mod\tgithub.com/grafana/mcp-grafana\tv1.1.0\th1:exactsource=\n"
                 "dep\texample.invalid/module\tv1.2.3\th1:exact=\n"
                 "build\tvcs.revision=" + "5" * 40 + "\n"
             ).encode()
             framed = (
                 b"0w\xaf\x0c\x92t\x08\x02A\xe1\xc1\x07\xe6\xd6\x18\xe6" + module_text + bytes(16)
             )
-            version = b"go1.26.5"
+            version = b"go1.26.6"
             binary = _write(
                 root / "mcp-grafana",
                 b"binary-prefix"
@@ -400,11 +400,16 @@ class ImageLicenseBundleTest(unittest.TestCase):
                 + framed,
             )
             lock = {
-                "archive_sha256": "6" * 64,
+                "schema": "mcp-grafana-runtime-lock/v2",
                 "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                 "release_version": "1.1.0",
                 "source_commit": "5" * 40,
+                "source_module": "github.com/grafana/mcp-grafana",
+                "source_module_sum": "h1:exactsource=",
+                "source_module_version": "v1.1.0",
                 "source_repository": "https://github.com/grafana/mcp-grafana",
+                "source_tree": "6" * 40,
+                "toolchain_version": "go1.26.6",
             }
             lock_path = _write(root / "mcp-lock.json", json.dumps(lock))
             output = root / "bundle"
@@ -432,6 +437,8 @@ class ImageLicenseBundleTest(unittest.TestCase):
                 if item["kind"] == "go-module" and item["name"] == "github.com/grafana/mcp-grafana"
             )
             self.assertEqual(main_module["version"], "v1.1.0")
+            self.assertEqual(main_module["source_checksum"], "h1:exactsource=")
+            self.assertEqual(main_module["source_tree"], "6" * 40)
             self.assertEqual(main_module["license_evidence_status"], "delivered-text")
 
     def test_web_bundle_covers_exact_first_and_third_party_runtime_graph(self) -> None:

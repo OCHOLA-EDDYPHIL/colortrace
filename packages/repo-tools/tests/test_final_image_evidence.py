@@ -65,6 +65,7 @@ def _write_archive(
     missing_layer: bool = False,
     nested_index: bool = False,
     malformed_layer: bool = False,
+    layer_media_type: str = "application/vnd.oci.image.layer.v1.tar+gzip",
 ) -> tuple[Path, str]:
     layer_name = "usr/local/lib/node_modules/yarn/bin/yarn.js" if yarn_path else "app/colortrace"
     plain_layer = _tar_bytes({layer_name: b"fixture\n"})
@@ -98,7 +99,7 @@ def _write_archive(
             "layers": [
                 {
                     "digest": layer_digest,
-                    "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                    "mediaType": layer_media_type,
                     "size": len(layer),
                 }
             ],
@@ -951,10 +952,14 @@ class FinalImageEvidenceTest(unittest.TestCase):
             "\nsecurity-evidence: prepare-cache\n", maxsplit=1
         )[0]
         self.assertIn('source_date_epoch="$$(git show -s --format=%ct', recipe)
-        self.assertEqual(recipe.count("docker buildx build --pull=false --provenance=false"), 3)
-        self.assertEqual(recipe.count("--build-arg SOURCE_DATE_EPOCH="), 3)
-        self.assertEqual(recipe.count("rewrite-timestamp=true"), 3)
-        self.assertEqual(recipe.count("docker load --input"), 3)
+        self.assertEqual(recipe.count("docker buildx build --pull=false --provenance=false"), 4)
+        self.assertEqual(recipe.count("--build-arg SOURCE_DATE_EPOCH="), 4)
+        self.assertEqual(recipe.count("rewrite-timestamp=true"), 4)
+        self.assertEqual(recipe.count("docker load --input"), 4)
+        self.assertEqual(recipe.count("--no-cache-filter mcp-grafana"), 2)
+        self.assertEqual(recipe.count('images/$$name/vulnerability.json"'), 1)
+        self.assertIn("--scanners vuln --severity HIGH,CRITICAL --exit-code 1", recipe)
+        self.assertNotIn("--ignorefile", recipe)
         self.assertNotIn("docker image save", recipe)
 
         runtime = (REPOSITORY_ROOT / "Dockerfile.runtime").read_text(encoding="utf-8")
@@ -982,6 +987,37 @@ class FinalImageEvidenceTest(unittest.TestCase):
                 candidate_tree=TREE,
             )
             self.assertEqual(findings, [])
+
+            docker, reference = _write_archive(
+                root,
+                "docker-gzip",
+                "public-readonly",
+                layer_media_type="application/vnd.docker.image.rootfs.diff.tar.gzip",
+            )
+            _, findings = _archive_binding(
+                docker,
+                expected_reference=reference,
+                profile="public-readonly",
+                candidate_sha=CANDIDATE,
+                candidate_tree=TREE,
+            )
+            self.assertEqual(findings, [])
+
+            unsupported, reference = _write_archive(
+                root,
+                "unsupported-layer",
+                "public-readonly",
+                layer_media_type="application/example.image.layer.v1.tar+gzip",
+            )
+            with self.assertRaises(EvidenceError) as raised:
+                _archive_binding(
+                    unsupported,
+                    expected_reference=reference,
+                    profile="public-readonly",
+                    candidate_sha=CANDIDATE,
+                    candidate_tree=TREE,
+                )
+            self.assertEqual(raised.exception.code, "image.oci.invalid")
 
             nested, reference = _write_archive(root, "nested", "public-readonly", nested_index=True)
             binding, findings = _archive_binding(

@@ -2,21 +2,43 @@ ARG SOURCE_DATE_EPOCH
 
 FROM ghcr.io/astral-sh/uv@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc AS uv
 
-FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS mcp-grafana
+FROM golang@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS mcp-grafana
 ARG SOURCE_DATE_EPOCH
-ADD --checksum=sha256:8468b1e159412eb1ab738786cf0d2755a1ea0a44103ca8c0040849a227746e07 \
-    https://github.com/grafana/mcp-grafana/releases/download/v1.1.0/mcp-grafana_Linux_x86_64.tar.gz \
-    /tmp/mcp-grafana.tar.gz
-ADD --checksum=sha256:6ec12926d6478d895ccec681c3739c170a88773d6c54d0a57e46682ae6f0adc0 \
-    https://raw.githubusercontent.com/grafana/mcp-grafana/007e8d82154899a28e19e8dfe9c2bb4452c5211a/LICENSE \
-    /tmp/mcp-grafana.LICENSE
-ADD --checksum=sha256:911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad \
-    https://raw.githubusercontent.com/golang/go/go1.26.5/LICENSE \
-    /tmp/go.LICENSE
-RUN tar -xzf /tmp/mcp-grafana.tar.gz -C /tmp mcp-grafana \
-    && echo "7b4f978ee4e31053cad3392626b6896d3da2315d5e6b2bcbba815c9b04872236  /tmp/mcp-grafana" | sha256sum -c - \
-    && install -m 0755 /tmp/mcp-grafana /usr/local/bin/mcp-grafana \
-    && test "$(/usr/local/bin/mcp-grafana --version)" = 1.1.0
+ENV CGO_ENABLED=0 \
+    GOARCH=amd64 \
+    GOOS=linux \
+    GOPROXY=https://proxy.golang.org \
+    GOSUMDB=sum.golang.org \
+    GOTOOLCHAIN=local
+WORKDIR /build
+COPY config/grafana-mcp/build/go.mod config/grafana-mcp/build/go.sum \
+    config/grafana-mcp/build/modules.txt ./
+ADD --checksum=sha256:91bdd1dece9d4aaaf9b5bda899d64f36ca65a37fd7511acbd6d69cd1c6ddbb59 \
+    https://codeload.github.com/grafana/mcp-grafana/tar.gz/007e8d82154899a28e19e8dfe9c2bb4452c5211a \
+    /tmp/mcp-grafana-source.tar.gz
+RUN test "$(go version)" = "go version go1.26.6 linux/amd64" \
+    && echo "bec38d3e8473226980e03364209db2a3180782d1f531ede5cb52983c5c9721cc  go.mod" | sha256sum -c - \
+    && echo "a793edc44adea4185d8bdef99e522bce47b3341d45d0d4b88723390169bb8f45  go.sum" | sha256sum -c - \
+    && echo "29f223acc1d2d9ac9e136d246d934e3c3130d1a57eed002f97a680b20b8050ed  modules.txt" | sha256sum -c - \
+    && echo "91bdd1dece9d4aaaf9b5bda899d64f36ca65a37fd7511acbd6d69cd1c6ddbb59  /tmp/mcp-grafana-source.tar.gz" | sha256sum -c - \
+    && go mod download all \
+    && go list -mod=readonly -m all > /tmp/modules.txt \
+    && cmp modules.txt /tmp/modules.txt \
+    && tar --extract --gzip --file /tmp/mcp-grafana-source.tar.gz --directory /tmp
+RUN --network=none go mod verify \
+    && module_root="$(go env GOMODCACHE)/github.com/grafana/mcp-grafana@v1.1.0" \
+    && source_root="/tmp/mcp-grafana-007e8d82154899a28e19e8dfe9c2bb4452c5211a" \
+    && find "$module_root" -type f -exec sh -eu -c 'module_root=$1; source_root=$2; shift 2; for module_file do relative=${module_file#${module_root}/}; cmp "$module_file" "$source_root/$relative"; done' sh "$module_root" "$source_root" {} + \
+    && go build -trimpath -buildvcs=false -mod=readonly \
+        -ldflags="-s -w -buildid= -X github.com/grafana/mcp-grafana.version=1.1.0" \
+        -o /usr/local/bin/mcp-grafana \
+        github.com/grafana/mcp-grafana/cmd/mcp-grafana \
+    && test "$(/usr/local/bin/mcp-grafana --version)" = 1.1.0 \
+    && echo "5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93  /usr/local/bin/mcp-grafana" | sha256sum -c - \
+    && install -m 0444 /go/pkg/mod/github.com/grafana/mcp-grafana@v1.1.0/LICENSE /tmp/mcp-grafana.LICENSE \
+    && echo "6ec12926d6478d895ccec681c3739c170a88773d6c54d0a57e46682ae6f0adc0  /tmp/mcp-grafana.LICENSE" | sha256sum -c - \
+    && install -m 0444 /usr/local/go/LICENSE /tmp/go.LICENSE \
+    && echo "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  /tmp/go.LICENSE" | sha256sum -c -
 
 FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS build
 ARG SOURCE_DATE_EPOCH
@@ -75,7 +97,9 @@ RUN apk add --no-cache libcrypto3=3.5.7-r0 libssl3=3.5.7-r0 libstdc++=14.2.0-r6 
     && grep -Fqx "colortrace:!:${source_date_days}:0:99999:7:::" /etc/shadow \
     && install -d -o 65532 -g 65532 -m 0700 /var/run/colortrace-private /tmp/colortrace
 COPY --from=build /source/.venv /opt/colortrace
-COPY config/grafana-mcp/ /opt/colortrace-config/grafana-mcp/
+COPY config/grafana-mcp/mcp-grafana.lock.json \
+    config/grafana-mcp/query-catalog.json \
+    /opt/colortrace-config/grafana-mcp/
 COPY uv.lock /opt/colortrace-config/uv.lock
 COPY deploy/runtime-entrypoint.py /usr/local/libexec/colortrace-entrypoint.py
 COPY packages/repo-tools/src/colortrace_repo/image_licenses.py /usr/local/libexec/colortrace-image-licenses.py
@@ -102,7 +126,7 @@ COPY --from=mcp-grafana /usr/local/bin/mcp-grafana /usr/local/bin/mcp-grafana
 COPY --from=mcp-grafana /tmp/mcp-grafana.LICENSE /usr/share/licenses/mcp-grafana/LICENSE
 COPY --from=mcp-grafana /tmp/go.LICENSE /usr/share/licenses/go/LICENSE
 RUN test "$(/usr/local/bin/mcp-grafana --version)" = 1.1.0 \
-    && echo "7b4f978ee4e31053cad3392626b6896d3da2315d5e6b2bcbba815c9b04872236  /usr/local/bin/mcp-grafana" | sha256sum -c - \
+    && echo "5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93  /usr/local/bin/mcp-grafana" | sha256sum -c - \
     && python /usr/local/libexec/colortrace-image-licenses.py runtime \
         --output /usr/share/colortrace/licenses \
         --profile private-full \
