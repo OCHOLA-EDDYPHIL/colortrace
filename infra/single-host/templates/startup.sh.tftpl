@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+readonly PROJECT_ID='${project_id}'
+readonly REGION='${region}'
+readonly REGISTRY_HOST='${registry_host}'
+readonly ACCESS_SECRET_ID='${access_secret_id}'
+readonly ACCESS_SECRET_VERSION='${access_secret_version}'
+readonly STAGING_GENERATION='${staging_generation}'
+readonly STAGING_LIFETIME_HOURS='${staging_lifetime_hours}'
+readonly COMPOSE_B64='${compose_yaml_base64}'
+readonly CADDYFILE_B64='${caddyfile_base64}'
+readonly ROOT_DIR='/srv/colortrace'
+readonly CONTROL_DIR='/var/lib/colortrace-lifecycle'
+readonly METADATA_URL='http://metadata.google.internal/computeMetadata/v1'
+
+install -d -m 0700 "$CONTROL_DIR"
+
+if ! test -f "$CONTROL_DIR/generation" \
+  || ! printf '%s' "$STAGING_GENERATION" | cmp --silent - "$CONTROL_DIR/generation"; then
+  printf '%s' "$STAGING_GENERATION" >"$CONTROL_DIR/generation.new"
+  date +%s >"$CONTROL_DIR/activated-at.new"
+  mv "$CONTROL_DIR/generation.new" "$CONTROL_DIR/generation"
+  mv "$CONTROL_DIR/activated-at.new" "$CONTROL_DIR/activated-at"
+fi
+
+activated_at=$(cat "$CONTROL_DIR/activated-at")
+case "$activated_at" in
+  ''|*[!0-9]*) exit 1 ;;
+esac
+deadline=$((activated_at + STAGING_LIFETIME_HOURS * 3600))
+now=$(date +%s)
+remaining=$((deadline - now))
+
+systemctl stop colortrace-auto-stop.timer colortrace-auto-stop.service >/dev/null 2>&1 || true
+systemctl reset-failed colortrace-auto-stop.timer colortrace-auto-stop.service >/dev/null 2>&1 || true
+if test "$remaining" -le 0; then
+  systemctl poweroff
+  exit 0
+fi
+systemd-run \
+  --unit=colortrace-auto-stop \
+  --on-active="$remaining seconds" \
+  --timer-property=AccuracySec=1min \
+  /usr/bin/systemctl poweroff
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install --yes --no-install-recommends \
+  ca-certificates \
+  curl \
+  docker-compose \
+  docker.io \
+  jq \
+  openssl
+systemctl enable --now docker
+
+install -d -m 0755 "$ROOT_DIR"
+install -d -m 0700 \
+  "$ROOT_DIR/app" \
+  "$ROOT_DIR/caddy-config" \
+  "$ROOT_DIR/caddy-data" \
+  "$ROOT_DIR/config" \
+  "$ROOT_DIR/grafana" \
+  "$ROOT_DIR/secrets"
+install -d -o 65532 -g 65532 -m 0700 \
+  "$ROOT_DIR/app/simulator-workspace"
+chown -R 65532:65532 "$ROOT_DIR/app"
+
+metadata_token() {
+  curl \
+    --fail \
+    --silent \
+    --show-error \
+    --header 'Metadata-Flavor: Google' \
+    "$METADATA_URL/instance/service-accounts/default/token" \
+    | jq -er '.access_token'
+}
+
+cloud_token=$(metadata_token)
+secret_payload=$(curl \
+  --fail \
+  --silent \
+  --show-error \
+  --header "Authorization: Bearer $cloud_token" \
+  "https://secretmanager.googleapis.com/v1/projects/$PROJECT_ID/secrets/$ACCESS_SECRET_ID/versions/$ACCESS_SECRET_VERSION:access" \
+  | jq -er '.payload.data')
+access_hash=$(printf '%s' "$secret_payload" | base64 --decode)
+unset secret_payload
+
+case "$access_hash" in
+  '$2a$'*|'$2b$'*|'$2y$'*) ;;
+  *) exit 1 ;;
+esac
+if test "$(printf '%s' "$access_hash" | wc -c)" -ne 60; then
+  exit 1
+fi
+
+printf '%s' "$COMPOSE_B64" | base64 --decode >"$ROOT_DIR/config/compose.yaml.new"
+printf '%s' "$CADDYFILE_B64" | base64 --decode >"$ROOT_DIR/config/Caddyfile.template"
+sed "s|__COLORTRACE_ACCESS_HASH__|$access_hash|" \
+  "$ROOT_DIR/config/Caddyfile.template" >"$ROOT_DIR/config/Caddyfile.new"
+unset access_hash
+if grep --quiet '__COLORTRACE_ACCESS_HASH__' "$ROOT_DIR/config/Caddyfile.new"; then
+  exit 1
+fi
+mv "$ROOT_DIR/config/compose.yaml.new" "$ROOT_DIR/config/compose.yaml"
+mv "$ROOT_DIR/config/Caddyfile.new" "$ROOT_DIR/config/Caddyfile"
+rm -f "$ROOT_DIR/config/Caddyfile.template"
+chmod 0600 "$ROOT_DIR/config/compose.yaml" "$ROOT_DIR/config/Caddyfile"
+
+if ! test -s "$ROOT_DIR/secrets/grafana-admin-password"; then
+  openssl rand -hex 32 >"$ROOT_DIR/secrets/grafana-admin-password.new"
+  mv "$ROOT_DIR/secrets/grafana-admin-password.new" \
+    "$ROOT_DIR/secrets/grafana-admin-password"
+fi
+chmod 0600 "$ROOT_DIR/secrets/grafana-admin-password"
+grafana_admin_password=$(cat "$ROOT_DIR/secrets/grafana-admin-password")
+printf '%s\n' \
+  'GF_SECURITY_ADMIN_USER=colortrace-admin' \
+  "GF_SECURITY_ADMIN_PASSWORD=$grafana_admin_password" \
+  >"$ROOT_DIR/config/grafana.env.new"
+unset grafana_admin_password
+mv "$ROOT_DIR/config/grafana.env.new" "$ROOT_DIR/config/grafana.env"
+chmod 0600 "$ROOT_DIR/config/grafana.env"
+
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose --file "$ROOT_DIR/config/compose.yaml" "$@"
+  else
+    docker-compose --file "$ROOT_DIR/config/compose.yaml" "$@"
+  fi
+}
+
+compose config --quiet
+printf '%s' "$cloud_token" \
+  | docker login --username oauth2accesstoken --password-stdin "$REGISTRY_HOST"
+trap 'docker logout "$REGISTRY_HOST" >/dev/null 2>&1 || true' EXIT
+compose pull
+compose up --detach lgtm caddy
+
+grafana_ready=false
+for _ in $(seq 1 90); do
+  if curl --fail --silent --show-error \
+    http://127.0.0.1:13000/api/health >/dev/null; then
+    grafana_ready=true
+    break
+  fi
+  sleep 2
+done
+if test "$grafana_ready" != true; then
+  exit 1
+fi
+
+if ! test -s "$ROOT_DIR/secrets/grafana-viewer-token"; then
+  grafana_admin_password=$(cat "$ROOT_DIR/secrets/grafana-admin-password")
+  printf '%s\n' \
+    'machine 127.0.0.1' \
+    'login colortrace-admin' \
+    "password $grafana_admin_password" \
+    >"$ROOT_DIR/secrets/grafana.netrc"
+  unset grafana_admin_password
+  chmod 0600 "$ROOT_DIR/secrets/grafana.netrc"
+
+  service_account_body=$(jq -cn \
+    --arg name "colortrace-mcp-$STAGING_GENERATION" \
+    '{name: $name, role: "Viewer"}')
+  service_account_response=$(curl \
+    --fail \
+    --silent \
+    --show-error \
+    --netrc-file "$ROOT_DIR/secrets/grafana.netrc" \
+    --header 'Content-Type: application/json' \
+    --request POST \
+    --data "$service_account_body" \
+    http://127.0.0.1:13000/api/serviceaccounts)
+  service_account_id=$(printf '%s' "$service_account_response" | jq -er '.id')
+  token_body=$(jq -cn \
+    --arg name "runtime-$STAGING_GENERATION" \
+    '{name: $name, secondsToLive: 0}')
+  token_response=$(curl \
+    --fail \
+    --silent \
+    --show-error \
+    --netrc-file "$ROOT_DIR/secrets/grafana.netrc" \
+    --header 'Content-Type: application/json' \
+    --request POST \
+    --data "$token_body" \
+    "http://127.0.0.1:13000/api/serviceaccounts/$service_account_id/tokens")
+  grafana_token=$(printf '%s' "$token_response" | jq -er '.key')
+  case "$grafana_token" in
+    ''|*[[:space:]]*) exit 1 ;;
+  esac
+  printf '%s' "$grafana_token" >"$ROOT_DIR/secrets/grafana-viewer-token.new"
+  unset grafana_token token_response service_account_response cloud_token
+  mv "$ROOT_DIR/secrets/grafana-viewer-token.new" \
+    "$ROOT_DIR/secrets/grafana-viewer-token"
+  chown 65532:65532 "$ROOT_DIR/secrets/grafana-viewer-token"
+  chmod 0600 "$ROOT_DIR/secrets/grafana-viewer-token"
+  rm -f "$ROOT_DIR/secrets/grafana.netrc"
+fi
+
+caddy_ca="$ROOT_DIR/caddy-data/caddy/pki/authorities/local/root.crt"
+caddy_ca_ready=false
+for _ in $(seq 1 60); do
+  if test -s "$caddy_ca"; then
+    caddy_ca_ready=true
+    break
+  fi
+  sleep 1
+done
+if test "$caddy_ca_ready" != true; then
+  exit 1
+fi
+install -m 0444 "$caddy_ca" "$ROOT_DIR/config/caddy-root.crt.new"
+mv "$ROOT_DIR/config/caddy-root.crt.new" "$ROOT_DIR/config/caddy-root.crt"
+
+compose up --detach runtime web
+compose ps

@@ -1,0 +1,32 @@
+${public_hostname} {
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+
+	route {
+		basic_auth {
+			${access_username} __COLORTRACE_ACCESS_HASH__
+		}
+
+		header {
+			Referrer-Policy "no-referrer"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+		}
+
+		@demo path /v1/demo /v1/demo/*
+		reverse_proxy @demo runtime:8080
+
+		@other_api path /v1/*
+		respond @other_api 404
+
+		reverse_proxy web:8080
+	}
+}
+
+https://grafana.internal {
+	tls internal
+	reverse_proxy lgtm:3000
+}
