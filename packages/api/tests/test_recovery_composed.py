@@ -1412,6 +1412,7 @@ def test_demo_facade_composes_alert_through_immutable_closure_receipt(tmp_path: 
         assert receipt["bindings"]["closure_id"] == recovery_review["closure"]["closure_id"]
         return closed, receipt
 
+    simulator_runtime.runner.start()
     try:
         first_closed, first_receipt = complete_run(0)
         assert len(alert_source.emitted) == 1
@@ -1479,6 +1480,7 @@ def test_demo_facade_composes_alert_through_immutable_closure_receipt(tmp_path: 
             assert str(oracle).encode() not in stored
             assert str(sealed_oracle).encode() not in stored
     finally:
+        simulator_runtime.runner.close()
         simulator_repository.close()
         recovery_repository.close()
         os.chmod(sealed_oracle, 0o700)
