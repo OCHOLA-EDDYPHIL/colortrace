@@ -363,6 +363,9 @@ class LocalSimulatorRuntime:
             runner=self.runner,
         )
 
+    def execute(self, identity: DispatchIdentity, *, owner: str) -> dict[str, Any]:
+        return self.runner.execute(identity, owner=owner)
+
     def restore_authored_scenario(self, *, operation_id: str) -> Mapping[str, Any]:
         if not self.runner.thread_alive:
             raise SimulatorRepositoryError("simulator-runner-unavailable")

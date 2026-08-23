@@ -276,6 +276,9 @@ class ExecutingRuntime:
         self.service = service
         self.repository = repository
 
+    def execute(self, identity: Any, *, owner: str) -> dict[str, Any]:
+        return self.service.execute(identity, owner=owner)
+
 
 def _recovery_packet() -> dict[str, Any]:
     return {
