@@ -971,6 +971,26 @@ class FinalImageEvidenceTest(unittest.TestCase):
         self.assertEqual(runtime.count("PyOpenColorIO/bin/ociolutimage --help"), 1)
         self.assertIn("find /source/.venv -type f -name '*.py[co]'", runtime)
         self.assertIn("source_date_days=$((SOURCE_DATE_EPOCH / 86400))", runtime)
+        self.assertEqual(runtime.count("colortrace-fixture generate"), 2)
+        self.assertEqual(runtime.count("colortrace-fixture validate"), 2)
+        self.assertIn("diff -qr /tmp/colortrace-fixture-a /tmp/colortrace-fixture-b", runtime)
+        self.assertIn(
+            "COPY --from=build /opt/colortrace-fixture /opt/colortrace/fixture",
+            runtime,
+        )
+        self.assertIn(
+            "COPY config/demo/local-demo.json /opt/colortrace-config/demo/local-demo.json",
+            runtime,
+        )
+        self.assertIn("colortrace-runtime-build-binding/v1", runtime)
+        self.assertIn("/opt/colortrace-config/build-binding.json", runtime)
+        self.assertIn(
+            "test -z \"$(find /tmp/colortrace-fixture-a -iname '*oracle*' -print -quit)\"",
+            runtime,
+        )
+        self.assertIn("/opt/colortrace-config/investigation/investigation-policy.json", runtime)
+        self.assertIn("/opt/colortrace-config/investigation/model-profile.json", runtime)
+        self.assertNotIn("COPY --from=build /tmp/colortrace-oracle", runtime)
 
         web = (REPOSITORY_ROOT / "Dockerfile.web").read_text(encoding="utf-8")
         self.assertEqual(web.count("ARG SOURCE_DATE_EPOCH"), 5)

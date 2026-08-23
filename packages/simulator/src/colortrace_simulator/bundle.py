@@ -650,6 +650,18 @@ class LocalPublicationPort:
             or lock_metadata.st_mode & 0o077
         ):
             raise SimulatorBundleError("workspace-lock-invalid")
+        reset_records = self.root / "state" / "reset-records"
+        if not reset_records.exists():
+            reset_records.mkdir(mode=0o700)
+        reset_metadata = reset_records.lstat()
+        if (
+            reset_records.is_symlink()
+            or not stat.S_ISDIR(reset_metadata.st_mode)
+            or reset_metadata.st_uid != metadata.st_uid
+            or reset_metadata.st_dev != metadata.st_dev
+            or reset_metadata.st_mode & 0o077
+        ):
+            raise SimulatorBundleError("workspace-layout-invalid")
 
     @classmethod
     def bootstrap(
@@ -672,11 +684,13 @@ class LocalPublicationPort:
         with port._publication_lock():
             active = port.root / "state" / "active.json"
             if active.exists():
-                port._load_active_context()
+                context = port._load_active_context()
+                port._ensure_baseline_pointer(context.pointer)
                 return port
             batch_root, batch, batch_sha256 = port._admit_source_batch(fixture_bundle)
             pointer = port._build_initial_publication(batch_root, batch, batch_sha256)
             port._write_active_pointer(pointer)
+            port._ensure_baseline_pointer(pointer)
             port.fault_hook("bootstrap-pointer-durable")
         return port
 
@@ -1481,13 +1495,62 @@ class LocalPublicationPort:
             os.close(state_fd)
         return sha256_bytes(raw)
 
+    def _ensure_baseline_pointer(self, candidate: Mapping[str, Any]) -> None:
+        path = self.root / "state" / "baseline.json"
+        if path.exists():
+            baseline = self._load_pointer_context("baseline.json")
+            if (
+                baseline.pointer["candidate_seal_sha256"] is not None
+                or baseline.pointer["generation"] != 1
+                or baseline.pointer["operation_id"] is not None
+                or baseline.pointer["previous_pointer_sha256"] is not None
+            ):
+                raise SimulatorBundleError("baseline-pointer-invalid")
+            return
+        if (
+            candidate.get("candidate_seal_sha256") is not None
+            or candidate.get("generation") != 1
+            or candidate.get("operation_id") is not None
+            or candidate.get("previous_pointer_sha256") is not None
+        ):
+            raise SimulatorBundleError("baseline-pointer-unavailable")
+        raw = canonical_json_bytes(candidate)
+        state_fd = os.open(
+            self.root / "state",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+        try:
+            descriptor = os.open(
+                "baseline.json",
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o400,
+                dir_fd=state_fd,
+            )
+            try:
+                _write_all(descriptor, raw)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            os.fsync(state_fd)
+        except FileExistsError:
+            baseline_raw = _read_relative(self.root / "state", "baseline.json")
+            if baseline_raw != raw:
+                raise SimulatorBundleError("baseline-pointer-conflict") from None
+        except OSError as error:
+            raise SimulatorBundleError("baseline-pointer-unavailable") from error
+        finally:
+            os.close(state_fd)
+
     def _load_active_context(self) -> _ActiveContext:
+        return self._load_pointer_context("active.json")
+
+    def _load_pointer_context(self, pointer_name: str) -> _ActiveContext:
         pointer = _read_document(
             self.root / "state",
-            "active.json",
+            pointer_name,
             schema="simulator-publication-pointer/v1",
         )
-        pointer_raw = _read_relative(self.root / "state", "active.json")
+        pointer_raw = _read_relative(self.root / "state", pointer_name)
         pointer_sha256 = sha256_bytes(pointer_raw)
         publication_root = self._publication_root(cast(str, pointer["publication_id"]))
         actual_files = set(_audit_tree(publication_root))
@@ -1605,6 +1668,73 @@ class LocalPublicationPort:
             source_batch_root=source_batch_root,
             source_batch=source_batch,
         )
+
+    def restore_authored_scenario(self, *, operation_id: str) -> dict[str, Any]:
+        selected_operation = _identifier(operation_id, code="reset-operation-id-invalid")
+        with self._publication_lock():
+            current = self._load_active_context()
+            baseline = self._load_pointer_context("baseline.json")
+            if (
+                baseline.pointer["candidate_seal_sha256"] is not None
+                or baseline.pointer["generation"] != 1
+                or baseline.pointer["operation_id"] is not None
+                or baseline.pointer["previous_pointer_sha256"] is not None
+                or baseline.pointer["fixture_id"] != current.pointer["fixture_id"]
+                or baseline.pointer["source_batch_id"] != current.pointer["source_batch_id"]
+                or baseline.pointer["source_batch_sha256"] != current.pointer["source_batch_sha256"]
+            ):
+                raise SimulatorBundleError("baseline-pointer-invalid")
+            record_name = f"{hashlib.sha256(selected_operation.encode()).hexdigest()}.json"
+            record_path = f"reset-records/{record_name}"
+            stored_path = self.root / "state" / record_path
+            if stored_path.exists():
+                result = _read_document(
+                    self.root / "state",
+                    record_path,
+                    schema="simulator-authored-scenario-reset/v1",
+                )
+                if (
+                    set(result)
+                    != {
+                        "schema",
+                        "operation_id",
+                        "fixture_id",
+                        "source_batch_sha256",
+                        "previous_pointer_sha256",
+                        "active_pointer_sha256",
+                        "generation",
+                    }
+                    or result["operation_id"] != selected_operation
+                    or result["fixture_id"] != baseline.pointer["fixture_id"]
+                    or result["source_batch_sha256"] != baseline.pointer["source_batch_sha256"]
+                    or result["active_pointer_sha256"] != baseline.pointer_sha256
+                    or result["generation"] != 1
+                    or _DIGEST.fullmatch(cast(str, result["previous_pointer_sha256"])) is None
+                ):
+                    raise SimulatorBundleError("stored-reset-record-invalid")
+                if current.pointer_sha256 == result["previous_pointer_sha256"]:
+                    self._write_active_pointer(baseline.pointer)
+                    current = self._load_active_context()
+                if current.pointer_sha256 != baseline.pointer_sha256:
+                    raise SimulatorBundleError("reset-replay-state-conflict")
+                return result
+            result = {
+                "schema": "simulator-authored-scenario-reset/v1",
+                "operation_id": selected_operation,
+                "fixture_id": baseline.pointer["fixture_id"],
+                "source_batch_sha256": baseline.pointer["source_batch_sha256"],
+                "previous_pointer_sha256": current.pointer_sha256,
+                "active_pointer_sha256": baseline.pointer_sha256,
+                "generation": 1,
+            }
+            _write_document(self.root / "state", record_path, result)
+            stored_path.chmod(0o400)
+            self.fault_hook("reset-record-durable")
+            self._write_active_pointer(baseline.pointer)
+            restored = self._load_active_context()
+            if restored.pointer_sha256 != baseline.pointer_sha256:
+                raise SimulatorBundleError("baseline-pointer-restore-invalid")
+            return result
 
     @staticmethod
     def _validated_recovery_outcome(value: Mapping[str, Any]) -> dict[str, Any]:

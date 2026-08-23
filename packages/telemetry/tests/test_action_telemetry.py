@@ -409,12 +409,27 @@ def test_precompletion_emission_is_rejected_before_sink_use() -> None:
     assert sink.calls == 0
 
 
-def test_action_otel_sink_has_a_fixed_local_endpoint_and_no_attribute_input() -> None:
+def test_action_otel_sink_has_a_safe_default_and_bounded_endpoint_input() -> None:
     constructor = inspect.signature(ActionOtelSink)
     emit = inspect.signature(ActionOtelSink.emit)
-    assert "endpoint" not in constructor.parameters
+    assert constructor.parameters["endpoint"].default == LOCAL_ACTION_OTLP_ENDPOINT
     assert list(emit.parameters) == ["self", "event"]
     assert LOCAL_ACTION_OTLP_ENDPOINT == "http://127.0.0.1:14318"
+
+    for value in (
+        "file:///tmp/collector",
+        "http://user:secret@collector:4318",
+        "http://collector:4318/path",
+        "http://collector:4318?token=secret",
+    ):
+        with pytest.raises(ValueError, match="endpoint is invalid"):
+            ActionOtelSink(value)
+
+    configured = ActionOtelSink("http://otel.internal:4318/")
+    try:
+        assert configured.endpoint == "http://otel.internal:4318"
+    finally:
+        configured.shutdown()
 
 
 def test_metric_projection_omits_redundant_publication_labels_only() -> None:
