@@ -234,8 +234,15 @@ def _reject_demo_constant(_value: str) -> None:
 
 async def _read_demo_body(request: Request) -> dict[str, Any]:
     _guard_demo_mutation(request)
-    raw = await request.body()
-    if not raw or len(raw) > 16_384:
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > 16_384:
+            raise _problem(413, "demo-request-too-large")
+        chunks.append(chunk)
+    raw = b"".join(chunks)
+    if not raw:
         raise _problem(413, "demo-request-too-large")
     try:
         value = json.loads(

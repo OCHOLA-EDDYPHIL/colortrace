@@ -76,6 +76,7 @@ class FakeWorkflow:
         self.prepare_calls: list[Mapping[str, Any]] = []
         self.execute_calls: list[Mapping[str, Any]] = []
         self.reconcile_calls: list[Mapping[str, Any]] = []
+        self.prepare_error: BaseException | None = None
         self.execute_error: BaseException | None = None
         self.reconciliation: Mapping[str, Any] | None = None
 
@@ -97,6 +98,10 @@ class FakeWorkflow:
             "run_id": request["run_id"],
             "incident_id": request["incident_id"],
             "incident_version": request["incident_version"],
+            "plan_version": request["plan_version"],
+            "plan_sha256": request["plan_sha256"],
+            "target_sha256": request["target_sha256"],
+            "idempotency_key": request["idempotency_key"],
             "outcome_id": OUTCOME_ID,
             "outcome_sha256": OUTCOME_SHA256,
             "workflow_id": WORKFLOW_ID,
@@ -108,6 +113,8 @@ class FakeWorkflow:
 
     def prepare(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         self.prepare_calls.append(request)
+        if self.prepare_error is not None:
+            raise self.prepare_error
         return self.preparation(request)
 
     def execute(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -125,9 +132,12 @@ class FakeRecovery:
     def __init__(self) -> None:
         self.calls: list[tuple[Principal, str, Mapping[str, Any]]] = []
         self.result: dict[str, Any] | None = None
+        self.review_error: BaseException | None = None
         self.close_error: BaseException | None = None
 
     def review(self, incident_id: str) -> dict[str, Any]:
+        if self.review_error is not None:
+            raise self.review_error
         return {
             "schema": "recovery-review/v1",
             "incident_id": incident_id,
@@ -437,13 +447,7 @@ def test_startup_reconciles_an_interrupted_execution_without_replay(tmp_path: Pa
 
     assert facade.get(RUN_IDS[0])["phase"] == "executing"
     resumed_workflow = FakeWorkflow(workflow.visuals)
-    resumed_workflow.reconciliation = resumed_workflow.execution(
-        {
-            "run_id": RUN_IDS[0],
-            "incident_id": started["incident_id"],
-            "incident_version": INCIDENT_VERSION,
-        }
-    )
+    resumed_workflow.reconciliation = resumed_workflow.execution(workflow.execute_calls[0])
     resumed = DemoFacade(
         store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
         workflow=resumed_workflow,
@@ -462,6 +466,11 @@ def test_startup_reconciles_an_interrupted_execution_without_replay(tmp_path: Pa
             "incident_id": started["incident_id"],
             "phase": "executing",
             "run_version": 3,
+            "operation": "approve",
+            "idempotency_key": "demo-approve-1",
+            "operation_request_sha256": document_sha256(workflow.execute_calls[0]),
+            "operation_request": workflow.execute_calls[0],
+            "lease_expired": False,
         }
     ]
     assert workflow.execute_calls and resumed_workflow.execute_calls == []
@@ -478,7 +487,9 @@ def test_startup_reconciles_an_interrupted_closure_from_durable_recovery(
     with pytest.raises(SystemExit, match="simulated response loss"):
         facade.close(RUN_IDS[0], _closure(recovered))
 
-    assert facade.get(RUN_IDS[0])["phase"] == "closing"
+    assert SQLiteDemoRunStore(tmp_path / "demo.sqlite3").transient(now=clock())["phase"] == (
+        "closing"
+    )
     resumed = DemoFacade(
         store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
         workflow=workflow,
@@ -492,6 +503,148 @@ def test_startup_reconciles_an_interrupted_closure_from_durable_recovery(
     assert resumed.get(RUN_IDS[0])["phase"] == "closed"
     assert recovery.result is not None
     assert resumed.receipt(RUN_IDS[0])["bindings"]["closure_id"] == recovery.result["closure_id"]
+
+
+def test_prepare_response_loss_reconciles_exact_request_after_lease(tmp_path: Path) -> None:
+    visual_root = tmp_path / "visuals"
+    visual_root.mkdir()
+    workflow = FakeWorkflow(_write_visuals(visual_root))
+    workflow.prepare_error = ConnectionError("response lost")
+    clock = ManualClock()
+    facade = DemoFacade(
+        store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+        workflow=workflow,
+        source_commit=SOURCE_COMMIT,
+        visual_root=visual_root,
+        clock=clock,
+        run_id_factory=iter(RUN_IDS).__next__,
+        nonce_factory=lambda: NONCE,
+    )
+
+    with pytest.raises(DemoFacadeError, match="demo-operation-uncertain"):
+        _start(facade)
+
+    workflow.prepare_error = None
+    workflow.reconciliation = workflow.preparation(workflow.prepare_calls[0])
+    clock.value += timedelta(minutes=16)
+    resumed = DemoFacade(
+        store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+        workflow=workflow,
+        source_commit=SOURCE_COMMIT,
+        visual_root=visual_root,
+        clock=clock,
+    )
+
+    assert resumed.get(RUN_IDS[0])["phase"] == "awaiting-approval"
+    request = workflow.reconcile_calls[0]
+    assert request["operation"] == "prepare"
+    assert request["operation_request"] == workflow.prepare_calls[0]
+    assert request["operation_request_sha256"] == document_sha256(workflow.prepare_calls[0])
+    assert request["lease_expired"] is True
+
+
+def test_execution_response_loss_reconciles_exact_request_after_lease(tmp_path: Path) -> None:
+    facade, workflow, recovery, clock, visual_root = _facade(tmp_path)
+    started = _start(facade)
+    workflow.execute_error = ConnectionError("response lost")
+
+    with pytest.raises(DemoFacadeError, match="demo-operation-uncertain"):
+        facade.approve(RUN_IDS[0], _approval(started))
+
+    workflow.execute_error = None
+    workflow.reconciliation = workflow.execution(workflow.execute_calls[0])
+    clock.value += timedelta(minutes=16)
+    resumed = DemoFacade(
+        store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+        workflow=workflow,
+        source_commit=SOURCE_COMMIT,
+        visual_root=visual_root,
+        recovery=recovery,
+        closure_principal=_principal(),
+        clock=clock,
+    )
+
+    assert resumed.get(RUN_IDS[0])["phase"] == "awaiting-closure"
+    assert len(workflow.execute_calls) == 1
+    request = workflow.reconcile_calls[0]
+    assert request["operation_request"] == workflow.execute_calls[0]
+    assert request["idempotency_key"] == "demo-approve-1"
+    assert request["lease_expired"] is True
+
+
+def test_closure_response_loss_reconciles_authoritative_result_after_lease(
+    tmp_path: Path,
+) -> None:
+    facade, workflow, recovery, clock, visual_root = _facade(tmp_path)
+    started = _start(facade)
+    recovered = facade.approve(RUN_IDS[0], _approval(started))
+    recovery.close_error = ConnectionError("response lost")
+
+    with pytest.raises(DemoFacadeError, match="demo-operation-uncertain"):
+        facade.close(RUN_IDS[0], _closure(recovered))
+
+    recovery.close_error = None
+    clock.value += timedelta(minutes=16)
+    resumed = DemoFacade(
+        store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+        workflow=workflow,
+        source_commit=SOURCE_COMMIT,
+        visual_root=visual_root,
+        recovery=recovery,
+        closure_principal=_principal(),
+        clock=clock,
+    )
+
+    assert len(recovery.calls) == 1
+    assert resumed.get(RUN_IDS[0])["phase"] == "closed"
+    assert recovery.result is not None
+    assert resumed.receipt(RUN_IDS[0])["bindings"]["closure_id"] == recovery.result["closure_id"]
+
+
+def test_temporary_closure_lookup_failure_stays_locked_and_later_heals(tmp_path: Path) -> None:
+    facade, workflow, recovery, clock, visual_root = _facade(tmp_path)
+    started = _start(facade)
+    recovered = facade.approve(RUN_IDS[0], _approval(started))
+    recovery.close_error = SystemExit("process stopped")
+    with pytest.raises(SystemExit, match="process stopped"):
+        facade.close(RUN_IDS[0], _closure(recovered))
+    recovery.close_error = None
+    recovery.review_error = ConnectionError("temporarily unavailable")
+    clock.value += timedelta(minutes=16)
+
+    resumed = DemoFacade(
+        store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+        workflow=workflow,
+        source_commit=SOURCE_COMMIT,
+        visual_root=visual_root,
+        recovery=recovery,
+        closure_principal=_principal(),
+        clock=clock,
+    )
+    assert resumed.get(RUN_IDS[0])["phase"] == "closing"
+    with pytest.raises(DemoFacadeError, match="demo-active-run-exists"):
+        _start(resumed)
+
+    recovery.review_error = None
+    assert resumed.get(RUN_IDS[0])["phase"] == "closed"
+
+
+def test_active_run_cannot_cross_source_commit_binding(tmp_path: Path) -> None:
+    facade, workflow, recovery, clock, visual_root = _facade(tmp_path)
+    _start(facade)
+
+    with pytest.raises(DemoFacadeError, match="demo-build-binding-conflict"):
+        DemoFacade(
+            store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+            workflow=workflow,
+            source_commit="b" * 40,
+            visual_root=visual_root,
+            recovery=recovery,
+            closure_principal=_principal(),
+            clock=clock,
+        )
+
+    assert workflow.execute_calls == []
 
 
 def test_receipt_and_visual_rows_are_append_only(tmp_path: Path) -> None:

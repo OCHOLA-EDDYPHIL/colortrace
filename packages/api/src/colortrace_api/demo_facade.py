@@ -52,6 +52,7 @@ _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _REASON_CODE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 _NONCE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 _MAX_VISUAL_BYTES = 8 * 1024 * 1024
+BUILD_PROVENANCE_SCHEMA = "colortrace-demo-build-provenance/v1"
 
 
 class DemoFacadeError(RuntimeError):
@@ -162,6 +163,22 @@ def _decode_document(value: Any, *, code: str) -> dict[str, Any]:
     return cast(dict[str, Any], decoded)
 
 
+def _build_provenance(value: Mapping[str, Any], *, source_commit: str) -> tuple[bytes, str]:
+    try:
+        encoded = canonical_json_bytes(value)
+        decoded = json.loads(encoded)
+    except (RecursionError, TypeError, UnicodeError, ValueError):
+        raise DemoFacadeError("demo-build-provenance-invalid") from None
+    if (
+        not isinstance(decoded, dict)
+        or decoded.get("schema") != BUILD_PROVENANCE_SCHEMA
+        or decoded.get("source_commit") != source_commit
+        or set(decoded) < {"schema", "source_commit"}
+    ):
+        raise DemoFacadeError("demo-build-provenance-invalid")
+    return encoded, document_sha256(decoded)
+
+
 def _relative_visual_path(value: Any) -> str:
     if (
         not isinstance(value, str)
@@ -262,6 +279,10 @@ _EXECUTION_FIELDS = frozenset(
         "run_id",
         "incident_id",
         "incident_version",
+        "plan_version",
+        "plan_sha256",
+        "target_sha256",
+        "idempotency_key",
         "outcome_id",
         "outcome_sha256",
         "workflow_id",
@@ -284,6 +305,9 @@ def _validate_execution(
         value.get("run_id") != run["run_id"]
         or value.get("incident_id") != run["incident_id"]
         or value.get("incident_version") != run["incident_version"]
+        or value.get("plan_version") != run["plan_version"]
+        or value.get("plan_sha256") != run["plan_sha256"]
+        or value.get("target_sha256") != run["target_sha256"]
     ):
         raise DemoFacadeError("demo-execution-binding-invalid")
     return {
@@ -301,6 +325,16 @@ def _validate_execution(
         "packet_sha256": _require_digest(
             value.get("packet_sha256"), code="demo-packet-digest-invalid"
         ),
+        "plan_version": _require_version(
+            value.get("plan_version"), code="demo-plan-version-invalid"
+        ),
+        "plan_sha256": _require_digest(
+            value.get("plan_sha256"), code="demo-plan-digest-invalid"
+        ),
+        "target_sha256": _require_digest(
+            value.get("target_sha256"), code="demo-target-digest-invalid"
+        ),
+        "idempotency_key": _require_idempotency_key(value.get("idempotency_key")),
         "visuals": _visual_descriptors(
             value.get("visuals"), required_kinds=frozenset({"recovered"})
         ),
@@ -313,6 +347,8 @@ CREATE TABLE demo_runs (
     incident_id TEXT NOT NULL UNIQUE,
     scenario_id TEXT NOT NULL,
     source_commit TEXT NOT NULL,
+    build_sha256 TEXT NOT NULL,
+    build_document BLOB NOT NULL,
     phase TEXT NOT NULL CHECK(phase IN (
         'preparing', 'awaiting-approval', 'executing', 'awaiting-closure',
         'closing', 'closed', 'unresolved', 'expired'
@@ -369,9 +405,10 @@ CREATE TABLE demo_active_run (
 ) STRICT;
 CREATE TABLE demo_operations (
     run_id TEXT NOT NULL REFERENCES demo_runs(run_id),
-    operation TEXT NOT NULL CHECK(operation IN ('approve', 'close')),
+    operation TEXT NOT NULL CHECK(operation IN ('prepare', 'approve', 'close')),
     idempotency_key TEXT NOT NULL,
     request_sha256 TEXT NOT NULL,
+    request_document BLOB NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('pending', 'complete')),
     result_document BLOB,
     created_at TEXT NOT NULL,
@@ -413,6 +450,7 @@ CREATE TRIGGER demo_runs_identity_immutable
 BEFORE UPDATE ON demo_runs
 WHEN NEW.run_id != OLD.run_id OR NEW.incident_id != OLD.incident_id
     OR NEW.scenario_id != OLD.scenario_id OR NEW.source_commit != OLD.source_commit
+    OR NEW.build_sha256 != OLD.build_sha256 OR NEW.build_document != OLD.build_document
     OR NEW.approval_nonce_sha256 != OLD.approval_nonce_sha256
     OR NEW.approval_phrase != OLD.approval_phrase OR NEW.created_at != OLD.created_at
 BEGIN
@@ -446,7 +484,8 @@ CREATE TRIGGER demo_operations_identity_immutable
 BEFORE UPDATE ON demo_operations
 WHEN NEW.run_id != OLD.run_id OR NEW.operation != OLD.operation
     OR NEW.idempotency_key != OLD.idempotency_key
-    OR NEW.request_sha256 != OLD.request_sha256 OR NEW.created_at != OLD.created_at
+    OR NEW.request_sha256 != OLD.request_sha256
+    OR NEW.request_document != OLD.request_document OR NEW.created_at != OLD.created_at
 BEGIN
     SELECT RAISE(ABORT, 'demo-operation-identity-immutable');
 END;
@@ -483,7 +522,7 @@ END;
 """
 
 _APPLICATION_ID = 0x4354444D
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _SchemaManifest = tuple[tuple[str, str, str, str | None], ...]
 
 
@@ -689,6 +728,7 @@ class SQLiteDemoRunStore:
             or _INCIDENT_ID.fullmatch(cast(str, value.get("incident_id"))) is None
             or value.get("scenario_id") != CANONICAL_SCENARIO
             or _COMMIT.fullmatch(cast(str, value.get("source_commit"))) is None
+            or _DIGEST.fullmatch(cast(str, value.get("build_sha256"))) is None
             or value.get("phase") not in _ACTIVE_PHASES | _TERMINAL_PHASES
             or not isinstance(value.get("version"), int)
             or isinstance(value.get("version"), bool)
@@ -700,6 +740,15 @@ class SQLiteDemoRunStore:
         _parse_timestamp(value.get("created_at"))
         _parse_timestamp(value.get("updated_at"))
         _parse_timestamp(value.get("lease_expires_at"))
+        provenance = _decode_document(
+            value.get("build_document"), code="stored-demo-build-provenance-invalid"
+        )
+        encoded, digest = _build_provenance(
+            provenance, source_commit=cast(str, value["source_commit"])
+        )
+        if encoded != value["build_document"] or digest != value["build_sha256"]:
+            raise DemoFacadeError("stored-demo-build-provenance-invalid")
+        value["build_provenance"] = provenance
         return value
 
     @staticmethod
@@ -740,6 +789,7 @@ class SQLiteDemoRunStore:
             "incident_id": run["incident_id"],
             "scenario_id": run["scenario_id"],
             "source_commit": run["source_commit"],
+            "build_sha256": run["build_sha256"],
             "phase": phase,
             "version": run["version"],
             "lease_expires_at": None if terminal else run["lease_expires_at"],
@@ -772,6 +822,8 @@ class SQLiteDemoRunStore:
             "incident_id": run["incident_id"],
             "scenario_id": run["scenario_id"],
             "source_commit": run["source_commit"],
+            "build_sha256": run["build_sha256"],
+            "provenance": run["build_provenance"],
             "phase": run["phase"],
             "run_version": run["version"],
             "created_at": run["created_at"],
@@ -858,7 +910,7 @@ class SQLiteDemoRunStore:
                 "completed_at = ? WHERE run_id = ? AND operation = ?",
                 (response, now_value, selected["run_id"], operation[0]),
             )
-        return selected
+        return cast(dict[str, Any], selected)
 
     @classmethod
     def _expire_active(cls, connection: sqlite3.Connection, *, now: datetime) -> None:
@@ -869,6 +921,8 @@ class SQLiteDemoRunStore:
         if active is None:
             return
         run = cls._run(cast(sqlite3.Row, active))
+        if run["phase"] in _TRANSIENT_PHASES:
+            return
         if _parse_timestamp(run["lease_expires_at"]) <= now:
             cls._terminalize(connection, run, phase="expired", reason="lease-expired", now=now)
 
@@ -878,24 +932,32 @@ class SQLiteDemoRunStore:
         run_id: str,
         incident_id: str,
         source_commit: str,
+        build_provenance: Mapping[str, Any],
         nonce_sha256: str,
+        preparation_request: Mapping[str, Any],
         now: datetime,
     ) -> dict[str, Any]:
         now_value = _timestamp(now)
         expires = _timestamp(now + timedelta(seconds=LEASE_SECONDS))
+        build_document, build_sha256 = _build_provenance(
+            build_provenance, source_commit=source_commit
+        )
         with self._transaction(write=True) as connection:
             self._expire_active(connection, now=now)
             if connection.execute("SELECT 1 FROM demo_active_run WHERE slot = 1").fetchone():
                 raise DemoFacadeError("demo-active-run-exists")
             connection.execute(
-                "INSERT INTO demo_runs(run_id, incident_id, scenario_id, source_commit, phase, "
+                "INSERT INTO demo_runs(run_id, incident_id, scenario_id, source_commit, "
+                "build_sha256, build_document, phase, "
                 "version, lease_expires_at, approval_nonce_sha256, approval_phrase, created_at, "
-                "updated_at) VALUES(?, ?, ?, ?, 'preparing', 1, ?, ?, ?, ?, ?)",
+                "updated_at) VALUES(?, ?, ?, ?, ?, ?, 'preparing', 1, ?, ?, ?, ?, ?)",
                 (
                     run_id,
                     incident_id,
                     CANONICAL_SCENARIO,
                     source_commit,
+                    build_sha256,
+                    build_document,
                     expires,
                     nonce_sha256,
                     APPROVAL_PHRASE,
@@ -904,6 +966,19 @@ class SQLiteDemoRunStore:
                 ),
             )
             connection.execute("INSERT INTO demo_active_run(slot, run_id) VALUES(1, ?)", (run_id,))
+            request_document = canonical_json_bytes(preparation_request)
+            connection.execute(
+                "INSERT INTO demo_operations(run_id, operation, idempotency_key, "
+                "request_sha256, request_document, status, created_at) "
+                "VALUES(?, 'prepare', ?, ?, ?, 'pending', ?)",
+                (
+                    run_id,
+                    preparation_request["idempotency_key"],
+                    document_sha256(preparation_request),
+                    request_document,
+                    now_value,
+                ),
+            )
             return self._run(self._row(connection, run_id))
 
     @staticmethod
@@ -941,14 +1016,6 @@ class SQLiteDemoRunStore:
             run = self._run(self._row(connection, run_id))
             if run["phase"] != "preparing":
                 raise DemoFacadeError("demo-run-phase-conflict")
-            if _parse_timestamp(run["lease_expires_at"]) <= now:
-                return self._terminalize(
-                    connection,
-                    run,
-                    phase="expired",
-                    reason="lease-expired",
-                    now=now,
-                )
             connection.execute(
                 "UPDATE demo_runs SET phase = 'awaiting-approval', version = version + 1, "
                 "lease_expires_at = ?, incident_version = ?, plan_version = ?, "
@@ -969,7 +1036,17 @@ class SQLiteDemoRunStore:
                 visuals=cast(Sequence[Mapping[str, str]], preparation["visuals"]),
                 now_value=now_value,
             )
-            return self._run(self._row(connection, run_id))
+            selected = self._run(self._row(connection, run_id))
+            result = self._projection(connection, selected)
+            changed = connection.execute(
+                "UPDATE demo_operations SET status = 'complete', result_document = ?, "
+                "completed_at = ? WHERE run_id = ? AND operation = 'prepare' "
+                "AND status = 'pending'",
+                (canonical_json_bytes(result), now_value, run_id),
+            )
+            if changed.rowcount != 1:
+                raise DemoFacadeError("demo-operation-state-invalid")
+            return selected
 
     def get(self, run_id: str, *, now: datetime) -> dict[str, Any]:
         with self._transaction(write=True) as connection:
@@ -984,7 +1061,6 @@ class SQLiteDemoRunStore:
 
     def transient(self, *, now: datetime) -> dict[str, Any] | None:
         with self._transaction(write=True) as connection:
-            self._expire_active(connection, now=now)
             row = connection.execute(
                 "SELECT runs.* FROM demo_active_run AS active "
                 "JOIN demo_runs AS runs ON runs.run_id = active.run_id "
@@ -993,7 +1069,49 @@ class SQLiteDemoRunStore:
             if row is None:
                 return None
             run = self._run(cast(sqlite3.Row, row))
-            return run if run["phase"] in _TRANSIENT_PHASES else None
+            if run["phase"] not in _TRANSIENT_PHASES:
+                self._expire_active(connection, now=now)
+                return None
+            operation = connection.execute(
+                "SELECT operation, idempotency_key, request_sha256, request_document "
+                "FROM demo_operations WHERE run_id = ? AND status = 'pending'",
+                (run["run_id"],),
+            ).fetchall()
+            if len(operation) != 1:
+                raise DemoFacadeError("demo-operation-state-invalid")
+            selected = operation[0]
+            expected_operation = {
+                "preparing": "prepare",
+                "executing": "approve",
+                "closing": "close",
+            }[cast(str, run["phase"])]
+            if selected["operation"] != expected_operation:
+                raise DemoFacadeError("demo-operation-state-invalid")
+            request = _decode_document(
+                selected["request_document"], code="stored-demo-operation-invalid"
+            )
+            if (
+                selected["request_sha256"] != document_sha256(request)
+                or request.get("idempotency_key") != selected["idempotency_key"]
+            ):
+                raise DemoFacadeError("stored-demo-operation-invalid")
+            return {
+                **run,
+                "operation": selected["operation"],
+                "operation_idempotency_key": selected["idempotency_key"],
+                "operation_request_sha256": selected["request_sha256"],
+                "operation_request": request,
+                "lease_expired": _parse_timestamp(run["lease_expires_at"]) <= now,
+            }
+
+    def active(self, *, now: datetime) -> dict[str, Any] | None:
+        with self._transaction(write=True) as connection:
+            self._expire_active(connection, now=now)
+            row = connection.execute(
+                "SELECT runs.* FROM demo_active_run AS active "
+                "JOIN demo_runs AS runs ON runs.run_id = active.run_id WHERE active.slot = 1"
+            ).fetchone()
+            return None if row is None else self._run(cast(sqlite3.Row, row))
 
     def fail(self, run_id: str, *, reason: str, now: datetime) -> dict[str, Any]:
         with self._transaction(write=True) as connection:
@@ -1034,8 +1152,14 @@ class SQLiteDemoRunStore:
         expected_version: int,
         idempotency_key: str,
         request_sha256: str,
+        operation_request: Mapping[str, Any],
         now: datetime,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        if (
+            document_sha256(operation_request) != request_sha256
+            or operation_request.get("idempotency_key") != idempotency_key
+        ):
+            raise DemoFacadeError("demo-operation-request-invalid")
         now_value = _timestamp(now)
         expires = _timestamp(now + timedelta(seconds=LEASE_SECONDS))
         with self._transaction(write=True) as connection:
@@ -1056,8 +1180,16 @@ class SQLiteDemoRunStore:
                 raise DemoFacadeError("demo-run-version-conflict")
             connection.execute(
                 "INSERT INTO demo_operations(run_id, operation, idempotency_key, "
-                "request_sha256, status, created_at) VALUES(?, ?, ?, ?, 'pending', ?)",
-                (run_id, operation, idempotency_key, request_sha256, now_value),
+                "request_sha256, request_document, status, created_at) "
+                "VALUES(?, ?, ?, ?, ?, 'pending', ?)",
+                (
+                    run_id,
+                    operation,
+                    idempotency_key,
+                    request_sha256,
+                    canonical_json_bytes(operation_request),
+                    now_value,
+                ),
             )
             connection.execute(
                 "UPDATE demo_runs SET phase = ?, version = version + 1, lease_expires_at = ?, "
@@ -1079,7 +1211,6 @@ class SQLiteDemoRunStore:
             run = self._run(self._row(connection, run_id))
             if run["phase"] != "executing":
                 raise DemoFacadeError("demo-run-phase-conflict")
-            lease_expired = _parse_timestamp(run["lease_expires_at"]) <= now
             connection.execute(
                 "UPDATE demo_runs SET phase = 'awaiting-closure', version = version + 1, "
                 "lease_expires_at = ?, outcome_id = ?, outcome_sha256 = ?, workflow_id = ?, "
@@ -1104,22 +1235,15 @@ class SQLiteDemoRunStore:
                 now_value=now_value,
             )
             selected = self._run(self._row(connection, run_id))
-            if lease_expired:
-                selected = self._terminalize(
-                    connection,
-                    selected,
-                    phase="unresolved",
-                    reason="execution-lease-expired",
-                    now=now,
-                )
-                return self._projection(connection, selected)
             result = self._projection(connection, selected)
-            connection.execute(
+            changed = connection.execute(
                 "UPDATE demo_operations SET status = 'complete', result_document = ?, "
                 "completed_at = ? WHERE run_id = ? AND operation = 'approve' "
                 "AND status = 'pending'",
                 (canonical_json_bytes(result), now_value, run_id),
             )
+            if changed.rowcount != 1:
+                raise DemoFacadeError("demo-operation-state-invalid")
             return result
 
     def complete_closure(
@@ -1143,6 +1267,12 @@ class SQLiteDemoRunStore:
                 now=now,
                 closure=closure,
             )
+            completed = connection.execute(
+                "SELECT status FROM demo_operations WHERE run_id = ? AND operation = 'close'",
+                (run_id,),
+            ).fetchone()
+            if completed is None or completed["status"] != "complete":
+                raise DemoFacadeError("demo-operation-state-invalid")
             return self._projection(connection, selected)
 
     def reset(
@@ -1248,6 +1378,7 @@ class DemoFacade:
         workflow: DemoWorkflowPort,
         source_commit: str,
         visual_root: str | Path,
+        build_provenance: Mapping[str, Any] | None = None,
         recovery: RecoveryApi | None = None,
         closure_principal: Principal | None = None,
         clock: Callable[[], datetime] = _utc_now,
@@ -1268,12 +1399,28 @@ class DemoFacade:
         self._store = store
         self._workflow = workflow
         self._source_commit = source_commit
+        selected_provenance = (
+            {
+                "schema": BUILD_PROVENANCE_SCHEMA,
+                "source_commit": source_commit,
+            }
+            if build_provenance is None
+            else build_provenance
+        )
+        self._build_document, self._build_sha256 = _build_provenance(
+            selected_provenance,
+            source_commit=source_commit,
+        )
+        self._build_provenance = _decode_document(
+            self._build_document, code="demo-build-provenance-invalid"
+        )
         self._visual_root = resolved
         self._recovery = recovery
         self._closure_principal = closure_principal
         self._clock = clock
         self._run_id_factory = run_id_factory or (lambda: f"demo-run-{secrets.token_hex(16)}")
         self._nonce_factory = nonce_factory or (lambda: secrets.token_urlsafe(32))
+        self._assert_active_build_binding()
         if reconcile_on_startup:
             self.reconcile_startup()
 
@@ -1282,6 +1429,14 @@ class DemoFacade:
         if value.tzinfo is None or value.utcoffset() is None:
             raise DemoFacadeError("demo-time-invalid")
         return value.astimezone(UTC)
+
+    def _assert_active_build_binding(self) -> None:
+        active = self._store.active(now=self._now())
+        if active is not None and (
+            active["source_commit"] != self._source_commit
+            or active["build_sha256"] != self._build_sha256
+        ):
+            raise DemoFacadeError("demo-build-binding-conflict")
 
     def _verify_visual(self, descriptor: Mapping[str, str]) -> None:
         self._read_visual(descriptor)
@@ -1353,13 +1508,6 @@ class DemoFacade:
             raise DemoFacadeError("demo-identity-generation-invalid")
         incident_id = f"incident-demo-{run_id.removeprefix('demo-run-')}"
         now = self._now()
-        run = self._store.create(
-            run_id=run_id,
-            incident_id=incident_id,
-            source_commit=self._source_commit,
-            nonce_sha256=_nonce_sha256(nonce),
-            now=now,
-        )
         request = {
             "schema": "colortrace-demo-preparation-request/v1",
             "run_id": run_id,
@@ -1368,18 +1516,23 @@ class DemoFacade:
             "source_commit": self._source_commit,
             "idempotency_key": f"prepare:{run_id}",
         }
+        self._store.create(
+            run_id=run_id,
+            incident_id=incident_id,
+            source_commit=self._source_commit,
+            build_provenance=self._build_provenance,
+            nonce_sha256=_nonce_sha256(nonce),
+            preparation_request=request,
+            now=now,
+        )
         try:
             raw = self._workflow.prepare(request)
             preparation = _validate_preparation(raw, run_id=run_id, incident_id=incident_id)
             self._verify_visuals(cast(Sequence[Mapping[str, str]], preparation["visuals"]))
             self._store.complete_preparation(run_id, preparation, now=self._now())
             result = self._store.get(run_id, now=self._now())
-        except Exception:
-            return self._store.fail(
-                cast(str, run["run_id"]),
-                reason="preparation-failed",
-                now=self._now(),
-            )
+        except Exception as error:
+            raise DemoFacadeError("demo-operation-uncertain") from error
         if result["phase"] == "awaiting-approval":
             result["approval_nonce"] = nonce
         return result
@@ -1430,6 +1583,8 @@ class DemoFacade:
     def approve(self, run_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
         if _RUN_ID.fullmatch(run_id) is None:
             raise DemoFacadeError("demo-run-id-invalid")
+        self._assert_active_build_binding()
+        self.reconcile_startup()
         request = self._approval_request(body)
         current = self._store.raw(run_id, now=self._now())
         if not hmac.compare_digest(
@@ -1445,11 +1600,17 @@ class DemoFacade:
         }
         if any(request[provided] != current[stored] for provided, stored in bindings.items()):
             raise DemoFacadeError("demo-approval-binding-conflict")
-        digest_body = {
-            **request,
-            "approval_nonce": _nonce_sha256(cast(str, request["approval_nonce"])),
+        execution_request = {
+            "schema": "colortrace-demo-execution-request/v1",
+            "run_id": current["run_id"],
+            "incident_id": current["incident_id"],
+            "incident_version": current["incident_version"],
+            "plan_version": current["plan_version"],
+            "plan_sha256": current["plan_sha256"],
+            "target_sha256": current["target_sha256"],
+            "idempotency_key": request["idempotency_key"],
         }
-        request_sha256 = document_sha256(digest_body)
+        request_sha256 = document_sha256(execution_request)
         started, replay = self._store.begin_operation(
             run_id,
             operation="approve",
@@ -1458,27 +1619,20 @@ class DemoFacade:
             expected_version=cast(int, request["expected_run_version"]),
             idempotency_key=cast(str, request["idempotency_key"]),
             request_sha256=request_sha256,
+            operation_request=execution_request,
             now=self._now(),
         )
         if replay is not None:
             return replay
-        execution_request = {
-            "schema": "colortrace-demo-execution-request/v1",
-            "run_id": started["run_id"],
-            "incident_id": started["incident_id"],
-            "incident_version": started["incident_version"],
-            "plan_version": started["plan_version"],
-            "plan_sha256": started["plan_sha256"],
-            "target_sha256": started["target_sha256"],
-            "idempotency_key": request["idempotency_key"],
-        }
         try:
             raw = self._workflow.execute(execution_request)
             execution = _validate_execution(raw, run=started)
+            if execution["idempotency_key"] != execution_request["idempotency_key"]:
+                raise DemoFacadeError("demo-execution-binding-invalid")
             self._verify_visuals(cast(Sequence[Mapping[str, str]], execution["visuals"]))
             return self._store.complete_execution(run_id, execution, now=self._now())
-        except Exception:
-            return self._store.fail(run_id, reason="execution-failed", now=self._now())
+        except Exception as error:
+            raise DemoFacadeError("demo-operation-uncertain") from error
 
     @staticmethod
     def _closure_request(body: Mapping[str, Any]) -> dict[str, Any]:
@@ -1532,7 +1686,12 @@ class DemoFacade:
         }
 
     @staticmethod
-    def _validate_closure(value: Mapping[str, Any], *, run: Mapping[str, Any]) -> dict[str, Any]:
+    def _validate_closure(
+        value: Mapping[str, Any],
+        *,
+        run: Mapping[str, Any],
+        request: Mapping[str, Any],
+    ) -> dict[str, Any]:
         selected = validate_closure_result(value)
         bindings = {
             "incident_id": run["incident_id"],
@@ -1545,16 +1704,23 @@ class DemoFacade:
         }
         if any(selected.get(key) != expected for key, expected in bindings.items()):
             raise DemoFacadeError("demo-closure-binding-invalid")
+        if (
+            selected.get("idempotency_key") != request.get("idempotency_key")
+            or selected.get("reason") != request.get("reason")
+        ):
+            raise DemoFacadeError("demo-closure-binding-invalid")
         after = _require_version(
             selected.get("workflow_version_after"), code="demo-workflow-version-invalid"
         )
         if after != cast(int, run["workflow_version"]) + 1:
             raise DemoFacadeError("demo-closure-binding-invalid")
-        return selected
+        return cast(dict[str, Any], selected)
 
     def close(self, run_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
         if _RUN_ID.fullmatch(run_id) is None:
             raise DemoFacadeError("demo-run-id-invalid")
+        self._assert_active_build_binding()
+        self.reconcile_startup()
         request = self._closure_request(body)
         current = self._store.raw(run_id, now=self._now())
         bindings = {
@@ -1567,21 +1733,6 @@ class DemoFacade:
         }
         if any(request[provided] != current[stored] for provided, stored in bindings.items()):
             raise DemoFacadeError("demo-closure-binding-conflict")
-        request_sha256 = document_sha256(request)
-        started, replay = self._store.begin_operation(
-            run_id,
-            operation="close",
-            expected_phase="awaiting-closure",
-            next_phase="closing",
-            expected_version=cast(int, request["expected_run_version"]),
-            idempotency_key=cast(str, request["idempotency_key"]),
-            request_sha256=request_sha256,
-            now=self._now(),
-        )
-        if replay is not None:
-            return replay
-        if self._recovery is None or self._closure_principal is None:
-            return self._store.fail(run_id, reason="closure-unavailable", now=self._now())
         delegated = {
             "schema": "recovery-closure-request/v1",
             "expected_incident_version": request["expected_incident_version"],
@@ -1593,20 +1744,38 @@ class DemoFacade:
             "reason": request["reason"],
             "idempotency_key": request["idempotency_key"],
         }
+        request_sha256 = document_sha256(delegated)
+        started, replay = self._store.begin_operation(
+            run_id,
+            operation="close",
+            expected_phase="awaiting-closure",
+            next_phase="closing",
+            expected_version=cast(int, request["expected_run_version"]),
+            idempotency_key=cast(str, request["idempotency_key"]),
+            request_sha256=request_sha256,
+            operation_request=delegated,
+            now=self._now(),
+        )
+        if replay is not None:
+            return replay
+        if self._recovery is None or self._closure_principal is None:
+            return self._store.fail(run_id, reason="closure-unavailable", now=self._now())
         try:
             raw = self._recovery.close(
                 self._closure_principal,
                 cast(str, started["incident_id"]),
                 delegated,
             )
-            closure = self._validate_closure(raw, run=started)
+            closure = self._validate_closure(raw, run=started, request=delegated)
             return self._store.complete_closure(run_id, closure, now=self._now())
-        except Exception:
-            return self._store.fail(run_id, reason="closure-failed", now=self._now())
+        except Exception as error:
+            raise DemoFacadeError("demo-operation-uncertain") from error
 
     def get(self, run_id: str) -> dict[str, Any]:
         if _RUN_ID.fullmatch(run_id) is None:
             raise DemoFacadeError("demo-run-id-invalid")
+        self._assert_active_build_binding()
+        self.reconcile_startup()
         return self._store.get(run_id, now=self._now())
 
     def reset(self, run_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
@@ -1656,20 +1825,32 @@ class DemoFacade:
         run = self._store.transient(now=self._now())
         if run is None:
             return
+        if run["source_commit"] != self._source_commit:
+            raise DemoFacadeError("demo-build-binding-conflict")
+        operation_request = cast(Mapping[str, Any], run["operation_request"])
         if run["phase"] == "closing":
+            if self._recovery is None:
+                return
             try:
-                if self._recovery is None:
-                    raise DemoFacadeError("demo-reconciliation-inconclusive")
                 review = self._recovery.review(cast(str, run["incident_id"]))
-                raw_closure = review.get("closure")
-                if not isinstance(raw_closure, Mapping):
-                    raise DemoFacadeError("demo-reconciliation-inconclusive")
-                closure = self._validate_closure(raw_closure, run=run)
-                self._store.complete_closure(cast(str, run["run_id"]), closure, now=self._now())
             except Exception:
+                return
+            raw_closure = review.get("closure")
+            if not isinstance(raw_closure, Mapping):
+                return
+            try:
+                closure = self._validate_closure(
+                    raw_closure,
+                    run=run,
+                    request=operation_request,
+                )
+                self._store.complete_closure(
+                    cast(str, run["run_id"]), closure, now=self._now()
+                )
+            except DemoFacadeError:
                 self._store.fail(
                     cast(str, run["run_id"]),
-                    reason="restart-reconciliation-failed",
+                    reason="restart-reconciliation-invalid",
                     now=self._now(),
                 )
             return
@@ -1679,11 +1860,19 @@ class DemoFacade:
             "incident_id": run["incident_id"],
             "phase": run["phase"],
             "run_version": run["version"],
+            "operation": run["operation"],
+            "idempotency_key": run["operation_idempotency_key"],
+            "operation_request_sha256": run["operation_request_sha256"],
+            "operation_request": operation_request,
+            "lease_expired": run["lease_expired"],
         }
         try:
             result = self._workflow.reconcile(request)
-            if result is None:
-                raise DemoFacadeError("demo-reconciliation-inconclusive")
+        except Exception:
+            return
+        if result is None:
+            return
+        try:
             if run["phase"] == "preparing":
                 preparation = _validate_preparation(
                     result,
@@ -1696,14 +1885,16 @@ class DemoFacade:
                 )
             elif run["phase"] == "executing":
                 execution = _validate_execution(result, run=run)
+                if execution["idempotency_key"] != operation_request.get("idempotency_key"):
+                    raise DemoFacadeError("demo-execution-binding-invalid")
                 self._verify_visuals(cast(Sequence[Mapping[str, str]], execution["visuals"]))
                 self._store.complete_execution(cast(str, run["run_id"]), execution, now=self._now())
             else:
                 raise DemoFacadeError("demo-reconciliation-inconclusive")
-        except Exception:
+        except DemoFacadeError:
             self._store.fail(
                 cast(str, run["run_id"]),
-                reason="restart-reconciliation-failed",
+                reason="restart-reconciliation-invalid",
                 now=self._now(),
             )
 
