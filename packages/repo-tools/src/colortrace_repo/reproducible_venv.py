@@ -48,7 +48,7 @@ _OCIO_BINARIES = (
     "PyOpenColorIO/bin/ociolutimage",
 )
 _OCIO_BUILD_ROOT = re.compile(
-    rb"/root/\.cache/uv/sdists-v9/pypi/opencolorio/2\.5\.2/([A-Za-z0-9]{16})(?=/)"
+    rb"/root/\.cache/uv/sdists-v9/pypi/opencolorio/2\.5\.2/([A-Za-z0-9_-]{16})(?=/)"
 )
 _OCIO_BUILD_ROOT_PREFIX = b"/root/.cache/uv/sdists-v9/pypi/opencolorio/2.5.2/"
 _NORMALIZED_BUILD_TOKEN = b"0" * 16

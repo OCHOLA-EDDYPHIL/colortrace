@@ -19,6 +19,7 @@ from colortrace_repo.final_image_evidence import (
     build_final_image_evidence,
 )
 from colortrace_repo.generated import check_generated_manifest, compare_generated_trees
+from colortrace_repo.mcp_build_evidence import build_mcp_reproducibility_evidence
 from colortrace_repo.security_evidence import (
     finalize_security_evidence,
     prepare_security_evidence,
@@ -146,6 +147,20 @@ def _parser() -> argparse.ArgumentParser:
         image_evidence.add_argument(f"--{name}-sbom", required=True, metavar="PATH")
         image_evidence.add_argument(f"--{name}-reference", required=True)
 
+    mcp_build_evidence = subparsers.add_parser(
+        "mcp-build-evidence", help="verify two no-cache MCP runtime builds"
+    )
+    _add_common_arguments(mcp_build_evidence)
+    mcp_build_evidence.add_argument("--output", required=True, metavar="PATH")
+    mcp_build_evidence.add_argument("--candidate-sha", required=True)
+    mcp_build_evidence.add_argument("--candidate-tree", required=True)
+    mcp_build_evidence.add_argument("--first-binary", required=True, metavar="PATH")
+    mcp_build_evidence.add_argument("--second-binary", required=True, metavar="PATH")
+    mcp_build_evidence.add_argument("--first-archive", required=True, metavar="PATH")
+    mcp_build_evidence.add_argument("--second-archive", required=True, metavar="PATH")
+    mcp_build_evidence.add_argument("--first-reference", required=True)
+    mcp_build_evidence.add_argument("--second-reference", required=True)
+
     check = subparsers.add_parser("check", help="run every repository policy check")
     _add_common_arguments(check)
     return parser
@@ -221,6 +236,19 @@ def _run(args: argparse.Namespace, root: Path) -> list[Finding]:
             candidate_tree=args.candidate_tree,
             scanner_image=args.scanner_image,
             images=images,
+        )
+    if args.command == "mcp-build-evidence":
+        return build_mcp_reproducibility_evidence(
+            root,
+            _path(root, args.output),  # type: ignore[arg-type]
+            candidate_sha=args.candidate_sha,
+            candidate_tree=args.candidate_tree,
+            first_binary=_unresolved_path(root, args.first_binary),
+            second_binary=_unresolved_path(root, args.second_binary),
+            first_archive=_unresolved_path(root, args.first_archive),
+            second_archive=_unresolved_path(root, args.second_archive),
+            first_reference=args.first_reference,
+            second_reference=args.second_reference,
         )
     if args.command == "check":
         findings: list[Finding] = []
