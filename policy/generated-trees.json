@@ -25,7 +25,7 @@
         {
           "role": "openapi",
           "path": "packages/contracts/openapi.json",
-          "sha256": "7f62860f0d90e1976024827264d7bd93464269cebfa4e71f020d645cbb6346d2"
+          "sha256": "82c8808802ee338d2fec7937c2d7497aabe01909f41001e4f620ef9ac98c57ee"
         },
         {
           "role": "package",
@@ -97,7 +97,7 @@
         },
         {
           "path": "types.gen.ts",
-          "sha256": "ecfd835c2fa64e216522bf73a11367848fccac878813d5c2c1a5ffd7c5d2a285"
+          "sha256": "9619f9a7dd29ed6da50960e9146db2bdb8eb7193514d506d4a1906619b1d0bb7"
         }
       ]
     }

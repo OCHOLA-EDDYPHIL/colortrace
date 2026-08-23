@@ -1106,7 +1106,9 @@ def test_invalid_model_tool_arguments_stop_after_alert_baseline(
     assert [item["observation"]["query_key"] for item in evidence.last_result.envelopes] == [
         "alert.rule"
     ]
+    assert "assessment" not in packet["state_history"]
     assert "model-output-invalid" in {item["code"] for item in packet["unresolved_items"]}
+    assert "incomplete-evidence" in {item["code"] for item in packet["unresolved_items"]}
 
 
 def test_drafting_rejects_citation_outside_quoted_evidence(
@@ -1133,13 +1135,15 @@ def test_one_trusted_model_retry_then_second_timeout_is_terminal(
 ) -> None:
     model = FakeModel(
         failures=[
-            ModelFailure("timeout", transient=True),
-            ModelFailure("timeout", transient=True),
+            ModelFailure("timeout", transient=True, input_tokens=10, output_tokens=2),
+            ModelFailure("timeout", transient=True, input_tokens=10, output_tokens=2),
         ]
     )
     packet, _, evidence = asyncio.run(execute(policy, bundles["canonical"], model=model))
     assert packet["status"] == "unresolved"
     assert packet["budget_use"]["model_turns"] == 2
+    assert packet["budget_use"]["input_tokens"] == 20
+    assert packet["budget_use"]["output_tokens"] == 4
     assert packet["budget_use"]["trusted_transient_retries"] == 1
     assert evidence.collections == 1
     assert [item["result_class"] for item in packet["invocation_records"]] == [
@@ -1162,6 +1166,55 @@ def test_aggregate_token_overage_is_recorded_and_rejected(
     assert packet["budget_use"]["input_tokens"] == 32_001
     assert packet["invocation_records"][0]["result_class"] == "budget-rejected"
     assert evidence.collections == 1
+
+
+def test_multi_turn_token_bound_is_admitted_before_provider_execution(
+    policy: InvestigationPolicy, bundles: dict[str, Path]
+) -> None:
+    bounded = replace(
+        policy,
+        budgets=replace(policy.budgets, maximum_output_tokens=1_800),
+    )
+    model = FakeModel()
+    packet, _, evidence = asyncio.run(execute(bounded, bundles["canonical"], model=model))
+
+    assert model.calls == []
+    assert packet["status"] == "unresolved"
+    assert "token-budget" in {item["code"] for item in packet["unresolved_items"]}
+    assert "assessment" not in packet["state_history"]
+    assert evidence.last_result is not None
+    assert [item["observation"]["query_key"] for item in evidence.last_result.envelopes] == [
+        "alert.rule"
+    ]
+
+
+def test_partial_provider_failure_records_known_and_unobserved_usage(
+    policy: InvestigationPolicy, bundles: dict[str, Path]
+) -> None:
+    failure = ModelFailure(
+        "service",
+        transient=False,
+        input_tokens=10,
+        output_tokens=2,
+        model_calls=2,
+        unobserved_model_calls=1,
+    )
+    packet, _, _ = asyncio.run(
+        execute(policy, bundles["canonical"], model=FakeModel(failures=[failure]))
+    )
+
+    assert packet["status"] == "unresolved"
+    assert packet["budget_use"]["model_turns"] == 2
+    assert packet["budget_use"]["input_tokens"] == 10
+    assert packet["budget_use"]["output_tokens"] == 2
+    assert packet["budget_use"]["unavailable_input_tokens_reserved"] > 0
+    assert packet["budget_use"]["unavailable_output_tokens_reserved"] == 512
+    assert packet["invocation_records"][0]["usage"] == {
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "model_calls": 2,
+        "unobserved_model_calls": 1,
+    }
 
 
 def test_model_visible_content_and_attempt_budgets_fail_closed(
@@ -1395,6 +1448,52 @@ def test_pinned_adk_runner_executes_the_three_tool_calls_in_sequence() -> None:
     assert output.input_tokens == 40
     assert output.output_tokens == 8
     assert ModelSelection.from_bytes(output.content).query_keys == mcp_subject.QUERY_KEYS
+
+
+def test_vertex_gateway_preserves_partial_usage_on_mid_loop_provider_failure() -> None:
+    from google.genai import errors as genai_errors
+
+    class FailingRunner:
+        def __init__(self, **_: Any) -> None:
+            return
+
+        async def run_async(self, **_: Any) -> AsyncIterator[Any]:
+            yield SimpleNamespace(
+                usage_metadata=SimpleNamespace(
+                    prompt_token_count=10,
+                    candidates_token_count=2,
+                    thoughts_token_count=0,
+                ),
+                error_code=None,
+                finish_reason=None,
+                content=None,
+                is_final_response=lambda: False,
+            )
+            raise genai_errors.ServerError(503, {"error": {"message": "untrusted"}})
+
+        async def close(self) -> None:
+            return
+
+    async def evidence_tool(_query_key: Any) -> Mapping[str, Any]:
+        return {"schema": "grafana-evidence-tool-result/v1", "status": "collected"}
+
+    call = ModelCall(
+        "evidence-selection",
+        {"input_contract": "evidence-selection-input/v1"},
+        {"type": "object"},
+        512,
+        evidence_tool,
+    )
+    with patch("colortrace_investigation.model.Runner", FailingRunner):
+        with pytest.raises(ModelFailure) as caught:
+            asyncio.run(AdkVertexGateway(project_id="colortrace-test").generate(call))
+
+    assert caught.value.code == "service"
+    assert caught.value.input_tokens == 10
+    assert caught.value.output_tokens == 2
+    assert caught.value.model_calls == 2
+    assert caught.value.unobserved_model_calls == 1
+    assert "untrusted" not in str(caught.value)
 
 
 def test_model_instructions_pin_each_output_contract() -> None:

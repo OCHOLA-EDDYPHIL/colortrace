@@ -854,6 +854,19 @@ def _audit_attempts(result: EvidenceResult, ledger: BudgetLedger) -> list[Blocke
     return blockers
 
 
+def _has_complete_required_envelopes(result: EvidenceResult) -> bool:
+    query_keys: list[str] = []
+    for envelope in result.envelopes:
+        observation = envelope.get("observation")
+        if not isinstance(observation, Mapping):
+            return False
+        query_key = observation.get("query_key")
+        if not isinstance(query_key, str):
+            return False
+        query_keys.append(query_key)
+    return len(query_keys) == len(QUERY_KEYS) and set(query_keys) == set(QUERY_KEYS)
+
+
 def assess_evidence(
     result: EvidenceResult,
     *,
@@ -1348,6 +1361,8 @@ class InvestigationWorkflow:
         result_class: str,
         error_code: str | None,
         inventory_version: str | None,
+        model_calls: int,
+        unobserved_model_calls: int = 0,
         failure_usage: tuple[int, int] | None = None,
     ) -> dict[str, Any]:
         output_sha = None if output is None else prefixed_sha256(output.content)
@@ -1376,6 +1391,8 @@ class InvestigationWorkflow:
             "usage": {
                 "input_tokens": None if usage is None else usage[0],
                 "output_tokens": None if usage is None else usage[1],
+                "model_calls": model_calls,
+                "unobserved_model_calls": unobserved_model_calls,
             },
             "result_class": result_class,
             "error_code": error_code,
@@ -1421,7 +1438,10 @@ class InvestigationWorkflow:
                 - ledger.unavailable_output_tokens_reserved
             )
             maximum_output = min(_MODEL_OUTPUT_LIMITS[turn_kind], remaining_output)
-            if maximum_output <= 0 or not ledger.can_admit_model(input_upper_bound, maximum_output):
+            if maximum_output <= 0 or not ledger.can_admit_model(
+                input_upper_bound * maximum_model_calls,
+                maximum_output * maximum_model_calls,
+            ):
                 return (
                     None,
                     records,
@@ -1466,7 +1486,12 @@ class InvestigationWorkflow:
                 finally:
                     self._model_lock.release()
             except TimeoutError:
-                failure = ModelFailure("timeout", transient=True, model_calls=maximum_model_calls)
+                failure = ModelFailure(
+                    "timeout",
+                    transient=True,
+                    model_calls=maximum_model_calls,
+                    unobserved_model_calls=maximum_model_calls,
+                )
             except ModelFailure as error:
                 failure = error
             except asyncio.CancelledError:
@@ -1489,6 +1514,8 @@ class InvestigationWorkflow:
                         result_class="failed",
                         error_code="cancelled",
                         inventory_version=inventory_version,
+                        model_calls=maximum_model_calls,
+                        unobserved_model_calls=maximum_model_calls,
                     )
                 )
                 if self._progress is not None:
@@ -1496,7 +1523,10 @@ class InvestigationWorkflow:
                 raise
             except Exception:
                 failure = ModelFailure(
-                    "model-provider", transient=False, model_calls=maximum_model_calls
+                    "model-provider",
+                    transient=False,
+                    model_calls=maximum_model_calls,
+                    unobserved_model_calls=maximum_model_calls,
                 )
             latency_ms = int(max(0.0, self._monotonic() - started) * 1000)
             if failure is not None:
@@ -1513,10 +1543,16 @@ class InvestigationWorkflow:
                     failure_usage = (failure.input_tokens, failure.output_tokens)
                 else:
                     failure_usage = None
+                unobserved_model_calls = (
+                    failure.unobserved_model_calls
+                    if failure_usage is not None
+                    else failure.model_calls
+                )
+                if unobserved_model_calls:
                     try:
                         ledger.reserve_unavailable_model_usage(
-                            input_upper_bound * failure.model_calls,
-                            maximum_output * failure.model_calls,
+                            input_upper_bound * unobserved_model_calls,
+                            maximum_output * unobserved_model_calls,
                         )
                     except WorkflowError:
                         usage_within_budget = False
@@ -1531,6 +1567,8 @@ class InvestigationWorkflow:
                     result_class="failed",
                     error_code=_normalized_code(failure.code).replace("-", "_"),
                     inventory_version=inventory_version,
+                    model_calls=failure.model_calls,
+                    unobserved_model_calls=unobserved_model_calls,
                     failure_usage=failure_usage,
                 )
                 records.append(record)
@@ -1584,6 +1622,7 @@ class InvestigationWorkflow:
                     result_class=result_class,
                     error_code=error_code,
                     inventory_version=inventory_version,
+                    model_calls=output.model_calls,
                 )
             )
             if not within_budget:
@@ -1717,7 +1756,7 @@ class InvestigationWorkflow:
             except Exception:
                 blockers.append(Blocker("evidence-unavailable", "evidence"))
 
-            if result is not None:
+            if result is not None and _has_complete_required_envelopes(result):
                 state_history.append("assessment")
                 try:
                     assessment = await self._validator_call(
@@ -1737,6 +1776,8 @@ class InvestigationWorkflow:
                 if assessment is not None:
                     evidence_ids.update(assessment.evidence_ids)
                     blockers.extend(assessment.blockers)
+            elif result is not None:
+                blockers.append(Blocker("incomplete-evidence", "evidence"))
 
         validator_result: dict[str, Any] | None = None
         if not blockers and assessment is not None:

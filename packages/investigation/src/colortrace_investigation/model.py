@@ -64,12 +64,14 @@ class ModelFailure(RuntimeError):
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         model_calls: int = 1,
+        unobserved_model_calls: int = 0,
     ) -> None:
         self.code = code
         self.transient = transient
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
         self.model_calls = model_calls
+        self.unobserved_model_calls = unobserved_model_calls
         super().__init__(code)
 
 
@@ -171,6 +173,10 @@ class AdkVertexGateway:
             auto_create_session=False,
         )
         model_calls = 0
+        content: bytes | None = None
+        input_tokens = 0
+        output_tokens = 0
+        usage_observed = False
         try:
             async with self._lock:
                 await session_service.create_session(
@@ -179,10 +185,6 @@ class AdkVertexGateway:
                     session_id=session_id,
                     state={},
                 )
-                content: bytes | None = None
-                input_tokens = 0
-                output_tokens = 0
-                usage_observed = False
                 message = types.Content(role="user", parts=[types.Part.from_text(text=prompt)])
                 async for event in runner.run_async(
                     user_id=user_id,
@@ -202,12 +204,17 @@ class AdkVertexGateway:
                         None,
                         types.FinishReason.STOP,
                     }:
+                        attempted_model_calls = min(
+                            maximum_llm_calls,
+                            max(1, model_calls + (0 if usage is not None else 1)),
+                        )
                         raise ModelFailure(
                             "model-output",
                             transient=False,
-                            input_tokens=input_tokens,
-                            output_tokens=output_tokens,
-                            model_calls=max(1, model_calls),
+                            input_tokens=input_tokens if usage_observed else None,
+                            output_tokens=output_tokens if usage_observed else None,
+                            model_calls=attempted_model_calls,
+                            unobserved_model_calls=attempted_model_calls - model_calls,
                         )
                     if event.is_final_response() and event.content is not None:
                         text_parts = [
@@ -220,9 +227,10 @@ class AdkVertexGateway:
                     raise ModelFailure(
                         "model-incomplete",
                         transient=False,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
+                        input_tokens=input_tokens if usage_observed else None,
+                        output_tokens=output_tokens if usage_observed else None,
                         model_calls=max(1, model_calls),
+                        unobserved_model_calls=0 if usage_observed else 1,
                     )
                 if len(content) > 65_536:
                     raise ModelFailure(
@@ -238,29 +246,46 @@ class AdkVertexGateway:
         except ModelFailure:
             raise
         except errors.APIError as error:
+            attempted_model_calls = min(maximum_llm_calls, max(1, model_calls + 1))
+            failure_usage = (input_tokens, output_tokens) if usage_observed else (None, None)
+
+            def provider_failure(code: str, *, transient: bool) -> ModelFailure:
+                return ModelFailure(
+                    code,
+                    transient=transient,
+                    input_tokens=failure_usage[0],
+                    output_tokens=failure_usage[1],
+                    model_calls=attempted_model_calls,
+                    unobserved_model_calls=attempted_model_calls - model_calls,
+                )
+
             status = error.code
             if status == 429:
-                raise ModelFailure(
-                    "rate_limit", transient=True, model_calls=max(1, model_calls)
-                ) from None
+                raise provider_failure("rate_limit", transient=True) from None
             if status in {408, 504}:
-                raise ModelFailure(
-                    "timeout", transient=True, model_calls=max(1, model_calls)
-                ) from None
+                raise provider_failure("timeout", transient=True) from None
             if isinstance(status, int) and 500 <= status <= 599:
-                raise ModelFailure(
-                    "service", transient=True, model_calls=max(1, model_calls)
-                ) from None
-            raise ModelFailure(
-                "model-provider", transient=False, model_calls=max(1, model_calls)
-            ) from None
+                raise provider_failure("service", transient=True) from None
+            raise provider_failure("model-provider", transient=False) from None
         except (ConnectionError, EOFError, OSError):
+            attempted_model_calls = min(maximum_llm_calls, max(1, model_calls + 1))
             raise ModelFailure(
-                "transport", transient=True, model_calls=max(1, model_calls)
+                "transport",
+                transient=True,
+                input_tokens=input_tokens if usage_observed else None,
+                output_tokens=output_tokens if usage_observed else None,
+                model_calls=attempted_model_calls,
+                unobserved_model_calls=attempted_model_calls - model_calls,
             ) from None
         except Exception:
+            attempted_model_calls = min(maximum_llm_calls, max(1, model_calls + 1))
             raise ModelFailure(
-                "model-provider", transient=False, model_calls=max(1, model_calls)
+                "model-provider",
+                transient=False,
+                input_tokens=input_tokens if usage_observed else None,
+                output_tokens=output_tokens if usage_observed else None,
+                model_calls=attempted_model_calls,
+                unobserved_model_calls=attempted_model_calls - model_calls,
             ) from None
         finally:
             try:

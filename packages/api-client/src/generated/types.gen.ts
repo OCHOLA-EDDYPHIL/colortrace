@@ -293,6 +293,8 @@ export type ModelInvocation = {
   usage: {
     input_tokens: null | number;
     output_tokens: null | number;
+    model_calls: number;
+    unobserved_model_calls: number;
   };
   result_class: "accepted" | "budget-rejected" | "failed" | "invalid";
   error_code: null | string;
