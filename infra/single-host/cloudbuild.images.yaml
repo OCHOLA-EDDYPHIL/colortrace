@@ -1,0 +1,119 @@
+timeout: 7200s
+
+options:
+  machineType: E2_HIGHCPU_8
+  diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: runtime
+    name: gcr.io/cloud-builders/docker@sha256:2e8d40d8e48dc14fab4213d5e532d74f63fd403d9e8d7f6463096a75820286c3
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - build
+      - --pull
+      - --platform=linux/amd64
+      - --target=runtime
+      - --build-arg=SOURCE_COMMIT=${_SOURCE_COMMIT}
+      - --build-arg=SOURCE_TREE=${_SOURCE_TREE}
+      - --build-arg=SOURCE_DATE_EPOCH=${_SOURCE_DATE_EPOCH}
+      - --tag=${_REGISTRY}/runtime:${_SOURCE_COMMIT}
+      - --file=Dockerfile.runtime
+      - .
+
+  - id: web
+    waitFor:
+      - runtime
+    name: gcr.io/cloud-builders/docker@sha256:2e8d40d8e48dc14fab4213d5e532d74f63fd403d9e8d7f6463096a75820286c3
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - build
+      - --pull
+      - --platform=linux/amd64
+      - --build-arg=SOURCE_COMMIT=${_SOURCE_COMMIT}
+      - --build-arg=SOURCE_TREE=${_SOURCE_TREE}
+      - --build-arg=SOURCE_DATE_EPOCH=${_SOURCE_DATE_EPOCH}
+      - --tag=${_REGISTRY}/web:${_SOURCE_COMMIT}
+      - --file=Dockerfile.web
+      - .
+
+  - id: caddy
+    waitFor:
+      - web
+    name: gcr.io/cloud-builders/docker@sha256:2e8d40d8e48dc14fab4213d5e532d74f63fd403d9e8d7f6463096a75820286c3
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - build
+      - --pull
+      - --platform=linux/amd64
+      - --build-arg=SOURCE_COMMIT=${_SOURCE_COMMIT}
+      - --build-arg=SOURCE_TREE=${_SOURCE_TREE}
+      - --build-arg=SOURCE_DATE_EPOCH=${_SOURCE_DATE_EPOCH}
+      - --tag=${_REGISTRY}/caddy:${_SOURCE_COMMIT}
+      - --file=Dockerfile.caddy
+      - .
+
+  - id: grafana
+    waitFor:
+      - caddy
+    name: gcr.io/cloud-builders/docker@sha256:2e8d40d8e48dc14fab4213d5e532d74f63fd403d9e8d7f6463096a75820286c3
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - build
+      - --pull
+      - --platform=linux/amd64
+      - --target=grafana
+      - --build-arg=SOURCE_COMMIT=${_SOURCE_COMMIT}
+      - --build-arg=SOURCE_TREE=${_SOURCE_TREE}
+      - --build-arg=SOURCE_DATE_EPOCH=${_SOURCE_DATE_EPOCH}
+      - --tag=${_REGISTRY}/grafana:${_SOURCE_COMMIT}
+      - --file=Dockerfile.observability
+      - .
+
+  - id: loki
+    waitFor:
+      - grafana
+    name: gcr.io/cloud-builders/docker@sha256:2e8d40d8e48dc14fab4213d5e532d74f63fd403d9e8d7f6463096a75820286c3
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - build
+      - --pull
+      - --platform=linux/amd64
+      - --target=loki
+      - --build-arg=SOURCE_COMMIT=${_SOURCE_COMMIT}
+      - --build-arg=SOURCE_TREE=${_SOURCE_TREE}
+      - --build-arg=SOURCE_DATE_EPOCH=${_SOURCE_DATE_EPOCH}
+      - --tag=${_REGISTRY}/loki:${_SOURCE_COMMIT}
+      - --file=Dockerfile.observability
+      - .
+
+  - id: tempo
+    waitFor:
+      - loki
+    name: gcr.io/cloud-builders/docker@sha256:2e8d40d8e48dc14fab4213d5e532d74f63fd403d9e8d7f6463096a75820286c3
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - build
+      - --pull
+      - --platform=linux/amd64
+      - --target=tempo
+      - --build-arg=SOURCE_COMMIT=${_SOURCE_COMMIT}
+      - --build-arg=SOURCE_TREE=${_SOURCE_TREE}
+      - --build-arg=SOURCE_DATE_EPOCH=${_SOURCE_DATE_EPOCH}
+      - --tag=${_REGISTRY}/tempo:${_SOURCE_COMMIT}
+      - --file=Dockerfile.observability
+      - .
+
+images:
+  - ${_REGISTRY}/runtime:${_SOURCE_COMMIT}
+  - ${_REGISTRY}/web:${_SOURCE_COMMIT}
+  - ${_REGISTRY}/caddy:${_SOURCE_COMMIT}
+  - ${_REGISTRY}/grafana:${_SOURCE_COMMIT}
+  - ${_REGISTRY}/loki:${_SOURCE_COMMIT}
+  - ${_REGISTRY}/tempo:${_SOURCE_COMMIT}

@@ -1,0 +1,73 @@
+ARG SOURCE_DATE_EPOCH
+
+FROM golang@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS build
+ARG SOURCE_DATE_EPOCH
+ENV CGO_ENABLED=0 \
+    GOARCH=amd64 \
+    GOOS=linux \
+    GOMEMLIMIT=2500MiB \
+    GOMAXPROCS=2 \
+    GOPROXY=https://proxy.golang.org \
+    GOSUMDB=sum.golang.org \
+    GOTOOLCHAIN=local
+WORKDIR /build
+COPY config/caddy/build/go.mod config/caddy/build/go.sum \
+    config/caddy/build/main.go config/caddy/build/modules.txt ./
+ADD --checksum=sha256:a593bd7077c76102ca76d19287a5e247d4e359dd67eddbc933f865afd3c131eb \
+    https://codeload.github.com/caddyserver/caddy/tar.gz/e2eee6a7fce366321294c9c2a79f3146891dcbdf \
+    /tmp/caddy-source.tar.gz
+RUN test "$(go version)" = "go version go1.26.6 linux/amd64" \
+    && echo "ead34b17f4bf81fa214fc790ab80029f18222530c0bd8d4d03e5cd9bb1783872  go.mod" | sha256sum -c - \
+    && echo "c547ceb00efbc9670c92d4074cd0fa58341e1411ccc057e81dbeb04177f330ae  go.sum" | sha256sum -c - \
+    && echo "c1614b4d01d82b6d9fe7da448fbc9c91201223b5e23cb67cf7f17ecb65306e51  main.go" | sha256sum -c - \
+    && echo "66fe492187a1f400b7e932369bd59af454ce98d52c20d40218f5a6342432b08f  modules.txt" | sha256sum -c - \
+    && echo "a593bd7077c76102ca76d19287a5e247d4e359dd67eddbc933f865afd3c131eb  /tmp/caddy-source.tar.gz" | sha256sum -c - \
+    && go mod download all \
+    && go list -mod=readonly -m all >/tmp/modules.txt \
+    && cmp modules.txt /tmp/modules.txt \
+    && tar --extract --gzip --file /tmp/caddy-source.tar.gz --directory /tmp
+RUN --network=none go mod verify \
+    && module_root="$(go env GOMODCACHE)/github.com/caddyserver/caddy/v2@v2.11.4" \
+    && source_root="/tmp/caddy-e2eee6a7fce366321294c9c2a79f3146891dcbdf" \
+    && find "$module_root" -type f -exec sh -eu -c 'module_root=$1; source_root=$2; shift 2; for module_file do relative=${module_file#${module_root}/}; cmp "$module_file" "$source_root/$relative"; done' sh "$module_root" "$source_root" {} + \
+    && go build -trimpath -buildvcs=false -mod=readonly \
+        -ldflags="-s -w -buildid= -X github.com/caddyserver/caddy/v2.CustomVersion=v2.11.4" \
+        -o /usr/local/bin/caddy . \
+    && echo "4b57bb1bd9cd9a97b9dfec1ef56e530d4726574954b12d699789da862fc94988  /usr/local/bin/caddy" | sha256sum -c - \
+    && test "$(/usr/local/bin/caddy version)" = "v2.11.4 v2.11.4 h1:XKxkMTgNSizEvKG6QHue6cAsFOteU2qA61w2tKkCWi0=" \
+    && printf ':8080 {\n respond "ok"\n}\n' >/tmp/Caddyfile \
+    && /usr/local/bin/caddy adapt --adapter caddyfile --config /tmp/Caddyfile >/dev/null \
+    && /usr/local/bin/caddy list-modules >/tmp/caddy-runtime-modules \
+    && grep -Fx http.handlers.authentication /tmp/caddy-runtime-modules \
+    && grep -Fx http.authentication.hashes.bcrypt /tmp/caddy-runtime-modules \
+    && grep -Fx http.authentication.providers.http_basic /tmp/caddy-runtime-modules \
+    && grep -Fx http.handlers.headers /tmp/caddy-runtime-modules \
+    && grep -Fx http.handlers.reverse_proxy /tmp/caddy-runtime-modules \
+    && grep -Fx tls.issuance.acme /tmp/caddy-runtime-modules \
+    && grep -Fx tls.issuance.internal /tmp/caddy-runtime-modules \
+    && install -m 0444 "$module_root/LICENSE" /tmp/caddy.LICENSE \
+    && echo "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30  /tmp/caddy.LICENSE" | sha256sum -c - \
+    && install -m 0444 /usr/local/go/LICENSE /tmp/go.LICENSE \
+    && echo "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  /tmp/go.LICENSE" | sha256sum -c - \
+    && echo "b8d837841b88bfaa1a0fa827cbca8e2576418dd47c9fc4bb7f1f9d89c83111b9  /etc/ssl/certs/ca-certificates.crt" | sha256sum -c -
+
+FROM scratch
+ARG SOURCE_COMMIT
+ARG SOURCE_TREE
+ARG SOURCE_DATE_EPOCH
+COPY --from=build /usr/local/bin/caddy /usr/bin/caddy
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build /tmp/caddy.LICENSE /usr/share/licenses/caddy/LICENSE
+COPY --from=build /tmp/go.LICENSE /usr/share/licenses/go/LICENSE
+COPY config/caddy/caddy.lock.json /usr/share/colortrace/provenance/caddy.lock.json
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      org.opencontainers.image.source="https://github.com/caddyserver/caddy" \
+      org.opencontainers.image.version="2.11.4" \
+      org.colortrace.source-tree="${SOURCE_TREE}" \
+      org.colortrace.runtime-profile="staging-edge"
+ENV XDG_CONFIG_HOME=/config \
+    XDG_DATA_HOME=/data
+USER 65532:65532
+EXPOSE 80 443 443/udp 2019
+ENTRYPOINT ["/usr/bin/caddy"]
+CMD ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

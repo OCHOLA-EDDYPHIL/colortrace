@@ -9,6 +9,7 @@ mock_provider "google" {
     defaults = {
       email  = "ct-singlehost-vm@colortrace-test-project.iam.gserviceaccount.com"
       member = "serviceAccount:ct-singlehost-vm@colortrace-test-project.iam.gserviceaccount.com"
+      name   = "projects/colortrace-test-project/serviceAccounts/ct-singlehost-vm@colortrace-test-project.iam.gserviceaccount.com"
     }
   }
 }
@@ -37,6 +38,8 @@ run "foundation_has_no_billable_host" {
     condition = (
       length(google_project_iam_member.host) == 0
       && length(google_project_iam_member.operator) == 0
+      && length(google_project_iam_member.operator_build) == 0
+      && length(google_service_account_iam_member.operator_build) == 0
       && length(google_secret_manager_secret_iam_member.host_access_gate) == 0
     )
     error_message = "Runtime and operator authority must remain absent before VM admission."
@@ -56,8 +59,37 @@ run "foundation_has_no_billable_host" {
   }
 
   assert {
-    condition     = google_artifact_registry_repository.images.repository_id == "ct-singlehost-images"
-    error_message = "Private application images must have a dedicated repository."
+    condition = (
+      google_artifact_registry_repository.images.repository_id == "ct-singlehost-images"
+      && google_service_account.builder.account_id == "ct-singlehost-builder"
+      && google_artifact_registry_repository_iam_member.builder_writer.role == "roles/artifactregistry.writer"
+      && google_project_iam_member.builder_logs.role == "roles/logging.logWriter"
+      && contains(keys(google_project_service.required), "cloudbuild.googleapis.com")
+      && !contains(keys(google_project_service.required), "monitoring.googleapis.com")
+    )
+    error_message = "Private images must have a dedicated repository, builder identity, and minimal build services."
+  }
+}
+
+run "image_builder_precedes_host_admission" {
+  command = plan
+
+  variables {
+    project_id      = "colortrace-test-project"
+    operator_member = "user:operator@example.test"
+  }
+
+  assert {
+    condition = (
+      length(google_compute_instance.host) == 0
+      && toset(keys(google_project_iam_member.operator_build)) == toset([
+        "roles/cloudbuild.builds.editor",
+      ])
+      && google_service_account_iam_member.operator_build[0].role == "roles/iam.serviceAccountUser"
+      && google_service_account_iam_member.operator_build[0].member == "user:operator@example.test"
+      && output.image_build_identity.registry == "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images"
+    )
+    error_message = "The operator must be able to build immutable images without admitting the VM."
   }
 }
 
@@ -75,6 +107,17 @@ run "instance_requires_complete_admission_inputs" {
   ]
 }
 
+run "boot_image_family_is_rejected" {
+  command = plan
+
+  variables {
+    project_id = "colortrace-test-project"
+    boot_image = "projects/debian-cloud/global/images/family/debian-12"
+  }
+
+  expect_failures = [var.boot_image]
+}
+
 run "bounded_single_host_is_admitted" {
   command = apply
 
@@ -86,12 +129,16 @@ run "bounded_single_host_is_admitted" {
     access_secret_version        = "7"
     candidate_commit             = "1111111111111111111111111111111111111111"
     candidate_tree               = "2222222222222222222222222222222222222222"
-    boot_image                   = "projects/debian-cloud/global/images/debian-12-20260801"
+    boot_image                   = "projects/debian-cloud/global/images/debian-12-bookworm-v20260817"
     estimated_seven_day_cost_usd = 24
     runtime_image                = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/runtime@sha256:3333333333333333333333333333333333333333333333333333333333333333"
     web_image                    = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/web@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    caddy_image                  = "docker.io/library/caddy@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    lgtm_image                   = "docker.io/grafana/otel-lgtm@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    caddy_image                  = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/caddy@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    grafana_image                = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/grafana@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    loki_image                   = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/loki@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    prometheus_image             = "docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0"
+    tempo_image                  = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/tempo@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    fixture_bundle_sha256        = "sha256:a9c5234acee64294b149e8e6ee761c7e2799999476943766ae856ec54eac7061"
   }
 
   assert {
@@ -99,7 +146,7 @@ run "bounded_single_host_is_admitted" {
       google_compute_instance.host[0].machine_type == "e2-standard-2"
       && google_compute_disk.boot[0].type == "pd-balanced"
       && google_compute_disk.boot[0].size == 30
-      && google_compute_disk.boot[0].image == "projects/debian-cloud/global/images/debian-12-20260801"
+      && google_compute_disk.boot[0].image == "projects/debian-cloud/global/images/debian-12-bookworm-v20260817"
       && google_compute_instance.host[0].boot_disk[0].auto_delete == false
     )
     error_message = "The host must use the bounded machine and persistent 30 GiB balanced disk."
@@ -141,6 +188,9 @@ run "bounded_single_host_is_admitted" {
         "roles/compute.osAdminLogin",
         "roles/iap.tunnelResourceAccessor",
       ])
+      && toset(keys(google_project_iam_member.host)) == toset(["roles/aiplatform.user"])
+      && toset(keys(google_project_iam_member.operator_build)) == toset(["roles/cloudbuild.builds.editor"])
+      && google_service_account_iam_member.operator_build[0].role == "roles/iam.serviceAccountUser"
       && google_secret_manager_secret_iam_member.host_access_gate[0].role == "roles/secretmanager.secretAccessor"
       && google_artifact_registry_repository_iam_member.host_reader[0].role == "roles/artifactregistry.reader"
     )
@@ -159,12 +209,84 @@ run "bounded_single_host_is_admitted" {
 
   assert {
     condition = (
+      strcontains(local.compose_yaml, "COLORTRACE_DEMO_MODE: \"canonical\"")
+      && strcontains(local.compose_yaml, "COLORTRACE_SOURCE_COMMIT: \"1111111111111111111111111111111111111111\"")
+      && strcontains(local.compose_yaml, "COLORTRACE_SOURCE_TREE: \"2222222222222222222222222222222222222222\"")
+      && strcontains(local.compose_yaml, "COLORTRACE_FIXTURE_BUNDLE_SHA256: \"sha256:a9c5234acee64294b149e8e6ee761c7e2799999476943766ae856ec54eac7061\"")
+      && strcontains(local.compose_yaml, "COLORTRACE_RUNTIME_IMAGE: \"us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/runtime@sha256:3333333333333333333333333333333333333333333333333333333333333333\"")
+      && strcontains(local.compose_yaml, "COLORTRACE_PUBLIC_URL: \"https://203-0-113-42.sslip.io\"")
+      && strcontains(local.compose_yaml, "COLORTRACE_VERTEX_PROJECT_ID: \"colortrace-test-project\"")
+      && strcontains(local.compose_yaml, "COLORTRACE_VERTEX_LOCATION: \"global\"")
+      && strcontains(local.compose_yaml, "COLORTRACE_OIDC_AUDIENCE: \"https://runtime.internal:8443\"")
+    )
+    error_message = "The runtime must receive all immutable canonical-demo and identity bindings."
+  }
+
+  assert {
+    condition = (
+      strcontains(local.compose_yaml, "/var/run/colortrace-private:size=64k,uid=65532,gid=65532,mode=0700")
+      && strcontains(local.compose_yaml, "http://127.0.0.1:8080/health/startup")
+      && strcontains(local.compose_yaml, "COLORTRACE_API_ORIGIN: \"https://runtime.internal:8443\"")
+      && strcontains(local.compose_yaml, "COLORTRACE_API_AUDIENCE: \"https://runtime.internal:8443\"")
+      && strcontains(local.compose_yaml, "COLORTRACE_GRAFANA_URL: \"https://grafana.internal:8443\"")
+      && strcontains(local.compose_yaml, "ipv4_address: 172.30.0.2")
+      && strcontains(local.compose_yaml, "ipv4_address: 172.30.0.10")
+      && strcontains(local.compose_yaml, "subnet: 172.30.0.0/24")
+      && strcontains(local.compose_yaml, "NODE_EXTRA_CA_CERTS: \"/etc/colortrace/caddy-root.crt\"")
+      && strcontains(local.compose_yaml, "OTEL_EXPORTER_OTLP_ENDPOINT: \"http://otel.internal:4318\"")
+      && !strcontains(local.compose_yaml, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+      && !strcontains(local.compose_yaml, "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
+      && !strcontains(local.compose_yaml, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
+      && strcontains(local.compose_yaml, "GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: \"prometheus,loki,tempo\"")
+      && strcontains(local.compose_yaml, "image: us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/grafana@sha256:6666666666666666666666666666666666666666666666666666666666666666")
+      && strcontains(local.compose_yaml, "image: docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0")
+      && !strcontains(local.compose_yaml, "otel-lgtm")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "chown -R 65532:65532 \"$ROOT_DIR/caddy-config\" \"$ROOT_DIR/caddy-data\"")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "grafana-datasources.yaml")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "/api/datasources/uid/$datasource_uid/health")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "/api/datasources/proxy/uid/prometheus/api/v1/query")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "/api/datasources/proxy/uid/loki/loki/api/v1/query")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "/api/datasources/proxy/uid/tempo/api/search")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "backends_ready")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "configure_container_metadata_boundary")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "--remove-orphans grafana loki prometheus tempo caddy")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "RUNTIME_CONTAINER_IP='172.30.0.10'")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "METADATA_IP='169.254.169.254'")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "--insert DOCKER-USER 1")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "--jump ACCEPT")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "--jump DROP")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "65532:65532:400")
+      && strcontains(google_compute_instance.host[0].metadata_startup_script, "hmac.compare_digest(source.read_bytes(), target.read_bytes())")
+      && strcontains(local.caddyfile, "http://otel.internal:4318")
+      && strcontains(local.caddyfile, "rewrite * /api/v1/otlp/v1/metrics")
+      && strcontains(local.caddyfile, "rewrite * /otlp/v1/logs")
+      && strcontains(local.caddyfile, "reverse_proxy tempo:4318")
+      && length(regexall("header_up -Authorization", local.caddyfile)) == 2
+      && strcontains(local.caddyfile, "https://grafana.internal:8443")
+      && strcontains(local.caddyfile, "https://runtime.internal:8443")
+      && !strcontains(local.caddyfile, "https://grafana.internal {")
+      && !strcontains(local.caddyfile, "https://runtime.internal {")
+      && length(regexall("bind 172.30.0.2", local.caddyfile)) == 3
+    )
+    error_message = "The deployment must preserve non-root state, private token-copy, and runtime/web health contracts."
+  }
+
+  assert {
+    condition = (
       output.deployment_contract.public_tcp_ports == [443]
       && output.deployment_contract.lifetime_hours == 168
       && output.deployment_contract.estimated_cost_usd == 24
       && output.deployment_contract.public_url == "https://203-0-113-42.sslip.io"
     )
     error_message = "The deployment output must preserve its bounded public and lifecycle contract."
+  }
+
+  assert {
+    condition = (
+      local.private_images_in_owned_registry
+      && startswith(var.prometheus_image, "docker.io/prom/prometheus@sha256:")
+    )
+    error_message = "The exact qualified public Prometheus image must remain outside the private-image registry check."
   }
 }
 
@@ -179,12 +301,16 @@ run "cost_above_ceiling_is_rejected" {
     access_secret_version        = "7"
     candidate_commit             = "1111111111111111111111111111111111111111"
     candidate_tree               = "2222222222222222222222222222222222222222"
-    boot_image                   = "projects/debian-cloud/global/images/debian-12-20260801"
+    boot_image                   = "projects/debian-cloud/global/images/debian-12-bookworm-v20260817"
     estimated_seven_day_cost_usd = 101
     runtime_image                = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/runtime@sha256:3333333333333333333333333333333333333333333333333333333333333333"
     web_image                    = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/web@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    caddy_image                  = "docker.io/library/caddy@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    lgtm_image                   = "docker.io/grafana/otel-lgtm@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    caddy_image                  = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/caddy@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    grafana_image                = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/grafana@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    loki_image                   = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/loki@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    prometheus_image             = "docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0"
+    tempo_image                  = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/tempo@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    fixture_bundle_sha256        = "sha256:a9c5234acee64294b149e8e6ee761c7e2799999476943766ae856ec54eac7061"
   }
 
   expect_failures = [

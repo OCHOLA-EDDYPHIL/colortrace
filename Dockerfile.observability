@@ -1,0 +1,231 @@
+ARG SOURCE_DATE_EPOCH
+
+FROM golang@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS loki-build
+ENV CGO_ENABLED=0 \
+    GOARCH=amd64 \
+    GOOS=linux \
+    GOMEMLIMIT=2500MiB \
+    GOMAXPROCS=2 \
+    GOPROXY=https://proxy.golang.org \
+    GOSUMDB=sum.golang.org \
+    GOTOOLCHAIN=local
+WORKDIR /build
+ADD --checksum=sha256:a9d85e56871a3d00134e67344f70e2c23d3bf13f5b88fa4dc372cead0ec3d5a6 \
+    https://codeload.github.com/grafana/loki/tar.gz/5003600d7c787b5f047c8d1b0198559471b0caa5 \
+    /tmp/loki-source.tar.gz
+RUN test "$(go version)" = "go version go1.26.6 linux/amd64" \
+    && echo "a9d85e56871a3d00134e67344f70e2c23d3bf13f5b88fa4dc372cead0ec3d5a6  /tmp/loki-source.tar.gz" | sha256sum -c - \
+    && tar --extract --gzip --file /tmp/loki-source.tar.gz --directory /build
+WORKDIR /build/loki-5003600d7c787b5f047c8d1b0198559471b0caa5
+RUN go mod download all
+RUN --network=none go mod verify \
+    && go build -p=2 -trimpath -buildvcs=false -mod=readonly -tags=netgo \
+        -ldflags="-s -w -buildid= -extldflags=-static -X github.com/grafana/loki/v3/pkg/util/build.Branch=release-3.7.x -X github.com/grafana/loki/v3/pkg/util/build.Version=3.7.6 -X github.com/grafana/loki/v3/pkg/util/build.Revision=5003600d7c787b5f047c8d1b0198559471b0caa5 -X github.com/grafana/loki/v3/pkg/util/build.BuildUser=colortrace -X github.com/grafana/loki/v3/pkg/util/build.BuildDate=2026-08-05T15:35:30Z" \
+        -o /usr/local/bin/loki ./cmd/loki \
+    && /usr/local/bin/loki -version 2>&1 | grep -F "version 3.7.6" \
+    && /usr/local/bin/loki -version 2>&1 | grep -F "go version:       go1.26.6" \
+    && install -m 0444 LICENSE /tmp/loki.LICENSE \
+    && echo "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0  /tmp/loki.LICENSE" | sha256sum -c - \
+    && install -m 0444 /usr/local/go/LICENSE /tmp/go.LICENSE \
+    && echo "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  /tmp/go.LICENSE" | sha256sum -c - \
+    && echo "b8d837841b88bfaa1a0fa827cbca8e2576418dd47c9fc4bb7f1f9d89c83111b9  /etc/ssl/certs/ca-certificates.crt" | sha256sum -c -
+
+FROM loki-build AS loki-verified
+COPY config/observability/images.lock.json /tmp/observability-images.lock.json
+RUN echo "497603946881b941432dee393c6ea9d9b8e6a31477def03274e1924f7c68e2ff  /usr/local/bin/loki" | sha256sum -c - \
+    && grep -F '"binary_sha256": "497603946881b941432dee393c6ea9d9b8e6a31477def03274e1924f7c68e2ff"' /tmp/observability-images.lock.json
+
+FROM scratch AS loki
+ARG SOURCE_COMMIT
+ARG SOURCE_TREE
+ARG SOURCE_DATE_EPOCH
+COPY --from=loki-verified /usr/local/bin/loki /usr/bin/loki
+COPY --from=loki-verified /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=loki-verified /tmp/loki.LICENSE /usr/share/licenses/loki/LICENSE
+COPY --from=loki-verified /tmp/go.LICENSE /usr/share/licenses/go/LICENSE
+COPY --from=loki-verified /tmp/observability-images.lock.json /usr/share/colortrace/provenance/observability-images.lock.json
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      org.opencontainers.image.source="https://github.com/grafana/loki" \
+      org.opencontainers.image.version="3.7.6" \
+      org.colortrace.source-tree="${SOURCE_TREE}" \
+      org.colortrace.upstream-revision="5003600d7c787b5f047c8d1b0198559471b0caa5" \
+      org.colortrace.runtime-profile="staging-logs"
+USER 10001:10001
+EXPOSE 3100
+ENTRYPOINT ["/usr/bin/loki"]
+CMD ["-config.file=/etc/loki/config.yaml"]
+
+FROM golang@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS tempo-build
+ENV CGO_ENABLED=0 \
+    GOARCH=amd64 \
+    GOOS=linux \
+    GOAMD64=v2 \
+    GOMEMLIMIT=2500MiB \
+    GOMAXPROCS=2 \
+    GOTOOLCHAIN=local
+WORKDIR /build
+ADD --checksum=sha256:f10ae5ecaa7f1eade220b9d013ae73961227b51a7602694896675df1cb96e8e7 \
+    https://codeload.github.com/grafana/tempo/tar.gz/1900ed7bb5cad1a3edc285783d7d4ac4278337dc \
+    /tmp/tempo-source.tar.gz
+RUN test "$(go version)" = "go version go1.26.6 linux/amd64" \
+    && echo "f10ae5ecaa7f1eade220b9d013ae73961227b51a7602694896675df1cb96e8e7  /tmp/tempo-source.tar.gz" | sha256sum -c - \
+    && tar --extract --gzip --file /tmp/tempo-source.tar.gz --directory /build
+WORKDIR /build/tempo-1900ed7bb5cad1a3edc285783d7d4ac4278337dc
+RUN --network=none go build -p=1 -trimpath -buildvcs=false -mod=vendor \
+        -ldflags="-s -w -buildid= -X main.Branch=HEAD -X main.Revision=1900ed7bb -X main.Version=v3.0.3" \
+        -o /usr/local/bin/tempo ./cmd/tempo \
+    && /usr/local/bin/tempo -version 2>&1 | grep -F "version v3.0.3" \
+    && /usr/local/bin/tempo -version 2>&1 | grep -F "go version:       go1.26.6" \
+    && install -m 0444 LICENSE /tmp/tempo.LICENSE \
+    && echo "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0  /tmp/tempo.LICENSE" | sha256sum -c - \
+    && install -m 0444 /usr/local/go/LICENSE /tmp/go.LICENSE \
+    && echo "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad  /tmp/go.LICENSE" | sha256sum -c - \
+    && echo "b8d837841b88bfaa1a0fa827cbca8e2576418dd47c9fc4bb7f1f9d89c83111b9  /etc/ssl/certs/ca-certificates.crt" | sha256sum -c -
+
+FROM tempo-build AS tempo-verified
+COPY config/observability/images.lock.json /tmp/observability-images.lock.json
+RUN echo "8a324cfc382a8829549bb80c71c85bfe12f932f9aa393c33867d652f22b8038d  /usr/local/bin/tempo" | sha256sum -c - \
+    && grep -F '"binary_sha256": "8a324cfc382a8829549bb80c71c85bfe12f932f9aa393c33867d652f22b8038d"' /tmp/observability-images.lock.json
+
+FROM scratch AS tempo
+ARG SOURCE_COMMIT
+ARG SOURCE_TREE
+ARG SOURCE_DATE_EPOCH
+COPY --from=tempo-verified /usr/local/bin/tempo /usr/bin/tempo
+COPY --from=tempo-verified /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=tempo-verified /tmp/tempo.LICENSE /usr/share/licenses/tempo/LICENSE
+COPY --from=tempo-verified /tmp/go.LICENSE /usr/share/licenses/go/LICENSE
+COPY --from=tempo-verified /tmp/observability-images.lock.json /usr/share/colortrace/provenance/observability-images.lock.json
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      org.opencontainers.image.source="https://github.com/grafana/tempo" \
+      org.opencontainers.image.version="3.0.3" \
+      org.colortrace.source-tree="${SOURCE_TREE}" \
+      org.colortrace.upstream-revision="1900ed7bb5cad1a3edc285783d7d4ac4278337dc" \
+      org.colortrace.runtime-profile="staging-traces"
+USER 10001:10001
+EXPOSE 3200 4317 4318
+ENTRYPOINT ["/usr/bin/tempo"]
+CMD ["-config.file=/etc/tempo/config.yaml"]
+
+FROM grafana/grafana@sha256:4a8233a6a672604bd88f02bafad7b6631de490b3c6d3c6718a5de11e23de36e7 AS grafana-upstream-plugins
+
+FROM golang@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS grafana-plugin-build
+ENV CGO_ENABLED=0 \
+    GOARCH=amd64 \
+    GOOS=linux \
+    GOAMD64=v1 \
+    GOMEMLIMIT=2500MiB \
+    GOMAXPROCS=2 \
+    GOPROXY=https://proxy.golang.org \
+    GOSUMDB=sum.golang.org \
+    GOTOOLCHAIN=local
+WORKDIR /build
+ADD --checksum=sha256:8e66640a7c45b6762d1ac14aa7a94b87fa21c771b4d0d739a3a6716d6a019954 \
+    https://codeload.github.com/grafana/grafana-prometheus-datasource/tar.gz/2e10053dd7d940f9eb91701df5122c8e348a0d18 \
+    /tmp/prometheus-datasource-source.tar.gz
+ADD --checksum=sha256:237bdc3aa7c5bf3557bb7865c96894d3f37af1b482cde0413daf6163952b8c5a \
+    https://codeload.github.com/grafana/grafana-loki-datasource/tar.gz/6c17d1bd832fa399b9562b21a20b5de0b00a4fb9 \
+    /tmp/loki-datasource-source.tar.gz
+ADD --checksum=sha256:5e14b72b72981823691c275be20b7f0903c2f13743b24556a1656d7116d34bd6 \
+    https://codeload.github.com/grafana/grafana-tempo-datasource/tar.gz/95f2697d64101818287fa873bb683228c1d1d8a5 \
+    /tmp/tempo-datasource-source.tar.gz
+ADD --checksum=sha256:6159f130af77216215137a1033e3f573cc83e7aba69a19d618b521b7ab41d81f \
+    https://codeload.github.com/grafana/tempo/tar.gz/4aeafc237b8d9a8d62e45735131e8a89eb741a00 \
+    /tmp/tempo-fixed-source.tar.gz
+COPY --from=grafana-upstream-plugins /usr/share/grafana/data/plugins-bundled/prometheus /plugins/prometheus
+COPY --from=grafana-upstream-plugins /usr/share/grafana/data/plugins-bundled/loki /plugins/loki
+COPY --from=grafana-upstream-plugins /usr/share/grafana/data/plugins-bundled/tempo /plugins/tempo
+RUN test "$(go version)" = "go version go1.26.6 linux/amd64" \
+    && echo "8e66640a7c45b6762d1ac14aa7a94b87fa21c771b4d0d739a3a6716d6a019954  /tmp/prometheus-datasource-source.tar.gz" | sha256sum -c - \
+    && echo "237bdc3aa7c5bf3557bb7865c96894d3f37af1b482cde0413daf6163952b8c5a  /tmp/loki-datasource-source.tar.gz" | sha256sum -c - \
+    && echo "5e14b72b72981823691c275be20b7f0903c2f13743b24556a1656d7116d34bd6  /tmp/tempo-datasource-source.tar.gz" | sha256sum -c - \
+    && echo "6159f130af77216215137a1033e3f573cc83e7aba69a19d618b521b7ab41d81f  /tmp/tempo-fixed-source.tar.gz" | sha256sum -c - \
+    && test "$(cd /plugins && find prometheus -type f ! -name MANIFEST.txt ! -name 'gpx_*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)" = "3fd8a9aa58220c26df0275ca4dd1d34e67e86a2a3a245e8c33417458dae08d72" \
+    && test "$(cd /plugins && find loki -type f ! -name MANIFEST.txt ! -name 'gpx_*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)" = "b6bdbe3d6c5b2dfc908ffeb824baa152e3a6da01143783e51561972888a57f7c" \
+    && test "$(cd /plugins && find tempo -type f ! -name MANIFEST.txt ! -name 'gpx_*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)" = "123c9bd33c5988ddd6adac319a96ac1d18a5a89171b6bb7a8787e843baee102b" \
+    && grep -F '"version": "13.1.7"' /plugins/prometheus/plugin.json \
+    && grep -F '"version": "13.1.0"' /plugins/loki/plugin.json \
+    && grep -F '"version": "13.1.5"' /plugins/tempo/plugin.json \
+    && tar --extract --gzip --file /tmp/prometheus-datasource-source.tar.gz --directory /build \
+    && tar --extract --gzip --file /tmp/loki-datasource-source.tar.gz --directory /build \
+    && tar --extract --gzip --file /tmp/tempo-datasource-source.tar.gz --directory /build \
+    && tar --extract --gzip --file /tmp/tempo-fixed-source.tar.gz --directory /build
+RUN cd /build/grafana-prometheus-datasource-2e10053dd7d940f9eb91701df5122c8e348a0d18 \
+    && go mod edit -go=1.26.6 \
+    && test "$(sha256sum go.mod | cut -d ' ' -f 1)" = "647e86f151c2b2018051d8dff32a6b9856043ae267506217477ef382b07e611e" \
+    && test "$(sha256sum go.sum | cut -d ' ' -f 1)" = "2a6fc7761327d376a3da255359ff40a54992d10eddc61cae31982caf6e4920db" \
+    && go mod download all \
+    && go mod verify \
+    && go list -mod=readonly -m all > /tmp/prometheus-datasource.modules \
+    && test "$(sha256sum /tmp/prometheus-datasource.modules | cut -d ' ' -f 1)" = "1f8faa81bca09e5e00b996b93f71b244a40bb45e9267bf1e884519ca71e606f1"
+RUN cd /build/grafana-loki-datasource-6c17d1bd832fa399b9562b21a20b5de0b00a4fb9 \
+    && go mod edit -go=1.26.6 -require=google.golang.org/grpc@v1.82.1 \
+    && go mod download all \
+    && test "$(sha256sum go.mod | cut -d ' ' -f 1)" = "be6066dde4e9362f4d1b8d05386b304e510601fb1b95b67df87b96a24d33344c" \
+    && test "$(sha256sum go.sum | cut -d ' ' -f 1)" = "9873feeb0546ceef0df2222194378653aa7341e89092fcdad1e141a56e4bc2c7" \
+    && go mod verify \
+    && go list -mod=readonly -m all > /tmp/loki-datasource.modules \
+    && test "$(sha256sum /tmp/loki-datasource.modules | cut -d ' ' -f 1)" = "c2cb650318bf576468ac0d2b78f494a223dc57c537e5af9cfbf1621e2dd71d0b"
+RUN cp -a /build/tempo-4aeafc237b8d9a8d62e45735131e8a89eb741a00/pkg/tempopb \
+        /build/grafana-tempo-datasource-95f2697d64101818287fa873bb683228c1d1d8a5/pkg/tempopb \
+    && cd /build/grafana-tempo-datasource-95f2697d64101818287fa873bb683228c1d1d8a5 \
+    && find pkg -type f -name '*.go' -exec sed -i \
+        's#github.com/grafana/tempo/pkg/tempopb#github.com/grafana/grafana-tempo-datasource/pkg/tempopb#g' {} + \
+    && go mod edit -go=1.26.6 \
+        -droprequire=github.com/grafana/tempo \
+        -require=google.golang.org/grpc@v1.82.1 \
+        -require=golang.org/x/net@v0.56.0 \
+        -require=golang.org/x/text@v0.39.0 \
+    && go mod tidy \
+    && go mod download all \
+    && test "$(sha256sum go.mod | cut -d ' ' -f 1)" = "8ee9e1a3973a97d72e05b2c3d7e60a8be4b8cf4de6115440eb935c85c2c2d9f1" \
+    && test "$(sha256sum go.sum | cut -d ' ' -f 1)" = "10925c8ef07e5cb99cf2fdf23040112ea48c2f4f9077b2866bd9d0ace2dfdc16" \
+    && go mod verify \
+    && go list -mod=readonly -m all > /tmp/tempo-datasource.modules \
+    && test "$(sha256sum /tmp/tempo-datasource.modules | cut -d ' ' -f 1)" = "1c53069dcdba3cd7e05a920cf2e2c162bde508a9676eb939315e3c4158bb5415"
+RUN --network=none cd /build/grafana-prometheus-datasource-2e10053dd7d940f9eb91701df5122c8e348a0d18 \
+    && go build -p=2 -trimpath -buildvcs=false -mod=readonly -ldflags="-s -w -buildid=" \
+        -o /plugins/prometheus/gpx_grafana-prometheus-datasource_linux_amd64 ./pkg \
+    && echo "4ab13cfd975a13faaf729fe9751a786f58eb6ba23251273be109f788ea093416  /plugins/prometheus/gpx_grafana-prometheus-datasource_linux_amd64" | sha256sum -c -
+RUN --network=none cd /build/grafana-loki-datasource-6c17d1bd832fa399b9562b21a20b5de0b00a4fb9 \
+    && go build -p=2 -trimpath -buildvcs=false -mod=readonly -ldflags="-s -w -buildid=" \
+        -o /plugins/loki/gpx_grafana-loki-datasource_linux_amd64 ./pkg \
+    && echo "049f5fdaebb14c383cc0a237dd3e22c9083538bd09849b2381d9b2d0f01b3b42  /plugins/loki/gpx_grafana-loki-datasource_linux_amd64" | sha256sum -c -
+RUN --network=none cd /build/grafana-tempo-datasource-95f2697d64101818287fa873bb683228c1d1d8a5 \
+    && go build -p=2 -trimpath -buildvcs=false -mod=readonly -ldflags="-s -w -buildid=" \
+        -o /plugins/tempo/gpx_grafana-tempo-datasource_linux_amd64 ./pkg \
+    && echo "b622f14cf02a740d81848222eebf89c0d3e1358835339386851758d9a5357dbd  /plugins/tempo/gpx_grafana-tempo-datasource_linux_amd64" | sha256sum -c - \
+    && rm /plugins/prometheus/MANIFEST.txt /plugins/loki/MANIFEST.txt /plugins/tempo/MANIFEST.txt \
+    && find /plugins -type d -exec chmod 0555 {} + \
+    && find /plugins -type f -exec chmod 0444 {} + \
+    && chmod 0555 \
+        /plugins/prometheus/gpx_grafana-prometheus-datasource_linux_amd64 \
+        /plugins/loki/gpx_grafana-loki-datasource_linux_amd64 \
+        /plugins/tempo/gpx_grafana-tempo-datasource_linux_amd64
+
+FROM grafana-plugin-build AS grafana-plugin-verified
+COPY config/observability/images.lock.json /tmp/observability-images.lock.json
+RUN grep -F '"binary_sha256": "4ab13cfd975a13faaf729fe9751a786f58eb6ba23251273be109f788ea093416"' /tmp/observability-images.lock.json \
+    && grep -F '"binary_sha256": "049f5fdaebb14c383cc0a237dd3e22c9083538bd09849b2381d9b2d0f01b3b42"' /tmp/observability-images.lock.json \
+    && grep -F '"binary_sha256": "b622f14cf02a740d81848222eebf89c0d3e1358835339386851758d9a5357dbd"' /tmp/observability-images.lock.json
+
+FROM grafana/grafana@sha256:19adcd07c96e2a99da64dd5e19b5ad115ca8e449ecac100ca5ab5c0a3da9a158 AS grafana
+ARG SOURCE_COMMIT
+ARG SOURCE_TREE
+ARG SOURCE_DATE_EPOCH
+COPY --from=grafana-plugin-verified --chown=472:0 /plugins/prometheus /usr/share/grafana/data/plugins-bundled/prometheus
+COPY --from=grafana-plugin-verified --chown=472:0 /plugins/loki /usr/share/grafana/data/plugins-bundled/loki
+COPY --from=grafana-plugin-verified --chown=472:0 /plugins/tempo /usr/share/grafana/data/plugins-bundled/tempo
+COPY --chown=472:0 config/observability/images.lock.json /usr/share/colortrace/provenance/observability-images.lock.json
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      org.opencontainers.image.source="https://github.com/ColorTrace/ColorTrace" \
+      org.opencontainers.image.version="13.2.0-colortrace.1" \
+      org.colortrace.source-tree="${SOURCE_TREE}" \
+      org.colortrace.upstream-revision="13.2.0-distroless-slim@sha256:19adcd07c96e2a99da64dd5e19b5ad115ca8e449ecac100ca5ab5c0a3da9a158" \
+      org.colortrace.runtime-profile="staging-observability-ui"
+ENV GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=prometheus,loki,tempo \
+    GF_PLUGINS_PLUGIN_ADMIN_ENABLED=false \
+    GF_PLUGINS_PREINSTALL_AUTO_UPDATE=false \
+    GF_PLUGINS_PREINSTALL_DISABLED=true \
+    GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED=true
+USER 472

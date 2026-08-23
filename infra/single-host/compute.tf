@@ -1,10 +1,23 @@
 locals {
+  caddyfile = templatefile("${path.module}/templates/Caddyfile.tftpl", {
+    access_username = var.access_username
+    public_hostname = local.public_hostname
+  })
   compose_yaml = templatefile("${path.module}/templates/compose.yaml.tftpl", {
-    caddy_image         = local.caddy_image
-    fixture_bundle_path = var.fixture_bundle_path
-    lgtm_image          = local.lgtm_image
-    runtime_image       = local.runtime_image
-    web_image           = local.web_image
+    caddy_image           = local.caddy_image
+    candidate_commit      = local.candidate_commit
+    candidate_tree        = local.candidate_tree
+    fixture_bundle_path   = var.fixture_bundle_path
+    fixture_bundle_sha256 = local.fixture_bundle_sha256
+    grafana_image         = local.grafana_image
+    loki_image            = local.loki_image
+    project_id            = var.project_id
+    prometheus_image      = local.prometheus_image
+    public_url            = local.public_url
+    runtime_image         = local.runtime_image
+    staging_generation    = local.staging_generation
+    tempo_image           = local.tempo_image
+    web_image             = local.web_image
   })
 }
 
@@ -68,18 +81,20 @@ resource "google_compute_instance" "host" {
   }
 
   metadata_startup_script = templatefile("${path.module}/templates/startup.sh.tftpl", {
-    access_secret_id      = google_secret_manager_secret.access_gate.secret_id
-    access_secret_version = coalesce(var.access_secret_version, "MISSING")
-    caddyfile_base64 = base64encode(templatefile("${path.module}/templates/Caddyfile.tftpl", {
-      access_username = var.access_username
-      public_hostname = "${replace(google_compute_address.public[0].address, ".", "-")}.sslip.io"
-    }))
-    compose_yaml_base64    = base64encode(local.compose_yaml)
-    project_id             = var.project_id
-    region                 = var.region
-    registry_host          = local.registry_host
-    staging_generation     = coalesce(var.staging_generation, "unbound")
-    staging_lifetime_hours = local.staging_lifetime_hours
+    access_secret_id           = google_secret_manager_secret.access_gate.secret_id
+    access_secret_version      = coalesce(var.access_secret_version, "MISSING")
+    caddyfile_base64           = base64encode(local.caddyfile)
+    compose_yaml_base64        = base64encode(local.compose_yaml)
+    grafana_alerting_base64    = filebase64("${path.module}/../../config/telemetry/grafana-alerting.yaml")
+    grafana_datasources_base64 = filebase64("${path.module}/../../config/observability/grafana-datasources.yaml")
+    loki_config_base64         = filebase64("${path.module}/../../config/observability/loki.yaml")
+    prometheus_config_base64   = filebase64("${path.module}/../../config/observability/prometheus.yaml")
+    tempo_config_base64        = filebase64("${path.module}/../../config/observability/tempo.yaml")
+    project_id                 = var.project_id
+    region                     = var.region
+    registry_host              = local.registry_host
+    staging_generation         = coalesce(var.staging_generation, "unbound")
+    staging_lifetime_hours     = local.staging_lifetime_hours
   })
 
   scheduling {

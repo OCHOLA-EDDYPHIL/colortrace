@@ -11,7 +11,14 @@ SCRIPT = Path(__file__).parents[1] / "scripts" / "resume-instance.sh"
 
 
 class ResumeInstanceTests(unittest.TestCase):
-    def _run(self, *, status: str, actual_generation: str, expected_generation: str):
+    def _run(
+        self,
+        *,
+        status: str,
+        actual_generation: str,
+        expected_generation: str,
+        healthy: bool = True,
+    ):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
             log = temporary / "gcloud.log"
@@ -46,6 +53,9 @@ if sys.argv[1:4] == ["compute", "instances", "describe"]:
 if sys.argv[1:4] == ["compute", "instances", "start"]:
     raise SystemExit(0)
 
+if sys.argv[1:3] == ["compute", "ssh"]:
+    raise SystemExit(0 if os.environ["FAKE_GCLOUD_HEALTHY"] == "true" else 1)
+
 raise SystemExit(2)
 """,
                 encoding="utf-8",
@@ -78,6 +88,9 @@ raise SystemExit(1)
                 "FAKE_GCLOUD_COUNTER": str(counter),
                 "FAKE_GCLOUD_STATUS": status,
                 "FAKE_GCLOUD_GENERATION": actual_generation,
+                "FAKE_GCLOUD_HEALTHY": "true" if healthy else "false",
+                "COLORTRACE_RESUME_ATTEMPTS": "1",
+                "COLORTRACE_RESUME_DELAY_SECONDS": "0",
                 "PATH": f"{temporary}:{os.environ['PATH']}",
             }
             completed = subprocess.run(
@@ -110,8 +123,16 @@ raise SystemExit(1)
                 ["compute", "instances", "describe"],
                 ["compute", "instances", "start"],
                 ["compute", "instances", "describe"],
+                ["compute", "ssh", "ct-singlehost-vm"],
             ],
         )
+        ssh_call = calls[-1]
+        self.assertIn("--tunnel-through-iap", ssh_call)
+        command = ssh_call[ssh_call.index("--command") + 1]
+        self.assertIn("/var/lib/colortrace-lifecycle/generation", command)
+        self.assertIn("colortrace-auto-stop.timer", command)
+        self.assertIn("colortrace-runtime", command)
+        self.assertIn("colortrace-web", command)
 
     def test_generation_mismatch_does_not_start_instance(self) -> None:
         completed, calls = self._run(
@@ -126,7 +147,7 @@ raise SystemExit(1)
             [["compute", "instances", "describe"]],
         )
 
-    def test_running_instance_is_a_noop(self) -> None:
+    def test_running_instance_is_health_verified(self) -> None:
         completed, calls = self._run(
             status="RUNNING",
             actual_generation="stage-0001",
@@ -136,7 +157,28 @@ raise SystemExit(1)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
             [call[:3] for call in calls],
-            [["compute", "instances", "describe"]],
+            [
+                ["compute", "instances", "describe"],
+                ["compute", "ssh", "ct-singlehost-vm"],
+            ],
+        )
+
+    def test_stale_or_unhealthy_generation_requires_terraform_renewal(self) -> None:
+        completed, calls = self._run(
+            status="RUNNING",
+            actual_generation="stage-0001",
+            expected_generation="stage-0001",
+            healthy=False,
+        )
+
+        self.assertEqual(completed.returncode, 70)
+        self.assertIn("new staging_generation", completed.stderr)
+        self.assertEqual(
+            [call[:3] for call in calls],
+            [
+                ["compute", "instances", "describe"],
+                ["compute", "ssh", "ct-singlehost-vm"],
+            ],
         )
 
 

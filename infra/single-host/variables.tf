@@ -101,7 +101,7 @@ variable "boot_image" {
   validation {
     condition = (
       var.boot_image == null
-      || can(regex("^projects/debian-cloud/global/images/debian-12-[0-9]+$", var.boot_image))
+      || can(regex("^projects/debian-cloud/global/images/debian-12-bookworm-v[0-9]{8}$", var.boot_image))
     )
     error_message = "boot_image must identify one exact Debian 12 image, not an image family."
   }
@@ -237,18 +237,60 @@ variable "caddy_image" {
   }
 }
 
-variable "lgtm_image" {
-  description = "Exact security-cleared Grafana LGTM image reference; tags are not accepted."
+variable "grafana_image" {
+  description = "Exact private Grafana image with source-built security-cleared datasource backends; tags are not accepted."
   type        = string
   default     = null
   nullable    = true
 
   validation {
     condition = (
-      var.lgtm_image == null
-      || can(regex("^[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9_./-]+@sha256:[0-9a-f]{64}$", var.lgtm_image))
+      var.grafana_image == null
+      || can(regex("^[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9_./-]+@sha256:[0-9a-f]{64}$", var.grafana_image))
     )
-    error_message = "lgtm_image must be an OCI image reference with a SHA-256 digest."
+    error_message = "grafana_image must be an OCI image reference with a SHA-256 digest."
+  }
+}
+
+variable "loki_image" {
+  description = "Exact private source-built Loki image reference; tags are not accepted."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.loki_image == null
+      || can(regex("^[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9_./-]+@sha256:[0-9a-f]{64}$", var.loki_image))
+    )
+    error_message = "loki_image must be an OCI image reference with a SHA-256 digest."
+  }
+}
+
+variable "prometheus_image" {
+  description = "Exact security-cleared Prometheus image reference; tags are not accepted."
+  type        = string
+  default     = "docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0"
+  nullable    = false
+
+  validation {
+    condition     = var.prometheus_image == "docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0"
+    error_message = "prometheus_image must remain the current and frozen-database-qualified Prometheus 3.14.0 image."
+  }
+}
+
+variable "tempo_image" {
+  description = "Exact private source-built Tempo image reference; tags are not accepted."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.tempo_image == null
+      || can(regex("^[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9_./-]+@sha256:[0-9a-f]{64}$", var.tempo_image))
+    )
+    error_message = "tempo_image must be an OCI image reference with a SHA-256 digest."
   }
 }
 
@@ -264,5 +306,20 @@ variable "fixture_bundle_path" {
       && !strcontains(var.fixture_bundle_path, "//")
     )
     error_message = "fixture_bundle_path must be a normalized absolute path."
+  }
+}
+
+variable "fixture_bundle_sha256" {
+  description = "SHA-256 identity of the public fixture runtime manifest embedded in the runtime image."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.fixture_bundle_sha256 == null
+      || can(regex("^sha256:[0-9a-f]{64}$", var.fixture_bundle_sha256))
+    )
+    error_message = "fixture_bundle_sha256 must be a lowercase SHA-256 digest."
   }
 }

@@ -22,12 +22,16 @@ locals {
       var.runtime_image,
       var.web_image,
       var.caddy_image,
-      var.lgtm_image,
+      var.grafana_image,
+      var.loki_image,
+      var.prometheus_image,
+      var.tempo_image,
+      var.fixture_bundle_sha256,
     ] : value != null
   ])
 
   private_images_in_owned_registry = alltrue([
-    for image in [var.runtime_image, var.web_image] :
+    for image in [var.runtime_image, var.web_image, var.caddy_image, var.grafana_image, var.loki_image, var.tempo_image] :
     image == null || startswith(
       image,
       "${local.registry_host}/${var.project_id}/${google_artifact_registry_repository.images.repository_id}/",
@@ -45,7 +49,19 @@ locals {
   runtime_image      = coalesce(var.runtime_image, "invalid.local/colortrace/runtime@${local.placeholder_digest}")
   web_image          = coalesce(var.web_image, "invalid.local/colortrace/web@${local.placeholder_digest}")
   caddy_image        = coalesce(var.caddy_image, "invalid.local/colortrace/caddy@${local.placeholder_digest}")
-  lgtm_image         = coalesce(var.lgtm_image, "invalid.local/colortrace/lgtm@${local.placeholder_digest}")
+  grafana_image      = coalesce(var.grafana_image, "invalid.local/colortrace/grafana@${local.placeholder_digest}")
+  loki_image         = coalesce(var.loki_image, "invalid.local/colortrace/loki@${local.placeholder_digest}")
+  prometheus_image   = coalesce(var.prometheus_image, "invalid.local/colortrace/prometheus@${local.placeholder_digest}")
+  tempo_image        = coalesce(var.tempo_image, "invalid.local/colortrace/tempo@${local.placeholder_digest}")
+  candidate_commit   = coalesce(var.candidate_commit, join("", [for _ in range(40) : "0"]))
+  candidate_tree     = coalesce(var.candidate_tree, join("", [for _ in range(40) : "0"]))
+  staging_generation = coalesce(var.staging_generation, "unbound")
+  fixture_bundle_sha256 = coalesce(
+    var.fixture_bundle_sha256,
+    local.placeholder_digest,
+  )
+  public_hostname = var.enable_instance ? "${replace(google_compute_address.public[0].address, ".", "-")}.sslip.io" : "invalid.example"
+  public_url      = "https://${local.public_hostname}"
 }
 
 check "instance_admission" {
@@ -58,7 +74,7 @@ check "instance_admission" {
         && local.estimated_cost_is_bounded
       )
     )
-    error_message = "VM admission requires the operator identity, generation, immutable secret version, source bindings, exact boot image, digest-addressed workload images, owned runtime and web images, and a bounded seven-day cost estimate."
+    error_message = "VM admission requires the operator identity, generation, immutable secret and fixture versions, source bindings, exact boot image, digest-addressed workload images, owned source-built runtime, web, Caddy, Grafana, Loki, and Tempo images, and a bounded seven-day cost estimate."
   }
 }
 

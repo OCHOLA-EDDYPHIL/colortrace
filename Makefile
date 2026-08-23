@@ -370,7 +370,8 @@ check-terraform: prepare-cache
 	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/single-host test -no-color
 	$(TOOL_RUN_OFFLINE) python -m unittest discover \
 		-s infra/single-host/tests -p 'test_*.py' -v
-	$(TOOL_RUN_OFFLINE) bash -n infra/single-host/scripts/resume-instance.sh
+	$(TOOL_RUN_OFFLINE) bash -n infra/single-host/scripts/*.sh \
+		infra/single-host/templates/startup.sh.tftpl
 
 check-telemetry: prepare-cache
 	@set -eu; \

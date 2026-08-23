@@ -11,9 +11,16 @@ readonly STAGING_GENERATION='${staging_generation}'
 readonly STAGING_LIFETIME_HOURS='${staging_lifetime_hours}'
 readonly COMPOSE_B64='${compose_yaml_base64}'
 readonly CADDYFILE_B64='${caddyfile_base64}'
+readonly GRAFANA_ALERTING_B64='${grafana_alerting_base64}'
+readonly GRAFANA_DATASOURCES_B64='${grafana_datasources_base64}'
+readonly LOKI_CONFIG_B64='${loki_config_base64}'
+readonly PROMETHEUS_CONFIG_B64='${prometheus_config_base64}'
+readonly TEMPO_CONFIG_B64='${tempo_config_base64}'
 readonly ROOT_DIR='/srv/colortrace'
 readonly CONTROL_DIR='/var/lib/colortrace-lifecycle'
 readonly METADATA_URL='http://metadata.google.internal/computeMetadata/v1'
+readonly METADATA_IP='169.254.169.254'
+readonly RUNTIME_CONTAINER_IP='172.30.0.10'
 
 install -d -m 0700 "$CONTROL_DIR"
 
@@ -52,21 +59,59 @@ apt-get install --yes --no-install-recommends \
   curl \
   docker-compose \
   docker.io \
+  iptables \
   jq \
   openssl
 systemctl enable --now docker
 
+configure_container_metadata_boundary() {
+  while iptables --wait 5 --delete DOCKER-USER \
+    --source "$RUNTIME_CONTAINER_IP/32" \
+    --destination "$METADATA_IP/32" \
+    --jump ACCEPT >/dev/null 2>&1; do :; done
+  while iptables --wait 5 --delete DOCKER-USER \
+    --destination "$METADATA_IP/32" \
+    --jump DROP >/dev/null 2>&1; do :; done
+
+  iptables --wait 5 --insert DOCKER-USER 1 \
+    --destination "$METADATA_IP/32" \
+    --jump DROP
+  iptables --wait 5 --insert DOCKER-USER 1 \
+    --source "$RUNTIME_CONTAINER_IP/32" \
+    --destination "$METADATA_IP/32" \
+    --jump ACCEPT
+
+  iptables --wait 5 --check DOCKER-USER \
+    --source "$RUNTIME_CONTAINER_IP/32" \
+    --destination "$METADATA_IP/32" \
+    --jump ACCEPT
+  iptables --wait 5 --check DOCKER-USER \
+    --destination "$METADATA_IP/32" \
+    --jump DROP
+}
+
+configure_container_metadata_boundary
+
 install -d -m 0755 "$ROOT_DIR"
 install -d -m 0700 \
   "$ROOT_DIR/app" \
-  "$ROOT_DIR/caddy-config" \
-  "$ROOT_DIR/caddy-data" \
   "$ROOT_DIR/config" \
   "$ROOT_DIR/grafana" \
+  "$ROOT_DIR/loki" \
+  "$ROOT_DIR/prometheus" \
   "$ROOT_DIR/secrets"
 install -d -o 65532 -g 65532 -m 0700 \
-  "$ROOT_DIR/app/simulator-workspace"
+  "$ROOT_DIR/app/simulator-workspace" \
+  "$ROOT_DIR/caddy-config" \
+  "$ROOT_DIR/caddy-data"
+install -d -o 10001 -g 10001 -m 0700 "$ROOT_DIR/loki" "$ROOT_DIR/tempo"
+install -d -o 472 -g 472 -m 0700 "$ROOT_DIR/grafana"
+install -d -o 65534 -g 65534 -m 0700 "$ROOT_DIR/prometheus"
 chown -R 65532:65532 "$ROOT_DIR/app"
+chown -R 65532:65532 "$ROOT_DIR/caddy-config" "$ROOT_DIR/caddy-data"
+chown -R 10001:10001 "$ROOT_DIR/loki" "$ROOT_DIR/tempo"
+chown -R 472:472 "$ROOT_DIR/grafana"
+chown -R 65534:65534 "$ROOT_DIR/prometheus"
 
 metadata_token() {
   curl \
@@ -99,6 +144,11 @@ fi
 
 printf '%s' "$COMPOSE_B64" | base64 --decode >"$ROOT_DIR/config/compose.yaml.new"
 printf '%s' "$CADDYFILE_B64" | base64 --decode >"$ROOT_DIR/config/Caddyfile.template"
+printf '%s' "$GRAFANA_ALERTING_B64" | base64 --decode >"$ROOT_DIR/config/grafana-alerting.yaml.new"
+printf '%s' "$GRAFANA_DATASOURCES_B64" | base64 --decode >"$ROOT_DIR/config/grafana-datasources.yaml.new"
+printf '%s' "$LOKI_CONFIG_B64" | base64 --decode >"$ROOT_DIR/config/loki.yaml.new"
+printf '%s' "$PROMETHEUS_CONFIG_B64" | base64 --decode >"$ROOT_DIR/config/prometheus.yaml.new"
+printf '%s' "$TEMPO_CONFIG_B64" | base64 --decode >"$ROOT_DIR/config/tempo.yaml.new"
 sed "s|__COLORTRACE_ACCESS_HASH__|$access_hash|" \
   "$ROOT_DIR/config/Caddyfile.template" >"$ROOT_DIR/config/Caddyfile.new"
 unset access_hash
@@ -107,8 +157,24 @@ if grep --quiet '__COLORTRACE_ACCESS_HASH__' "$ROOT_DIR/config/Caddyfile.new"; t
 fi
 mv "$ROOT_DIR/config/compose.yaml.new" "$ROOT_DIR/config/compose.yaml"
 mv "$ROOT_DIR/config/Caddyfile.new" "$ROOT_DIR/config/Caddyfile"
+mv "$ROOT_DIR/config/grafana-alerting.yaml.new" "$ROOT_DIR/config/grafana-alerting.yaml"
+mv "$ROOT_DIR/config/grafana-datasources.yaml.new" "$ROOT_DIR/config/grafana-datasources.yaml"
+mv "$ROOT_DIR/config/loki.yaml.new" "$ROOT_DIR/config/loki.yaml"
+mv "$ROOT_DIR/config/prometheus.yaml.new" "$ROOT_DIR/config/prometheus.yaml"
+mv "$ROOT_DIR/config/tempo.yaml.new" "$ROOT_DIR/config/tempo.yaml"
 rm -f "$ROOT_DIR/config/Caddyfile.template"
 chmod 0600 "$ROOT_DIR/config/compose.yaml" "$ROOT_DIR/config/Caddyfile"
+chmod 0444 \
+  "$ROOT_DIR/config/grafana-alerting.yaml" \
+  "$ROOT_DIR/config/grafana-datasources.yaml" \
+  "$ROOT_DIR/config/loki.yaml" \
+  "$ROOT_DIR/config/prometheus.yaml" \
+  "$ROOT_DIR/config/tempo.yaml"
+chown 65532:65532 "$ROOT_DIR/config/Caddyfile"
+chmod 0400 "$ROOT_DIR/config/Caddyfile"
+test "$(stat -c '%u:%g:%a' "$ROOT_DIR/config/Caddyfile")" = "65532:65532:400"
+test "$(stat -c '%u:%g:%a' "$ROOT_DIR/caddy-data")" = "65532:65532:700"
+test "$(stat -c '%u:%g:%a' "$ROOT_DIR/caddy-config")" = "65532:65532:700"
 
 if ! test -s "$ROOT_DIR/secrets/grafana-admin-password"; then
   openssl rand -hex 32 >"$ROOT_DIR/secrets/grafana-admin-password.new"
@@ -123,7 +189,8 @@ printf '%s\n' \
   >"$ROOT_DIR/config/grafana.env.new"
 unset grafana_admin_password
 mv "$ROOT_DIR/config/grafana.env.new" "$ROOT_DIR/config/grafana.env"
-chmod 0600 "$ROOT_DIR/config/grafana.env"
+chown 472:472 "$ROOT_DIR/config/grafana.env"
+chmod 0400 "$ROOT_DIR/config/grafana.env"
 
 compose() {
   if docker compose version >/dev/null 2>&1; then
@@ -136,33 +203,90 @@ compose() {
 compose config --quiet
 printf '%s' "$cloud_token" \
   | docker login --username oauth2accesstoken --password-stdin "$REGISTRY_HOST"
-trap 'docker logout "$REGISTRY_HOST" >/dev/null 2>&1 || true' EXIT
+trap 'rm -f "$ROOT_DIR/secrets/grafana.netrc"; docker logout "$REGISTRY_HOST" >/dev/null 2>&1 || true' EXIT
 compose pull
-compose up --detach lgtm caddy
+compose up --detach --remove-orphans grafana loki prometheus tempo caddy
 
 grafana_ready=false
+backends_ready=false
 for _ in $(seq 1 90); do
   if curl --fail --silent --show-error \
     http://127.0.0.1:13000/api/health >/dev/null; then
     grafana_ready=true
+  fi
+  if curl --fail --silent --show-error http://127.0.0.1:13100/ready >/dev/null \
+    && curl --fail --silent --show-error http://127.0.0.1:13200/ready >/dev/null \
+    && curl --fail --silent --show-error http://127.0.0.1:19090/-/ready >/dev/null; then
+    backends_ready=true
+  fi
+  if test "$grafana_ready" = true && test "$backends_ready" = true; then
     break
   fi
   sleep 2
 done
-if test "$grafana_ready" != true; then
+if test "$grafana_ready" != true || test "$backends_ready" != true; then
+  compose ps
   exit 1
 fi
 
-if ! test -s "$ROOT_DIR/secrets/grafana-viewer-token"; then
-  grafana_admin_password=$(cat "$ROOT_DIR/secrets/grafana-admin-password")
-  printf '%s\n' \
-    'machine 127.0.0.1' \
-    'login colortrace-admin' \
-    "password $grafana_admin_password" \
-    >"$ROOT_DIR/secrets/grafana.netrc"
-  unset grafana_admin_password
-  chmod 0600 "$ROOT_DIR/secrets/grafana.netrc"
+grafana_admin_password=$(cat "$ROOT_DIR/secrets/grafana-admin-password")
+printf '%s\n' \
+  'machine 127.0.0.1' \
+  'login colortrace-admin' \
+  "password $grafana_admin_password" \
+  >"$ROOT_DIR/secrets/grafana.netrc"
+unset grafana_admin_password
+chmod 0600 "$ROOT_DIR/secrets/grafana.netrc"
 
+for datasource_uid in prometheus loki tempo; do
+  datasource_ready=false
+  for _ in $(seq 1 30); do
+    if curl \
+      --fail \
+      --silent \
+      --show-error \
+      --netrc-file "$ROOT_DIR/secrets/grafana.netrc" \
+      "http://127.0.0.1:13000/api/datasources/uid/$datasource_uid/health" \
+      | jq -e '.status == "OK"' >/dev/null; then
+      datasource_ready=true
+      break
+    fi
+    sleep 2
+  done
+  if test "$datasource_ready" != true; then
+    exit 1
+  fi
+done
+
+curl \
+  --fail \
+  --silent \
+  --show-error \
+  --netrc-file "$ROOT_DIR/secrets/grafana.netrc" \
+  --get \
+  --data-urlencode 'query=vector(1)' \
+  http://127.0.0.1:13000/api/datasources/proxy/uid/prometheus/api/v1/query \
+  | jq -e '.status == "success" and (.data.result | length) == 1' >/dev/null
+curl \
+  --fail \
+  --silent \
+  --show-error \
+  --netrc-file "$ROOT_DIR/secrets/grafana.netrc" \
+  --get \
+  --data-urlencode 'query=vector(1)' \
+  http://127.0.0.1:13000/api/datasources/proxy/uid/loki/loki/api/v1/query \
+  | jq -e '.status == "success" and (.data.result | length) == 1' >/dev/null
+curl \
+  --fail \
+  --silent \
+  --show-error \
+  --netrc-file "$ROOT_DIR/secrets/grafana.netrc" \
+  --get \
+  --data-urlencode 'limit=1' \
+  http://127.0.0.1:13000/api/datasources/proxy/uid/tempo/api/search \
+  | jq -e '(.traces | type) == "array"' >/dev/null
+
+if ! test -s "$ROOT_DIR/secrets/grafana-viewer-token"; then
   service_account_body=$(jq -cn \
     --arg name "colortrace-mcp-$STAGING_GENERATION" \
     '{name: $name, role: "Viewer"}')
@@ -193,13 +317,14 @@ if ! test -s "$ROOT_DIR/secrets/grafana-viewer-token"; then
     ''|*[[:space:]]*) exit 1 ;;
   esac
   printf '%s' "$grafana_token" >"$ROOT_DIR/secrets/grafana-viewer-token.new"
-  unset grafana_token token_response service_account_response cloud_token
+  unset grafana_token token_response service_account_response
   mv "$ROOT_DIR/secrets/grafana-viewer-token.new" \
     "$ROOT_DIR/secrets/grafana-viewer-token"
   chown 65532:65532 "$ROOT_DIR/secrets/grafana-viewer-token"
   chmod 0600 "$ROOT_DIR/secrets/grafana-viewer-token"
-  rm -f "$ROOT_DIR/secrets/grafana.netrc"
 fi
+unset cloud_token
+rm -f "$ROOT_DIR/secrets/grafana.netrc"
 
 caddy_ca="$ROOT_DIR/caddy-data/caddy/pki/authorities/local/root.crt"
 caddy_ca_ready=false
@@ -217,4 +342,25 @@ install -m 0444 "$caddy_ca" "$ROOT_DIR/config/caddy-root.crt.new"
 mv "$ROOT_DIR/config/caddy-root.crt.new" "$ROOT_DIR/config/caddy-root.crt"
 
 compose up --detach runtime web
+runtime_ready=false
+web_ready=false
+for _ in $(seq 1 90); do
+  runtime_health=$(docker inspect --format '{{.State.Health.Status}}' colortrace-runtime)
+  web_health=$(docker inspect --format '{{.State.Health.Status}}' colortrace-web)
+  if test "$runtime_health" = healthy && test "$web_health" = healthy; then
+    runtime_ready=true
+    web_ready=true
+    break
+  fi
+  if test "$runtime_health" = unhealthy || test "$web_health" = unhealthy; then
+    break
+  fi
+  sleep 2
+done
+if test "$runtime_ready" != true || test "$web_ready" != true; then
+  compose ps
+  exit 1
+fi
+docker exec --user 65532:65532 colortrace-runtime \
+  python -c 'import hmac, os, stat; from pathlib import Path; source=Path("/run/colortrace-secrets/grafana-viewer-token"); target=Path("/var/run/colortrace-private/grafana-viewer-token"); info=target.stat(); assert stat.S_ISREG(info.st_mode); assert info.st_uid == 65532 and info.st_gid == 65532; assert stat.S_IMODE(info.st_mode) == 0o600; assert hmac.compare_digest(source.read_bytes(), target.read_bytes())'
 compose ps
