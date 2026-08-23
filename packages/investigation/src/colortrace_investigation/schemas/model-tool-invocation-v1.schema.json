@@ -57,10 +57,17 @@
     "usage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["input_tokens", "output_tokens"],
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "model_calls",
+        "unobserved_model_calls"
+      ],
       "properties": {
         "input_tokens": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]},
-        "output_tokens": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]}
+        "output_tokens": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]},
+        "model_calls": {"type": "integer", "minimum": 1, "maximum": 6},
+        "unobserved_model_calls": {"type": "integer", "minimum": 0, "maximum": 6}
       }
     },
     "result_class": {"enum": ["accepted", "budget-rejected", "failed", "invalid"]},

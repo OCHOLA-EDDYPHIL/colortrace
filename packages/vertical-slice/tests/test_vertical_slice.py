@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -132,6 +132,9 @@ class FakeModel:
         if self.delay:
             await asyncio.sleep(self.delay)
         if call.turn_kind == "evidence-selection":
+            if call.evidence_tool is not None:
+                for query_key in mcp_subject.QUERY_KEYS[1:]:
+                    await call.evidence_tool(cast(Any, query_key))
             value = {
                 "schema": "model-selection/v1",
                 "hypothesis_keys": [
@@ -320,12 +323,7 @@ class FakeEvidence:
         self.correlation = dict(correlation)
         self.missing_trace = missing_trace
 
-    async def collect(
-        self,
-        batch: mcp_subject.EvidenceBatch,
-        *,
-        controls: mcp_subject.ExecutionControls | None = None,
-    ) -> mcp_subject.BatchResult:
+    def _adapter(self) -> mcp_subject.EvidenceAdapter:
         session = FakeSession(self)
 
         @asynccontextmanager
@@ -341,19 +339,36 @@ class FakeEvidence:
             b"unit-test-viewer-token",
             mcp_subject._RUNTIME_VERIFICATION,
         )
-        adapter = mcp_subject.EvidenceAdapter(
-            runtime=runtime,
-            catalog=mcp_subject.QueryCatalog.load(Path("config/grafana-mcp/query-catalog.json")),
-            session_factory=factory,
-            clock=lambda: NOW,
-        )
         inventory = mcp_subject.FrozenInventory("sha256:" + "a" * 64, mcp_subject.TOOL_PINS)
 
         async def load_inventory(_session: FakeSession) -> mcp_subject.FrozenInventory:
             return inventory
 
-        with patch.object(mcp_subject, "_load_inventory", new=load_inventory):
-            return await adapter.collect(batch, controls=controls)
+        return mcp_subject.EvidenceAdapter(
+            runtime=runtime,
+            catalog=mcp_subject.QueryCatalog.load(Path("config/grafana-mcp/query-catalog.json")),
+            session_factory=factory,
+            inventory_loader=load_inventory,
+            clock=lambda: NOW,
+        )
+
+    @asynccontextmanager
+    async def open_collection(
+        self,
+        batch: mcp_subject.EvidenceBatch,
+        *,
+        controls: mcp_subject.ExecutionControls | None = None,
+    ) -> AsyncIterator[Any]:
+        async with self._adapter().open_collection(batch, controls=controls) as collection:
+            yield collection
+
+    async def collect(
+        self,
+        batch: mcp_subject.EvidenceBatch,
+        *,
+        controls: mcp_subject.ExecutionControls | None = None,
+    ) -> mcp_subject.BatchResult:
+        return await self._adapter().collect(batch, controls=controls)
 
 
 def worker(
@@ -656,7 +671,11 @@ def test_service_timeout_is_durable_and_clean_reset_is_exact(
     assert packet["status"] == "unresolved"
     assert packet["no_action_reason"] == "budget-exhausted"
     assert packet["unresolved_items"] == [
-        {"code": "service-timeout", "stage": "worker", "evidence_ids": []}
+        {
+            "code": "service-timeout",
+            "stage": "worker",
+            "evidence_ids": packet["evidence_ids"],
+        }
     ]
     validate_replay(api.replay("incident-timeout"))
 

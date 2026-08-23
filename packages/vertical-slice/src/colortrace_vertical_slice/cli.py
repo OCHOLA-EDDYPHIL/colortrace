@@ -49,6 +49,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--project-id", required=True)
     run.add_argument("--grafana-url", required=True)
     run.add_argument("--token-file", type=Path, required=True)
+    run.add_argument("--tls-ca-file", type=Path)
     run.add_argument("--mcp-binary", type=Path, required=True)
     run.add_argument(
         "--mcp-lock",
@@ -125,6 +126,9 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         token_file=arguments.token_file.resolve(strict=True),
         binary=arguments.mcp_binary.resolve(strict=True),
         lock_path=arguments.mcp_lock.resolve(strict=True),
+        tls_ca_file=(
+            None if arguments.tls_ca_file is None else arguments.tls_ca_file.resolve(strict=True)
+        ),
     )
     evidence = EvidenceAdapter(
         runtime=runtime,

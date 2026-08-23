@@ -482,6 +482,8 @@ class OfficialMcpRuntime:
     binary: Path
     token: bytes = field(repr=False)
     _verification: object = field(default=None, repr=False, compare=False)
+    tls_ca_file: Path | None = None
+    _tls_ca_sha256: str | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def verify(
@@ -491,6 +493,7 @@ class OfficialMcpRuntime:
         token_file: Path,
         binary: Path,
         lock_path: Path,
+        tls_ca_file: Path | None = None,
     ) -> OfficialMcpRuntime:
         lock = strict_json_file(lock_path.resolve(strict=True))
         if lock != _EXPECTED_LOCK:
@@ -525,12 +528,18 @@ class OfficialMcpRuntime:
             raise AdapterError("mcp_binary_drift")
 
         token = cls._read_token_file(token_file)
+        tls_ca_sha256 = None
+        if tls_ca_file is not None:
+            cls._validate_regular_file(tls_ca_file, private=False)
+            tls_ca_sha256 = _file_sha256(tls_ca_file)
         return cls(
-            grafana_url.rstrip("/"),
-            token_file,
-            binary,
-            token,
-            _RUNTIME_VERIFICATION,
+            grafana_url=grafana_url.rstrip("/"),
+            token_file=token_file,
+            binary=binary,
+            token=token,
+            _verification=_RUNTIME_VERIFICATION,
+            tls_ca_file=tls_ca_file,
+            _tls_ca_sha256=tls_ca_sha256,
         )
 
     @classmethod
@@ -560,6 +569,15 @@ class OfficialMcpRuntime:
         current_token = self._read_token_file(self.token_file)
         if not hmac.compare_digest(current_token, self.token):
             raise AdapterError("credential_file_changed")
+        if self.tls_ca_file is None:
+            if self._tls_ca_sha256 is not None:
+                raise AdapterError("runtime_unverified")
+        else:
+            self._validate_regular_file(self.tls_ca_file, private=False)
+            if self._tls_ca_sha256 is None or not hmac.compare_digest(
+                _file_sha256(self.tls_ca_file), self._tls_ca_sha256
+            ):
+                raise AdapterError("tls_ca_file_changed")
 
     @staticmethod
     def _validate_regular_file(path: Path, *, private: bool) -> None:
@@ -1387,25 +1405,32 @@ SessionFactory = Callable[[OfficialMcpRuntime], AbstractAsyncContextManager[McpS
 InventoryLoader = Callable[[McpSession], Awaitable[FrozenInventory]]
 
 
-@asynccontextmanager
-async def _official_session_transport(runtime: OfficialMcpRuntime) -> AsyncIterator[McpSession]:
-    runtime.assert_unchanged()
-    parameters = StdioServerParameters(
+def _official_server_parameters(runtime: OfficialMcpRuntime) -> StdioServerParameters:
+    arguments = [
+        "--transport=stdio",
+        "--disable-write",
+        f"--enabled-tools={','.join(MCP_ENABLED_CATEGORIES)}",
+        f"--grafana-timeout={MCP_GRAFANA_TIMEOUT_SECONDS}s",
+        "--max-loki-log-limit=200",
+        "--log-level=error",
+    ]
+    if runtime.tls_ca_file is not None:
+        arguments.append(f"--tls-ca-file={runtime.tls_ca_file}")
+    return StdioServerParameters(
         command=str(runtime.binary),
-        args=[
-            "--transport=stdio",
-            "--disable-write",
-            f"--enabled-tools={','.join(MCP_ENABLED_CATEGORIES)}",
-            f"--grafana-timeout={MCP_GRAFANA_TIMEOUT_SECONDS}s",
-            "--max-loki-log-limit=200",
-            "--log-level=error",
-        ],
+        args=arguments,
         env={
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             "GRAFANA_URL": runtime.grafana_url,
             "GRAFANA_SERVICE_ACCOUNT_TOKEN_FILE": str(runtime.token_file),
         },
     )
+
+
+@asynccontextmanager
+async def _official_session_transport(runtime: OfficialMcpRuntime) -> AsyncIterator[McpSession]:
+    runtime.assert_unchanged()
+    parameters = _official_server_parameters(runtime)
     with Path(os.devnull).open("w", encoding="utf-8") as error_log:
         async with stdio_client(parameters, errlog=error_log) as (read, write):
             async with ClientSession(
@@ -2320,6 +2345,95 @@ class BatchResult:
         }
 
 
+class EvidenceCollectionSession:
+    def __init__(
+        self,
+        *,
+        session: McpSession,
+        runtime: OfficialMcpRuntime,
+        catalog: QueryCatalog,
+        batch: EvidenceBatch,
+        inventory: FrozenInventory,
+        controls: ExecutionControls,
+        clock: Callable[[], datetime],
+    ) -> None:
+        self._session = session
+        self._runtime = runtime
+        self._catalog = catalog
+        self._batch = batch
+        self._inventory = inventory
+        self._controls = controls
+        self._clock = clock
+        self._budget = _CallBudget(maximum_calls=8, maximum_in_flight=1)
+        self._local_limiter = asyncio.Semaphore(1)
+        self._raw_results: list[_RawCollection] = []
+        self._envelopes: list[Mapping[str, Any]] = []
+        self._seen: set[str] = set()
+        self._in_flight = False
+        self._closed = False
+        self._predecessor = batch.predecessor_event_sha256
+
+    @property
+    def query_keys(self) -> tuple[str, ...]:
+        return tuple(
+            cast(str, envelope["observation"]["query_key"]) for envelope in self._envelopes
+        )
+
+    async def collect(self, query_key: str) -> Mapping[str, Any]:
+        if self._closed:
+            raise AdapterError("collection_session_closed")
+        if self._in_flight:
+            raise AdapterError("parallel_query")
+        if (
+            not isinstance(query_key, str)
+            or query_key not in self._batch.query_keys
+            or query_key not in QUERY_KEYS
+        ):
+            raise AdapterError("query_not_allowed")
+        if query_key in self._seen:
+            raise AdapterError("duplicate_query")
+
+        self._in_flight = True
+        self._seen.add(query_key)
+        try:
+            bound = _bind_call(self._catalog, self._batch, query_key)
+            raw = await _collect_one(
+                self._session,
+                bound,
+                runtime=self._runtime,
+                catalog=self._catalog,
+                local_limiter=self._local_limiter,
+                controls=self._controls,
+                budget=self._budget,
+                clock=self._clock,
+            )
+            envelope = _build_envelope(
+                raw,
+                batch=self._batch,
+                catalog=self._catalog,
+                inventory=self._inventory,
+                predecessor=self._predecessor,
+            )
+            self._raw_results.append(raw)
+            self._envelopes.append(envelope)
+            self._predecessor = cast(str, envelope["event_sha256"])
+            return envelope
+        finally:
+            self._in_flight = False
+
+    def result(self) -> BatchResult:
+        return BatchResult(
+            self._inventory,
+            tuple(self._envelopes),
+            self._budget.calls_used,
+            self._budget.maximum_observed_in_flight,
+            tuple(attempt for raw in self._raw_results for attempt in raw.attempt_records),
+        )
+
+    def close(self) -> None:
+        self._closed = True
+
+
 _ACTION_CORRELATION_ATTRIBUTES = (
     "outcome_id",
     "outcome_sha256",
@@ -2833,6 +2947,34 @@ class EvidenceAdapter:
             raise
         except Exception:
             raise AdapterError("mcp_session_failure") from None
+
+    @asynccontextmanager
+    async def open_collection(
+        self,
+        batch: EvidenceBatch,
+        *,
+        controls: ExecutionControls | None = None,
+    ) -> AsyncIterator[EvidenceCollectionSession]:
+        snapshot = _snapshot_batch(batch)
+        current = self._clock().astimezone(UTC)
+        if snapshot.window_end > current + timedelta(seconds=5):
+            raise AdapterError("invalid_time_range")
+        execution_controls = controls or ExecutionControls()
+        async with self._session_factory(self._runtime) as session:
+            inventory = await self._inventory(session)
+            collection = EvidenceCollectionSession(
+                session=session,
+                runtime=self._runtime,
+                catalog=self._catalog,
+                batch=snapshot,
+                inventory=inventory,
+                controls=execution_controls,
+                clock=self._clock,
+            )
+            try:
+                yield collection
+            finally:
+                collection.close()
 
     def normalize_simulator_action_observations(
         self,

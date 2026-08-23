@@ -8,7 +8,14 @@ from .contracts import (
     ModelSelection,
     validate_response_packet,
 )
-from .model import AdkVertexGateway, ModelCall, ModelFailure, ModelGateway, ModelOutput
+from .model import (
+    AdkVertexGateway,
+    AllowedQueryKey,
+    ModelCall,
+    ModelFailure,
+    ModelGateway,
+    ModelOutput,
+)
 from .workflow import (
     ColorStateValidatorGateway,
     InvestigationWorkflow,
@@ -19,6 +26,7 @@ from .workflow import (
 
 __all__ = [
     "AdkVertexGateway",
+    "AllowedQueryKey",
     "AlertIntake",
     "ColorStateValidatorGateway",
     "ContractError",
