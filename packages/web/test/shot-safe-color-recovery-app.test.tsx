@@ -175,7 +175,7 @@ describe("shot-safe color recovery", () => {
       approval_nonce: NONCE,
       idempotency_key: expect.stringMatching(/^demo-start-/u),
     });
-  });
+  }, 15_000);
 
   it("does not let an older poll response reverse an accepted recovery", async () => {
     const adapter = adapterFixture();

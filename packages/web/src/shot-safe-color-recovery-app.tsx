@@ -882,7 +882,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
   );
 
   const acceptRun = useCallback(
-    (next: DemoRun, nonce: string | null = approvalNonceRef.current) => {
+    (next: DemoRun, nonce: string | null = approvalNonceRef.current): boolean => {
       const current = runRef.current;
       if (current?.run_id === next.run_id) {
         if (
@@ -892,9 +892,9 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
           current.build_sha256 !== next.build_sha256
         ) {
           setActionError("The service returned conflicting immutable run bindings.");
-          return;
+          return false;
         }
-        if (next.version < current.version) return;
+        if (next.version < current.version) return false;
       }
       const usableNonce = next.phase === "awaiting-approval" ? nonce : null;
       approvalNonceRef.current = usableNonce;
@@ -904,6 +904,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
       pendingStartNonce.current = null;
       pendingStartKey.current = null;
       persistRun(sessionStorage, next.run_id, usableNonce);
+      return true;
     },
     [sessionStorage],
   );
@@ -943,8 +944,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
         return false;
       }
       const next = await adapter.get(error.runId, signal);
-      acceptRun(next, null);
-      return true;
+      return acceptRun(next, null);
     },
     [acceptRun, adapter],
   );
@@ -1017,8 +1017,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
         .get(run.run_id, controller.signal)
         .then((next) => {
           if (!active) return;
-          acceptRun(next);
-          setActionError(null);
+          if (acceptRun(next)) setActionError(null);
         })
         .catch((error: unknown) => {
           if (active) setActionError(errorMessage(error, "load"));
@@ -1329,8 +1328,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
     void adapter
       .get(run.run_id)
       .then((next) => {
-        acceptRun(next);
-        setActionError(null);
+        if (acceptRun(next)) setActionError(null);
       })
       .catch((error: unknown) => setActionError(errorMessage(error, "load")))
       .finally(() => setBusy(false));
