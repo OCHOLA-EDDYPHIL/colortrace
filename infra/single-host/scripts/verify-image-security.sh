@@ -10,6 +10,7 @@ fi
 readonly script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 readonly repository_root=$(CDPATH= cd -- "$script_dir/../../.." && pwd -P)
 readonly observability_lock="$repository_root/config/observability/images.lock.json"
+readonly admission_helper="$script_dir/admission-binding.py"
 readonly trivy_image='aquasec/trivy@sha256:'\
 'bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c'
 readonly frozen_database_image='ghcr.io/aquasecurity/trivy-db@sha256:'\
@@ -19,11 +20,13 @@ readonly docker_socket=${COLORTRACE_DOCKER_SOCKET:-/var/run/docker.sock}
 
 command -v docker >/dev/null
 command -v jq >/dev/null
+command -v python3 >/dev/null
 command -v realpath >/dev/null
 command -v sha256sum >/dev/null
 command -v stat >/dev/null
 test -f "$1"
 test -f "$observability_lock"
+test -x "$admission_helper"
 test -e "$docker_socket"
 install -d -m 0700 "$2" "$3" "$4"
 readonly manifest=$(realpath "$1")
@@ -41,12 +44,7 @@ test "$frozen_cache" != "$output_directory"
 docker pull "$trivy_image" >/dev/null
 docker image inspect "$trivy_image" >/dev/null
 
-jq -e '
-  .schema_version == 1
-  and (.source.commit | type == "string" and test("^[0-9a-f]{40}$"))
-  and (.source.tree | type == "string" and test("^[0-9a-f]{40}$"))
-  and ((.images | keys | sort) == ["caddy", "grafana", "loki", "runtime", "tempo", "web"])
-' "$manifest" >/dev/null
+python3 "$admission_helper" validate-build "$manifest"
 readonly source_commit=$(jq -er '.source.commit' "$manifest")
 readonly tag_pattern="^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9_./-]+:${source_commit}$"
 
@@ -96,21 +94,26 @@ if ! test -s "$frozen_cache/db/trivy.db"; then
   download_database "$frozen_cache" --db-repository "$frozen_database_image"
 fi
 
-test -s "$current_cache/db/trivy.db"
-test -s "$current_cache/db/metadata.json"
-test -s "$frozen_cache/db/trivy.db"
-test -s "$frozen_cache/db/metadata.json"
-printf '%s  %s\n' "$frozen_database_sha256" "$frozen_cache/db/trivy.db" \
-  | sha256sum --check --status
-jq -e '.Version == 2 and (.UpdatedAt | type == "string")' \
-  "$current_cache/db/metadata.json" >/dev/null
-jq -e '.Version == 2 and .UpdatedAt == "2026-08-22T12:57:22.518776499Z"' \
-  "$frozen_cache/db/metadata.json" >/dev/null
+validate_databases() {
+  test -s "$current_cache/db/trivy.db"
+  test -s "$current_cache/db/metadata.json"
+  test -s "$frozen_cache/db/trivy.db"
+  test -s "$frozen_cache/db/metadata.json"
+  printf '%s  %s\n' "$frozen_database_sha256" "$frozen_cache/db/trivy.db" \
+    | sha256sum --check --status
+  jq -e '.Version == 2 and (.UpdatedAt | type == "string")' \
+    "$current_cache/db/metadata.json" >/dev/null
+  jq -e '
+    .Version == 2
+    and .UpdatedAt == "2026-08-22T12:57:22.518776499Z"
+    and .NextUpdate == "2026-08-23T12:57:22.518775968Z"
+    and (.DownloadedAt | type == "string")
+    and (.DownloadedAt | length > 0)
+  ' \
+    "$frozen_cache/db/metadata.json" >/dev/null
+}
 
-install -m 0600 "$current_cache/db/metadata.json" \
-  "$output_directory/current-db-metadata.json"
-install -m 0600 "$frozen_cache/db/metadata.json" \
-  "$output_directory/frozen-db-metadata.json"
+validate_databases
 docker run --rm --network none --pull=never \
   --user "$host_uid:$host_gid" \
   --volume "$current_cache:/trivy-cache:ro" \
@@ -155,42 +158,16 @@ for component in "${scan_components[@]}"; do
   scan_image frozen "$frozen_cache" "$component" "${references[$component]}"
 done
 
+validate_databases
+install -m 0600 "$current_cache/db/metadata.json" \
+  "$output_directory/current-db-metadata.json"
+install -m 0600 "$frozen_cache/db/metadata.json" \
+  "$output_directory/frozen-db-metadata.json"
 current_database_sha256=$(sha256sum "$current_cache/db/trivy.db" | cut -d ' ' -f 1)
-jq -n \
-  --slurpfile build "$manifest" \
-  --slurpfile observability "$observability_lock" \
-  --arg scanner_image "$trivy_image" \
-  --arg frozen_database_image "$frozen_database_image" \
-  --arg frozen_database_sha256 "sha256:$frozen_database_sha256" \
-  --arg current_database_sha256 "sha256:$current_database_sha256" \
-  --arg prometheus_reference "$prometheus_reference" \
-  '{
-    schema: "colortrace-single-host-image-scan/v1",
-    source: $build[0].source,
-    scanner_image: $scanner_image,
-    databases: {
-      current: {content_sha256: $current_database_sha256},
-      frozen: {
-        image: $frozen_database_image,
-        content_sha256: $frozen_database_sha256
-      }
-    },
-    images: ($build[0].images + {
-      prometheus: {
-        reference: $prometheus_reference,
-        upstream: $observability[0].upstream.prometheus
-      }
-    }),
-    severities: ["HIGH", "CRITICAL"],
-    vulnerability_ignores: false,
-    result: "pass"
-  }' >"$output_directory/scan-bindings.json"
-
-(
-  cd "$output_directory"
-  find . -maxdepth 1 -type f -name '*.json' -printf '%P\n' \
-    | LC_ALL=C sort \
-    | xargs sha256sum
-) >"$output_directory/SHA256SUMS"
-chmod 0600 "$output_directory"/*.json "$output_directory/SHA256SUMS"
+python3 "$admission_helper" record-scan \
+  "$manifest" \
+  "$observability_lock" \
+  "$output_directory" \
+  "sha256:$current_database_sha256" \
+  "sha256:$frozen_database_sha256"
 printf '%s\n' "$output_directory/scan-bindings.json"

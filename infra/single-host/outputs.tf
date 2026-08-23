@@ -14,8 +14,19 @@ output "resource_inventory" {
     persistent_disk      = var.enable_instance ? google_compute_disk.boot[0].id : null
     operator_iam_roles   = sort(keys(google_project_iam_member.operator))
     operator_build_roles = sort(keys(google_project_iam_member.operator_build))
-    host_iam_roles       = sort(keys(google_project_iam_member.host))
-    artifact_reader      = var.enable_instance ? google_artifact_registry_repository_iam_member.host_reader[0].id : null
+    host_iam_roles = (
+      var.enable_instance ? [google_project_iam_custom_role.vertex_predictor[0].id] : []
+    )
+    resume_instance_start_role = (
+      var.enable_instance ? google_project_iam_custom_role.resume_instance_starter[0].id : null
+    )
+    operator_instance_inspect_role = (
+      var.enable_instance ? google_project_iam_custom_role.operator_instance_inspector[0].id : null
+    )
+    host_prediction_role = (
+      var.enable_instance ? google_project_iam_custom_role.vertex_predictor[0].id : null
+    )
+    artifact_reader = var.enable_instance ? google_artifact_registry_repository_iam_member.host_reader[0].id : null
   }
 }
 
@@ -32,8 +43,8 @@ output "image_build_identity" {
 output "deployment_contract" {
   description = "Non-secret immutable and lifecycle bindings for the admitted host."
   value = var.enable_instance ? {
-    candidate_commit      = var.candidate_commit
-    candidate_tree        = var.candidate_tree
+    candidate_commit      = local.candidate_commit
+    candidate_tree        = local.candidate_tree
     machine_type          = var.machine_type
     disk_size_gb          = var.boot_disk_size_gb
     disk_type             = google_compute_disk.boot[0].type
@@ -48,24 +59,36 @@ output "deployment_contract" {
     public_url            = local.public_url
     access_secret_version = var.access_secret_version
     images = {
-      caddy      = var.caddy_image
-      grafana    = var.grafana_image
-      loki       = var.loki_image
-      prometheus = var.prometheus_image
-      runtime    = var.runtime_image
-      tempo      = var.tempo_image
-      web        = var.web_image
+      caddy      = local.caddy_image
+      grafana    = local.grafana_image
+      loki       = local.loki_image
+      prometheus = local.prometheus_image
+      runtime    = local.runtime_image
+      tempo      = local.tempo_image
+      web        = local.web_image
     }
-    fixture_bundle_sha256 = var.fixture_bundle_sha256
+    fixture_bundle_sha256 = local.fixture_bundle_sha256
+    artifact_hashes = {
+      deployment_artifact_binding_sha256 = local.deployment_artifact_binding_sha256
+      build_manifest_sha256              = local.build_manifest_sha256
+      observability_lock_sha256          = local.observability_lock_sha256
+      scan_binding_sha256                = local.scan_binding_sha256
+      scan_report_set_sha256             = local.scan_report_set_sha256
+      scanner_version_sha256             = local.scanner_version_sha256
+      runtime_build_binding_sha256       = local.runtime_build_binding_sha256
+    }
+    scanner = var.deployment_artifact_binding.scanner
   } : null
 }
 
 output "resume_identity" {
   description = "Exact non-secret identity required by the guarded resume command."
   value = var.enable_instance ? {
-    project    = var.project_id
-    zone       = var.zone
-    instance   = google_compute_instance.host[0].name
-    generation = var.staging_generation
+    member                  = var.resume_member
+    project                 = var.project_id
+    zone                    = var.zone
+    instance                = google_compute_instance.host[0].name
+    generation              = var.staging_generation
+    artifact_binding_sha256 = local.deployment_artifact_binding_sha256
   } : null
 }

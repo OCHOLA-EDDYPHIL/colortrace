@@ -17,10 +17,6 @@ resource "google_service_account" "builder" {
 }
 
 locals {
-  host_project_roles = toset([
-    "roles/aiplatform.user",
-  ])
-
   operator_project_roles = toset([
     "roles/compute.osAdminLogin",
     "roles/iap.tunnelResourceAccessor",
@@ -31,11 +27,24 @@ locals {
   ])
 }
 
-resource "google_project_iam_member" "host" {
-  for_each = var.enable_instance ? local.host_project_roles : toset([])
+resource "google_project_iam_custom_role" "vertex_predictor" {
+  count = var.enable_instance ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "${replace(var.resource_prefix, "-", "_")}_vertex_predictor"
+  title       = "ColorTrace Vertex prediction"
+  description = "Allows only hosted Vertex prediction for the single-host runtime."
+  permissions = ["aiplatform.endpoints.predict"]
+  stage       = "GA"
+
+  depends_on = [google_project_service.required["iam.googleapis.com"]]
+}
+
+resource "google_project_iam_member" "host_vertex_predictor" {
+  count = var.enable_instance ? 1 : 0
 
   project = var.project_id
-  role    = each.key
+  role    = google_project_iam_custom_role.vertex_predictor[0].id
   member  = google_service_account.host.member
 }
 
@@ -45,6 +54,55 @@ resource "google_project_iam_member" "operator" {
   project = var.project_id
   role    = each.key
   member  = coalesce(var.operator_member, "user:invalid@example.invalid")
+}
+
+resource "google_project_iam_custom_role" "resume_instance_starter" {
+  count = var.enable_instance ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "${replace(var.resource_prefix, "-", "_")}_instance_starter"
+  title       = "ColorTrace instance start"
+  description = "Allows the guarded operator workflow to inspect and start the single staging VM."
+  permissions = [
+    "compute.instances.get",
+    "compute.instances.start",
+  ]
+  stage = "GA"
+
+  depends_on = [google_project_service.required["iam.googleapis.com"]]
+}
+
+resource "google_compute_instance_iam_member" "resume_instance_starter" {
+  count = var.enable_instance ? 1 : 0
+
+  project       = var.project_id
+  zone          = var.zone
+  instance_name = google_compute_instance.host[0].name
+  role          = google_project_iam_custom_role.resume_instance_starter[0].id
+  member        = coalesce(var.resume_member, "user:invalid@example.invalid")
+}
+
+resource "google_project_iam_custom_role" "operator_instance_inspector" {
+  count = var.enable_instance ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "${replace(var.resource_prefix, "-", "_")}_instance_inspector"
+  title       = "ColorTrace instance inspection"
+  description = "Allows the deployment operator to inspect the single staging VM without start or stop authority."
+  permissions = ["compute.instances.get"]
+  stage       = "GA"
+
+  depends_on = [google_project_service.required["iam.googleapis.com"]]
+}
+
+resource "google_compute_instance_iam_member" "operator_instance_inspector" {
+  count = var.enable_instance ? 1 : 0
+
+  project       = var.project_id
+  zone          = var.zone
+  instance_name = google_compute_instance.host[0].name
+  role          = google_project_iam_custom_role.operator_instance_inspector[0].id
+  member        = coalesce(var.operator_member, "user:invalid@example.invalid")
 }
 
 resource "google_project_iam_member" "builder_logs" {

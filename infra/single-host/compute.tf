@@ -32,6 +32,10 @@ resource "google_compute_disk" "boot" {
   image   = local.boot_image
   labels  = local.labels
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   depends_on = [google_project_service.required["compute.googleapis.com"]]
 }
 
@@ -72,12 +76,20 @@ resource "google_compute_instance" "host" {
   }
 
   metadata = {
-    block-project-ssh-keys        = "TRUE"
-    colortrace-candidate-commit   = coalesce(var.candidate_commit, "unbound")
-    colortrace-candidate-tree     = coalesce(var.candidate_tree, "unbound")
-    colortrace-staging-generation = coalesce(var.staging_generation, "unbound")
-    enable-oslogin                = "TRUE"
-    serial-port-enable            = "FALSE"
+    block-project-ssh-keys                  = "TRUE"
+    colortrace-artifact-binding-sha256      = local.deployment_artifact_binding_sha256
+    colortrace-build-manifest-sha256        = local.build_manifest_sha256
+    colortrace-candidate-commit             = local.candidate_commit
+    colortrace-candidate-tree               = local.candidate_tree
+    colortrace-fixture-manifest-sha256      = local.fixture_bundle_sha256
+    colortrace-observability-lock-sha256    = local.observability_lock_sha256
+    colortrace-runtime-build-binding-sha256 = local.runtime_build_binding_sha256
+    colortrace-scan-binding-sha256          = local.scan_binding_sha256
+    colortrace-scan-report-set-sha256       = local.scan_report_set_sha256
+    colortrace-scanner-version-sha256       = local.scanner_version_sha256
+    colortrace-staging-generation           = local.staging_generation
+    enable-oslogin                          = "TRUE"
+    serial-port-enable                      = "FALSE"
   }
 
   metadata_startup_script = templatefile("${path.module}/templates/startup.sh.tftpl", {
@@ -113,6 +125,7 @@ resource "google_compute_instance" "host" {
     precondition {
       condition = (
         local.workload_inputs_complete
+        && local.artifact_binding_is_valid
         && local.private_images_in_owned_registry
         && local.estimated_cost_is_bounded
       )
@@ -122,7 +135,7 @@ resource "google_compute_instance" "host" {
 
   depends_on = [
     google_artifact_registry_repository_iam_member.host_reader,
-    google_project_iam_member.host,
+    google_project_iam_member.host_vertex_predictor,
     google_project_iam_member.operator,
     google_secret_manager_secret_iam_member.host_access_gate,
   ]

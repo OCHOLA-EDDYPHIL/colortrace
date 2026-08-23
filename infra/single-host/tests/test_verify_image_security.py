@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -10,6 +11,7 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "verify-image-security.sh"
 FAKE_JQ = Path(__file__).with_name("fake_jq.py")
+ROOT = Path(__file__).parents[3]
 
 
 class VerifyImageSecurityTests(unittest.TestCase):
@@ -34,7 +36,18 @@ class VerifyImageSecurityTests(unittest.TestCase):
                 (cache / "db").mkdir(parents=True)
                 (cache / "db" / "trivy.db").write_bytes(b"fixture-database")
                 (cache / "db" / "metadata.json").write_text(
-                    json.dumps({"Version": 2, "UpdatedAt": updated_at}),
+                    json.dumps(
+                        {
+                            "Version": 2,
+                            "NextUpdate": (
+                                "2026-08-23T12:57:22.518775968Z"
+                                if cache == frozen_cache
+                                else "2026-08-24T12:00:00Z"
+                            ),
+                            "UpdatedAt": updated_at,
+                            "DownloadedAt": "2026-08-23T12:10:00Z",
+                        }
+                    ),
                     encoding="utf-8",
                 )
 
@@ -42,18 +55,59 @@ class VerifyImageSecurityTests(unittest.TestCase):
             registry = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images"
             components = ["runtime", "web", "caddy", "grafana", "loki", "tempo"]
             images = {}
+            build_paths = {
+                "runtime": ("Dockerfile.runtime", "runtime"),
+                "web": ("Dockerfile.web", None),
+                "caddy": ("Dockerfile.caddy", None),
+                "grafana": ("Dockerfile.observability", "grafana"),
+                "loki": ("Dockerfile.observability", "loki"),
+                "tempo": ("Dockerfile.observability", "tempo"),
+            }
             for index, component in enumerate(components, 1):
                 digest = f"sha256:{str(index) * 64}"
                 images[component] = {
+                    "dockerfile": build_paths[component][0],
+                    "target": build_paths[component][1],
                     "tag": f"{registry}/{component}:{commit}",
                     "digest": digest,
                     "reference": f"{registry}/{component}@{digest}",
                 }
+            build_config = ROOT / "infra/single-host/cloudbuild.images.yaml"
+            fixture_digests = json.loads(
+                (ROOT / "packages/fixture-generator/fixtures/canonical-digests.json").read_text(
+                    encoding="utf-8"
+                )
+            )
             manifest.write_text(
                 json.dumps(
                     {
-                        "schema_version": 1,
-                        "source": {"commit": commit, "tree": "a" * 40},
+                        "schema": "colortrace-single-host-image-build/v2",
+                        "build": {
+                            "id": "build-123",
+                            "project": "colortrace-test-project",
+                            "region": "us-central1",
+                            "service_account": (
+                                "projects/colortrace-test-project/serviceAccounts/"
+                                "ct-singlehost-builder@colortrace-test-project.iam.gserviceaccount.com"
+                            ),
+                            "registry": registry,
+                            "config_sha256": (
+                                "sha256:" + hashlib.sha256(build_config.read_bytes()).hexdigest()
+                            ),
+                            "create_time": "2026-08-23T12:00:00Z",
+                            "finish_time": "2026-08-23T12:10:00Z",
+                        },
+                        "source": {
+                            "commit": commit,
+                            "tree": "a" * 40,
+                            "date_epoch": 1787486400,
+                        },
+                        "fixture_manifest_sha256": (
+                            "sha256:"
+                            + fixture_digests["files"][
+                                "runtime/manifests/fixture-runtime-manifest.json"
+                            ]
+                        ),
                         "images": images,
                     }
                 ),
@@ -105,11 +159,17 @@ raise SystemExit(2)
             sha256sum.write_text(
                 """#!/usr/bin/env python3
 import hashlib
+import os
 import pathlib
 import sys
 
 if "--check" in sys.argv[1:]:
     sys.stdin.read()
+    state = pathlib.Path(os.environ["FAKE_SHA_CHECK_STATE"])
+    count = int(state.read_text()) + 1 if state.exists() else 1
+    state.write_text(str(count))
+    if os.environ.get("FAKE_FAIL_SECOND_FROZEN_CHECK") == "true" and count == 2:
+        raise SystemExit(1)
     raise SystemExit(0)
 for value in sys.argv[1:]:
     path = pathlib.Path(value)
@@ -123,6 +183,7 @@ for value in sys.argv[1:]:
                 **os.environ,
                 "COLORTRACE_DOCKER_SOCKET": str(socket),
                 "FAKE_DOCKER_LOG": str(command_log),
+                "FAKE_SHA_CHECK_STATE": str(temporary / "sha-check-state"),
                 "PATH": f"{binary_directory}:{os.environ['PATH']}",
             }
             completed = subprocess.run(
@@ -135,9 +196,11 @@ for value in sys.argv[1:]:
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             bindings = json.loads((output / "scan-bindings.json").read_text())
+            self.assertEqual(bindings["schema"], "colortrace-single-host-image-scan/v2")
             self.assertEqual(bindings["result"], "pass")
             self.assertFalse(bindings["vulnerability_ignores"])
             self.assertEqual(set(bindings["images"]), {*components, "prometheus"})
+            self.assertEqual(len(bindings["reports"]), 14)
             calls = [json.loads(line) for line in command_log.read_text().splitlines()]
             scan_calls = [call for call in calls if "--output" in call]
             self.assertEqual(len(scan_calls), 14)
@@ -155,6 +218,22 @@ for value in sys.argv[1:]:
             self.assertTrue(
                 any(line.endswith("  frozen-prometheus.json") for line in checksum_lines)
             )
+
+            (temporary / "sha-check-state").unlink()
+            tampered_output = temporary / "tampered-reports"
+            tampered_environment = {
+                **environment,
+                "FAKE_FAIL_SECOND_FROZEN_CHECK": "true",
+            }
+            tampered = subprocess.run(
+                [SCRIPT, manifest, current_cache, frozen_cache, tampered_output],
+                check=False,
+                capture_output=True,
+                env=tampered_environment,
+                text=True,
+            )
+            self.assertNotEqual(tampered.returncode, 0)
+            self.assertFalse((tampered_output / "scan-bindings.json").exists())
 
 
 if __name__ == "__main__":

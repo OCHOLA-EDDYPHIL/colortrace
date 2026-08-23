@@ -56,7 +56,7 @@ variable "enable_instance" {
 }
 
 variable "operator_member" {
-  description = "IAM member that may use IAP TCP forwarding and OS Login on the VM."
+  description = "Deployment IAM member that may build images and use IAP TCP forwarding and OS Login on the VM."
   type        = string
   default     = null
   nullable    = true
@@ -67,6 +67,26 @@ variable "operator_member" {
       || can(regex("^(user|group|serviceAccount):[^[:space:]]+$", var.operator_member))
     )
     error_message = "operator_member must be a user, group, or serviceAccount IAM member."
+  }
+}
+
+variable "resume_member" {
+  description = "Separate least-privilege IAM member that may only inspect and start the staging VM."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.resume_member == null
+      || can(regex("^(user|group|serviceAccount):[^[:space:]]+$", var.resume_member))
+    )
+    error_message = "resume_member must be a user, group, or serviceAccount IAM member."
+  }
+
+  validation {
+    condition     = var.resume_member == null || var.resume_member != var.operator_member
+    error_message = "resume_member must be separate from operator_member."
   }
 }
 
@@ -120,7 +140,7 @@ variable "estimated_seven_day_cost_usd" {
 }
 
 variable "cost_ceiling_usd" {
-  description = "Maximum accepted estimate; it cannot exceed the approved USD 100 safety ceiling."
+  description = "Configured comparison ceiling; the estimate must also remain strictly below USD 100."
   type        = number
   default     = 100
 
@@ -168,129 +188,101 @@ variable "access_username" {
   }
 }
 
-variable "candidate_commit" {
-  description = "Full source commit represented by the deployed images."
-  type        = string
-  default     = null
-  nullable    = true
+variable "deployment_artifact_binding" {
+  description = "One checked build-and-scan admission binding from which every deployed artifact identity is derived."
+  type = object({
+    schema                    = string
+    build_manifest_sha256     = string
+    scan_binding_sha256       = string
+    observability_lock_sha256 = string
+    build = object({
+      id              = string
+      project         = string
+      region          = string
+      service_account = string
+      registry        = string
+      config_sha256   = string
+      create_time     = string
+      finish_time     = string
+    })
+    source = object({
+      commit     = string
+      tree       = string
+      date_epoch = number
+    })
+    fixture_manifest_sha256 = string
+    images = object({
+      runtime    = string
+      web        = string
+      caddy      = string
+      grafana    = string
+      loki       = string
+      prometheus = string
+      tempo      = string
+    })
+    scanner = object({
+      image          = string
+      version_sha256 = string
+      databases = object({
+        current = object({
+          content_sha256  = string
+          metadata_sha256 = string
+          updated_at      = string
+        })
+        frozen = object({
+          image           = string
+          content_sha256  = string
+          metadata_sha256 = string
+          updated_at      = string
+        })
+      })
+      report_set_sha256 = string
+    })
+  })
+  default  = null
+  nullable = true
 
   validation {
-    condition     = var.candidate_commit == null || can(regex("^[0-9a-f]{40}$", var.candidate_commit))
-    error_message = "candidate_commit must be a full lowercase Git commit."
+    condition = var.deployment_artifact_binding == null || try(
+      var.deployment_artifact_binding.schema == "colortrace-single-host-admission/v1"
+      && can(regex("^sha256:[0-9a-f]{64}$", var.deployment_artifact_binding.build_manifest_sha256))
+      && can(regex("^sha256:[0-9a-f]{64}$", var.deployment_artifact_binding.scan_binding_sha256))
+      && can(regex("^sha256:[0-9a-f]{64}$", var.deployment_artifact_binding.observability_lock_sha256))
+      && can(regex("^[A-Za-z0-9-]+$", var.deployment_artifact_binding.build.id))
+      && can(regex("^[0-9a-f]{40}$", var.deployment_artifact_binding.source.commit))
+      && can(regex("^[0-9a-f]{40}$", var.deployment_artifact_binding.source.tree))
+      && var.deployment_artifact_binding.source.date_epoch > 0
+      && floor(var.deployment_artifact_binding.source.date_epoch) == var.deployment_artifact_binding.source.date_epoch
+      && can(regex("^sha256:[0-9a-f]{64}$", var.deployment_artifact_binding.build.config_sha256))
+      && can(regex("^sha256:[0-9a-f]{64}$", var.deployment_artifact_binding.fixture_manifest_sha256))
+      && alltrue([
+        for image in values(var.deployment_artifact_binding.images) :
+        can(regex("^[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9_./-]+@sha256:[0-9a-f]{64}$", image))
+      ])
+      && can(regex("^sha256:[0-9a-f]{64}$", var.deployment_artifact_binding.scanner.databases.current.content_sha256))
+      && can(regex("^sha256:[0-9a-f]{64}$", var.deployment_artifact_binding.scanner.version_sha256))
+      && can(regex("^sha256:[0-9a-f]{64}$", var.deployment_artifact_binding.scanner.databases.current.metadata_sha256))
+      && can(regex("^sha256:[0-9a-f]{64}$", var.deployment_artifact_binding.scanner.databases.frozen.content_sha256))
+      && can(regex("^sha256:[0-9a-f]{64}$", var.deployment_artifact_binding.scanner.databases.frozen.metadata_sha256))
+      && can(regex("^sha256:[0-9a-f]{64}$", var.deployment_artifact_binding.scanner.report_set_sha256)),
+      false,
+    )
+    error_message = "deployment_artifact_binding must use the exact admission schema with complete immutable source, build, image, scanner, database, fixture, and report digests."
   }
 }
 
-variable "candidate_tree" {
-  description = "Full source tree represented by the deployed images."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition     = var.candidate_tree == null || can(regex("^[0-9a-f]{40}$", var.candidate_tree))
-    error_message = "candidate_tree must be a full lowercase Git tree."
-  }
-}
-
-variable "runtime_image" {
-  description = "Exact private runtime image reference; tags are not accepted."
+variable "deployment_artifact_binding_sha256" {
+  description = "Canonical SHA-256 of deployment_artifact_binding, as emitted by the admission helper."
   type        = string
   default     = null
   nullable    = true
 
   validation {
     condition = (
-      var.runtime_image == null
-      || can(regex("^[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9_./-]+@sha256:[0-9a-f]{64}$", var.runtime_image))
+      var.deployment_artifact_binding_sha256 == null
+      || can(regex("^sha256:[0-9a-f]{64}$", var.deployment_artifact_binding_sha256))
     )
-    error_message = "runtime_image must be an OCI image reference with a SHA-256 digest."
-  }
-}
-
-variable "web_image" {
-  description = "Exact web image reference; tags are not accepted."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition = (
-      var.web_image == null
-      || can(regex("^[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9_./-]+@sha256:[0-9a-f]{64}$", var.web_image))
-    )
-    error_message = "web_image must be an OCI image reference with a SHA-256 digest."
-  }
-}
-
-variable "caddy_image" {
-  description = "Exact security-cleared Caddy image reference; tags are not accepted."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition = (
-      var.caddy_image == null
-      || can(regex("^[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9_./-]+@sha256:[0-9a-f]{64}$", var.caddy_image))
-    )
-    error_message = "caddy_image must be an OCI image reference with a SHA-256 digest."
-  }
-}
-
-variable "grafana_image" {
-  description = "Exact private Grafana image with source-built security-cleared datasource backends; tags are not accepted."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition = (
-      var.grafana_image == null
-      || can(regex("^[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9_./-]+@sha256:[0-9a-f]{64}$", var.grafana_image))
-    )
-    error_message = "grafana_image must be an OCI image reference with a SHA-256 digest."
-  }
-}
-
-variable "loki_image" {
-  description = "Exact private source-built Loki image reference; tags are not accepted."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition = (
-      var.loki_image == null
-      || can(regex("^[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9_./-]+@sha256:[0-9a-f]{64}$", var.loki_image))
-    )
-    error_message = "loki_image must be an OCI image reference with a SHA-256 digest."
-  }
-}
-
-variable "prometheus_image" {
-  description = "Exact security-cleared Prometheus image reference; tags are not accepted."
-  type        = string
-  default     = "docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0"
-  nullable    = false
-
-  validation {
-    condition     = var.prometheus_image == "docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0"
-    error_message = "prometheus_image must remain the current and frozen-database-qualified Prometheus 3.14.0 image."
-  }
-}
-
-variable "tempo_image" {
-  description = "Exact private source-built Tempo image reference; tags are not accepted."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition = (
-      var.tempo_image == null
-      || can(regex("^[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9_./-]+@sha256:[0-9a-f]{64}$", var.tempo_image))
-    )
-    error_message = "tempo_image must be an OCI image reference with a SHA-256 digest."
+    error_message = "deployment_artifact_binding_sha256 must be a lowercase SHA-256 digest."
   }
 }
 
@@ -306,20 +298,5 @@ variable "fixture_bundle_path" {
       && !strcontains(var.fixture_bundle_path, "//")
     )
     error_message = "fixture_bundle_path must be a normalized absolute path."
-  }
-}
-
-variable "fixture_bundle_sha256" {
-  description = "SHA-256 identity of the public fixture runtime manifest embedded in the runtime image."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition = (
-      var.fixture_bundle_sha256 == null
-      || can(regex("^sha256:[0-9a-f]{64}$", var.fixture_bundle_sha256))
-    )
-    error_message = "fixture_bundle_sha256 must be a lowercase SHA-256 digest."
   }
 }

@@ -18,50 +18,371 @@ readonly PROMETHEUS_CONFIG_B64='${prometheus_config_base64}'
 readonly TEMPO_CONFIG_B64='${tempo_config_base64}'
 readonly ROOT_DIR='/srv/colortrace'
 readonly CONTROL_DIR='/var/lib/colortrace-lifecycle'
+readonly STATES_DIR="$CONTROL_DIR/states"
 readonly METADATA_URL='http://metadata.google.internal/computeMetadata/v1'
 readonly METADATA_IP='169.254.169.254'
 readonly RUNTIME_CONTAINER_IP='172.30.0.10'
+readonly REQUIRED_PACKAGES='ca-certificates curl docker-compose docker.io iptables jq openssl'
+readonly LIFECYCLE_STATE_VERSION='1'
 
-install -d -m 0700 "$CONTROL_DIR"
+startup_complete=false
+registry_login_active=false
 
-if ! test -f "$CONTROL_DIR/generation" \
-  || ! printf '%s' "$STAGING_GENERATION" | cmp --silent - "$CONTROL_DIR/generation"; then
-  printf '%s' "$STAGING_GENERATION" >"$CONTROL_DIR/generation.new"
-  date +%s >"$CONTROL_DIR/activated-at.new"
-  mv "$CONTROL_DIR/generation.new" "$CONTROL_DIR/generation"
-  mv "$CONTROL_DIR/activated-at.new" "$CONTROL_DIR/activated-at"
+cleanup_runtime_credentials() {
+  rm -f "$ROOT_DIR/secrets/grafana.netrc" >/dev/null 2>&1 || true
+  if test "$registry_login_active" = true; then
+    docker logout "$REGISTRY_HOST" >/dev/null 2>&1 || true
+  fi
+}
+
+fail_closed() {
+  local status=$1
+  trap - ERR EXIT HUP INT TERM
+  cleanup_runtime_credentials
+  if test "$status" -eq 0; then
+    status=1
+  fi
+  systemctl poweroff >/dev/null 2>&1 \
+    || poweroff --force >/dev/null 2>&1 \
+    || shutdown --poweroff now >/dev/null 2>&1 \
+    || true
+  exit "$status"
+}
+
+finish_startup() {
+  local status=$1
+  trap - ERR EXIT HUP INT TERM
+  cleanup_runtime_credentials
+  if test "$startup_complete" != true; then
+    fail_closed "$status"
+  fi
+  exit "$status"
+}
+
+trap 'fail_closed $?' ERR
+trap 'finish_startup $?' EXIT
+trap 'fail_closed 1' HUP INT TERM
+
+lifecycle_error() {
+  printf 'Invalid or interrupted ColorTrace lifecycle state.\n' >&2
+  return 1
+}
+
+read_record_value() {
+  local path=$1
+  local destination=$2
+  local value
+  local size
+
+  test -f "$path" && ! test -L "$path" || lifecycle_error
+  value=$(cat "$path") || lifecycle_error
+  size=$(stat -c '%s' "$path")
+  if test "$size" -eq "$${#value}"; then
+    printf '%s' "$value" | cmp --silent - "$path" || lifecycle_error
+  elif test "$size" -eq "$(( $${#value} + 1 ))"; then
+    printf '%s\n' "$value" | cmp --silent - "$path" || lifecycle_error
+  else
+    lifecycle_error
+  fi
+  printf -v "$destination" '%s' "$value"
+}
+
+validate_generation_value() {
+  local generation=$1
+  [[ "$generation" =~ ^[a-z0-9][a-z0-9-]{6,30}[a-z0-9]$ ]] || lifecycle_error
+}
+
+validate_activation_value() {
+  local activation=$1
+  case "$activation" in
+    ''|*[!0-9]*) lifecycle_error ;;
+  esac
+}
+
+installed_package_versions() {
+  local package
+  local package_status
+  local inventory_name
+  local inventory_status
+  local inventory_version
+
+  for package in $REQUIRED_PACKAGES; do
+    package_status=$(dpkg-query \
+      --show \
+      --showformat='$${db:Status-Abbrev}|$${Version}' \
+      "$package") || lifecycle_error
+    case "$package_status" in
+      'ii '*) ;;
+      *) lifecycle_error; return 1 ;;
+    esac
+  done
+
+  dpkg-query \
+    --show \
+    --showformat='$${db:Status-Abbrev}|$${binary:Package}|$${Version}\n' \
+    | while IFS='|' read -r inventory_status inventory_name inventory_version; do
+      case "$inventory_status" in
+        'ii ') ;;
+        *) continue ;;
+      esac
+      case "$inventory_name" in
+        ''|*=*|*[[:space:]]*) lifecycle_error; return 1 ;;
+      esac
+      case "$inventory_version" in
+        ''|*[[:space:]]*) lifecycle_error; return 1 ;;
+      esac
+      printf '%s=%s\n' "$inventory_name" "$inventory_version"
+    done \
+    | LC_ALL=C sort
+}
+
+validate_package_record() {
+  local state_dir=$1
+  local installed_versions
+
+  test -s "$state_dir/package-versions" \
+    && test -f "$state_dir/package-versions" \
+    && ! test -L "$state_dir/package-versions" \
+    || lifecycle_error
+  test "$(stat -c '%a' "$state_dir/package-versions")" = 400 \
+    || lifecycle_error
+  installed_versions=$(installed_package_versions) || lifecycle_error
+  printf '%s\n' "$installed_versions" \
+    | cmp --silent - "$state_dir/package-versions" \
+    || lifecycle_error
+}
+
+validate_managed_state() {
+  local state_dir=$1
+  local state_name=$2
+  local state_version
+
+  test -d "$state_dir" && ! test -L "$state_dir" || lifecycle_error
+  test "$(stat -c '%a' "$state_dir")" = 700 || lifecycle_error
+  test "$(stat -c '%a' "$state_dir/state-version")" = 400 \
+    || lifecycle_error
+  test "$(stat -c '%a' "$state_dir/generation")" = 400 \
+    || lifecycle_error
+  test "$(stat -c '%a' "$state_dir/activated-at")" = 400 \
+    || lifecycle_error
+  read_record_value "$state_dir/state-version" state_version
+  read_record_value "$state_dir/generation" existing_generation
+  read_record_value "$state_dir/activated-at" existing_activated_at
+  test "$state_version" = "$LIFECYCLE_STATE_VERSION" || lifecycle_error
+  validate_generation_value "$existing_generation"
+  validate_activation_value "$existing_activated_at"
+  test "$state_name" = "$existing_generation-$existing_activated_at" \
+    || lifecycle_error
+  validate_package_record "$state_dir"
+}
+
+accept_generation_state() {
+  local generation=$1
+  local activation=$2
+  local state_name="$generation-$activation"
+  local temporary_state="$STATES_DIR/.state-new-$generation-$activation-$$"
+  local temporary_link="$CONTROL_DIR/.current-new-$$"
+
+  test ! -e "$temporary_state" && ! test -L "$temporary_state" \
+    || lifecycle_error
+  test ! -e "$STATES_DIR/$state_name" \
+    && ! test -L "$STATES_DIR/$state_name" \
+    || lifecycle_error
+  install -d -m 0700 "$temporary_state"
+  printf '%s' "$LIFECYCLE_STATE_VERSION" >"$temporary_state/state-version"
+  printf '%s' "$generation" >"$temporary_state/generation"
+  printf '%s' "$activation" >"$temporary_state/activated-at"
+  chmod 0400 \
+    "$temporary_state/state-version" \
+    "$temporary_state/generation" \
+    "$temporary_state/activated-at"
+  sync \
+    "$temporary_state/state-version" \
+    "$temporary_state/generation" \
+    "$temporary_state/activated-at" \
+    "$temporary_state"
+  mv -T "$temporary_state" "$STATES_DIR/$state_name"
+  sync "$STATES_DIR"
+  ln -s "states/$state_name" "$temporary_link"
+  mv -Tf "$temporary_link" "$CONTROL_DIR/current"
+  sync "$CONTROL_DIR"
+  active_state_dir="$STATES_DIR/$state_name"
+}
+
+install_compatibility_links() {
+  local generation_link="$CONTROL_DIR/.generation-link-new-$$"
+  local activation_link="$CONTROL_DIR/.activated-link-new-$$"
+
+  ln -s 'current/generation' "$generation_link"
+  ln -s 'current/activated-at' "$activation_link"
+  if test "$legacy_state" = true; then
+    mv -T "$CONTROL_DIR/generation" "$CONTROL_DIR/.legacy-generation-$$"
+    mv -T "$CONTROL_DIR/activated-at" "$CONTROL_DIR/.legacy-activated-at-$$"
+  fi
+  mv -Tf "$generation_link" "$CONTROL_DIR/generation"
+  mv -Tf "$activation_link" "$CONTROL_DIR/activated-at"
+  sync "$CONTROL_DIR"
+  if test "$legacy_state" = true; then
+    rm -f \
+      "$CONTROL_DIR/.legacy-generation-$$" \
+      "$CONTROL_DIR/.legacy-activated-at-$$"
+  fi
+}
+
+record_installed_packages() {
+  local installed_versions
+  local temporary_record="$active_state_dir/.packages-new-$$"
+
+  installed_versions=$(installed_package_versions) || lifecycle_error
+  printf '%s\n' "$installed_versions" >"$temporary_record"
+  chmod 0400 "$temporary_record"
+  sync "$temporary_record" "$active_state_dir"
+  mv -T "$temporary_record" "$active_state_dir/package-versions"
+  sync "$active_state_dir"
+}
+
+fresh_lifecycle=false
+if test -e "$CONTROL_DIR" || test -L "$CONTROL_DIR"; then
+  test -d "$CONTROL_DIR" && ! test -L "$CONTROL_DIR" || lifecycle_error
+else
+  install -d -m 0700 "$CONTROL_DIR"
+  fresh_lifecycle=true
+fi
+if test -e "$STATES_DIR" || test -L "$STATES_DIR"; then
+  test -d "$STATES_DIR" && ! test -L "$STATES_DIR" || lifecycle_error
+else
+  install -d -m 0700 "$STATES_DIR"
+fi
+test "$(stat -c '%a' "$STATES_DIR")" = 700 || lifecycle_error
+validate_generation_value "$STAGING_GENERATION"
+case "$STAGING_LIFETIME_HOURS" in
+  ''|*[!0-9]*) lifecycle_error ;;
+esac
+test "$STAGING_LIFETIME_HOURS" -eq 168 || lifecycle_error
+
+unexpected_lifecycle_entry=$(find "$CONTROL_DIR" -mindepth 1 -maxdepth 1 \
+  ! \( -name states \
+  -o -name current \
+  -o -name generation \
+  -o -name activated-at \) \
+  -print -quit)
+test -z "$unexpected_lifecycle_entry" || lifecycle_error
+
+interrupted_state=$(find "$CONTROL_DIR" -mindepth 1 -maxdepth 3 \
+  \( -name '.state-new-*' \
+  -o -name '.current-new-*' \
+  -o -name '.generation-link-new-*' \
+  -o -name '.activated-link-new-*' \
+  -o -name '.legacy-generation-*' \
+  -o -name '.legacy-activated-at-*' \
+  -o -name '.packages-new-*' \) \
+  -print -quit)
+test -z "$interrupted_state" || lifecycle_error
+
+legacy_state=false
+generation_requires_packages=false
+active_state_dir=''
+existing_generation=''
+existing_activated_at=''
+if test -L "$CONTROL_DIR/current"; then
+  test -L "$CONTROL_DIR/generation" \
+    && test "$(readlink "$CONTROL_DIR/generation")" = 'current/generation' \
+    || lifecycle_error
+  test -L "$CONTROL_DIR/activated-at" \
+    && test "$(readlink "$CONTROL_DIR/activated-at")" = 'current/activated-at' \
+    || lifecycle_error
+  current_target=$(readlink "$CONTROL_DIR/current")
+  case "$current_target" in
+    states/*) ;;
+    *) lifecycle_error ;;
+  esac
+  state_name=$${current_target#states/}
+  case "$state_name" in
+    ''|.*|*/*) lifecycle_error ;;
+  esac
+  active_state_dir="$CONTROL_DIR/$current_target"
+  validate_managed_state "$active_state_dir" "$state_name"
+elif test -e "$CONTROL_DIR/current"; then
+  lifecycle_error
+elif test -f "$CONTROL_DIR/generation" \
+  && ! test -L "$CONTROL_DIR/generation" \
+  && test -f "$CONTROL_DIR/activated-at" \
+  && ! test -L "$CONTROL_DIR/activated-at"; then
+  legacy_state=true
+  read_record_value "$CONTROL_DIR/generation" existing_generation
+  read_record_value "$CONTROL_DIR/activated-at" existing_activated_at
+  validate_generation_value "$existing_generation"
+  validate_activation_value "$existing_activated_at"
+  test -z "$(find "$STATES_DIR" -mindepth 1 -print -quit)" || lifecycle_error
+elif test ! -e "$CONTROL_DIR/generation" \
+  && ! test -L "$CONTROL_DIR/generation" \
+  && test ! -e "$CONTROL_DIR/activated-at" \
+  && ! test -L "$CONTROL_DIR/activated-at"; then
+  test "$fresh_lifecycle" = true || lifecycle_error
+  test -z "$(find "$STATES_DIR" -mindepth 1 -print -quit)" || lifecycle_error
+else
+  lifecycle_error
 fi
 
-activated_at=$(cat "$CONTROL_DIR/activated-at")
-case "$activated_at" in
-  ''|*[!0-9]*) exit 1 ;;
-esac
-deadline=$((activated_at + STAGING_LIFETIME_HOURS * 3600))
 now=$(date +%s)
+validate_activation_value "$now"
+if test -n "$existing_activated_at" && test "$existing_activated_at" -gt "$now"; then
+  lifecycle_error
+fi
+
+if test "$existing_generation" != "$STAGING_GENERATION"; then
+  activated_at=$now
+  accept_generation_state "$STAGING_GENERATION" "$activated_at"
+  install_compatibility_links
+  generation_requires_packages=true
+else
+  activated_at=$existing_activated_at
+  if test "$legacy_state" = true; then
+    accept_generation_state "$existing_generation" "$activated_at"
+    install_compatibility_links
+    generation_requires_packages=true
+  fi
+fi
+
+deadline=$((activated_at + STAGING_LIFETIME_HOURS * 3600))
+test "$deadline" -gt "$activated_at" || lifecycle_error
+now=$(date +%s)
+validate_activation_value "$now"
 remaining=$((deadline - now))
 
+if test "$remaining" -le 0; then
+  fail_closed 1
+fi
 systemctl stop colortrace-auto-stop.timer colortrace-auto-stop.service >/dev/null 2>&1 || true
 systemctl reset-failed colortrace-auto-stop.timer colortrace-auto-stop.service >/dev/null 2>&1 || true
-if test "$remaining" -le 0; then
-  systemctl poweroff
-  exit 0
-fi
 systemd-run \
+  --collect \
   --unit=colortrace-auto-stop \
-  --on-active="$remaining seconds" \
-  --timer-property=AccuracySec=1min \
+  --on-calendar="@$deadline" \
+  --timer-property=AccuracySec=1s \
+  --timer-property=Persistent=yes \
   /usr/bin/systemctl poweroff
+systemctl is-active --quiet colortrace-auto-stop.timer
+test "$(systemctl show colortrace-auto-stop.timer \
+  --property=Persistent --value)" = yes
+test "$(systemctl show colortrace-auto-stop.timer \
+  --property=AccuracyUSec --value)" = 1s
+timer_deadline=$(systemctl show --timestamp=unix colortrace-auto-stop.timer \
+  --property=NextElapseUSecRealtime --value)
+test -n "$timer_deadline"
+timer_deadline_epoch=$(date --date="$timer_deadline" +%s)
+validate_activation_value "$timer_deadline_epoch"
+test "$timer_deadline_epoch" -eq "$deadline"
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install --yes --no-install-recommends \
-  ca-certificates \
-  curl \
-  docker-compose \
-  docker.io \
-  iptables \
-  jq \
-  openssl
+if test "$generation_requires_packages" = true; then
+  if test "$legacy_state" != true \
+    || test "$existing_generation" != "$STAGING_GENERATION"; then
+    apt-get update
+    apt-get install --yes --no-install-recommends $REQUIRED_PACKAGES
+  fi
+  record_installed_packages
+fi
 systemctl enable --now docker
 
 configure_container_metadata_boundary() {
@@ -203,7 +524,7 @@ compose() {
 compose config --quiet
 printf '%s' "$cloud_token" \
   | docker login --username oauth2accesstoken --password-stdin "$REGISTRY_HOST"
-trap 'rm -f "$ROOT_DIR/secrets/grafana.netrc"; docker logout "$REGISTRY_HOST" >/dev/null 2>&1 || true' EXIT
+registry_login_active=true
 compose pull
 compose up --detach --remove-orphans grafana loki prometheus tempo caddy
 
@@ -364,3 +685,4 @@ fi
 docker exec --user 65532:65532 colortrace-runtime \
   python -c 'import hmac, os, stat; from pathlib import Path; source=Path("/run/colortrace-secrets/grafana-viewer-token"); target=Path("/var/run/colortrace-private/grafana-viewer-token"); info=target.stat(); assert stat.S_ISREG(info.st_mode); assert info.st_uid == 65532 and info.st_gid == 65532; assert stat.S_IMODE(info.st_mode) == 0o600; assert hmac.compare_digest(source.read_bytes(), target.read_bytes())'
 compose ps
+startup_complete=true

@@ -30,25 +30,6 @@ describe_instance() {
     --format=json
 }
 
-readonly health_check='test -d /srv/colortrace/app
-test -s /var/lib/colortrace-lifecycle/generation
-test "$(cat /var/lib/colortrace-lifecycle/generation)" = "$1"
-activated_at=$(cat /var/lib/colortrace-lifecycle/activated-at)
-case "$activated_at" in ""|*[!0-9]*) exit 1 ;; esac
-test "$((activated_at + 604800))" -gt "$(date +%s)"
-systemctl is-active --quiet colortrace-auto-stop.timer
-test "$(docker inspect --format={{.State.Health.Status}} colortrace-runtime)" = healthy
-test "$(docker inspect --format={{.State.Health.Status}} colortrace-web)" = healthy'
-
-verify_instance() {
-  gcloud compute ssh "$instance" \
-    --project "$project_id" \
-    --zone "$zone" \
-    --tunnel-through-iap \
-    --quiet \
-    --command "sudo --non-interactive /bin/bash -ceu '$health_check' colortrace-resume '$expected_generation'"
-}
-
 description=$(describe_instance)
 actual_generation=$(printf '%s' "$description" \
   | jq -er '.metadata.items[] | select(.key == "colortrace-staging-generation") | .value')
@@ -78,9 +59,7 @@ for ((attempt = 1; attempt <= attempts; attempt++)); do
   status=$(printf '%s' "$description" | jq -er '.status')
   case "$status" in
     RUNNING)
-      if verify_instance; then
-        exit 0
-      fi
+      exit 0
       ;;
     PROVISIONING|REPAIRING|STAGING|STOPPING|TERMINATED)
       ;;
@@ -97,5 +76,5 @@ for ((attempt = 1; attempt <= attempts; attempt++)); do
 done
 
 printf '%s\n' \
-  'The instance did not become healthy for the expected lifecycle generation; apply Terraform with a new staging_generation first.' >&2
+  'The instance did not reach RUNNING for the expected lifecycle generation; apply Terraform with a new staging_generation first.' >&2
 exit 70

@@ -11,7 +11,7 @@ services:
     image: ${grafana_image}
     platform: linux/amd64
     container_name: colortrace-grafana
-    restart: unless-stopped
+    restart: "no"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -51,7 +51,7 @@ services:
     image: ${loki_image}
     platform: linux/amd64
     container_name: colortrace-loki
-    restart: unless-stopped
+    restart: "no"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -75,7 +75,7 @@ services:
     image: ${prometheus_image}
     platform: linux/amd64
     container_name: colortrace-prometheus
-    restart: unless-stopped
+    restart: "no"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -105,7 +105,7 @@ services:
     image: ${tempo_image}
     platform: linux/amd64
     container_name: colortrace-tempo
-    restart: unless-stopped
+    restart: "no"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -133,7 +133,7 @@ services:
     image: ${caddy_image}
     platform: linux/amd64
     container_name: colortrace-caddy
-    restart: unless-stopped
+    restart: "no"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -166,7 +166,7 @@ services:
     image: ${runtime_image}
     platform: linux/amd64
     container_name: colortrace-runtime
-    restart: unless-stopped
+    restart: "no"
     command: ["api"]
     read_only: true
     security_opt:
@@ -240,7 +240,7 @@ services:
     image: ${web_image}
     platform: linux/amd64
     container_name: colortrace-web
-    restart: unless-stopped
+    restart: "no"
     read_only: true
     security_opt:
       - no-new-privileges:true

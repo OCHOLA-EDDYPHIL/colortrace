@@ -11,6 +11,9 @@ from pathlib import Path
 SOURCE_ROOT = Path(__file__).parents[3]
 SCRIPT = SOURCE_ROOT / "infra" / "single-host" / "scripts" / "build-images.sh"
 BUILD_CONFIG = SOURCE_ROOT / "infra" / "single-host" / "cloudbuild.images.yaml"
+FIXTURE_DIGESTS = (
+    SOURCE_ROOT / "packages" / "fixture-generator" / "fixtures" / "canonical-digests.json"
+)
 FAKE_JQ = Path(__file__).with_name("fake_jq.py")
 
 
@@ -38,9 +41,14 @@ class BuildImagesTests(unittest.TestCase):
         repository = temporary / "repository"
         script = repository / "infra" / "single-host" / "scripts" / "build-images.sh"
         config = repository / "infra" / "single-host" / "cloudbuild.images.yaml"
+        fixture_digests = (
+            repository / "packages" / "fixture-generator" / "fixtures" / "canonical-digests.json"
+        )
         script.parent.mkdir(parents=True)
+        fixture_digests.parent.mkdir(parents=True)
         shutil.copy2(SCRIPT, script)
         shutil.copy2(BUILD_CONFIG, config)
+        shutil.copy2(FIXTURE_DIGESTS, fixture_digests)
         subprocess.run(["git", "init", "--quiet", repository], check=True)
         subprocess.run(
             ["git", "-C", repository, "config", "user.email", "test@example.test"],
@@ -159,8 +167,16 @@ raise SystemExit(2)
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             manifest = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["schema"], "colortrace-single-host-image-build/v2")
             self.assertEqual(manifest["build"]["id"], "build-123")
+            self.assertEqual(manifest["build"]["project"], "colortrace-test-project")
+            self.assertEqual(manifest["build"]["region"], "us-central1")
+            self.assertRegex(manifest["build"]["config_sha256"], r"^sha256:[0-9a-f]{64}$")
             self.assertEqual(manifest["source"]["commit"], commit)
+            self.assertEqual(
+                manifest["fixture_manifest_sha256"],
+                "sha256:a9c5234acee64294b149e8e6ee761c7e2799999476943766ae856ec54eac7061",
+            )
             self.assertEqual(
                 set(manifest["images"]),
                 {"runtime", "web", "caddy", "grafana", "loki", "tempo"},
@@ -169,6 +185,13 @@ raise SystemExit(2)
                 manifest["images"]["runtime"]["reference"],
                 "us-central1-docker.pkg.dev/colortrace-test-project/"
                 f"ct-singlehost-images/runtime@sha256:{'1' * 64}",
+            )
+            self.assertEqual(
+                (
+                    manifest["images"]["runtime"]["dockerfile"],
+                    manifest["images"]["runtime"]["target"],
+                ),
+                ("Dockerfile.runtime", "runtime"),
             )
             calls = [json.loads(line) for line in log.read_text().splitlines()]
             self.assertEqual(calls[0][:2], ["builds", "submit"])

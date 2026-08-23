@@ -17,7 +17,6 @@ class ResumeInstanceTests(unittest.TestCase):
         status: str,
         actual_generation: str,
         expected_generation: str,
-        healthy: bool = True,
     ):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
@@ -53,9 +52,6 @@ if sys.argv[1:4] == ["compute", "instances", "describe"]:
 if sys.argv[1:4] == ["compute", "instances", "start"]:
     raise SystemExit(0)
 
-if sys.argv[1:3] == ["compute", "ssh"]:
-    raise SystemExit(0 if os.environ["FAKE_GCLOUD_HEALTHY"] == "true" else 1)
-
 raise SystemExit(2)
 """,
                 encoding="utf-8",
@@ -88,7 +84,6 @@ raise SystemExit(1)
                 "FAKE_GCLOUD_COUNTER": str(counter),
                 "FAKE_GCLOUD_STATUS": status,
                 "FAKE_GCLOUD_GENERATION": actual_generation,
-                "FAKE_GCLOUD_HEALTHY": "true" if healthy else "false",
                 "COLORTRACE_RESUME_ATTEMPTS": "1",
                 "COLORTRACE_RESUME_DELAY_SECONDS": "0",
                 "PATH": f"{temporary}:{os.environ['PATH']}",
@@ -109,7 +104,7 @@ raise SystemExit(1)
             calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
             return completed, calls
 
-    def test_matching_stopped_instance_is_started_and_verified(self) -> None:
+    def test_matching_stopped_instance_is_started_without_broader_authority(self) -> None:
         completed, calls = self._run(
             status="TERMINATED",
             actual_generation="stage-0001",
@@ -123,16 +118,9 @@ raise SystemExit(1)
                 ["compute", "instances", "describe"],
                 ["compute", "instances", "start"],
                 ["compute", "instances", "describe"],
-                ["compute", "ssh", "ct-singlehost-vm"],
             ],
         )
-        ssh_call = calls[-1]
-        self.assertIn("--tunnel-through-iap", ssh_call)
-        command = ssh_call[ssh_call.index("--command") + 1]
-        self.assertIn("/var/lib/colortrace-lifecycle/generation", command)
-        self.assertIn("colortrace-auto-stop.timer", command)
-        self.assertIn("colortrace-runtime", command)
-        self.assertIn("colortrace-web", command)
+        self.assertNotIn(["compute", "ssh"], [call[:2] for call in calls])
 
     def test_generation_mismatch_does_not_start_instance(self) -> None:
         completed, calls = self._run(
@@ -147,7 +135,7 @@ raise SystemExit(1)
             [["compute", "instances", "describe"]],
         )
 
-    def test_running_instance_is_health_verified(self) -> None:
+    def test_matching_running_instance_requires_only_inspection(self) -> None:
         completed, calls = self._run(
             status="RUNNING",
             actual_generation="stage-0001",
@@ -157,28 +145,21 @@ raise SystemExit(1)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
             [call[:3] for call in calls],
-            [
-                ["compute", "instances", "describe"],
-                ["compute", "ssh", "ct-singlehost-vm"],
-            ],
+            [["compute", "instances", "describe"]],
         )
 
-    def test_stale_or_unhealthy_generation_requires_terraform_renewal(self) -> None:
+    def test_non_resumable_state_is_rejected(self) -> None:
         completed, calls = self._run(
-            status="RUNNING",
+            status="SUSPENDED",
             actual_generation="stage-0001",
             expected_generation="stage-0001",
-            healthy=False,
         )
 
-        self.assertEqual(completed.returncode, 70)
-        self.assertIn("new staging_generation", completed.stderr)
+        self.assertEqual(completed.returncode, 69)
+        self.assertIn("not in a resumable state", completed.stderr)
         self.assertEqual(
             [call[:3] for call in calls],
-            [
-                ["compute", "instances", "describe"],
-                ["compute", "ssh", "ct-singlehost-vm"],
-            ],
+            [["compute", "instances", "describe"]],
         )
 
 

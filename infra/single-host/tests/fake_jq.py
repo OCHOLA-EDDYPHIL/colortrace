@@ -39,6 +39,14 @@ def _arguments() -> tuple[bool, bool, dict[str, str], dict[str, list[Any]], list
 
 def _build_manifest(document: dict[str, Any], values: dict[str, str]) -> dict[str, Any]:
     components = ("runtime", "web", "caddy", "grafana", "loki", "tempo")
+    build_paths: dict[str, tuple[str, str | None]] = {
+        "runtime": ("Dockerfile.runtime", "runtime"),
+        "web": ("Dockerfile.web", None),
+        "caddy": ("Dockerfile.caddy", None),
+        "grafana": ("Dockerfile.observability", "grafana"),
+        "loki": ("Dockerfile.observability", "loki"),
+        "tempo": ("Dockerfile.observability", "tempo"),
+    }
     if document.get("id") != values["build_id"] or document.get("status") != "SUCCESS":
         raise ValueError
     images: dict[str, dict[str, str]] = {}
@@ -49,17 +57,21 @@ def _build_manifest(document: dict[str, Any], values: dict[str, str]) -> dict[st
             raise ValueError
         digest = matches[0]["digest"]
         images[component] = {
+            "dockerfile": build_paths[component][0],
+            "target": build_paths[component][1],
             "tag": tag,
             "digest": digest,
             "reference": f"{values['registry']}/{component}@{digest}",
         }
     return {
-        "schema_version": 1,
+        "schema": "colortrace-single-host-image-build/v2",
         "build": {
             "id": values["build_id"],
             "project": values["project_id"],
             "region": values["region"],
             "service_account": values["service_account"],
+            "registry": values["registry"],
+            "config_sha256": values["build_config_sha256"],
             "create_time": document.get("createTime"),
             "finish_time": document.get("finishTime"),
         },
@@ -68,6 +80,7 @@ def _build_manifest(document: dict[str, Any], values: dict[str, str]) -> dict[st
             "tree": values["source_tree"],
             "date_epoch": int(values["source_date_epoch"]),
         },
+        "fixture_manifest_sha256": values["fixture_manifest_sha256"],
         "images": images,
     }
 
@@ -98,23 +111,28 @@ def main() -> int:
             result = document["source"]["commit"]
         elif expression == ".source_commit":
             result = document["source_commit"]
+        elif expression == '.files["runtime/manifests/fixture-runtime-manifest.json"]':
+            result = document["files"]["runtime/manifests/fixture-runtime-manifest.json"]
         elif expression.startswith(".images[$component]."):
             result = document["images"][values["component"]][expression.rsplit(".", 1)[1]]
         elif expression == ".upstream.prometheus.index_digest":
             result = document["upstream"]["prometheus"]["index_digest"]
-        elif ".schema_version == 1" in expression:
+        elif "colortrace-single-host-image-build/v2" in expression:
             result = (
-                document["schema_version"] == 1
+                document["schema"] == "colortrace-single-host-image-build/v2"
                 and re.fullmatch(r"[0-9a-f]{40}", document["source"]["commit"]) is not None
                 and re.fullmatch(r"[0-9a-f]{40}", document["source"]["tree"]) is not None
                 and sorted(document["images"])
                 == ["caddy", "grafana", "loki", "runtime", "tempo", "web"]
             )
         elif '.UpdatedAt == "2026-08-22' in expression:
-            result = document == {
-                "Version": 2,
-                "UpdatedAt": "2026-08-22T12:57:22.518776499Z",
-            }
+            result = (
+                document.get("Version") == 2
+                and document.get("UpdatedAt") == "2026-08-22T12:57:22.518776499Z"
+                and document.get("NextUpdate") == "2026-08-23T12:57:22.518775968Z"
+                and isinstance(document.get("DownloadedAt"), str)
+                and bool(document["DownloadedAt"])
+            )
         elif ".UpdatedAt | type" in expression:
             result = document.get("Version") == 2 and isinstance(document.get("UpdatedAt"), str)
         elif ".Results | type" in expression:

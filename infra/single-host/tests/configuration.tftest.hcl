@@ -14,11 +14,66 @@ mock_provider "google" {
   }
 }
 
+variables {
+  project_id = "colortrace-test-project"
+  deployment_artifact_binding = {
+    schema                    = "colortrace-single-host-admission/v1"
+    build_manifest_sha256     = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    scan_binding_sha256       = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    observability_lock_sha256 = "sha256:856778e5e36b0800797b4e187923e8ff86c7fc855fe6ff7afb7844b9dadc4001"
+    build = {
+      id              = "build-123"
+      project         = "colortrace-test-project"
+      region          = "us-central1"
+      service_account = "projects/colortrace-test-project/serviceAccounts/ct-singlehost-builder@colortrace-test-project.iam.gserviceaccount.com"
+      registry        = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images"
+      config_sha256   = "sha256:9d22ac39c270d2534c1c930aceac9e3b4fdcce1d8a9a3339aec8a27720809947"
+      create_time     = "2026-08-23T01:00:00Z"
+      finish_time     = "2026-08-23T01:10:00Z"
+    }
+    source = {
+      commit     = "1111111111111111111111111111111111111111"
+      tree       = "2222222222222222222222222222222222222222"
+      date_epoch = 1787446800
+    }
+    fixture_manifest_sha256 = "sha256:a9c5234acee64294b149e8e6ee761c7e2799999476943766ae856ec54eac7061"
+    images = {
+      runtime    = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/runtime@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      web        = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/web@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      caddy      = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/caddy@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      grafana    = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/grafana@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      loki       = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/loki@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      prometheus = "docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0"
+      tempo      = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/tempo@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    }
+    scanner = {
+      image          = "aquasec/trivy@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c"
+      version_sha256 = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      databases = {
+        current = {
+          content_sha256  = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          metadata_sha256 = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          updated_at      = "2026-08-23T00:00:00Z"
+        }
+        frozen = {
+          image           = "ghcr.io/aquasecurity/trivy-db@sha256:67136d9c032b639278e256601e29b8af0ff4ed28e66d859e4cac692f7c1deef6"
+          content_sha256  = "sha256:eb94cd71f35e20ce5b572803f65009bb61a13a75f8d7c4f1f111ec732c98d314"
+          metadata_sha256 = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          updated_at      = "2026-08-22T12:57:22.518776499Z"
+        }
+      }
+      report_set_sha256 = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    }
+  }
+  deployment_artifact_binding_sha256 = "sha256:5371d678215ff64f062ac959b080975f1b0a06866186e0604b895447271b6dc6"
+}
+
 run "foundation_has_no_billable_host" {
   command = plan
 
   variables {
-    project_id = "colortrace-test-project"
+    deployment_artifact_binding        = null
+    deployment_artifact_binding_sha256 = null
   }
 
   assert {
@@ -36,8 +91,13 @@ run "foundation_has_no_billable_host" {
 
   assert {
     condition = (
-      length(google_project_iam_member.host) == 0
+      length(google_project_iam_member.host_vertex_predictor) == 0
+      && length(google_project_iam_custom_role.vertex_predictor) == 0
       && length(google_project_iam_member.operator) == 0
+      && length(google_compute_instance_iam_member.resume_instance_starter) == 0
+      && length(google_project_iam_custom_role.resume_instance_starter) == 0
+      && length(google_compute_instance_iam_member.operator_instance_inspector) == 0
+      && length(google_project_iam_custom_role.operator_instance_inspector) == 0
       && length(google_project_iam_member.operator_build) == 0
       && length(google_service_account_iam_member.operator_build) == 0
       && length(google_secret_manager_secret_iam_member.host_access_gate) == 0
@@ -69,14 +129,20 @@ run "foundation_has_no_billable_host" {
     )
     error_message = "Private images must have a dedicated repository, builder identity, and minimal build services."
   }
+
+  assert {
+    condition     = strcontains(file("${path.module}/compute.tf"), "prevent_destroy = true")
+    error_message = "The retained boot disk must be protected from Terraform destruction."
+  }
 }
 
 run "image_builder_precedes_host_admission" {
   command = plan
 
   variables {
-    project_id      = "colortrace-test-project"
-    operator_member = "user:operator@example.test"
+    operator_member                    = "user:operator@example.test"
+    deployment_artifact_binding        = null
+    deployment_artifact_binding_sha256 = null
   }
 
   assert {
@@ -97,7 +163,6 @@ run "instance_requires_complete_admission_inputs" {
   command = plan
 
   variables {
-    project_id      = "colortrace-test-project"
     enable_instance = true
   }
 
@@ -111,45 +176,115 @@ run "boot_image_family_is_rejected" {
   command = plan
 
   variables {
-    project_id = "colortrace-test-project"
     boot_image = "projects/debian-cloud/global/images/family/debian-12"
   }
 
   expect_failures = [var.boot_image]
 }
 
-run "bounded_single_host_is_admitted" {
-  command = apply
+run "artifact_hash_mismatch_is_rejected" {
+  command = plan
 
   variables {
-    project_id                   = "colortrace-test-project"
+    enable_instance                    = true
+    operator_member                    = "user:operator@example.test"
+    staging_generation                 = "stage-0001"
+    access_secret_version              = "7"
+    boot_image                         = "projects/debian-cloud/global/images/debian-12-bookworm-v20260817"
+    estimated_seven_day_cost_usd       = 24
+    deployment_artifact_binding_sha256 = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  }
+
+  expect_failures = [
+    check.instance_admission,
+    google_compute_instance.host,
+  ]
+}
+
+run "cost_at_hard_ceiling_is_rejected" {
+  command = plan
+
+  variables {
+    enable_instance              = true
+    operator_member              = "user:operator@example.test"
+    resume_member                = "serviceAccount:resume@example.test"
+    staging_generation           = "stage-0001"
+    access_secret_version        = "7"
+    boot_image                   = "projects/debian-cloud/global/images/debian-12-bookworm-v20260817"
+    estimated_seven_day_cost_usd = 100
+  }
+
+  expect_failures = [
+    check.instance_admission,
+    google_compute_instance.host,
+  ]
+}
+
+run "cost_above_configured_ceiling_is_rejected" {
+  command = plan
+
+  variables {
     enable_instance              = true
     operator_member              = "user:operator@example.test"
     staging_generation           = "stage-0001"
     access_secret_version        = "7"
-    candidate_commit             = "1111111111111111111111111111111111111111"
-    candidate_tree               = "2222222222222222222222222222222222222222"
     boot_image                   = "projects/debian-cloud/global/images/debian-12-bookworm-v20260817"
     estimated_seven_day_cost_usd = 24
-    runtime_image                = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/runtime@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    web_image                    = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/web@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    caddy_image                  = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/caddy@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    grafana_image                = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/grafana@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    loki_image                   = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/loki@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-    prometheus_image             = "docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0"
-    tempo_image                  = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/tempo@sha256:9999999999999999999999999999999999999999999999999999999999999999"
-    fixture_bundle_sha256        = "sha256:a9c5234acee64294b149e8e6ee761c7e2799999476943766ae856ec54eac7061"
+    cost_ceiling_usd             = 23
+  }
+
+  expect_failures = [
+    check.instance_admission,
+    google_compute_instance.host,
+  ]
+}
+
+run "reserved_network_namespace_is_rejected" {
+  command = plan
+
+  variables {
+    resource_prefix = "ct-p114-0821a"
+  }
+
+  expect_failures = [var.resource_prefix]
+}
+
+run "resume_principal_must_be_separate" {
+  command = plan
+
+  variables {
+    operator_member = "user:operator@example.test"
+    resume_member   = "user:operator@example.test"
+  }
+
+  expect_failures = [var.resume_member]
+}
+
+run "bounded_single_host_is_admitted" {
+  command = apply
+
+  variables {
+    enable_instance              = true
+    operator_member              = "user:operator@example.test"
+    resume_member                = "serviceAccount:resume@example.test"
+    staging_generation           = "stage-0001"
+    access_secret_version        = "7"
+    boot_image                   = "projects/debian-cloud/global/images/debian-12-bookworm-v20260817"
+    estimated_seven_day_cost_usd = 24
   }
 
   assert {
     condition = (
-      google_compute_instance.host[0].machine_type == "e2-standard-2"
+      local.artifact_binding_is_valid
+      && local.private_images_in_owned_registry
+      && local.estimated_cost_is_bounded
+      && google_compute_instance.host[0].machine_type == "e2-standard-2"
       && google_compute_disk.boot[0].type == "pd-balanced"
       && google_compute_disk.boot[0].size == 30
       && google_compute_disk.boot[0].image == "projects/debian-cloud/global/images/debian-12-bookworm-v20260817"
       && google_compute_instance.host[0].boot_disk[0].auto_delete == false
     )
-    error_message = "The host must use the bounded machine and persistent 30 GiB balanced disk."
+    error_message = "The host must use the checked binding, bounded machine, and retained 30 GiB balanced disk."
   }
 
   assert {
@@ -158,8 +293,14 @@ run "bounded_single_host_is_admitted" {
       && google_compute_instance.host[0].metadata["enable-oslogin"] == "TRUE"
       && google_compute_instance.host[0].metadata["block-project-ssh-keys"] == "TRUE"
       && google_compute_instance.host[0].metadata["serial-port-enable"] == "FALSE"
+      && google_compute_instance.host[0].metadata["colortrace-artifact-binding-sha256"] == "sha256:5371d678215ff64f062ac959b080975f1b0a06866186e0604b895447271b6dc6"
+      && google_compute_instance.host[0].metadata["colortrace-build-manifest-sha256"] == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      && google_compute_instance.host[0].metadata["colortrace-scan-binding-sha256"] == "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      && google_compute_instance.host[0].metadata["colortrace-runtime-build-binding-sha256"] == "sha256:94dcf637a46182cd88090369a68dd2295a43df1fcb1e0d3ce885cd8d62debbba"
+      && google_compute_instance.host[0].metadata["colortrace-scanner-version-sha256"] == "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      && google_compute_instance.host[0].metadata["colortrace-scan-report-set-sha256"] == "sha256:8888888888888888888888888888888888888888888888888888888888888888"
     )
-    error_message = "The host must use its dedicated service account and hardened OS Login metadata."
+    error_message = "The host must expose its hardened identity and complete admission hash chain in metadata."
   }
 
   assert {
@@ -188,13 +329,28 @@ run "bounded_single_host_is_admitted" {
         "roles/compute.osAdminLogin",
         "roles/iap.tunnelResourceAccessor",
       ])
-      && toset(keys(google_project_iam_member.host)) == toset(["roles/aiplatform.user"])
+      && toset(google_project_iam_custom_role.vertex_predictor[0].permissions) == toset(["aiplatform.endpoints.predict"])
+      && google_project_iam_member.host_vertex_predictor[0].role == google_project_iam_custom_role.vertex_predictor[0].id
+      && toset(google_project_iam_custom_role.resume_instance_starter[0].permissions) == toset([
+        "compute.instances.get",
+        "compute.instances.start",
+      ])
+      && google_compute_instance_iam_member.resume_instance_starter[0].role == google_project_iam_custom_role.resume_instance_starter[0].id
+      && google_compute_instance_iam_member.resume_instance_starter[0].member == "serviceAccount:resume@example.test"
+      && google_compute_instance_iam_member.resume_instance_starter[0].member != "user:operator@example.test"
+      && google_compute_instance_iam_member.resume_instance_starter[0].instance_name == google_compute_instance.host[0].name
+      && toset(google_project_iam_custom_role.operator_instance_inspector[0].permissions) == toset([
+        "compute.instances.get",
+      ])
+      && google_compute_instance_iam_member.operator_instance_inspector[0].member == "user:operator@example.test"
+      && google_compute_instance_iam_member.operator_instance_inspector[0].instance_name == google_compute_instance.host[0].name
       && toset(keys(google_project_iam_member.operator_build)) == toset(["roles/cloudbuild.builds.editor"])
       && google_service_account_iam_member.operator_build[0].role == "roles/iam.serviceAccountUser"
       && google_secret_manager_secret_iam_member.host_access_gate[0].role == "roles/secretmanager.secretAccessor"
       && google_artifact_registry_repository_iam_member.host_reader[0].role == "roles/artifactregistry.reader"
+      && !strcontains(file("${path.module}/identity.tf"), "roles/aiplatform.user")
     )
-    error_message = "The operator and VM must receive only the declared access roles."
+    error_message = "The operator and VM must receive only their exact declared custom and access roles."
   }
 
   assert {
@@ -218,6 +374,8 @@ run "bounded_single_host_is_admitted" {
       && strcontains(local.compose_yaml, "COLORTRACE_VERTEX_PROJECT_ID: \"colortrace-test-project\"")
       && strcontains(local.compose_yaml, "COLORTRACE_VERTEX_LOCATION: \"global\"")
       && strcontains(local.compose_yaml, "COLORTRACE_OIDC_AUDIENCE: \"https://runtime.internal:8443\"")
+      && length(regexall("restart: \"no\"", local.compose_yaml)) == 7
+      && !strcontains(local.compose_yaml, "restart: unless-stopped")
     )
     error_message = "The runtime must receive all immutable canonical-demo and identity bindings."
   }
@@ -261,14 +419,14 @@ run "bounded_single_host_is_admitted" {
       && strcontains(local.caddyfile, "rewrite * /api/v1/otlp/v1/metrics")
       && strcontains(local.caddyfile, "rewrite * /otlp/v1/logs")
       && strcontains(local.caddyfile, "reverse_proxy tempo:4318")
-      && length(regexall("header_up -Authorization", local.caddyfile)) == 2
       && strcontains(local.caddyfile, "https://grafana.internal:8443")
       && strcontains(local.caddyfile, "https://runtime.internal:8443")
       && !strcontains(local.caddyfile, "https://grafana.internal {")
       && !strcontains(local.caddyfile, "https://runtime.internal {")
+      && length(regexall("header_up -Authorization", local.caddyfile)) == 2
       && length(regexall("bind 172.30.0.2", local.caddyfile)) == 3
     )
-    error_message = "The deployment must preserve non-root state, private token-copy, and runtime/web health contracts."
+    error_message = "The deployment must preserve the private runtime, observability, metadata-boundary, and proxy contracts."
   }
 
   assert {
@@ -277,55 +435,12 @@ run "bounded_single_host_is_admitted" {
       && output.deployment_contract.lifetime_hours == 168
       && output.deployment_contract.estimated_cost_usd == 24
       && output.deployment_contract.public_url == "https://203-0-113-42.sslip.io"
+      && output.deployment_contract.artifact_hashes.deployment_artifact_binding_sha256 == "sha256:5371d678215ff64f062ac959b080975f1b0a06866186e0604b895447271b6dc6"
+      && output.deployment_contract.artifact_hashes.runtime_build_binding_sha256 == "sha256:94dcf637a46182cd88090369a68dd2295a43df1fcb1e0d3ce885cd8d62debbba"
+      && output.deployment_contract.scanner.image == local.trivy_image
+      && output.resume_identity.artifact_binding_sha256 == "sha256:5371d678215ff64f062ac959b080975f1b0a06866186e0604b895447271b6dc6"
+      && output.resume_identity.member == "serviceAccount:resume@example.test"
     )
-    error_message = "The deployment output must preserve its bounded public and lifecycle contract."
+    error_message = "The deployment output must preserve its bounded lifecycle and complete artifact hash contract."
   }
-
-  assert {
-    condition = (
-      local.private_images_in_owned_registry
-      && startswith(var.prometheus_image, "docker.io/prom/prometheus@sha256:")
-    )
-    error_message = "The exact qualified public Prometheus image must remain outside the private-image registry check."
-  }
-}
-
-run "cost_above_ceiling_is_rejected" {
-  command = plan
-
-  variables {
-    project_id                   = "colortrace-test-project"
-    enable_instance              = true
-    operator_member              = "user:operator@example.test"
-    staging_generation           = "stage-0001"
-    access_secret_version        = "7"
-    candidate_commit             = "1111111111111111111111111111111111111111"
-    candidate_tree               = "2222222222222222222222222222222222222222"
-    boot_image                   = "projects/debian-cloud/global/images/debian-12-bookworm-v20260817"
-    estimated_seven_day_cost_usd = 101
-    runtime_image                = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/runtime@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    web_image                    = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/web@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    caddy_image                  = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/caddy@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    grafana_image                = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/grafana@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    loki_image                   = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/loki@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-    prometheus_image             = "docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0"
-    tempo_image                  = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/tempo@sha256:9999999999999999999999999999999999999999999999999999999999999999"
-    fixture_bundle_sha256        = "sha256:a9c5234acee64294b149e8e6ee761c7e2799999476943766ae856ec54eac7061"
-  }
-
-  expect_failures = [
-    check.instance_admission,
-    google_compute_instance.host,
-  ]
-}
-
-run "reserved_network_namespace_is_rejected" {
-  command = plan
-
-  variables {
-    project_id      = "colortrace-test-project"
-    resource_prefix = "ct-p114-0821a"
-  }
-
-  expect_failures = [var.resource_prefix]
 }

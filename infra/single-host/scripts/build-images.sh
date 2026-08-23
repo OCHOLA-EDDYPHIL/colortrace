@@ -23,6 +23,7 @@ readonly output=${5:-"$repository_root/.cache/single-host/image-digests-$candida
 command -v gcloud >/dev/null
 command -v git >/dev/null
 command -v jq >/dev/null
+command -v sha256sum >/dev/null
 command -v tar >/dev/null
 test -f "$repository_root/infra/single-host/cloudbuild.images.yaml"
 
@@ -58,7 +59,15 @@ trap cleanup EXIT
 git -C "$repository_root" archive --format=tar "$candidate_commit" \
   | tar --extract --file=- --directory "$snapshot_root"
 readonly build_config="$snapshot_root/infra/single-host/cloudbuild.images.yaml"
+readonly fixture_digests="$snapshot_root/packages/fixture-generator/fixtures/canonical-digests.json"
 test -f "$build_config"
+test -f "$fixture_digests"
+readonly build_config_sha256="sha256:$(sha256sum "$build_config" | cut -d ' ' -f 1)"
+fixture_manifest_sha256=$(jq -er \
+  '.files["runtime/manifests/fixture-runtime-manifest.json"]' \
+  "$fixture_digests")
+[[ "$fixture_manifest_sha256" =~ ^[0-9a-f]{64}$ ]] || exit 65
+readonly fixture_manifest_sha256="sha256:$fixture_manifest_sha256"
 
 build_id=$(gcloud builds submit "$snapshot_root" \
   --project "$project_id" \
@@ -88,11 +97,13 @@ printf '%s' "$build_result" | jq -e \
   --arg region "$region" \
   --arg registry "$registry" \
   --arg service_account "$builder_service_account" \
+  --arg build_config_sha256 "$build_config_sha256" \
   --arg source_commit "$candidate_commit" \
   --arg source_tree "$source_tree" \
   --arg source_date_epoch "$source_date_epoch" \
+  --arg fixture_manifest_sha256 "$fixture_manifest_sha256" \
   '
-    def image_result($component):
+    def image_result($component; $dockerfile; $target):
       ($registry + "/" + $component + ":" + $source_commit) as $expected_tag
       | [.results.images[]? | select(.name == $expected_tag)] as $matches
       | if ($matches | length) != 1 then
@@ -101,6 +112,8 @@ printf '%s' "$build_result" | jq -e \
           error("invalid digest for " + $component)
         else
           {
+            dockerfile: $dockerfile,
+            target: $target,
             tag: $expected_tag,
             digest: $matches[0].digest,
             reference: ($registry + "/" + $component + "@" + $matches[0].digest)
@@ -113,12 +126,14 @@ printf '%s' "$build_result" | jq -e \
     else
       . as $build
       | {
-          schema_version: 1,
+          schema: "colortrace-single-host-image-build/v2",
           build: {
             id: $build_id,
             project: $project_id,
             region: $region,
             service_account: $service_account,
+            registry: $registry,
+            config_sha256: $build_config_sha256,
             create_time: ($build.createTime // null),
             finish_time: ($build.finishTime // null)
           },
@@ -127,13 +142,14 @@ printf '%s' "$build_result" | jq -e \
             tree: $source_tree,
             date_epoch: ($source_date_epoch | tonumber)
           },
+          fixture_manifest_sha256: $fixture_manifest_sha256,
           images: {
-            runtime: ($build | image_result("runtime")),
-            web: ($build | image_result("web")),
-            caddy: ($build | image_result("caddy")),
-            grafana: ($build | image_result("grafana")),
-            loki: ($build | image_result("loki")),
-            tempo: ($build | image_result("tempo"))
+            runtime: ($build | image_result("runtime"; "Dockerfile.runtime"; "runtime")),
+            web: ($build | image_result("web"; "Dockerfile.web"; null)),
+            caddy: ($build | image_result("caddy"; "Dockerfile.caddy"; null)),
+            grafana: ($build | image_result("grafana"; "Dockerfile.observability"; "grafana")),
+            loki: ($build | image_result("loki"; "Dockerfile.observability"; "loki")),
+            tempo: ($build | image_result("tempo"; "Dockerfile.observability"; "tempo"))
           }
         }
     end
