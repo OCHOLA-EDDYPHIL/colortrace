@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from colortrace_recovery import RecoveryError
 from colortrace_response_plans import ResponsePlanError
@@ -15,6 +17,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.types import Lifespan
 
 from .auth import Principal, TokenVerifier
+from .demo_facade import DemoApi, DemoFacadeError
 from .recovery import RecoveryApi, RecoveryVerificationAdmissionApi
 from .response_plans import ResponsePlanApi
 from .simulator_actions import SimulatorActionApi
@@ -180,6 +183,75 @@ def _status_for_recovery_error(code: str) -> int:
     return 409
 
 
+def _status_for_demo_error(code: str) -> int:
+    if code in {"demo-run-not-found", "demo-visual-not-found"}:
+        return 404
+    if code in {"demo-store-unavailable", "demo-visual-unavailable"}:
+        return 503
+    if code.endswith("-invalid") or code in {
+        "demo-request-invalid",
+        "demo-scenario-invalid",
+    }:
+        return 400
+    return 409
+
+
+def _guard_demo_mutation(request: Request) -> None:
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json":
+        raise _problem(415, "demo-content-type-invalid")
+    raw_length = request.headers.get("content-length")
+    if raw_length is not None:
+        try:
+            length = int(raw_length)
+        except ValueError:
+            raise _problem(400, "demo-content-length-invalid") from None
+        if length < 0 or length > 16_384:
+            raise _problem(413, "demo-request-too-large")
+    if request.headers.get("sec-fetch-site", "").lower() == "cross-site":
+        raise _problem(403, "demo-origin-denied")
+    origin = request.headers.get("origin")
+    if origin is None:
+        return
+    parsed = urlsplit(origin)
+    host = request.headers.get("host")
+    if parsed.scheme not in {"http", "https"} or parsed.netloc != host or parsed.path:
+        raise _problem(403, "demo-origin-denied")
+
+
+def _reject_demo_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, child in pairs:
+        if key in value:
+            raise DemoFacadeError("demo-request-invalid")
+        value[key] = child
+    return value
+
+
+def _reject_demo_constant(_value: str) -> None:
+    raise DemoFacadeError("demo-request-invalid")
+
+
+async def _read_demo_body(request: Request) -> dict[str, Any]:
+    _guard_demo_mutation(request)
+    raw = await request.body()
+    if not raw or len(raw) > 16_384:
+        raise _problem(413, "demo-request-too-large")
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_reject_demo_duplicate_pairs,
+            parse_constant=_reject_demo_constant,
+        )
+    except DemoFacadeError:
+        raise
+    except (UnicodeError, json.JSONDecodeError):
+        raise DemoFacadeError("demo-request-invalid") from None
+    if not isinstance(value, dict):
+        raise DemoFacadeError("demo-request-invalid")
+    return value
+
+
 def create_read_only_app(
     service: IncidentReadService,
     *,
@@ -303,6 +375,7 @@ def create_app(
     simulator_actions: SimulatorActionApi | None = None,
     recovery: RecoveryApi | None = None,
     recovery_verifications: RecoveryVerificationAdmissionApi | None = None,
+    demo: DemoApi | None = None,
     lifespan: Lifespan[FastAPI] | None = None,
 ) -> FastAPI:
     app = FastAPI(
@@ -378,6 +451,13 @@ def create_app(
             content={"code": error.code},
         )
 
+    @app.exception_handler(DemoFacadeError)
+    async def handle_demo_error(_request: Any, error: DemoFacadeError) -> JSONResponse:
+        return JSONResponse(
+            status_code=_status_for_demo_error(error.code),
+            content={"code": error.code},
+        )
+
     @app.exception_handler(HTTPException)
     async def handle_http_error(_request: Any, error: HTTPException) -> JSONResponse:
         detail = error.detail
@@ -404,6 +484,7 @@ def create_app(
             raise _problem(401, "authentication-invalid") from None
 
     principal_dependency = Depends(current_principal)
+    demo_body_dependency = Depends(_read_demo_body)
 
     @app.get("/health/startup", include_in_schema=False)
     def startup_health() -> dict[str, str]:
@@ -432,6 +513,11 @@ def create_app(
         if recovery_verifications is None:
             raise _problem(503, "recovery-verification-dispatcher-unavailable")
         return recovery_verifications
+
+    def demo_api() -> DemoApi:
+        if demo is None:
+            raise _problem(404, "demo-unavailable")
+        return demo
 
     @app.post("/v1/incidents", status_code=202)
     def create_incident(
@@ -554,5 +640,40 @@ def create_app(
             "audience": principal.audience,
             "principal_kind": principal.principal_kind,
         }
+
+    @app.post("/v1/demo/runs", status_code=201)
+    def start_demo_run(body: dict[str, Any] = demo_body_dependency) -> dict[str, Any]:
+        return demo_api().start(body)
+
+    @app.get("/v1/demo/runs/{run_id}")
+    def get_demo_run(run_id: str) -> dict[str, Any]:
+        return demo_api().get(run_id)
+
+    @app.post("/v1/demo/runs/{run_id}/approve")
+    def approve_demo_run(
+        run_id: str, body: dict[str, Any] = demo_body_dependency
+    ) -> dict[str, Any]:
+        return demo_api().approve(run_id, body)
+
+    @app.post("/v1/demo/runs/{run_id}/close")
+    def close_demo_run(run_id: str, body: dict[str, Any] = demo_body_dependency) -> dict[str, Any]:
+        return demo_api().close(run_id, body)
+
+    @app.post("/v1/demo/runs/{run_id}/reset")
+    def reset_demo_run(run_id: str, body: dict[str, Any] = demo_body_dependency) -> dict[str, Any]:
+        return demo_api().reset(run_id, body)
+
+    @app.get("/v1/demo/runs/{run_id}/receipt")
+    def get_demo_receipt(run_id: str) -> dict[str, Any]:
+        return demo_api().receipt(run_id)
+
+    @app.get("/v1/demo/runs/{run_id}/visuals/{kind}")
+    def get_demo_visual(run_id: str, kind: str) -> Response:
+        visual = demo_api().visual(run_id, kind)
+        return Response(
+            content=visual.content,
+            media_type=visual.media_type,
+            headers={"X-Content-SHA256": visual.sha256},
+        )
 
     return app

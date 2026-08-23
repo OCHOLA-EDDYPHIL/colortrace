@@ -1,0 +1,1731 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import re
+import secrets
+import sqlite3
+import stat
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path, PurePosixPath
+from typing import Any, Protocol, cast
+
+from colortrace_fixture import CANONICAL_SEED
+from colortrace_recovery import canonical_json_bytes, document_sha256, validate_closure_result
+
+from .auth import Principal
+from .recovery import RecoveryApi
+
+RUN_REQUEST_SCHEMA = "colortrace-demo-run-request/v1"
+RUN_SCHEMA = "colortrace-demo-run/v1"
+APPROVAL_REQUEST_SCHEMA = "colortrace-demo-approval-request/v1"
+CLOSURE_REQUEST_SCHEMA = "colortrace-demo-closure-request/v1"
+RESET_REQUEST_SCHEMA = "colortrace-demo-reset-request/v1"
+RESET_SCHEMA = "colortrace-demo-reset/v1"
+RECEIPT_SCHEMA = "colortrace-demo-receipt/v1"
+PREPARATION_SCHEMA = "colortrace-demo-preparation/v1"
+EXECUTION_SCHEMA = "colortrace-demo-execution/v1"
+RECONCILIATION_REQUEST_SCHEMA = "colortrace-demo-reconciliation-request/v1"
+
+CANONICAL_SCENARIO = CANONICAL_SEED
+APPROVAL_PHRASE = "APPROVE_COLORTRACE_SIMULATOR_ACTION"
+LEASE_SECONDS = 15 * 60
+POLL_AFTER_MILLISECONDS = 1_000
+
+_ACTIVE_PHASES = frozenset(
+    {"preparing", "awaiting-approval", "executing", "awaiting-closure", "closing"}
+)
+_TRANSIENT_PHASES = frozenset({"preparing", "executing", "closing"})
+_TERMINAL_PHASES = frozenset({"closed", "unresolved", "expired"})
+_VISUAL_KINDS = frozenset({"expected", "observed", "recovered", "diff"})
+_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
+_RUN_ID = re.compile(r"^demo-run-[0-9a-f]{32}$")
+_INCIDENT_ID = re.compile(r"^incident-demo-[0-9a-f]{32}$")
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+_REASON_CODE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
+_NONCE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
+_MAX_VISUAL_BYTES = 8 * 1024 * 1024
+
+
+class DemoFacadeError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+class DemoWorkflowPort(Protocol):
+    def prepare(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+    def execute(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+    def reconcile(self, request: Mapping[str, Any]) -> Mapping[str, Any] | None: ...
+
+
+class DemoApi(Protocol):
+    def start(self, body: Mapping[str, Any]) -> dict[str, Any]: ...
+
+    def get(self, run_id: str) -> dict[str, Any]: ...
+
+    def approve(self, run_id: str, body: Mapping[str, Any]) -> dict[str, Any]: ...
+
+    def close(self, run_id: str, body: Mapping[str, Any]) -> dict[str, Any]: ...
+
+    def reset(self, run_id: str, body: Mapping[str, Any]) -> dict[str, Any]: ...
+
+    def receipt(self, run_id: str) -> dict[str, Any]: ...
+
+    def visual(self, run_id: str, kind: str) -> DemoVisual: ...
+
+
+@dataclass(frozen=True, slots=True)
+class DemoVisual:
+    content: bytes
+    media_type: str
+    sha256: str
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _timestamp(value: datetime) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise DemoFacadeError("demo-time-invalid")
+    return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _parse_timestamp(value: Any, *, code: str = "stored-demo-run-invalid") -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise DemoFacadeError(code)
+    try:
+        selected = datetime.fromisoformat(value[:-1] + "+00:00")
+    except (OverflowError, ValueError):
+        raise DemoFacadeError(code) from None
+    if selected.tzinfo is None or selected.utcoffset() != timedelta(0):
+        raise DemoFacadeError(code)
+    selected = selected.astimezone(UTC)
+    if _timestamp(selected) != value:
+        raise DemoFacadeError(code)
+    return selected
+
+
+def _require_exact(value: Mapping[str, Any], fields: frozenset[str], schema: str) -> None:
+    if set(value) != fields or value.get("schema") != schema:
+        raise DemoFacadeError("demo-request-invalid")
+
+
+def _require_identifier(value: Any, *, code: str) -> str:
+    if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
+        raise DemoFacadeError(code)
+    return value
+
+
+def _require_version(value: Any, *, code: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise DemoFacadeError(code)
+    return value
+
+
+def _require_digest(value: Any, *, code: str) -> str:
+    if not isinstance(value, str) or _DIGEST.fullmatch(value) is None:
+        raise DemoFacadeError(code)
+    return value
+
+
+def _require_idempotency_key(value: Any) -> str:
+    if not isinstance(value, str) or _IDEMPOTENCY_KEY.fullmatch(value) is None:
+        raise DemoFacadeError("demo-idempotency-key-invalid")
+    return value
+
+
+def _nonce_sha256(value: str) -> str:
+    return f"sha256:{hashlib.sha256(value.encode('ascii')).hexdigest()}"
+
+
+def _decode_document(value: Any, *, code: str) -> dict[str, Any]:
+    if not isinstance(value, bytes):
+        raise DemoFacadeError(code)
+    try:
+        decoded = json.loads(value.decode("utf-8"))
+        encoded = canonical_json_bytes(decoded)
+    except (RecursionError, TypeError, UnicodeError, ValueError):
+        raise DemoFacadeError(code) from None
+    if not isinstance(decoded, dict) or encoded != value:
+        raise DemoFacadeError(code)
+    return cast(dict[str, Any], decoded)
+
+
+def _relative_visual_path(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 512
+        or "\\" in value
+        or "\x00" in value
+    ):
+        raise DemoFacadeError("demo-visual-path-invalid")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise DemoFacadeError("demo-visual-path-invalid")
+    if path.suffix.lower() != ".png":
+        raise DemoFacadeError("demo-visual-media-invalid")
+    return path.as_posix()
+
+
+_VISUAL_FIELDS = frozenset({"kind", "path", "sha256", "media_type"})
+
+
+def _visual_descriptors(
+    value: Any,
+    *,
+    required_kinds: frozenset[str],
+) -> list[dict[str, str]]:
+    if not isinstance(value, list) or len(value) != len(required_kinds):
+        raise DemoFacadeError("demo-visuals-invalid")
+    selected: list[dict[str, str]] = []
+    observed: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, Mapping) or set(raw) != _VISUAL_FIELDS:
+            raise DemoFacadeError("demo-visuals-invalid")
+        kind = raw.get("kind")
+        if not isinstance(kind, str) or kind not in required_kinds or kind in observed:
+            raise DemoFacadeError("demo-visuals-invalid")
+        media_type = raw.get("media_type")
+        if media_type != "image/png":
+            raise DemoFacadeError("demo-visual-media-invalid")
+        selected.append(
+            {
+                "kind": kind,
+                "path": _relative_visual_path(raw.get("path")),
+                "sha256": _require_digest(raw.get("sha256"), code="demo-visual-digest-invalid"),
+                "media_type": media_type,
+            }
+        )
+        observed.add(kind)
+    if observed != set(required_kinds):
+        raise DemoFacadeError("demo-visuals-invalid")
+    return sorted(selected, key=lambda item: item["kind"])
+
+
+_PREPARATION_FIELDS = frozenset(
+    {
+        "schema",
+        "run_id",
+        "incident_id",
+        "incident_version",
+        "plan_version",
+        "plan_sha256",
+        "target_sha256",
+        "visuals",
+    }
+)
+
+
+def _validate_preparation(
+    value: Mapping[str, Any],
+    *,
+    run_id: str,
+    incident_id: str,
+) -> dict[str, Any]:
+    if set(value) != _PREPARATION_FIELDS or value.get("schema") != PREPARATION_SCHEMA:
+        raise DemoFacadeError("demo-preparation-invalid")
+    if value.get("run_id") != run_id or value.get("incident_id") != incident_id:
+        raise DemoFacadeError("demo-preparation-binding-invalid")
+    return {
+        "incident_version": _require_version(
+            value.get("incident_version"), code="demo-incident-version-invalid"
+        ),
+        "plan_version": _require_version(
+            value.get("plan_version"), code="demo-plan-version-invalid"
+        ),
+        "plan_sha256": _require_digest(value.get("plan_sha256"), code="demo-plan-digest-invalid"),
+        "target_sha256": _require_digest(
+            value.get("target_sha256"), code="demo-target-digest-invalid"
+        ),
+        "visuals": _visual_descriptors(
+            value.get("visuals"),
+            required_kinds=frozenset({"expected", "observed", "diff"}),
+        ),
+    }
+
+
+_EXECUTION_FIELDS = frozenset(
+    {
+        "schema",
+        "run_id",
+        "incident_id",
+        "incident_version",
+        "outcome_id",
+        "outcome_sha256",
+        "workflow_id",
+        "workflow_version",
+        "packet_id",
+        "packet_sha256",
+        "visuals",
+    }
+)
+
+
+def _validate_execution(
+    value: Mapping[str, Any],
+    *,
+    run: Mapping[str, Any],
+) -> dict[str, Any]:
+    if set(value) != _EXECUTION_FIELDS or value.get("schema") != EXECUTION_SCHEMA:
+        raise DemoFacadeError("demo-execution-invalid")
+    if (
+        value.get("run_id") != run["run_id"]
+        or value.get("incident_id") != run["incident_id"]
+        or value.get("incident_version") != run["incident_version"]
+    ):
+        raise DemoFacadeError("demo-execution-binding-invalid")
+    return {
+        "outcome_id": _require_identifier(value.get("outcome_id"), code="demo-outcome-id-invalid"),
+        "outcome_sha256": _require_digest(
+            value.get("outcome_sha256"), code="demo-outcome-digest-invalid"
+        ),
+        "workflow_id": _require_identifier(
+            value.get("workflow_id"), code="demo-workflow-id-invalid"
+        ),
+        "workflow_version": _require_version(
+            value.get("workflow_version"), code="demo-workflow-version-invalid"
+        ),
+        "packet_id": _require_identifier(value.get("packet_id"), code="demo-packet-id-invalid"),
+        "packet_sha256": _require_digest(
+            value.get("packet_sha256"), code="demo-packet-digest-invalid"
+        ),
+        "visuals": _visual_descriptors(
+            value.get("visuals"), required_kinds=frozenset({"recovered"})
+        ),
+    }
+
+
+_SCHEMA = """
+CREATE TABLE demo_runs (
+    run_id TEXT PRIMARY KEY,
+    incident_id TEXT NOT NULL UNIQUE,
+    scenario_id TEXT NOT NULL,
+    source_commit TEXT NOT NULL,
+    phase TEXT NOT NULL CHECK(phase IN (
+        'preparing', 'awaiting-approval', 'executing', 'awaiting-closure',
+        'closing', 'closed', 'unresolved', 'expired'
+    )),
+    version INTEGER NOT NULL CHECK(version >= 1),
+    lease_expires_at TEXT NOT NULL,
+    approval_nonce_sha256 TEXT NOT NULL,
+    approval_phrase TEXT NOT NULL,
+    incident_version INTEGER,
+    plan_version INTEGER,
+    plan_sha256 TEXT,
+    target_sha256 TEXT,
+    outcome_id TEXT,
+    outcome_sha256 TEXT,
+    workflow_id TEXT,
+    workflow_version INTEGER,
+    packet_id TEXT,
+    packet_sha256 TEXT,
+    closure_id TEXT,
+    closure_sha256 TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    terminal_at TEXT,
+    terminal_reason TEXT,
+    CHECK(
+        (phase = 'preparing' AND incident_version IS NULL AND plan_version IS NULL
+            AND plan_sha256 IS NULL AND target_sha256 IS NULL)
+        OR (phase != 'preparing' AND phase IN ('awaiting-approval', 'executing',
+            'awaiting-closure', 'closing', 'closed') AND incident_version >= 1
+            AND plan_version >= 1 AND plan_sha256 IS NOT NULL AND target_sha256 IS NOT NULL)
+        OR (phase IN ('unresolved', 'expired'))
+    ),
+    CHECK(
+        (phase IN ('awaiting-closure', 'closing', 'closed')
+            AND outcome_id IS NOT NULL AND outcome_sha256 IS NOT NULL
+            AND workflow_id IS NOT NULL AND workflow_version >= 1
+            AND packet_id IS NOT NULL AND packet_sha256 IS NOT NULL)
+        OR (phase NOT IN ('awaiting-closure', 'closing', 'closed'))
+    ),
+    CHECK(
+        (phase IN ('closed', 'unresolved', 'expired')
+            AND terminal_at IS NOT NULL AND terminal_reason IS NOT NULL)
+        OR (phase NOT IN ('closed', 'unresolved', 'expired')
+            AND terminal_at IS NULL AND terminal_reason IS NULL)
+    ),
+    CHECK(
+        (phase = 'closed' AND closure_id IS NOT NULL AND closure_sha256 IS NOT NULL)
+        OR (phase != 'closed' AND closure_id IS NULL AND closure_sha256 IS NULL)
+    )
+) STRICT;
+CREATE TABLE demo_active_run (
+    slot INTEGER PRIMARY KEY CHECK(slot = 1),
+    run_id TEXT NOT NULL UNIQUE REFERENCES demo_runs(run_id)
+) STRICT;
+CREATE TABLE demo_operations (
+    run_id TEXT NOT NULL REFERENCES demo_runs(run_id),
+    operation TEXT NOT NULL CHECK(operation IN ('approve', 'close')),
+    idempotency_key TEXT NOT NULL,
+    request_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'complete')),
+    result_document BLOB,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    PRIMARY KEY(run_id, operation),
+    CHECK(
+        (status = 'pending' AND result_document IS NULL AND completed_at IS NULL)
+        OR (status = 'complete' AND result_document IS NOT NULL AND completed_at IS NOT NULL)
+    )
+) STRICT;
+CREATE TABLE demo_visuals (
+    run_id TEXT NOT NULL REFERENCES demo_runs(run_id),
+    kind TEXT NOT NULL CHECK(kind IN ('expected', 'observed', 'recovered', 'diff')),
+    relative_path TEXT NOT NULL,
+    media_type TEXT NOT NULL CHECK(media_type = 'image/png'),
+    content_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(run_id, kind)
+) STRICT;
+CREATE TABLE demo_receipts (
+    run_id TEXT PRIMARY KEY REFERENCES demo_runs(run_id),
+    receipt_id TEXT NOT NULL UNIQUE,
+    receipt_sha256 TEXT NOT NULL,
+    receipt_document BLOB NOT NULL,
+    created_at TEXT NOT NULL
+) STRICT;
+CREATE TABLE demo_resets (
+    run_id TEXT PRIMARY KEY REFERENCES demo_runs(run_id),
+    idempotency_key TEXT NOT NULL,
+    request_sha256 TEXT NOT NULL,
+    result_document BLOB NOT NULL,
+    reset_at TEXT NOT NULL
+) STRICT;
+CREATE TRIGGER demo_runs_no_delete
+BEFORE DELETE ON demo_runs BEGIN
+    SELECT RAISE(ABORT, 'demo-runs-no-delete');
+END;
+CREATE TRIGGER demo_runs_identity_immutable
+BEFORE UPDATE ON demo_runs
+WHEN NEW.run_id != OLD.run_id OR NEW.incident_id != OLD.incident_id
+    OR NEW.scenario_id != OLD.scenario_id OR NEW.source_commit != OLD.source_commit
+    OR NEW.approval_nonce_sha256 != OLD.approval_nonce_sha256
+    OR NEW.approval_phrase != OLD.approval_phrase OR NEW.created_at != OLD.created_at
+BEGIN
+    SELECT RAISE(ABORT, 'demo-run-identity-immutable');
+END;
+CREATE TRIGGER demo_runs_terminal_immutable
+BEFORE UPDATE ON demo_runs
+WHEN OLD.phase IN ('closed', 'unresolved', 'expired')
+BEGIN
+    SELECT RAISE(ABORT, 'demo-run-terminal-immutable');
+END;
+CREATE TRIGGER demo_runs_valid_transition
+BEFORE UPDATE ON demo_runs
+WHEN NOT (
+    NEW.version = OLD.version + 1 AND (
+        (OLD.phase = 'preparing' AND NEW.phase IN ('awaiting-approval', 'unresolved', 'expired'))
+        OR (OLD.phase = 'awaiting-approval' AND NEW.phase IN ('executing', 'unresolved', 'expired'))
+        OR (OLD.phase = 'executing' AND NEW.phase IN ('awaiting-closure', 'unresolved', 'expired'))
+        OR (OLD.phase = 'awaiting-closure' AND NEW.phase IN ('closing', 'unresolved', 'expired'))
+        OR (OLD.phase = 'closing' AND NEW.phase IN ('closed', 'unresolved', 'expired'))
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'demo-run-transition-invalid');
+END;
+CREATE TRIGGER demo_operations_no_delete
+BEFORE DELETE ON demo_operations BEGIN
+    SELECT RAISE(ABORT, 'demo-operations-no-delete');
+END;
+CREATE TRIGGER demo_operations_identity_immutable
+BEFORE UPDATE ON demo_operations
+WHEN NEW.run_id != OLD.run_id OR NEW.operation != OLD.operation
+    OR NEW.idempotency_key != OLD.idempotency_key
+    OR NEW.request_sha256 != OLD.request_sha256 OR NEW.created_at != OLD.created_at
+BEGIN
+    SELECT RAISE(ABORT, 'demo-operation-identity-immutable');
+END;
+CREATE TRIGGER demo_operations_valid_transition
+BEFORE UPDATE ON demo_operations
+WHEN NOT (OLD.status = 'pending' AND NEW.status = 'complete')
+BEGIN
+    SELECT RAISE(ABORT, 'demo-operation-transition-invalid');
+END;
+CREATE TRIGGER demo_visuals_immutable
+BEFORE UPDATE ON demo_visuals BEGIN
+    SELECT RAISE(ABORT, 'demo-visuals-immutable');
+END;
+CREATE TRIGGER demo_visuals_no_delete
+BEFORE DELETE ON demo_visuals BEGIN
+    SELECT RAISE(ABORT, 'demo-visuals-no-delete');
+END;
+CREATE TRIGGER demo_receipts_immutable
+BEFORE UPDATE ON demo_receipts BEGIN
+    SELECT RAISE(ABORT, 'demo-receipts-immutable');
+END;
+CREATE TRIGGER demo_receipts_no_delete
+BEFORE DELETE ON demo_receipts BEGIN
+    SELECT RAISE(ABORT, 'demo-receipts-no-delete');
+END;
+CREATE TRIGGER demo_resets_immutable
+BEFORE UPDATE ON demo_resets BEGIN
+    SELECT RAISE(ABORT, 'demo-resets-immutable');
+END;
+CREATE TRIGGER demo_resets_no_delete
+BEFORE DELETE ON demo_resets BEGIN
+    SELECT RAISE(ABORT, 'demo-resets-no-delete');
+END;
+"""
+
+_APPLICATION_ID = 0x4354444D
+_SCHEMA_VERSION = 1
+_SchemaManifest = tuple[tuple[str, str, str, str | None], ...]
+
+
+def _normalized_sql(value: str | None) -> str | None:
+    return None if value is None else value.strip().replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _schema_manifest(connection: sqlite3.Connection) -> _SchemaManifest:
+    rows = connection.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "WHERE type IN ('table', 'index', 'trigger') "
+        "AND NOT (type = 'table' AND name LIKE 'sqlite_%') "
+        "AND NOT (type IN ('index', 'trigger') AND tbl_name LIKE 'sqlite_%') "
+        "ORDER BY type, name"
+    ).fetchall()
+    return tuple(
+        (
+            cast(str, row[0]),
+            cast(str, row[1]),
+            cast(str, row[2]),
+            _normalized_sql(cast(str | None, row[3])),
+        )
+        for row in rows
+    )
+
+
+def _expected_schema() -> _SchemaManifest:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(_SCHEMA)
+        return _schema_manifest(connection)
+    finally:
+        connection.close()
+
+
+_EXPECTED_SCHEMA = _expected_schema()
+
+
+class SQLiteDemoRunStore:
+    def __init__(self, path: str | Path) -> None:
+        self._path, created, self._identity = self._prepare_path(Path(path))
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = self._connect()
+            self._initialize_or_validate(connection, created=created)
+        except DemoFacadeError:
+            raise
+        except sqlite3.DatabaseError as error:
+            raise DemoFacadeError("demo-store-invalid") from error
+        finally:
+            if connection is not None:
+                connection.close()
+
+    @staticmethod
+    def _validate_stat(path: Path, value: os.stat_result) -> None:
+        if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1 or path.is_symlink():
+            raise DemoFacadeError("demo-store-path-invalid")
+        if value.st_uid != os.getuid() or stat.S_IMODE(value.st_mode) != 0o600:
+            raise DemoFacadeError("demo-store-permissions-invalid")
+
+    @classmethod
+    def _prepare_path(cls, raw_path: Path) -> tuple[Path, bool, tuple[int, int]]:
+        path = raw_path.absolute()
+        try:
+            parent = path.parent.stat(follow_symlinks=False)
+        except OSError as error:
+            raise DemoFacadeError("demo-store-path-invalid") from error
+        if not stat.S_ISDIR(parent.st_mode):
+            raise DemoFacadeError("demo-store-path-invalid")
+        flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(path, flags, 0o600)
+        except FileExistsError:
+            try:
+                value = path.lstat()
+            except OSError as error:
+                raise DemoFacadeError("demo-store-path-invalid") from error
+            cls._validate_stat(path, value)
+            return path, False, (value.st_dev, value.st_ino)
+        except OSError as error:
+            raise DemoFacadeError("demo-store-path-invalid") from error
+        try:
+            os.fchmod(descriptor, 0o600)
+            value = os.fstat(descriptor)
+            cls._validate_stat(path, value)
+            return path, True, (value.st_dev, value.st_ino)
+        finally:
+            os.close(descriptor)
+
+    @classmethod
+    def _validate_path(cls, path: Path, identity: tuple[int, int]) -> None:
+        try:
+            value = path.lstat()
+        except OSError as error:
+            raise DemoFacadeError("demo-store-path-invalid") from error
+        cls._validate_stat(path, value)
+        if (value.st_dev, value.st_ino) != identity:
+            raise DemoFacadeError("demo-store-path-changed")
+
+    def _connect(self) -> sqlite3.Connection:
+        self._validate_path(self._path, self._identity)
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(
+                f"{self._path.as_uri()}?mode=rw",
+                timeout=5.0,
+                isolation_level=None,
+                uri=True,
+            )
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout = 5000")
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA trusted_schema = OFF")
+            connection.execute("PRAGMA synchronous = FULL")
+            journal = connection.execute("PRAGMA journal_mode = DELETE").fetchone()
+            if journal is None or str(journal[0]).lower() != "delete":
+                raise DemoFacadeError("demo-store-invalid")
+            self._validate_path(self._path, self._identity)
+            return connection
+        except DemoFacadeError:
+            if connection is not None:
+                connection.close()
+            raise
+        except sqlite3.OperationalError as error:
+            if connection is not None:
+                connection.close()
+            raise DemoFacadeError("demo-store-unavailable") from error
+
+    @classmethod
+    def _initialize_or_validate(cls, connection: sqlite3.Connection, *, created: bool) -> None:
+        if created:
+            if (
+                connection.execute("PRAGMA application_id").fetchone()[0] != 0
+                or connection.execute("PRAGMA user_version").fetchone()[0] != 0
+                or _schema_manifest(connection)
+            ):
+                raise DemoFacadeError("demo-store-schema-invalid")
+            connection.executescript(_SCHEMA)
+            connection.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
+            connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        cls._validate_schema(connection)
+
+    @staticmethod
+    def _validate_schema(connection: sqlite3.Connection) -> None:
+        if (
+            connection.execute("PRAGMA application_id").fetchone()[0] != _APPLICATION_ID
+            or connection.execute("PRAGMA user_version").fetchone()[0] != _SCHEMA_VERSION
+            or _schema_manifest(connection) != _EXPECTED_SCHEMA
+        ):
+            raise DemoFacadeError("demo-store-schema-invalid")
+        integrity = connection.execute("PRAGMA integrity_check").fetchall()
+        if len(integrity) != 1 or integrity[0][0] != "ok":
+            raise DemoFacadeError("demo-store-integrity-invalid")
+
+    @contextmanager
+    def _transaction(self, *, write: bool) -> Iterator[sqlite3.Connection]:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+            self._validate_schema(connection)
+            yield connection
+            connection.commit()
+            self._validate_path(self._path, self._identity)
+        except DemoFacadeError:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        except sqlite3.IntegrityError as error:
+            if connection.in_transaction:
+                connection.rollback()
+            raise DemoFacadeError("demo-store-integrity-invalid") from error
+        except sqlite3.OperationalError as error:
+            if connection.in_transaction:
+                connection.rollback()
+            raise DemoFacadeError("demo-store-unavailable") from error
+        except sqlite3.DatabaseError as error:
+            if connection.in_transaction:
+                connection.rollback()
+            raise DemoFacadeError("demo-store-invalid") from error
+        except BaseException:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _row(connection: sqlite3.Connection, run_id: str) -> sqlite3.Row:
+        row = connection.execute("SELECT * FROM demo_runs WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise DemoFacadeError("demo-run-not-found")
+        return cast(sqlite3.Row, row)
+
+    @staticmethod
+    def _run(row: sqlite3.Row) -> dict[str, Any]:
+        value = {key: row[key] for key in row.keys()}
+        if (
+            _RUN_ID.fullmatch(cast(str, value.get("run_id"))) is None
+            or _INCIDENT_ID.fullmatch(cast(str, value.get("incident_id"))) is None
+            or value.get("scenario_id") != CANONICAL_SCENARIO
+            or _COMMIT.fullmatch(cast(str, value.get("source_commit"))) is None
+            or value.get("phase") not in _ACTIVE_PHASES | _TERMINAL_PHASES
+            or not isinstance(value.get("version"), int)
+            or isinstance(value.get("version"), bool)
+            or cast(int, value["version"]) < 1
+            or _DIGEST.fullmatch(cast(str, value.get("approval_nonce_sha256"))) is None
+            or value.get("approval_phrase") != APPROVAL_PHRASE
+        ):
+            raise DemoFacadeError("stored-demo-run-invalid")
+        _parse_timestamp(value.get("created_at"))
+        _parse_timestamp(value.get("updated_at"))
+        _parse_timestamp(value.get("lease_expires_at"))
+        return value
+
+    @staticmethod
+    def _is_reset(connection: sqlite3.Connection, run_id: str) -> bool:
+        return (
+            connection.execute("SELECT 1 FROM demo_resets WHERE run_id = ?", (run_id,)).fetchone()
+            is not None
+        )
+
+    @classmethod
+    def _projection(cls, connection: sqlite3.Connection, run: Mapping[str, Any]) -> dict[str, Any]:
+        phase = cast(str, run["phase"])
+        approval = None
+        if run.get("plan_sha256") is not None:
+            approval = {
+                "phrase": run["approval_phrase"],
+                "incident_version": run["incident_version"],
+                "plan_version": run["plan_version"],
+                "plan_sha256": run["plan_sha256"],
+                "target_sha256": run["target_sha256"],
+            }
+        recovery = None
+        if run.get("workflow_id") is not None:
+            recovery = {
+                "outcome_id": run["outcome_id"],
+                "outcome_sha256": run["outcome_sha256"],
+                "workflow_id": run["workflow_id"],
+                "workflow_version": run["workflow_version"],
+                "packet_id": run["packet_id"],
+                "packet_sha256": run["packet_sha256"],
+                "closure_id": run["closure_id"],
+                "closure_sha256": run["closure_sha256"],
+            }
+        terminal = phase in _TERMINAL_PHASES
+        return {
+            "schema": RUN_SCHEMA,
+            "run_id": run["run_id"],
+            "incident_id": run["incident_id"],
+            "scenario_id": run["scenario_id"],
+            "source_commit": run["source_commit"],
+            "phase": phase,
+            "version": run["version"],
+            "lease_expires_at": None if terminal else run["lease_expires_at"],
+            "poll": {
+                "href": f"/v1/demo/runs/{run['run_id']}",
+                "after_milliseconds": POLL_AFTER_MILLISECONDS,
+            },
+            "approval": approval,
+            "recovery": recovery,
+            "terminal": terminal,
+            "terminal_reason": run["terminal_reason"],
+            "receipt_href": (f"/v1/demo/runs/{run['run_id']}/receipt" if terminal else None),
+            "reset": cls._is_reset(connection, cast(str, run["run_id"])),
+        }
+
+    @classmethod
+    def _receipt_document(
+        cls, connection: sqlite3.Connection, run: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        visuals = [
+            {"kind": row[0], "sha256": row[1]}
+            for row in connection.execute(
+                "SELECT kind, content_sha256 FROM demo_visuals WHERE run_id = ? ORDER BY kind",
+                (run["run_id"],),
+            ).fetchall()
+        ]
+        body = {
+            "schema": RECEIPT_SCHEMA,
+            "run_id": run["run_id"],
+            "incident_id": run["incident_id"],
+            "scenario_id": run["scenario_id"],
+            "source_commit": run["source_commit"],
+            "phase": run["phase"],
+            "run_version": run["version"],
+            "created_at": run["created_at"],
+            "terminal_at": run["terminal_at"],
+            "reason_code": run["terminal_reason"],
+            "bindings": {
+                "incident_version": run["incident_version"],
+                "plan_version": run["plan_version"],
+                "plan_sha256": run["plan_sha256"],
+                "target_sha256": run["target_sha256"],
+                "outcome_id": run["outcome_id"],
+                "outcome_sha256": run["outcome_sha256"],
+                "workflow_id": run["workflow_id"],
+                "workflow_version": run["workflow_version"],
+                "packet_id": run["packet_id"],
+                "packet_sha256": run["packet_sha256"],
+                "closure_id": run["closure_id"],
+                "closure_sha256": run["closure_sha256"],
+            },
+            "visuals": visuals,
+        }
+        digest = document_sha256(body)
+        return {
+            **body,
+            "receipt_id": f"demo-receipt:{digest.removeprefix('sha256:')}",
+            "receipt_sha256": digest,
+        }
+
+    @classmethod
+    def _terminalize(
+        cls,
+        connection: sqlite3.Connection,
+        run: Mapping[str, Any],
+        *,
+        phase: str,
+        reason: str,
+        now: datetime,
+        closure: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if phase not in _TERMINAL_PHASES or _REASON_CODE.fullmatch(reason) is None:
+            raise DemoFacadeError("demo-terminal-state-invalid")
+        if run["phase"] in _TERMINAL_PHASES:
+            return dict(run)
+        now_value = _timestamp(now)
+        closure_id = None if closure is None else closure["closure_id"]
+        closure_sha256 = None if closure is None else closure["closure_sha256"]
+        connection.execute(
+            "UPDATE demo_runs SET phase = ?, version = version + 1, updated_at = ?, "
+            "terminal_at = ?, terminal_reason = ?, closure_id = ?, closure_sha256 = ? "
+            "WHERE run_id = ?",
+            (
+                phase,
+                now_value,
+                now_value,
+                reason,
+                closure_id,
+                closure_sha256,
+                run["run_id"],
+            ),
+        )
+        connection.execute("DELETE FROM demo_active_run WHERE run_id = ?", (run["run_id"],))
+        selected = cls._run(cls._row(connection, cast(str, run["run_id"])))
+        receipt = cls._receipt_document(connection, selected)
+        encoded = canonical_json_bytes(receipt)
+        connection.execute(
+            "INSERT INTO demo_receipts(run_id, receipt_id, receipt_sha256, "
+            "receipt_document, created_at) VALUES(?, ?, ?, ?, ?)",
+            (
+                selected["run_id"],
+                receipt["receipt_id"],
+                receipt["receipt_sha256"],
+                encoded,
+                now_value,
+            ),
+        )
+        pending = connection.execute(
+            "SELECT operation FROM demo_operations WHERE run_id = ? AND status = 'pending'",
+            (selected["run_id"],),
+        ).fetchall()
+        response = canonical_json_bytes(cls._projection(connection, selected))
+        for operation in pending:
+            connection.execute(
+                "UPDATE demo_operations SET status = 'complete', result_document = ?, "
+                "completed_at = ? WHERE run_id = ? AND operation = ?",
+                (response, now_value, selected["run_id"], operation[0]),
+            )
+        return selected
+
+    @classmethod
+    def _expire_active(cls, connection: sqlite3.Connection, *, now: datetime) -> None:
+        active = connection.execute(
+            "SELECT runs.* FROM demo_active_run AS active "
+            "JOIN demo_runs AS runs ON runs.run_id = active.run_id WHERE active.slot = 1"
+        ).fetchone()
+        if active is None:
+            return
+        run = cls._run(cast(sqlite3.Row, active))
+        if _parse_timestamp(run["lease_expires_at"]) <= now:
+            cls._terminalize(connection, run, phase="expired", reason="lease-expired", now=now)
+
+    def create(
+        self,
+        *,
+        run_id: str,
+        incident_id: str,
+        source_commit: str,
+        nonce_sha256: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        now_value = _timestamp(now)
+        expires = _timestamp(now + timedelta(seconds=LEASE_SECONDS))
+        with self._transaction(write=True) as connection:
+            self._expire_active(connection, now=now)
+            if connection.execute("SELECT 1 FROM demo_active_run WHERE slot = 1").fetchone():
+                raise DemoFacadeError("demo-active-run-exists")
+            connection.execute(
+                "INSERT INTO demo_runs(run_id, incident_id, scenario_id, source_commit, phase, "
+                "version, lease_expires_at, approval_nonce_sha256, approval_phrase, created_at, "
+                "updated_at) VALUES(?, ?, ?, ?, 'preparing', 1, ?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    incident_id,
+                    CANONICAL_SCENARIO,
+                    source_commit,
+                    expires,
+                    nonce_sha256,
+                    APPROVAL_PHRASE,
+                    now_value,
+                    now_value,
+                ),
+            )
+            connection.execute("INSERT INTO demo_active_run(slot, run_id) VALUES(1, ?)", (run_id,))
+            return self._run(self._row(connection, run_id))
+
+    @staticmethod
+    def _insert_visuals(
+        connection: sqlite3.Connection,
+        *,
+        run_id: str,
+        visuals: Sequence[Mapping[str, str]],
+        now_value: str,
+    ) -> None:
+        for visual in visuals:
+            connection.execute(
+                "INSERT INTO demo_visuals(run_id, kind, relative_path, media_type, "
+                "content_sha256, created_at) VALUES(?, ?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    visual["kind"],
+                    visual["path"],
+                    visual["media_type"],
+                    visual["sha256"],
+                    now_value,
+                ),
+            )
+
+    def complete_preparation(
+        self,
+        run_id: str,
+        preparation: Mapping[str, Any],
+        *,
+        now: datetime,
+    ) -> dict[str, Any]:
+        now_value = _timestamp(now)
+        expires = _timestamp(now + timedelta(seconds=LEASE_SECONDS))
+        with self._transaction(write=True) as connection:
+            run = self._run(self._row(connection, run_id))
+            if run["phase"] != "preparing":
+                raise DemoFacadeError("demo-run-phase-conflict")
+            if _parse_timestamp(run["lease_expires_at"]) <= now:
+                return self._terminalize(
+                    connection,
+                    run,
+                    phase="expired",
+                    reason="lease-expired",
+                    now=now,
+                )
+            connection.execute(
+                "UPDATE demo_runs SET phase = 'awaiting-approval', version = version + 1, "
+                "lease_expires_at = ?, incident_version = ?, plan_version = ?, "
+                "plan_sha256 = ?, target_sha256 = ?, updated_at = ? WHERE run_id = ?",
+                (
+                    expires,
+                    preparation["incident_version"],
+                    preparation["plan_version"],
+                    preparation["plan_sha256"],
+                    preparation["target_sha256"],
+                    now_value,
+                    run_id,
+                ),
+            )
+            self._insert_visuals(
+                connection,
+                run_id=run_id,
+                visuals=cast(Sequence[Mapping[str, str]], preparation["visuals"]),
+                now_value=now_value,
+            )
+            return self._run(self._row(connection, run_id))
+
+    def get(self, run_id: str, *, now: datetime) -> dict[str, Any]:
+        with self._transaction(write=True) as connection:
+            self._expire_active(connection, now=now)
+            run = self._run(self._row(connection, run_id))
+            return self._projection(connection, run)
+
+    def raw(self, run_id: str, *, now: datetime) -> dict[str, Any]:
+        with self._transaction(write=True) as connection:
+            self._expire_active(connection, now=now)
+            return self._run(self._row(connection, run_id))
+
+    def transient(self, *, now: datetime) -> dict[str, Any] | None:
+        with self._transaction(write=True) as connection:
+            self._expire_active(connection, now=now)
+            row = connection.execute(
+                "SELECT runs.* FROM demo_active_run AS active "
+                "JOIN demo_runs AS runs ON runs.run_id = active.run_id "
+                "WHERE active.slot = 1"
+            ).fetchone()
+            if row is None:
+                return None
+            run = self._run(cast(sqlite3.Row, row))
+            return run if run["phase"] in _TRANSIENT_PHASES else None
+
+    def fail(self, run_id: str, *, reason: str, now: datetime) -> dict[str, Any]:
+        with self._transaction(write=True) as connection:
+            run = self._run(self._row(connection, run_id))
+            selected = self._terminalize(
+                connection, run, phase="unresolved", reason=reason, now=now
+            )
+            return self._projection(connection, selected)
+
+    @staticmethod
+    def _operation_replay(
+        connection: sqlite3.Connection,
+        *,
+        run_id: str,
+        operation: str,
+        idempotency_key: str,
+        request_sha256: str,
+    ) -> dict[str, Any] | None:
+        row = connection.execute(
+            "SELECT * FROM demo_operations WHERE run_id = ? AND operation = ?",
+            (run_id, operation),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["idempotency_key"] != idempotency_key or row["request_sha256"] != request_sha256:
+            raise DemoFacadeError("demo-idempotency-conflict")
+        if row["status"] == "pending":
+            raise DemoFacadeError("demo-operation-in-progress")
+        return _decode_document(row["result_document"], code="stored-demo-operation-invalid")
+
+    def begin_operation(
+        self,
+        run_id: str,
+        *,
+        operation: str,
+        expected_phase: str,
+        next_phase: str,
+        expected_version: int,
+        idempotency_key: str,
+        request_sha256: str,
+        now: datetime,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        now_value = _timestamp(now)
+        expires = _timestamp(now + timedelta(seconds=LEASE_SECONDS))
+        with self._transaction(write=True) as connection:
+            self._expire_active(connection, now=now)
+            run = self._run(self._row(connection, run_id))
+            replay = self._operation_replay(
+                connection,
+                run_id=run_id,
+                operation=operation,
+                idempotency_key=idempotency_key,
+                request_sha256=request_sha256,
+            )
+            if replay is not None:
+                return run, replay
+            if run["phase"] != expected_phase:
+                raise DemoFacadeError("demo-run-phase-conflict")
+            if run["version"] != expected_version:
+                raise DemoFacadeError("demo-run-version-conflict")
+            connection.execute(
+                "INSERT INTO demo_operations(run_id, operation, idempotency_key, "
+                "request_sha256, status, created_at) VALUES(?, ?, ?, ?, 'pending', ?)",
+                (run_id, operation, idempotency_key, request_sha256, now_value),
+            )
+            connection.execute(
+                "UPDATE demo_runs SET phase = ?, version = version + 1, lease_expires_at = ?, "
+                "updated_at = ? WHERE run_id = ?",
+                (next_phase, expires, now_value, run_id),
+            )
+            return self._run(self._row(connection, run_id)), None
+
+    def complete_execution(
+        self,
+        run_id: str,
+        execution: Mapping[str, Any],
+        *,
+        now: datetime,
+    ) -> dict[str, Any]:
+        now_value = _timestamp(now)
+        expires = _timestamp(now + timedelta(seconds=LEASE_SECONDS))
+        with self._transaction(write=True) as connection:
+            run = self._run(self._row(connection, run_id))
+            if run["phase"] != "executing":
+                raise DemoFacadeError("demo-run-phase-conflict")
+            lease_expired = _parse_timestamp(run["lease_expires_at"]) <= now
+            connection.execute(
+                "UPDATE demo_runs SET phase = 'awaiting-closure', version = version + 1, "
+                "lease_expires_at = ?, outcome_id = ?, outcome_sha256 = ?, workflow_id = ?, "
+                "workflow_version = ?, packet_id = ?, packet_sha256 = ?, updated_at = ? "
+                "WHERE run_id = ?",
+                (
+                    expires,
+                    execution["outcome_id"],
+                    execution["outcome_sha256"],
+                    execution["workflow_id"],
+                    execution["workflow_version"],
+                    execution["packet_id"],
+                    execution["packet_sha256"],
+                    now_value,
+                    run_id,
+                ),
+            )
+            self._insert_visuals(
+                connection,
+                run_id=run_id,
+                visuals=cast(Sequence[Mapping[str, str]], execution["visuals"]),
+                now_value=now_value,
+            )
+            selected = self._run(self._row(connection, run_id))
+            if lease_expired:
+                selected = self._terminalize(
+                    connection,
+                    selected,
+                    phase="unresolved",
+                    reason="execution-lease-expired",
+                    now=now,
+                )
+                return self._projection(connection, selected)
+            result = self._projection(connection, selected)
+            connection.execute(
+                "UPDATE demo_operations SET status = 'complete', result_document = ?, "
+                "completed_at = ? WHERE run_id = ? AND operation = 'approve' "
+                "AND status = 'pending'",
+                (canonical_json_bytes(result), now_value, run_id),
+            )
+            return result
+
+    def complete_closure(
+        self,
+        run_id: str,
+        closure: Mapping[str, Any],
+        *,
+        now: datetime,
+    ) -> dict[str, Any]:
+        with self._transaction(write=True) as connection:
+            run = self._run(self._row(connection, run_id))
+            if run["phase"] != "closing":
+                raise DemoFacadeError("demo-run-phase-conflict")
+            if closure.get("workflow_version_after") != cast(int, run["workflow_version"]) + 1:
+                raise DemoFacadeError("demo-closure-binding-invalid")
+            selected = self._terminalize(
+                connection,
+                run,
+                phase="closed",
+                reason="recovery-closed",
+                now=now,
+                closure=closure,
+            )
+            return self._projection(connection, selected)
+
+    def reset(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        idempotency_key: str,
+        request_sha256: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        now_value = _timestamp(now)
+        with self._transaction(write=True) as connection:
+            self._expire_active(connection, now=now)
+            run = self._run(self._row(connection, run_id))
+            existing = connection.execute(
+                "SELECT * FROM demo_resets WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["idempotency_key"] != idempotency_key
+                    or existing["request_sha256"] != request_sha256
+                ):
+                    raise DemoFacadeError("demo-idempotency-conflict")
+                return _decode_document(
+                    existing["result_document"], code="stored-demo-reset-invalid"
+                )
+            if run["phase"] not in _TERMINAL_PHASES:
+                raise DemoFacadeError("demo-reset-not-terminal")
+            if run["version"] != expected_version:
+                raise DemoFacadeError("demo-run-version-conflict")
+            result = {
+                "schema": RESET_SCHEMA,
+                "run_id": run_id,
+                "phase": run["phase"],
+                "version": run["version"],
+                "reset": True,
+                "receipt_href": f"/v1/demo/runs/{run_id}/receipt",
+            }
+            connection.execute(
+                "INSERT INTO demo_resets(run_id, idempotency_key, request_sha256, "
+                "result_document, reset_at) VALUES(?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    idempotency_key,
+                    request_sha256,
+                    canonical_json_bytes(result),
+                    now_value,
+                ),
+            )
+            return result
+
+    def receipt(self, run_id: str, *, now: datetime) -> dict[str, Any]:
+        with self._transaction(write=True) as connection:
+            self._expire_active(connection, now=now)
+            self._run(self._row(connection, run_id))
+            row = connection.execute(
+                "SELECT * FROM demo_receipts WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise DemoFacadeError("demo-receipt-not-ready")
+            value = _decode_document(row["receipt_document"], code="stored-demo-receipt-invalid")
+            receipt_sha256 = value.get("receipt_sha256")
+            receipt_id = value.get("receipt_id")
+            body = {
+                key: child
+                for key, child in value.items()
+                if key not in {"receipt_id", "receipt_sha256"}
+            }
+            expected = document_sha256(body)
+            if (
+                receipt_sha256 != expected
+                or receipt_id != f"demo-receipt:{expected.removeprefix('sha256:')}"
+                or row["receipt_id"] != receipt_id
+                or row["receipt_sha256"] != receipt_sha256
+            ):
+                raise DemoFacadeError("stored-demo-receipt-invalid")
+            return value
+
+    def visual_descriptor(self, run_id: str, kind: str, *, now: datetime) -> dict[str, str]:
+        with self._transaction(write=True) as connection:
+            self._expire_active(connection, now=now)
+            self._run(self._row(connection, run_id))
+            row = connection.execute(
+                "SELECT relative_path, media_type, content_sha256 FROM demo_visuals "
+                "WHERE run_id = ? AND kind = ?",
+                (run_id, kind),
+            ).fetchone()
+            if row is None:
+                raise DemoFacadeError("demo-visual-not-found")
+            return {
+                "path": _relative_visual_path(row["relative_path"]),
+                "media_type": cast(str, row["media_type"]),
+                "sha256": _require_digest(row["content_sha256"], code="stored-demo-visual-invalid"),
+            }
+
+
+class DemoFacade:
+    def __init__(
+        self,
+        *,
+        store: SQLiteDemoRunStore,
+        workflow: DemoWorkflowPort,
+        source_commit: str,
+        visual_root: str | Path,
+        recovery: RecoveryApi | None = None,
+        closure_principal: Principal | None = None,
+        clock: Callable[[], datetime] = _utc_now,
+        run_id_factory: Callable[[], str] | None = None,
+        nonce_factory: Callable[[], str] | None = None,
+        reconcile_on_startup: bool = True,
+    ) -> None:
+        if _COMMIT.fullmatch(source_commit) is None:
+            raise DemoFacadeError("demo-source-commit-invalid")
+        root = Path(visual_root)
+        try:
+            resolved = root.resolve(strict=True)
+            metadata = root.lstat()
+        except OSError as error:
+            raise DemoFacadeError("demo-visual-root-invalid") from error
+        if root.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+            raise DemoFacadeError("demo-visual-root-invalid")
+        self._store = store
+        self._workflow = workflow
+        self._source_commit = source_commit
+        self._visual_root = resolved
+        self._recovery = recovery
+        self._closure_principal = closure_principal
+        self._clock = clock
+        self._run_id_factory = run_id_factory or (lambda: f"demo-run-{secrets.token_hex(16)}")
+        self._nonce_factory = nonce_factory or (lambda: secrets.token_urlsafe(32))
+        if reconcile_on_startup:
+            self.reconcile_startup()
+
+    def _now(self) -> datetime:
+        value = self._clock()
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise DemoFacadeError("demo-time-invalid")
+        return value.astimezone(UTC)
+
+    def _verify_visual(self, descriptor: Mapping[str, str]) -> None:
+        self._read_visual(descriptor)
+
+    def _read_visual(self, descriptor: Mapping[str, str]) -> bytes:
+        relative = _relative_visual_path(descriptor.get("path"))
+        candidate = self._visual_root.joinpath(*PurePosixPath(relative).parts)
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(self._visual_root)
+            if candidate != resolved or candidate.is_symlink():
+                raise DemoFacadeError("demo-visual-path-invalid")
+            metadata = resolved.stat(follow_symlinks=False)
+        except DemoFacadeError:
+            raise
+        except (OSError, ValueError) as error:
+            raise DemoFacadeError("demo-visual-unavailable") from error
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size < 1
+            or metadata.st_size > _MAX_VISUAL_BYTES
+        ):
+            raise DemoFacadeError("demo-visual-invalid")
+        flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor_fd = os.open(resolved, flags)
+            try:
+                opened = os.fstat(descriptor_fd)
+                if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+                    raise DemoFacadeError("demo-visual-path-changed")
+                chunks: list[bytes] = []
+                remaining = _MAX_VISUAL_BYTES + 1
+                while remaining > 0:
+                    chunk = os.read(descriptor_fd, min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                content = b"".join(chunks)
+            finally:
+                os.close(descriptor_fd)
+        except DemoFacadeError:
+            raise
+        except OSError as error:
+            raise DemoFacadeError("demo-visual-unavailable") from error
+        if not content.startswith(b"\x89PNG\r\n\x1a\n") or len(content) > _MAX_VISUAL_BYTES:
+            raise DemoFacadeError("demo-visual-invalid")
+        actual = f"sha256:{hashlib.sha256(content).hexdigest()}"
+        if not hmac.compare_digest(actual, descriptor["sha256"]):
+            raise DemoFacadeError("demo-visual-digest-conflict")
+        return content
+
+    def _verify_visuals(self, visuals: Sequence[Mapping[str, str]]) -> None:
+        for descriptor in visuals:
+            self._verify_visual(descriptor)
+
+    def start(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        _require_exact(body, frozenset({"schema", "scenario_id"}), RUN_REQUEST_SCHEMA)
+        if body.get("scenario_id") != CANONICAL_SCENARIO:
+            raise DemoFacadeError("demo-scenario-invalid")
+        run_id = self._run_id_factory()
+        nonce = self._nonce_factory()
+        if _RUN_ID.fullmatch(run_id) is None or _NONCE.fullmatch(nonce) is None:
+            raise DemoFacadeError("demo-identity-generation-invalid")
+        incident_id = f"incident-demo-{run_id.removeprefix('demo-run-')}"
+        now = self._now()
+        run = self._store.create(
+            run_id=run_id,
+            incident_id=incident_id,
+            source_commit=self._source_commit,
+            nonce_sha256=_nonce_sha256(nonce),
+            now=now,
+        )
+        request = {
+            "schema": "colortrace-demo-preparation-request/v1",
+            "run_id": run_id,
+            "incident_id": incident_id,
+            "scenario_id": CANONICAL_SCENARIO,
+            "source_commit": self._source_commit,
+            "idempotency_key": f"prepare:{run_id}",
+        }
+        try:
+            raw = self._workflow.prepare(request)
+            preparation = _validate_preparation(raw, run_id=run_id, incident_id=incident_id)
+            self._verify_visuals(cast(Sequence[Mapping[str, str]], preparation["visuals"]))
+            self._store.complete_preparation(run_id, preparation, now=self._now())
+            result = self._store.get(run_id, now=self._now())
+        except Exception:
+            return self._store.fail(
+                cast(str, run["run_id"]),
+                reason="preparation-failed",
+                now=self._now(),
+            )
+        if result["phase"] == "awaiting-approval":
+            result["approval_nonce"] = nonce
+        return result
+
+    @staticmethod
+    def _approval_request(body: Mapping[str, Any]) -> dict[str, Any]:
+        fields = frozenset(
+            {
+                "schema",
+                "approval_nonce",
+                "approval_phrase",
+                "expected_run_version",
+                "expected_incident_version",
+                "expected_plan_version",
+                "expected_plan_sha256",
+                "expected_target_sha256",
+                "idempotency_key",
+            }
+        )
+        _require_exact(body, fields, APPROVAL_REQUEST_SCHEMA)
+        nonce = body.get("approval_nonce")
+        phrase = body.get("approval_phrase")
+        if not isinstance(nonce, str) or _NONCE.fullmatch(nonce) is None:
+            raise DemoFacadeError("demo-approval-nonce-invalid")
+        if phrase != APPROVAL_PHRASE:
+            raise DemoFacadeError("demo-approval-phrase-invalid")
+        return {
+            "approval_nonce": nonce,
+            "approval_phrase": phrase,
+            "expected_run_version": _require_version(
+                body.get("expected_run_version"), code="demo-run-version-invalid"
+            ),
+            "expected_incident_version": _require_version(
+                body.get("expected_incident_version"), code="demo-incident-version-invalid"
+            ),
+            "expected_plan_version": _require_version(
+                body.get("expected_plan_version"), code="demo-plan-version-invalid"
+            ),
+            "expected_plan_sha256": _require_digest(
+                body.get("expected_plan_sha256"), code="demo-plan-digest-invalid"
+            ),
+            "expected_target_sha256": _require_digest(
+                body.get("expected_target_sha256"), code="demo-target-digest-invalid"
+            ),
+            "idempotency_key": _require_idempotency_key(body.get("idempotency_key")),
+        }
+
+    def approve(self, run_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        if _RUN_ID.fullmatch(run_id) is None:
+            raise DemoFacadeError("demo-run-id-invalid")
+        request = self._approval_request(body)
+        current = self._store.raw(run_id, now=self._now())
+        if not hmac.compare_digest(
+            cast(str, current["approval_nonce_sha256"]),
+            _nonce_sha256(cast(str, request["approval_nonce"])),
+        ):
+            raise DemoFacadeError("demo-approval-nonce-invalid")
+        bindings = {
+            "expected_incident_version": "incident_version",
+            "expected_plan_version": "plan_version",
+            "expected_plan_sha256": "plan_sha256",
+            "expected_target_sha256": "target_sha256",
+        }
+        if any(request[provided] != current[stored] for provided, stored in bindings.items()):
+            raise DemoFacadeError("demo-approval-binding-conflict")
+        digest_body = {
+            **request,
+            "approval_nonce": _nonce_sha256(cast(str, request["approval_nonce"])),
+        }
+        request_sha256 = document_sha256(digest_body)
+        started, replay = self._store.begin_operation(
+            run_id,
+            operation="approve",
+            expected_phase="awaiting-approval",
+            next_phase="executing",
+            expected_version=cast(int, request["expected_run_version"]),
+            idempotency_key=cast(str, request["idempotency_key"]),
+            request_sha256=request_sha256,
+            now=self._now(),
+        )
+        if replay is not None:
+            return replay
+        execution_request = {
+            "schema": "colortrace-demo-execution-request/v1",
+            "run_id": started["run_id"],
+            "incident_id": started["incident_id"],
+            "incident_version": started["incident_version"],
+            "plan_version": started["plan_version"],
+            "plan_sha256": started["plan_sha256"],
+            "target_sha256": started["target_sha256"],
+            "idempotency_key": request["idempotency_key"],
+        }
+        try:
+            raw = self._workflow.execute(execution_request)
+            execution = _validate_execution(raw, run=started)
+            self._verify_visuals(cast(Sequence[Mapping[str, str]], execution["visuals"]))
+            return self._store.complete_execution(run_id, execution, now=self._now())
+        except Exception:
+            return self._store.fail(run_id, reason="execution-failed", now=self._now())
+
+    @staticmethod
+    def _closure_request(body: Mapping[str, Any]) -> dict[str, Any]:
+        fields = frozenset(
+            {
+                "schema",
+                "expected_run_version",
+                "expected_incident_version",
+                "expected_workflow_version",
+                "expected_packet_id",
+                "expected_packet_sha256",
+                "expected_outcome_id",
+                "expected_outcome_sha256",
+                "reason",
+                "idempotency_key",
+            }
+        )
+        _require_exact(body, fields, CLOSURE_REQUEST_SCHEMA)
+        reason = body.get("reason")
+        if (
+            not isinstance(reason, str)
+            or reason != reason.strip()
+            or not 1 <= len(reason) <= 512
+            or "\x00" in reason
+        ):
+            raise DemoFacadeError("demo-closure-reason-invalid")
+        return {
+            "expected_run_version": _require_version(
+                body.get("expected_run_version"), code="demo-run-version-invalid"
+            ),
+            "expected_incident_version": _require_version(
+                body.get("expected_incident_version"), code="demo-incident-version-invalid"
+            ),
+            "expected_workflow_version": _require_version(
+                body.get("expected_workflow_version"), code="demo-workflow-version-invalid"
+            ),
+            "expected_packet_id": _require_identifier(
+                body.get("expected_packet_id"), code="demo-packet-id-invalid"
+            ),
+            "expected_packet_sha256": _require_digest(
+                body.get("expected_packet_sha256"), code="demo-packet-digest-invalid"
+            ),
+            "expected_outcome_id": _require_identifier(
+                body.get("expected_outcome_id"), code="demo-outcome-id-invalid"
+            ),
+            "expected_outcome_sha256": _require_digest(
+                body.get("expected_outcome_sha256"), code="demo-outcome-digest-invalid"
+            ),
+            "reason": reason,
+            "idempotency_key": _require_idempotency_key(body.get("idempotency_key")),
+        }
+
+    @staticmethod
+    def _validate_closure(value: Mapping[str, Any], *, run: Mapping[str, Any]) -> dict[str, Any]:
+        selected = validate_closure_result(value)
+        bindings = {
+            "incident_id": run["incident_id"],
+            "workflow_id": run["workflow_id"],
+            "workflow_version_before": run["workflow_version"],
+            "packet_id": run["packet_id"],
+            "packet_sha256": run["packet_sha256"],
+            "outcome_id": run["outcome_id"],
+            "outcome_sha256": run["outcome_sha256"],
+        }
+        if any(selected.get(key) != expected for key, expected in bindings.items()):
+            raise DemoFacadeError("demo-closure-binding-invalid")
+        after = _require_version(
+            selected.get("workflow_version_after"), code="demo-workflow-version-invalid"
+        )
+        if after != cast(int, run["workflow_version"]) + 1:
+            raise DemoFacadeError("demo-closure-binding-invalid")
+        return selected
+
+    def close(self, run_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        if _RUN_ID.fullmatch(run_id) is None:
+            raise DemoFacadeError("demo-run-id-invalid")
+        request = self._closure_request(body)
+        current = self._store.raw(run_id, now=self._now())
+        bindings = {
+            "expected_incident_version": "incident_version",
+            "expected_workflow_version": "workflow_version",
+            "expected_packet_id": "packet_id",
+            "expected_packet_sha256": "packet_sha256",
+            "expected_outcome_id": "outcome_id",
+            "expected_outcome_sha256": "outcome_sha256",
+        }
+        if any(request[provided] != current[stored] for provided, stored in bindings.items()):
+            raise DemoFacadeError("demo-closure-binding-conflict")
+        request_sha256 = document_sha256(request)
+        started, replay = self._store.begin_operation(
+            run_id,
+            operation="close",
+            expected_phase="awaiting-closure",
+            next_phase="closing",
+            expected_version=cast(int, request["expected_run_version"]),
+            idempotency_key=cast(str, request["idempotency_key"]),
+            request_sha256=request_sha256,
+            now=self._now(),
+        )
+        if replay is not None:
+            return replay
+        if self._recovery is None or self._closure_principal is None:
+            return self._store.fail(run_id, reason="closure-unavailable", now=self._now())
+        delegated = {
+            "schema": "recovery-closure-request/v1",
+            "expected_incident_version": request["expected_incident_version"],
+            "expected_workflow_version": request["expected_workflow_version"],
+            "expected_packet_id": request["expected_packet_id"],
+            "expected_packet_sha256": request["expected_packet_sha256"],
+            "expected_outcome_id": request["expected_outcome_id"],
+            "expected_outcome_sha256": request["expected_outcome_sha256"],
+            "reason": request["reason"],
+            "idempotency_key": request["idempotency_key"],
+        }
+        try:
+            raw = self._recovery.close(
+                self._closure_principal,
+                cast(str, started["incident_id"]),
+                delegated,
+            )
+            closure = self._validate_closure(raw, run=started)
+            return self._store.complete_closure(run_id, closure, now=self._now())
+        except Exception:
+            return self._store.fail(run_id, reason="closure-failed", now=self._now())
+
+    def get(self, run_id: str) -> dict[str, Any]:
+        if _RUN_ID.fullmatch(run_id) is None:
+            raise DemoFacadeError("demo-run-id-invalid")
+        return self._store.get(run_id, now=self._now())
+
+    def reset(self, run_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        if _RUN_ID.fullmatch(run_id) is None:
+            raise DemoFacadeError("demo-run-id-invalid")
+        _require_exact(
+            body,
+            frozenset({"schema", "expected_run_version", "idempotency_key"}),
+            RESET_REQUEST_SCHEMA,
+        )
+        expected = _require_version(
+            body.get("expected_run_version"), code="demo-run-version-invalid"
+        )
+        key = _require_idempotency_key(body.get("idempotency_key"))
+        request = {
+            "schema": RESET_REQUEST_SCHEMA,
+            "expected_run_version": expected,
+            "idempotency_key": key,
+        }
+        return self._store.reset(
+            run_id,
+            expected_version=expected,
+            idempotency_key=key,
+            request_sha256=document_sha256(request),
+            now=self._now(),
+        )
+
+    def receipt(self, run_id: str) -> dict[str, Any]:
+        if _RUN_ID.fullmatch(run_id) is None:
+            raise DemoFacadeError("demo-run-id-invalid")
+        return self._store.receipt(run_id, now=self._now())
+
+    def visual(self, run_id: str, kind: str) -> DemoVisual:
+        if _RUN_ID.fullmatch(run_id) is None:
+            raise DemoFacadeError("demo-run-id-invalid")
+        if kind not in _VISUAL_KINDS:
+            raise DemoFacadeError("demo-visual-kind-invalid")
+        descriptor = self._store.visual_descriptor(run_id, kind, now=self._now())
+        content = self._read_visual(descriptor)
+        return DemoVisual(
+            content=content,
+            media_type=descriptor["media_type"],
+            sha256=descriptor["sha256"],
+        )
+
+    def reconcile_startup(self) -> None:
+        run = self._store.transient(now=self._now())
+        if run is None:
+            return
+        if run["phase"] == "closing":
+            try:
+                if self._recovery is None:
+                    raise DemoFacadeError("demo-reconciliation-inconclusive")
+                review = self._recovery.review(cast(str, run["incident_id"]))
+                raw_closure = review.get("closure")
+                if not isinstance(raw_closure, Mapping):
+                    raise DemoFacadeError("demo-reconciliation-inconclusive")
+                closure = self._validate_closure(raw_closure, run=run)
+                self._store.complete_closure(cast(str, run["run_id"]), closure, now=self._now())
+            except Exception:
+                self._store.fail(
+                    cast(str, run["run_id"]),
+                    reason="restart-reconciliation-failed",
+                    now=self._now(),
+                )
+            return
+        request = {
+            "schema": RECONCILIATION_REQUEST_SCHEMA,
+            "run_id": run["run_id"],
+            "incident_id": run["incident_id"],
+            "phase": run["phase"],
+            "run_version": run["version"],
+        }
+        try:
+            result = self._workflow.reconcile(request)
+            if result is None:
+                raise DemoFacadeError("demo-reconciliation-inconclusive")
+            if run["phase"] == "preparing":
+                preparation = _validate_preparation(
+                    result,
+                    run_id=cast(str, run["run_id"]),
+                    incident_id=cast(str, run["incident_id"]),
+                )
+                self._verify_visuals(cast(Sequence[Mapping[str, str]], preparation["visuals"]))
+                self._store.complete_preparation(
+                    cast(str, run["run_id"]), preparation, now=self._now()
+                )
+            elif run["phase"] == "executing":
+                execution = _validate_execution(result, run=run)
+                self._verify_visuals(cast(Sequence[Mapping[str, str]], execution["visuals"]))
+                self._store.complete_execution(cast(str, run["run_id"]), execution, now=self._now())
+            else:
+                raise DemoFacadeError("demo-reconciliation-inconclusive")
+        except Exception:
+            self._store.fail(
+                cast(str, run["run_id"]),
+                reason="restart-reconciliation-failed",
+                now=self._now(),
+            )
+
+
+__all__ = [
+    "APPROVAL_PHRASE",
+    "APPROVAL_REQUEST_SCHEMA",
+    "CANONICAL_SCENARIO",
+    "CLOSURE_REQUEST_SCHEMA",
+    "DemoApi",
+    "DemoFacade",
+    "DemoFacadeError",
+    "DemoVisual",
+    "DemoWorkflowPort",
+    "EXECUTION_SCHEMA",
+    "LEASE_SECONDS",
+    "PREPARATION_SCHEMA",
+    "RECEIPT_SCHEMA",
+    "RECONCILIATION_REQUEST_SCHEMA",
+    "RESET_REQUEST_SCHEMA",
+    "RESET_SCHEMA",
+    "RUN_REQUEST_SCHEMA",
+    "RUN_SCHEMA",
+    "SQLiteDemoRunStore",
+]
