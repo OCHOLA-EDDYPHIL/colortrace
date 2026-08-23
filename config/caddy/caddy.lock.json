@@ -1,0 +1,61 @@
+{
+  "schema": "colortrace-caddy-runtime-lock/v1",
+  "source_repository": "https://github.com/caddyserver/caddy",
+  "source_tag": "v2.11.4",
+  "source_commit": "e2eee6a7fce366321294c9c2a79f3146891dcbdf",
+  "source_tree": "89190a02601c918d8de199c16a9d7d778ba204fa",
+  "source_archive": "https://codeload.github.com/caddyserver/caddy/tar.gz/e2eee6a7fce366321294c9c2a79f3146891dcbdf",
+  "source_archive_sha256": "a593bd7077c76102ca76d19287a5e247d4e359dd67eddbc933f865afd3c131eb",
+  "source_module": "github.com/caddyserver/caddy/v2",
+  "source_module_version": "v2.11.4",
+  "source_module_sum": "h1:XKxkMTgNSizEvKG6QHue6cAsFOteU2qA61w2tKkCWi0=",
+  "toolchain_image": "golang@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83",
+  "toolchain_version": "go1.26.6",
+  "build_module_sha256": "ead34b17f4bf81fa214fc790ab80029f18222530c0bd8d4d03e5cd9bb1783872",
+  "build_sum_sha256": "c547ceb00efbc9670c92d4074cd0fa58341e1411ccc057e81dbeb04177f330ae",
+  "build_main_sha256": "c1614b4d01d82b6d9fe7da448fbc9c91201223b5e23cb67cf7f17ecb65306e51",
+  "build_list_sha256": "66fe492187a1f400b7e932369bd59af454ce98d52c20d40218f5a6342432b08f",
+  "build_flags": [
+    "-trimpath",
+    "-buildvcs=false",
+    "-mod=readonly",
+    "-ldflags=-s -w -buildid= -X github.com/caddyserver/caddy/v2.CustomVersion=v2.11.4"
+  ],
+  "security_dependency_changes": [
+    {
+      "module": "golang.org/x/crypto",
+      "upstream": "v0.52.0",
+      "selected": "v0.53.0"
+    },
+    {
+      "module": "golang.org/x/net",
+      "upstream": "v0.55.0",
+      "selected": "v0.56.0"
+    },
+    {
+      "module": "golang.org/x/text",
+      "upstream": "v0.37.0",
+      "selected": "v0.39.0"
+    },
+    {
+      "module": "google.golang.org/grpc",
+      "upstream": "v1.81.0",
+      "selected": "v1.82.1"
+    }
+  ],
+  "required_modules": [
+    "http.authentication.hashes.bcrypt",
+    "http.authentication.providers.http_basic",
+    "http.handlers.authentication",
+    "http.handlers.headers",
+    "http.handlers.reverse_proxy",
+    "tls.issuance.acme",
+    "tls.issuance.internal"
+  ],
+  "binary_sha256": "4b57bb1bd9cd9a97b9dfec1ef56e530d4726574954b12d699789da862fc94988",
+  "caddy_license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+  "go_license_sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+  "runtime_uid": 65532,
+  "runtime_gid": 65532,
+  "runtime_rootfs": "scratch"
+}

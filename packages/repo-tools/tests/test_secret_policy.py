@@ -27,6 +27,21 @@ class SecretPolicyTest(unittest.TestCase):
 
         self.assertIsNotNone(re.search(rule["regex"], _synthetic_token()))
 
+    def test_invalid_basic_auth_probe_has_a_narrow_allowlist(self) -> None:
+        with GITLEAKS_CONFIG.open("rb") as handle:
+            configuration = tomllib.load(handle)
+        allowlist = next(
+            item
+            for item in configuration["allowlists"]
+            if item["description"]
+            == "Deliberate invalid Basic-auth probe in the single-host verifier"
+        )
+
+        self.assertEqual(allowlist["targetRules"], ["curl-auth-user"])
+        self.assertEqual(allowlist["condition"], "AND")
+        self.assertEqual(allowlist["paths"], [r"^infra/single-host/scripts/verify-host[.]sh$"])
+        self.assertEqual(allowlist["regexes"], [r"^'colortrace-invalid:invalid'$"])
+
     def test_gitleaks_rejects_temporary_synthetic_fixture(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

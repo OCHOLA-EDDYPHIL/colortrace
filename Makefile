@@ -117,11 +117,13 @@ bootstrap: prepare-cache build-tools
 	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
 	$(TOOL_RUN) pnpm install --frozen-lockfile --store-dir $(PNPM_STORE)
 	$(TOOL_RUN) terraform -chdir=infra/staging init -backend=false -input=false
+	$(TOOL_RUN) terraform -chdir=infra/single-host init -backend=false -input=false
 
 bootstrap-quality: prepare-cache build-quality-tools
 	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
 	$(TOOL_RUN) pnpm install --frozen-lockfile --store-dir $(PNPM_STORE)
 	$(TOOL_RUN) terraform -chdir=infra/staging init -backend=false -input=false
+	$(TOOL_RUN) terraform -chdir=infra/single-host init -backend=false -input=false
 
 bootstrap-security: prepare-cache build-security-tools
 	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
@@ -363,6 +365,13 @@ check-terraform: prepare-cache
 	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/staging fmt -check -recursive
 	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/staging validate
 	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/staging test -no-color
+	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/single-host fmt -check -recursive
+	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/single-host validate
+	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/single-host test -no-color
+	$(TOOL_RUN_OFFLINE) python -m unittest discover \
+		-s infra/single-host/tests -p 'test_*.py' -v
+	$(TOOL_RUN_OFFLINE) bash -n infra/single-host/scripts/*.sh \
+		infra/single-host/templates/startup.sh.tftpl
 
 check-telemetry: prepare-cache
 	@set -eu; \

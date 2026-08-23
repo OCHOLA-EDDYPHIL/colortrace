@@ -1,0 +1,180 @@
+{
+  "schema": "colortrace-staging-observability-images/v2",
+  "toolchain": {
+    "go": "1.26.6",
+    "image": "golang@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83"
+  },
+  "source_built": {
+    "grafana": {
+      "version": "13.2.0-colortrace.1",
+      "runtime_base": {
+        "version": "13.2.0-distroless-slim",
+        "index_digest": "sha256:bbaacd430cde39037818a05a6926ff18f7c67a4e1aa34ba034eedf7f4337103f",
+        "linux_amd64_digest": "sha256:19adcd07c96e2a99da64dd5e19b5ad115ca8e449ecac100ca5ab5c0a3da9a158"
+      },
+      "official_plugin_assets": {
+        "version": "13.2.0-distroless",
+        "index_digest": "sha256:08e6ab6d67a5e21e6540724d3673a572840a43b1ba02d03922d0a21a7dbb38f9",
+        "linux_amd64_digest": "sha256:4a8233a6a672604bd88f02bafad7b6631de490b3c6d3c6718a5de11e23de36e7"
+      },
+      "plugins": {
+        "prometheus": {
+          "version": "13.1.7",
+          "source_repository": "https://github.com/grafana/grafana-prometheus-datasource",
+          "source_tag": "v13.1.7",
+          "source_commit": "2e10053dd7d940f9eb91701df5122c8e348a0d18",
+          "source_tree": "248c7a5d30137951fe1dbf78a67578a8d5e73708",
+          "source_archive": "https://codeload.github.com/grafana/grafana-prometheus-datasource/tar.gz/2e10053dd7d940f9eb91701df5122c8e348a0d18",
+          "source_archive_sha256": "8e66640a7c45b6762d1ac14aa7a94b87fa21c771b4d0d739a3a6716d6a019954",
+          "official_package": "https://grafana.com/api/plugins/prometheus/versions/13.1.7/download?os=linux&arch=amd64",
+          "official_package_sha256": "31b0e919ae51db0fdb91ffb2ba0991f358bbd5e02fac676b6ffad56cc223d57c",
+          "official_static_tree_sha256": "3fd8a9aa58220c26df0275ca4dd1d34e67e86a2a3a245e8c33417458dae08d72",
+          "patched_go_mod_sha256": "647e86f151c2b2018051d8dff32a6b9856043ae267506217477ef382b07e611e",
+          "patched_go_sum_sha256": "2a6fc7761327d376a3da255359ff40a54992d10eddc61cae31982caf6e4920db",
+          "module_list_sha256": "1f8faa81bca09e5e00b996b93f71b244a40bb45e9267bf1e884519ca71e606f1",
+          "binary_sha256": "4ab13cfd975a13faaf729fe9751a786f58eb6ba23251273be109f788ea093416",
+          "security_dependency_changes": [
+            {
+              "module": "go toolchain",
+              "upstream": "1.26.5",
+              "selected": "1.26.6"
+            }
+          ]
+        },
+        "loki": {
+          "version": "13.1.0",
+          "source_repository": "https://github.com/grafana/grafana-loki-datasource",
+          "source_tag": "v13.1.0",
+          "source_commit": "6c17d1bd832fa399b9562b21a20b5de0b00a4fb9",
+          "source_tree": "34b986153d4597215d56a0362ee70777cc1afcf1",
+          "source_archive": "https://codeload.github.com/grafana/grafana-loki-datasource/tar.gz/6c17d1bd832fa399b9562b21a20b5de0b00a4fb9",
+          "source_archive_sha256": "237bdc3aa7c5bf3557bb7865c96894d3f37af1b482cde0413daf6163952b8c5a",
+          "official_package": "https://grafana.com/api/plugins/loki/versions/13.1.0/download?os=linux&arch=amd64",
+          "official_package_sha256": "e09d6c6fbadb9e486c4e01f4adb8477a7064d02fa44ca80c639efa47334d731d",
+          "official_static_tree_sha256": "b6bdbe3d6c5b2dfc908ffeb824baa152e3a6da01143783e51561972888a57f7c",
+          "patched_go_mod_sha256": "be6066dde4e9362f4d1b8d05386b304e510601fb1b95b67df87b96a24d33344c",
+          "patched_go_sum_sha256": "9873feeb0546ceef0df2222194378653aa7341e89092fcdad1e141a56e4bc2c7",
+          "module_list_sha256": "c2cb650318bf576468ac0d2b78f494a223dc57c537e5af9cfbf1621e2dd71d0b",
+          "binary_sha256": "049f5fdaebb14c383cc0a237dd3e22c9083538bd09849b2381d9b2d0f01b3b42",
+          "security_dependency_changes": [
+            {
+              "module": "go toolchain",
+              "upstream": "1.26.4",
+              "selected": "1.26.6"
+            },
+            {
+              "module": "google.golang.org/grpc",
+              "upstream": "v1.82.0",
+              "selected": "v1.82.1"
+            }
+          ]
+        },
+        "tempo": {
+          "version": "13.1.5",
+          "source_repository": "https://github.com/grafana/grafana-tempo-datasource",
+          "source_tag": "v13.1.5",
+          "source_commit": "95f2697d64101818287fa873bb683228c1d1d8a5",
+          "source_tree": "26183d9d9b7ba7a56450ec5a73bd150e85870c88",
+          "source_archive": "https://codeload.github.com/grafana/grafana-tempo-datasource/tar.gz/95f2697d64101818287fa873bb683228c1d1d8a5",
+          "source_archive_sha256": "5e14b72b72981823691c275be20b7f0903c2f13743b24556a1656d7116d34bd6",
+          "official_package": "https://grafana.com/api/plugins/tempo/versions/13.1.5/download?os=linux&arch=amd64",
+          "official_package_sha256": "9873241f32c57be89116ed14aa9ec2f567acbb0251c0fa9fdde909c4659a0148",
+          "official_static_tree_sha256": "123c9bd33c5988ddd6adac319a96ac1d18a5a89171b6bb7a8787e843baee102b",
+          "fixed_tempo_proto_source": {
+            "version": "2.10.3",
+            "source_repository": "https://github.com/grafana/tempo",
+            "source_tag": "v2.10.3",
+            "source_commit": "4aeafc237b8d9a8d62e45735131e8a89eb741a00",
+            "source_tree": "ea9aa31378d5c262502eac605bcd9718a98851ae",
+            "source_archive": "https://codeload.github.com/grafana/tempo/tar.gz/4aeafc237b8d9a8d62e45735131e8a89eb741a00",
+            "source_archive_sha256": "6159f130af77216215137a1033e3f573cc83e7aba69a19d618b521b7ab41d81f",
+            "copied_path": "pkg/tempopb"
+          },
+          "patched_go_mod_sha256": "8ee9e1a3973a97d72e05b2c3d7e60a8be4b8cf4de6115440eb935c85c2c2d9f1",
+          "patched_go_sum_sha256": "10925c8ef07e5cb99cf2fdf23040112ea48c2f4f9077b2866bd9d0ace2dfdc16",
+          "module_list_sha256": "1c53069dcdba3cd7e05a920cf2e2c162bde508a9676eb939315e3c4158bb5415",
+          "binary_sha256": "b622f14cf02a740d81848222eebf89c0d3e1358835339386851758d9a5357dbd",
+          "security_dependency_changes": [
+            {
+              "module": "go toolchain",
+              "upstream": "1.26.4",
+              "selected": "1.26.6"
+            },
+            {
+              "module": "github.com/grafana/tempo protobuf sources",
+              "upstream": "v1.5.1-0.20250529124718-87c2dc380cec",
+              "selected": "v2.10.3"
+            },
+            {
+              "module": "google.golang.org/grpc",
+              "upstream": "v1.81.1",
+              "selected": "v1.82.1"
+            },
+            {
+              "module": "golang.org/x/net",
+              "upstream": "v0.55.0",
+              "selected": "v0.56.0"
+            },
+            {
+              "module": "golang.org/x/text",
+              "upstream": "v0.37.0",
+              "selected": "v0.39.0"
+            }
+          ]
+        }
+      },
+      "build_flags": [
+        "-p=2",
+        "-trimpath",
+        "-buildvcs=false",
+        "-mod=readonly",
+        "-ldflags=-s -w -buildid="
+      ],
+      "signature_policy": "Only prometheus,loki,tempo may load unsigned because their exact official static assets are paired with source-built, hash-locked backends; all runtime plugin download and update paths are disabled.",
+      "runtime_uid": 472,
+      "runtime_rootfs": "grafana-13.2.0-distroless-slim"
+    },
+    "loki": {
+      "version": "3.7.6",
+      "source_repository": "https://github.com/grafana/loki",
+      "source_commit": "5003600d7c787b5f047c8d1b0198559471b0caa5",
+      "source_tree": "86028fb3d395adad00f896d9f07b97f0b6994b55",
+      "source_archive": "https://codeload.github.com/grafana/loki/tar.gz/5003600d7c787b5f047c8d1b0198559471b0caa5",
+      "source_archive_sha256": "a9d85e56871a3d00134e67344f70e2c23d3bf13f5b88fa4dc372cead0ec3d5a6",
+      "build_flags": ["-p=2", "-trimpath", "-buildvcs=false", "-mod=readonly", "-tags=netgo", "-ldflags=-s -w -buildid="],
+      "binary_sha256": "497603946881b941432dee393c6ea9d9b8e6a31477def03274e1924f7c68e2ff",
+      "runtime_uid": 10001,
+      "runtime_gid": 10001,
+      "runtime_rootfs": "scratch"
+    },
+    "tempo": {
+      "version": "3.0.3",
+      "source_repository": "https://github.com/grafana/tempo",
+      "source_commit": "1900ed7bb5cad1a3edc285783d7d4ac4278337dc",
+      "source_tree": "0b2438d617ca4c03223fc5236c82324a1fe496f5",
+      "source_archive": "https://codeload.github.com/grafana/tempo/tar.gz/1900ed7bb5cad1a3edc285783d7d4ac4278337dc",
+      "source_archive_sha256": "f10ae5ecaa7f1eade220b9d013ae73961227b51a7602694896675df1cb96e8e7",
+      "build_flags": ["-p=1", "-trimpath", "-buildvcs=false", "-mod=vendor", "-ldflags=-s -w -buildid="],
+      "binary_sha256": "8a324cfc382a8829549bb80c71c85bfe12f932f9aa393c33867d652f22b8038d",
+      "runtime_uid": 10001,
+      "runtime_gid": 10001,
+      "runtime_rootfs": "scratch"
+    }
+  },
+  "licenses": {
+    "grafana_loki_tempo_sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+    "go_sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+  },
+  "upstream": {
+    "grafana": {
+      "version": "13.2.0-distroless-slim",
+      "index_digest": "sha256:bbaacd430cde39037818a05a6926ff18f7c67a4e1aa34ba034eedf7f4337103f",
+      "linux_amd64_digest": "sha256:19adcd07c96e2a99da64dd5e19b5ad115ca8e449ecac100ca5ab5c0a3da9a158"
+    },
+    "prometheus": {
+      "version": "3.14.0",
+      "index_digest": "sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0",
+      "linux_amd64_digest": "sha256:e906cef998316bbe319f98711e1b4d8613ad37e14b08ff831d7036e77b7464f9"
+    }
+  }
+}

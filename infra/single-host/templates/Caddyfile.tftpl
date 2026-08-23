@@ -1,0 +1,67 @@
+${public_hostname} {
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+
+	route {
+		basic_auth {
+			${access_username} __COLORTRACE_ACCESS_HASH__
+		}
+
+		header {
+			Referrer-Policy "no-referrer"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+		}
+
+		@demo path /v1/demo /v1/demo/*
+		reverse_proxy @demo runtime:8080 {
+			header_up -Authorization
+		}
+
+		@other_api path /v1/*
+		respond @other_api 404
+
+		reverse_proxy web:8080 {
+			header_up -Authorization
+		}
+	}
+}
+
+https://grafana.internal:8443 {
+	bind 172.30.0.2
+	tls internal
+	reverse_proxy grafana:3000
+}
+
+https://runtime.internal:8443 {
+	bind 172.30.0.2
+	tls internal
+	reverse_proxy runtime:8080
+}
+
+http://otel.internal:4318 {
+	bind 172.30.0.2
+	route {
+		@traces path /v1/traces
+		handle @traces {
+			reverse_proxy tempo:4318
+		}
+
+		@metrics path /v1/metrics
+		handle @metrics {
+			rewrite * /api/v1/otlp/v1/metrics
+			reverse_proxy prometheus:9090
+		}
+
+		@logs path /v1/logs
+		handle @logs {
+			rewrite * /otlp/v1/logs
+			reverse_proxy loki:3100
+		}
+
+		respond 404
+	}
+}
