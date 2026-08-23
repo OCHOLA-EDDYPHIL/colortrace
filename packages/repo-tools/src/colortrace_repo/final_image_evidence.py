@@ -29,6 +29,14 @@ _PROFILES = {
     "hosted-runtime": "hosted-readonly",
     "web": "public-readonly",
 }
+_GZIP_LAYER_MEDIA_TYPES = {
+    "application/vnd.docker.image.rootfs.diff.tar.gzip",
+    "application/vnd.oci.image.layer.v1.tar+gzip",
+}
+_TAR_LAYER_MEDIA_TYPES = {
+    "application/vnd.docker.image.rootfs.diff.tar",
+    "application/vnd.oci.image.layer.v1.tar",
+}
 _BUNDLE_ONLY = {
     "private-full": {
         ("application", "colortrace"),
@@ -250,9 +258,9 @@ def _verify_web_layer_paths(
         _fail("image.archive.invalid", "web layer cannot be read")
     media_type = descriptor.get("mediaType")
     stream: Any
-    if isinstance(media_type, str) and media_type.endswith("+gzip"):
+    if media_type in _GZIP_LAYER_MEDIA_TYPES:
         stream = gzip.GzipFile(fileobj=handle)
-    elif isinstance(media_type, str) and media_type.endswith(".tar"):
+    elif media_type in _TAR_LAYER_MEDIA_TYPES:
         stream = handle
     else:
         _fail("image.oci.invalid", f"unsupported web layer media type: {media_type!r}")
