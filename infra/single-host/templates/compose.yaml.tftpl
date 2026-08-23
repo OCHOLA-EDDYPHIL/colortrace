@@ -1,0 +1,277 @@
+version: "3.8"
+
+x-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  grafana:
+    image: ${grafana_image}
+    platform: linux/amd64
+    container_name: colortrace-grafana
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_LOG_MODE: "console"
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "prometheus,loki,tempo"
+      GF_PLUGINS_PLUGIN_ADMIN_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
+    env_file:
+      - /srv/colortrace/config/grafana.env
+    ports:
+      - "127.0.0.1:13000:3000"
+    expose:
+      - "3000"
+    volumes:
+      - /srv/colortrace/grafana:/var/lib/grafana
+      - /srv/colortrace/config/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/colortrace.yaml:ro
+      - /srv/colortrace/config/grafana-alerting.yaml:/etc/grafana/provisioning/alerting/colortrace.yaml:ro
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /var/log/grafana:size=32m,uid=472,gid=472,mode=0700
+    networks:
+      - internal
+    logging: *bounded-logging
+
+  loki:
+    image: ${loki_image}
+    platform: linux/amd64
+    container_name: colortrace-loki
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command: ["-config.file=/etc/loki/config.yaml"]
+    ports:
+      - "127.0.0.1:13100:3100"
+    expose:
+      - "3100"
+    volumes:
+      - /srv/colortrace/loki:/var/lib/loki
+      - /srv/colortrace/config/loki.yaml:/etc/loki/config.yaml:ro
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    networks:
+      - internal
+    logging: *bounded-logging
+
+  prometheus:
+    image: ${prometheus_image}
+    platform: linux/amd64
+    container_name: colortrace-prometheus
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command:
+      - --config.file=/etc/prometheus/prometheus.yaml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-remote-write-receiver
+      - --web.enable-otlp-receiver
+      - --enable-feature=exemplar-storage
+    ports:
+      - "127.0.0.1:19090:9090"
+    expose:
+      - "9090"
+    volumes:
+      - /srv/colortrace/prometheus:/prometheus
+      - /srv/colortrace/config/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    networks:
+      - internal
+    logging: *bounded-logging
+
+  tempo:
+    image: ${tempo_image}
+    platform: linux/amd64
+    container_name: colortrace-tempo
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    ports:
+      - "127.0.0.1:13200:3200"
+    expose:
+      - "3200"
+      - "4317"
+      - "4318"
+    volumes:
+      - /srv/colortrace/tempo:/var/tempo
+      - /srv/colortrace/config/tempo.yaml:/etc/tempo/config.yaml:ro
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    networks:
+      - internal
+    depends_on:
+      - prometheus
+    logging: *bounded-logging
+
+  caddy:
+    image: ${caddy_image}
+    platform: linux/amd64
+    container_name: colortrace-caddy
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    ports:
+      - "443:443/tcp"
+    expose:
+      - "4318"
+      - "8443"
+    volumes:
+      - /srv/colortrace/config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/colortrace/caddy-data:/data
+      - /srv/colortrace/caddy-config:/config
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    networks:
+      edge:
+      internal:
+        ipv4_address: 172.30.0.2
+        aliases:
+          - grafana.internal
+          - otel.internal
+          - runtime.internal
+    logging: *bounded-logging
+
+  runtime:
+    image: ${runtime_image}
+    platform: linux/amd64
+    container_name: colortrace-runtime
+    restart: "no"
+    command: ["api"]
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      COLORTRACE_BIND_HOST: "0.0.0.0"
+      PORT: "8080"
+      COLORTRACE_DATABASE_PATH: "/var/lib/colortrace/incidents.sqlite3"
+      COLORTRACE_DEMO_CONFIG_PATH: "/opt/colortrace-config/demo/local-demo.json"
+      COLORTRACE_DEMO_DATABASE_PATH: "/var/lib/colortrace/demo.sqlite3"
+      COLORTRACE_DEMO_MODE: "canonical"
+      COLORTRACE_DEMO_VISUAL_ROOT: "/var/lib/colortrace/demo-visuals"
+      COLORTRACE_FIXTURE_BUNDLE_SHA256: "${fixture_bundle_sha256}"
+      COLORTRACE_RESPONSE_PLAN_DATABASE_PATH: "/var/lib/colortrace/response-plans.sqlite3"
+      COLORTRACE_RECOVERY_DATABASE_PATH: "/var/lib/colortrace/recovery.sqlite3"
+      COLORTRACE_RECOVERY_TASK_DATABASE_PATH: "/var/lib/colortrace/recovery-tasks.sqlite3"
+      COLORTRACE_SOURCE_COMMIT: "${candidate_commit}"
+      COLORTRACE_SOURCE_TREE: "${candidate_tree}"
+      COLORTRACE_RUNTIME_IMAGE: "${runtime_image}"
+      COLORTRACE_PUBLIC_URL: "${public_url}"
+      COLORTRACE_STAGING_GENERATION: "${staging_generation}"
+      COLORTRACE_VERTEX_PROJECT_ID: "${project_id}"
+      COLORTRACE_VERTEX_LOCATION: "global"
+      COLORTRACE_OIDC_ISSUER: "https://accounts.google.com"
+      COLORTRACE_OIDC_AUDIENCE: "https://runtime.internal:8443"
+      COLORTRACE_OIDC_JWKS_URI: "https://www.googleapis.com/oauth2/v3/certs"
+      COLORTRACE_OIDC_LEEWAY_SECONDS: "30"
+      COLORTRACE_SIMULATOR_MODE: "local"
+      COLORTRACE_SIMULATOR_DATABASE_PATH: "/var/lib/colortrace/simulator.sqlite3"
+      COLORTRACE_SIMULATOR_WORKSPACE_PATH: "/var/lib/colortrace/simulator-workspace"
+      COLORTRACE_SIMULATOR_FIXTURE_BUNDLE_PATH: "${fixture_bundle_path}"
+      COLORTRACE_GRAFANA_URL: "https://grafana.internal:8443"
+      COLORTRACE_GRAFANA_CA_FILE: "/etc/colortrace/caddy-root.crt"
+      COLORTRACE_GRAFANA_TOKEN_SOURCE: "/run/colortrace-secrets/grafana-viewer-token"
+      COLORTRACE_GRAFANA_TOKEN_FILE: "/var/run/colortrace-private/grafana-viewer-token"
+      COLORTRACE_MCP_BINARY: "/usr/local/bin/mcp-grafana"
+      COLORTRACE_MCP_LOCK_PATH: "/opt/colortrace-config/grafana-mcp/mcp-grafana.lock.json"
+      COLORTRACE_QUERY_CATALOG_PATH: "/opt/colortrace-config/grafana-mcp/query-catalog.json"
+      COLORTRACE_INVESTIGATION_POLICY_PATH: "/opt/colortrace-config/investigation/investigation-policy.json"
+      COLORTRACE_MODEL_PROFILE_PATH: "/opt/colortrace-config/investigation/model-profile.json"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel.internal:4318"
+    expose:
+      - "8080"
+    volumes:
+      - /srv/colortrace/app:/var/lib/colortrace
+      - /srv/colortrace/secrets/grafana-viewer-token:/run/colortrace-secrets/grafana-viewer-token:ro
+      - /srv/colortrace/config/caddy-root.crt:/etc/colortrace/caddy-root.crt:ro
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+      - /var/run/colortrace-private:size=64k,uid=65532,gid=65532,mode=0700
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/startup', timeout=2).read()"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
+    networks:
+      internal:
+        ipv4_address: 172.30.0.10
+    depends_on:
+      - grafana
+      - loki
+      - prometheus
+      - tempo
+    logging: *bounded-logging
+
+  web:
+    image: ${web_image}
+    platform: linux/amd64
+    container_name: colortrace-web
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      PORT: "8080"
+      COLORTRACE_API_ORIGIN: "https://runtime.internal:8443"
+      COLORTRACE_API_AUDIENCE: "https://runtime.internal:8443"
+      NODE_EXTRA_CA_CERTS: "/etc/colortrace/caddy-root.crt"
+    expose:
+      - "8080"
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    volumes:
+      - /srv/colortrace/config/caddy-root.crt:/etc/colortrace/caddy-root.crt:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('node:http').get('http://127.0.0.1:8080/', (response) => process.exit(response.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
+    networks:
+      - edge
+    logging: *bounded-logging
+
+networks:
+  edge:
+    name: colortrace-edge
+  internal:
+    name: colortrace-internal
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
