@@ -66,6 +66,7 @@ def _packet(incident_id: str) -> dict[str, Any]:
             "mcp_attempts": 4,
             "validator_calls": 6,
         },
+        "unresolved_items": [],
         "incident_id": incident_id,
     }
 
@@ -83,7 +84,7 @@ def _evidence(incident_id: str) -> list[dict[str, Any]]:
             "incident_id": incident_id,
             "source": {"tool": tool, "inventory_version": f"sha256:{'3' * 64}"},
             "observation": {"query_key": query},
-            "timing": {"freshness": "current"},
+            "timing": {"freshness": "unresolved"},
             "content_sha256": f"sha256:{digit * 64}",
         }
         for digit, (query, tool) in zip("abcd", query_tools, strict=True)
@@ -540,6 +541,7 @@ def test_prepare_emits_once_and_projects_bounded_live_proof(tmp_path: Path) -> N
         "safe_count": 3,
         "unknown_count": 0,
     }
+    assert {item["freshness"] for item in result["investigation"]["evidence"]} == {"current"}
     assert result["target_sha256"] == _digest([{"kind": "frame", "id": "frame-1"}])
     assert {item["kind"] for item in result["visuals"]} == {
         "expected",

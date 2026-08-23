@@ -121,7 +121,7 @@ test("reports bound fixture impact without turning the counterfactual into a ben
 }) => {
   await page.setViewportSize(DESKTOP_VIEWPORT);
   await installPreparedApi(page, { recoveryState: "recovery_verified" });
-  await page.goto("/");
+  await page.goto("/workspace");
 
   const report = page.getByRole("region", { name: "Incident-level impact" });
   await expect(report).toBeVisible();
@@ -149,7 +149,7 @@ test("renders the canonical evidence and exact supported scope at 1440x900", asy
 }, testInfo) => {
   await page.setViewportSize(DESKTOP_VIEWPORT);
   const { data } = await installPreparedApi(page);
-  await page.goto("/");
+  await page.goto("/workspace");
 
   await expect(page.getByRole("heading", { name: "Incident overview" })).toBeVisible();
   await expect(page.getByText("Pipeline operator", { exact: true })).toBeVisible();
@@ -287,7 +287,7 @@ test("labels synthetic provenance and resets the workspace using read-only reque
   page.on("pageerror", (error) => pageErrors.push(error.message));
   const { captured } = await installPreparedApi(page);
 
-  await page.goto("/");
+  await page.goto("/workspace");
   await expect(page.getByRole("heading", { name: "Incident overview" })).toBeVisible();
   await expect(page.getByLabel("Data provenance")).toContainText("Synthetic simulator data");
   await page.getByRole("button", { name: "Reset workspace view" }).click();
@@ -306,7 +306,7 @@ test("keeps slow, empty, and failed list states actionable", async ({ baseURL, b
   if (baseURL === undefined) throw new Error("Playwright base URL is required");
   const delayedPage = await browser.newPage({ baseURL, viewport: DESKTOP_VIEWPORT });
   await installPreparedApi(delayedPage, { incidentListMode: "delayed" });
-  await delayedPage.goto("/", { waitUntil: "domcontentloaded" });
+  await delayedPage.goto("/workspace", { waitUntil: "domcontentloaded" });
   await expect(delayedPage.getByRole("heading", { name: "Loading incident" })).toBeVisible();
   await expect(delayedPage.getByRole("button", { name: "Reset workspace view" })).toBeEnabled();
   await expect(delayedPage.getByRole("heading", { name: "Incident overview" })).toBeVisible();
@@ -314,14 +314,14 @@ test("keeps slow, empty, and failed list states actionable", async ({ baseURL, b
 
   const emptyPage = await browser.newPage({ baseURL, viewport: DESKTOP_VIEWPORT });
   await installPreparedApi(emptyPage, { incidentListMode: "empty" });
-  await emptyPage.goto("/");
+  await emptyPage.goto("/workspace");
   await expect(emptyPage.getByRole("heading", { name: "No incidents" })).toBeVisible();
   await expect(emptyPage.getByRole("button", { name: "Reset workspace view" })).toBeEnabled();
   await emptyPage.close();
 
   const errorPage = await browser.newPage({ baseURL, viewport: DESKTOP_VIEWPORT });
   await installPreparedApi(errorPage, { incidentListMode: "error" });
-  await errorPage.goto("/");
+  await errorPage.goto("/workspace");
   await expect(errorPage.getByRole("heading", { name: "Incident data unavailable" })).toBeVisible();
   await expect(errorPage.getByRole("button", { name: "Try again" })).toBeEnabled();
   await expect(errorPage.getByRole("button", { name: "Reset workspace view" })).toBeEnabled();
@@ -334,7 +334,7 @@ test("captures the current UX and accessibility evidence set", async ({ page }) 
   const { captured } = await installPreparedApi(page, { recoveryState: "recovery_verified" });
 
   await page.setViewportSize(DESKTOP_VIEWPORT);
-  await page.goto("/");
+  await page.goto("/workspace");
   await expect(page.getByRole("heading", { name: "Incident overview" })).toBeVisible();
   const axeResults = await new AxeBuilder({ page }).withTags([...WCAG_TAGS]).analyze();
   expect(axeResults.violations).toEqual([]);
@@ -456,7 +456,7 @@ test("keeps the investigation legible without page-level horizontal overflow on 
 }, testInfo) => {
   await page.setViewportSize(MOBILE_VIEWPORT);
   await installPreparedApi(page);
-  await page.goto("/");
+  await page.goto("/workspace");
   await expect(page.getByRole("heading", { name: "Incident overview" })).toBeVisible();
 
   const layout = await page.evaluate(() => ({
@@ -489,7 +489,7 @@ test("reflows without page-level overflow at a 200 percent zoom-equivalent viewp
 }) => {
   await page.setViewportSize({ height: 450, width: 720 });
   await installPreparedApi(page);
-  await page.goto("/");
+  await page.goto("/workspace");
   await expect(page.getByRole("heading", { name: "Incident overview" })).toBeVisible();
   await expect(page.getByLabel("Data provenance")).toBeVisible();
   await expect(page.getByRole("button", { name: "Reset workspace view" })).toBeVisible();
@@ -505,7 +505,7 @@ test("requires exact confirmation and sends immutable bindings before approval",
 }) => {
   await page.setViewportSize(DESKTOP_VIEWPORT);
   const { captured, data, oidcToken } = await installPreparedApi(page);
-  await page.goto("/");
+  await page.goto("/workspace");
 
   const planHeading = page.getByRole("heading", { name: "Response plan review" });
   await expect(planHeading).toBeVisible();
@@ -560,7 +560,7 @@ test("distinguishes unresolved blockers and unknown targets before acknowledgeme
   page,
 }) => {
   await installPreparedApi(page, { responsePlanUncertainty: true });
-  await page.goto("/");
+  await page.goto("/workspace");
 
   const uncertainty = page.getByRole("region", { name: "Approval uncertainty" });
   await expect(uncertainty.getByText("validator-blocker", { exact: true })).toHaveCount(2);
@@ -582,7 +582,7 @@ test("makes an approved-plan edit immutable and visibly returns it to pending re
   page,
 }) => {
   const { captured, data } = await installPreparedApi(page, { responsePlanState: "approved" });
-  await page.goto("/");
+  await page.goto("/workspace");
   await expect(page.locator('.status-badge[data-status="approved"]')).toBeVisible();
 
   const replacement = `sha256:${"4".repeat(64)}`;
@@ -618,7 +618,7 @@ test("makes an approved-plan edit immutable and visibly returns it to pending re
 
 test("retries an ambiguous approval with one retained idempotency key", async ({ page }) => {
   const { captured } = await installPreparedApi(page, { approvalMode: "ambiguous-once" });
-  await page.goto("/");
+  await page.goto("/workspace");
 
   await page.getByRole("button", { name: "Approve exact plan" }).click();
   await page.getByRole("button", { name: "Confirm approve" }).click();
@@ -642,7 +642,7 @@ test("reconciles an accepted approval without replaying it after refresh failure
   page,
 }) => {
   const { captured } = await installPreparedApi(page, { approvalMode: "refresh-fails-once" });
-  await page.goto("/");
+  await page.goto("/workspace");
 
   await page.getByRole("button", { name: "Approve exact plan" }).click();
   await page.getByRole("button", { name: "Confirm approve" }).click();
@@ -656,7 +656,7 @@ test("reconciles an accepted approval without replaying it after refresh failure
 
 test("keeps stale approval authority visibly disabled", async ({ page }) => {
   await installPreparedApi(page, { responsePlanState: "stale" });
-  await page.goto("/");
+  await page.goto("/workspace");
   await expect(page.getByText(/stale and cannot be decided or dispatched/i)).toBeVisible();
   await expect(page.getByRole("button", { name: "Approve exact plan" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Create revised version" })).toBeDisabled();
@@ -664,7 +664,7 @@ test("keeps stale approval authority visibly disabled", async ({ page }) => {
 
 test("keeps expired approval authority visibly disabled", async ({ page }) => {
   await installPreparedApi(page, { sessionStatus: "expired" });
-  await page.goto("/");
+  await page.goto("/workspace");
   await expect(
     page.getByRole("heading", { name: "Operator session expired or invalid" }),
   ).toBeVisible();
@@ -683,7 +683,7 @@ test("renders exact post-action recovery authority and records explicit human cl
   if (recovery === null || recovery.packet === null) {
     throw new Error("Prepared recovery must include its verified packet");
   }
-  await page.goto("/");
+  await page.goto("/workspace");
 
   const panel = page.locator(".recovery-panel");
   await expect(
@@ -745,7 +745,7 @@ test("keeps unresolved recovery fail-closed and legible on a small viewport", as
 }, testInfo) => {
   await page.setViewportSize(MOBILE_VIEWPORT);
   await installPreparedApi(page, { recoveryState: "recovery_unresolved" });
-  await page.goto("/");
+  await page.goto("/workspace");
 
   const panel = page.locator(".recovery-panel");
   await expect(
@@ -824,7 +824,7 @@ test("retries an ambiguous closure with one retained exact idempotency key", asy
     closureMode: "ambiguous-once",
     recoveryState: "recovery_verified",
   });
-  await page.goto("/");
+  await page.goto("/workspace");
 
   const panel = page.locator(".recovery-panel");
   await panel.getByRole("textbox", { name: "Closure reason" }).fill("Reviewed exact recovery.");
@@ -844,7 +844,7 @@ test("retries an ambiguous closure with one retained exact idempotency key", asy
 
 test("renders rejected plans as decided and exposes no dispatch control", async ({ page }) => {
   await installPreparedApi(page, { responsePlanState: "rejected" });
-  await page.goto("/");
+  await page.goto("/workspace");
 
   await expect(page.locator('.plan-panel .status-badge[data-status="rejected"]')).toBeVisible();
   await expect(page.getByText(/rejected by/i)).toBeVisible();
@@ -855,7 +855,7 @@ test("renders rejected plans as decided and exposes no dispatch control", async 
 
 test("supports keyboard skip navigation into the incident details", async ({ page }) => {
   await installPreparedApi(page);
-  await page.goto("/");
+  await page.goto("/workspace");
   await expect(page.getByRole("heading", { name: "Incident overview" })).toBeVisible();
 
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
@@ -884,7 +884,7 @@ test("passes automated WCAG A and AA checks for the prepared workspace", async (
 }, testInfo) => {
   await page.setViewportSize(DESKTOP_VIEWPORT);
   await installPreparedApi(page);
-  await page.goto("/");
+  await page.goto("/workspace");
   await expect(page.getByRole("heading", { name: "Investigation timeline" })).toBeVisible();
 
   const results = await new AxeBuilder({ page }).withTags([...WCAG_TAGS]).analyze();
@@ -976,7 +976,7 @@ test("uses a same-origin in-memory OIDC token provider without browser token sto
   if (baseURL === undefined) throw new Error("Playwright base URL is required");
   const { captured, data, oidcToken } = await installPreparedApi(page);
   if (oidcToken === null) throw new Error("Prepared API did not install an OIDC provider");
-  await page.goto("/");
+  await page.goto("/workspace");
   await expect(page.getByRole("heading", { name: "Incident overview" })).toBeVisible();
 
   const expectedPaths = new Set([
@@ -1014,7 +1014,7 @@ test("falls back to public read-only workspace when no host token provider is in
   page,
 }) => {
   const { captured } = await installPreparedApi(page, { oidcToken: null });
-  await page.goto("/");
+  await page.goto("/workspace");
 
   await expect(
     page.getByRole("heading", { name: "Unauthenticated read-only session" }),
@@ -1031,7 +1031,7 @@ test("falls back to public read-only workspace when no host token provider is in
 
 test("fails closed when a ready view packet does not match the replay packet", async ({ page }) => {
   await installPreparedApi(page, { viewPacket: "mismatched" });
-  await page.goto("/");
+  await page.goto("/workspace");
 
   await expect(
     page.getByRole("heading", { name: "Incident replay could not be verified" }),
@@ -1043,7 +1043,7 @@ test("fails closed when a ready view packet does not match the replay packet", a
 test("withholds a relationship when its cited validator artifact is missing", async ({ page }) => {
   const removedEvidenceId = "validator-evidence:frame-b-01";
   await installPreparedApi(page, { removedValidatorEvidenceId: removedEvidenceId });
-  await page.goto("/");
+  await page.goto("/workspace");
 
   await expect(page.getByRole("heading", { name: "Referenced evidence is missing" })).toBeVisible();
   await expect(
@@ -1056,7 +1056,7 @@ test("withholds a relationship when its cited validator artifact is missing", as
 test("keeps provider payloads inert in a real browser", async ({ page }) => {
   const payload = '<img src=x onerror="globalThis.compromised=true"><script>alert(1)</script>';
   await installPreparedApi(page, { providerExcerpt: payload, responsePlanCommandId: payload });
-  await page.goto("/");
+  await page.goto("/workspace");
   await expect(page.locator("textarea.evidence-preview").first()).toHaveValue(payload);
   await expect(page.locator('img[src="x"]')).toHaveCount(0);
   expect(

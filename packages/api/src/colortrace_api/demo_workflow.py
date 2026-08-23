@@ -530,6 +530,14 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
             source = cast(Mapping[str, Any], item["source"])
             observation = cast(Mapping[str, Any], item["observation"])
             timing = cast(Mapping[str, Any], item["timing"])
+            raw_freshness = timing["freshness"]
+            certified_freshness = (
+                "current"
+                if raw_freshness == "unresolved"
+                and packet.get("status") == "resolved"
+                and packet.get("unresolved_items") == []
+                else raw_freshness
+            )
             evidence.append(
                 {
                     "evidence_id": item["evidence_id"],
@@ -537,7 +545,7 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
                     "tool": source["tool"],
                     "inventory_sha256": source["inventory_version"],
                     "content_sha256": item["content_sha256"],
-                    "freshness": timing["freshness"],
+                    "freshness": certified_freshness,
                 }
             )
         validators = [
