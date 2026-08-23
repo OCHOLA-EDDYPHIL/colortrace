@@ -4,6 +4,7 @@ import asyncio
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -53,7 +54,7 @@ from .contracts import (
     timestamp,
     validate_contract,
 )
-from .model import ModelCall, ModelFailure, ModelGateway, ModelOutput
+from .model import AllowedQueryKey, EvidenceTool, ModelCall, ModelFailure, ModelGateway, ModelOutput
 
 _T = TypeVar("_T")
 _MODEL_OUTPUT_LIMITS = {"evidence-selection": 512, "response-drafting": 1792}
@@ -76,12 +77,28 @@ class EvidenceResult(Protocol):
 
 
 class EvidenceCollector(Protocol):
+    def open_collection(
+        self,
+        batch: EvidenceBatch,
+        *,
+        controls: ExecutionControls | None = None,
+    ) -> AbstractAsyncContextManager[EvidenceCollection]: ...
+
     async def collect(
         self,
         batch: EvidenceBatch,
         *,
         controls: ExecutionControls | None = None,
     ) -> EvidenceResult: ...
+
+
+class EvidenceCollection(Protocol):
+    @property
+    def query_keys(self) -> tuple[str, ...]: ...
+
+    async def collect(self, query_key: str) -> Mapping[str, Any]: ...
+
+    def result(self) -> EvidenceResult: ...
 
 
 class ValidatorGateway(Protocol):
@@ -175,12 +192,20 @@ class BudgetLedger:
         if self.remaining_seconds() <= 0:
             raise WorkflowError("wall-time-exhausted")
 
-    def reserve_model_turn(self) -> int:
+    def reserve_model_turns(self, maximum_calls: int) -> None:
         self.require_time()
-        if self.model_turns >= self.policy.budgets.maximum_model_turns:
+        if (
+            isinstance(maximum_calls, bool)
+            or maximum_calls < 1
+            or self.model_turns + maximum_calls > self.policy.budgets.maximum_model_turns
+        ):
             raise WorkflowError("model-turn-budget")
-        self.model_turns += 1
-        return self.model_turns
+        self.model_turns += maximum_calls
+
+    def settle_model_turns(self, reserved: int, used: int) -> None:
+        if isinstance(used, bool) or used < 1 or used > reserved or reserved > self.model_turns:
+            raise WorkflowError("model-turn-budget")
+        self.model_turns -= reserved - used
 
     def record_model_usage(self, input_tokens: int, output_tokens: int) -> bool:
         if (
@@ -606,6 +631,184 @@ def _assess_content_records(
     return _dedupe_blockers(blockers)
 
 
+def _model_evidence_view(
+    envelope: Mapping[str, Any],
+    *,
+    intake: AlertIntake,
+    now: datetime,
+) -> tuple[dict[str, Any] | None, list[Blocker]]:
+    evidence_id = envelope.get("evidence_id")
+    evidence_ids = (evidence_id,) if isinstance(evidence_id, str) else ()
+    try:
+        validate_evidence_envelope(envelope)
+        observation = envelope["observation"]
+        collection = envelope["collection"]
+        timing = envelope["timing"]
+        source = envelope["source"]
+        if not all(
+            isinstance(value, Mapping) for value in (observation, collection, timing, source)
+        ):
+            raise TypeError
+        query_key = observation["query_key"]
+        expected_batch = intake.evidence_batch(QUERY_KEYS)
+        if (
+            not isinstance(query_key, str)
+            or query_key not in QUERY_KEYS
+            or envelope.get("incident_id") != intake.incident_id
+            or envelope.get("request_id") != expected_batch.request_id
+            or source.get("kind") != "grafana-mcp"
+            or source.get("tool") != TOOL_BY_QUERY[query_key]
+            or observation.get("model_visible_arguments") != []
+            or observation.get("fixed_time_range")
+            != {
+                "start": timestamp(expected_batch.window_start),
+                "end": timestamp(expected_batch.window_end),
+            }
+            or envelope.get("correlation_keys") != dict(intake.correlation_keys)
+        ):
+            raise ValueError
+    except (AdapterError, KeyError, TypeError, ValueError):
+        return None, [Blocker("malformed-evidence", "evidence", evidence_ids)]
+
+    if collection.get("outcome") != "collected" or collection.get("error") is not None:
+        error = collection.get("error")
+        code = "evidence-unavailable"
+        if isinstance(error, Mapping) and isinstance(error.get("code"), str):
+            provider_code = _normalized_code(cast(str, error["code"]))
+            if "budget" in provider_code:
+                code = "budget-exhausted"
+            elif provider_code in {"incomplete-result", "malformed-result"}:
+                code = "malformed-evidence"
+        return None, [Blocker(code, "evidence", evidence_ids)]
+
+    try:
+        retrieved_at = parse_timestamp(cast(str, timing["retrieved_at"]))
+    except (ContractError, KeyError, TypeError, ValueError):
+        return None, [Blocker("time-ambiguous", "assessment", evidence_ids)]
+    if (
+        retrieved_at > now + timedelta(seconds=5)
+        or retrieved_at
+        < intake.window.frozen_at - timedelta(seconds=intake.measured_clock_skew_seconds)
+        or now - retrieved_at > timedelta(seconds=300)
+    ):
+        return None, [Blocker("stale-evidence", "assessment", evidence_ids)]
+
+    content = envelope.get("content")
+    if not isinstance(content, Mapping):
+        return None, [Blocker("malformed-evidence", "assessment", evidence_ids)]
+    content_blockers = _assess_content_records(
+        cast(str, observation["query_key"]),
+        content,
+        expected_correlation=intake.correlation_keys,
+        window=intake.window,
+        evidence_id=cast(str, evidence_id),
+    )
+    if content_blockers:
+        return None, content_blockers
+    excerpt = envelope.get("display_excerpt")
+    if not isinstance(excerpt, str):
+        return None, [Blocker("malformed-evidence", "evidence", evidence_ids)]
+    bounded_excerpt, truncated = _bounded_model_excerpt(excerpt)
+    return (
+        {
+            "schema": "grafana-evidence-tool-result/v1",
+            "status": "collected",
+            "query_key": observation["query_key"],
+            "evidence_id": evidence_id,
+            "retrieved_at": timing["retrieved_at"],
+            "display_excerpt": bounded_excerpt,
+            "display_excerpt_truncated": truncated,
+            "trust": "untrusted-provider-data",
+        },
+        [],
+    )
+
+
+class ModelEvidenceLedger:
+    _ALLOWED = frozenset(
+        {
+            "log.correlated-events",
+            "metric.correlated-observations",
+            "trace.by-id",
+        }
+    )
+
+    def __init__(
+        self,
+        *,
+        collection: EvidenceCollection,
+        budget: BudgetLedger,
+        intake: AlertIntake,
+        clock: Callable[[], datetime],
+    ) -> None:
+        self._collection = collection
+        self._budget = budget
+        self._intake = intake
+        self._clock = clock
+        self._active = False
+        self._seen: set[str] = set()
+        self._query_order: list[str] = []
+        self._blockers: list[Blocker] = []
+
+    @property
+    def blockers(self) -> tuple[Blocker, ...]:
+        return tuple(_dedupe_blockers(self._blockers))
+
+    @property
+    def query_order(self) -> tuple[str, ...]:
+        return tuple(self._query_order)
+
+    def _reject(self, code: str) -> dict[str, Any]:
+        self._blockers.append(Blocker(code, "model-tool"))
+        return {
+            "schema": "grafana-evidence-tool-result/v1",
+            "status": "rejected",
+            "error_code": code,
+        }
+
+    async def get_grafana_evidence(self, query_key: AllowedQueryKey) -> Mapping[str, Any]:
+        if self._active:
+            return self._reject("parallel-tool-call")
+        if type(query_key) is not str or query_key not in self._ALLOWED:
+            return self._reject("query-not-allowed")
+        if query_key in self._seen:
+            return self._reject("duplicate-tool-call")
+
+        self._active = True
+        self._seen.add(query_key)
+        self._query_order.append(query_key)
+        try:
+            envelope = await self._collection.collect(query_key)
+        except asyncio.CancelledError:
+            raise
+        except AdapterError as error:
+            return self._reject(_normalized_code(error.code))
+        except Exception:
+            return self._reject("evidence-unavailable")
+        finally:
+            self._active = False
+
+        view, blockers = _model_evidence_view(
+            envelope,
+            intake=self._intake,
+            now=self._clock().astimezone(UTC),
+        )
+        if blockers:
+            self._blockers.extend(blockers)
+            return {
+                "schema": "grafana-evidence-tool-result/v1",
+                "status": "rejected",
+                "error_code": blockers[0].code,
+            }
+        if view is None:  # pragma: no cover - blockers accompany an absent view
+            return self._reject("malformed-evidence")
+        try:
+            self._budget.reserve_model_visible(canonical_json_bytes(view))
+        except WorkflowError as error:
+            return self._reject(_normalized_code(error.code))
+        return view
+
+
 def _audit_attempts(result: EvidenceResult, ledger: BudgetLedger) -> list[Blocker]:
     blockers: list[Blocker] = []
     actual: list[tuple[str, str, int, bool, str]] = []
@@ -685,7 +888,7 @@ def assess_evidence(
     }
     if tuple(sorted(selected_query_keys)) != tuple(sorted(QUERY_KEYS)):
         blockers.append(Blocker("incomplete-capability-set", "evidence"))
-    if result.maximum_calls_in_flight_observed > 2:
+    if result.maximum_calls_in_flight_observed > 1:
         blockers.append(Blocker("concurrency-budget", "evidence"))
     inventory_version = getattr(result.inventory, "version", None)
     if not isinstance(inventory_version, str) or not inventory_version.startswith("sha256:"):
@@ -1194,6 +1397,7 @@ class InvestigationWorkflow:
         response_schema_name: str,
         input_evidence_ids: Sequence[str],
         inventory_version: str | None,
+        evidence_tool: EvidenceTool | None = None,
     ) -> tuple[ModelOutput | None, list[dict[str, Any]], Blocker | None]:
         encoded = canonical_json_bytes(payload)
         try:
@@ -1209,6 +1413,7 @@ class InvestigationWorkflow:
         schema.pop("$id", None)
         input_upper_bound = len(encoded) + len(canonical_json_bytes(schema)) + 4096
         records: list[dict[str, Any]] = []
+        maximum_model_calls = 4 if evidence_tool is not None else 1
         while True:
             remaining_output = (
                 self._policy.budgets.maximum_output_tokens
@@ -1223,13 +1428,14 @@ class InvestigationWorkflow:
                     Blocker("token-budget", "model", tuple(input_evidence_ids)),
                 )
             try:
-                attempt = ledger.reserve_model_turn()
+                ledger.reserve_model_turns(maximum_model_calls)
             except WorkflowError as error:
                 return (
                     None,
                     records,
                     Blocker(_normalized_code(error.code), "model", tuple(input_evidence_ids)),
                 )
+            attempt = len(records) + 1
             started = self._monotonic()
             output: ModelOutput | None = None
             failure: ModelFailure | None = None
@@ -1246,18 +1452,29 @@ class InvestigationWorkflow:
                     if timeout <= 0:
                         raise TimeoutError
                     output = await asyncio.wait_for(
-                        self._model.generate(ModelCall(turn_kind, payload, schema, maximum_output)),
+                        self._model.generate(
+                            ModelCall(
+                                turn_kind,
+                                payload,
+                                schema,
+                                maximum_output,
+                                evidence_tool,
+                            )
+                        ),
                         timeout=timeout,
                     )
                 finally:
                     self._model_lock.release()
             except TimeoutError:
-                failure = ModelFailure("timeout", transient=True)
+                failure = ModelFailure("timeout", transient=True, model_calls=maximum_model_calls)
             except ModelFailure as error:
                 failure = error
             except asyncio.CancelledError:
                 try:
-                    ledger.reserve_unavailable_model_usage(input_upper_bound, maximum_output)
+                    ledger.reserve_unavailable_model_usage(
+                        input_upper_bound * maximum_model_calls,
+                        maximum_output * maximum_model_calls,
+                    )
                 except WorkflowError:
                     pass
                 records.append(
@@ -1278,19 +1495,29 @@ class InvestigationWorkflow:
                     self._progress.invocations.extend(records)
                 raise
             except Exception:
-                failure = ModelFailure("model-provider", transient=False)
+                failure = ModelFailure(
+                    "model-provider", transient=False, model_calls=maximum_model_calls
+                )
             latency_ms = int(max(0.0, self._monotonic() - started) * 1000)
             if failure is not None:
                 usage_within_budget = True
+                try:
+                    ledger.settle_model_turns(maximum_model_calls, failure.model_calls)
+                except WorkflowError:
+                    usage_within_budget = False
                 if failure.input_tokens is not None and failure.output_tokens is not None:
-                    usage_within_budget = ledger.record_model_usage(
-                        failure.input_tokens, failure.output_tokens
+                    usage_within_budget = (
+                        ledger.record_model_usage(failure.input_tokens, failure.output_tokens)
+                        and usage_within_budget
                     )
                     failure_usage = (failure.input_tokens, failure.output_tokens)
                 else:
                     failure_usage = None
                     try:
-                        ledger.reserve_unavailable_model_usage(input_upper_bound, maximum_output)
+                        ledger.reserve_unavailable_model_usage(
+                            input_upper_bound * failure.model_calls,
+                            maximum_output * failure.model_calls,
+                        )
                     except WorkflowError:
                         usage_within_budget = False
                 record = self._invocation_record(
@@ -1327,9 +1554,24 @@ class InvestigationWorkflow:
                 )
             if output is None:  # pragma: no cover
                 raise WorkflowError("model-incomplete")
-            within_budget = ledger.record_model_usage(output.input_tokens, output.output_tokens)
+            try:
+                ledger.settle_model_turns(maximum_model_calls, output.model_calls)
+            except WorkflowError:
+                turns_within_budget = False
+            else:
+                turns_within_budget = True
+            within_budget = (
+                ledger.record_model_usage(output.input_tokens, output.output_tokens)
+                and turns_within_budget
+            )
             result_class = "accepted" if within_budget else "budget-rejected"
-            error_code = None if within_budget else "token_budget"
+            error_code = (
+                None
+                if within_budget
+                else "model_turn_budget"
+                if not turns_within_budget
+                else "token_budget"
+            )
             records.append(
                 self._invocation_record(
                     intake=intake,
@@ -1345,7 +1587,8 @@ class InvestigationWorkflow:
                 )
             )
             if not within_budget:
-                return None, records, Blocker("token-budget", "model", tuple(input_evidence_ids))
+                code = "model-turn-budget" if not turns_within_budget else "token-budget"
+                return None, records, Blocker(code, "model", tuple(input_evidence_ids))
             return output, records, None
 
     async def run(self, alert: Mapping[str, Any], *, bundle_root: Path) -> dict[str, Any]:
@@ -1389,47 +1632,80 @@ class InvestigationWorkflow:
 
         selection: ModelSelection | None = None
         assessment: EvidenceAssessment | None = None
+        result: EvidenceResult | None = None
         if not blockers:
-            state_history.append("selection")
-            selection_payload = {
-                "input_contract": "evidence-selection-input/v1",
-                "policy_version": self._policy.version,
-                "policy_sha256": self._policy.digest,
-                "alert": intake.model_view(),
-                "authority": "selection-only-no-arguments",
-            }
-            output, records, blocker = await self._model_call(
-                ledger=ledger,
-                intake=intake,
-                turn_kind="evidence-selection",
-                payload=selection_payload,
-                response_schema_name="model-selection-v1.schema.json",
-                input_evidence_ids=(),
-                inventory_version=None,
-            )
-            invocations.extend(records)
-            if blocker is not None:
-                blockers.append(blocker)
-            elif output is not None:
-                try:
-                    selection = ModelSelection.from_bytes(output.content)
-                except ContractError:
-                    blockers.append(Blocker("model-output-invalid", "selection"))
-
-        if not blockers and selection is not None:
             state_history.append("evidence")
             try:
-                batch = intake.evidence_batch(selection.query_keys)
+                batch = intake.evidence_batch(QUERY_KEYS)
                 controls = ExecutionControls(
                     shared_limiter=self._shared,
                     attempt_authorizer=ledger.authorize_attempt,
                 )
-                timeout = max(0.0, ledger.remaining_seconds() - 0.25)
-                if timeout <= 0:
-                    raise WorkflowError("wall-time-exhausted")
-                result = await asyncio.wait_for(
-                    self._evidence.collect(batch, controls=controls), timeout=timeout
-                )
+                async with self._evidence.open_collection(batch, controls=controls) as collection:
+                    timeout = min(
+                        float(self._policy.budgets.evidence_timeout_seconds),
+                        max(0.0, ledger.remaining_seconds() - 0.25),
+                    )
+                    if timeout <= 0:
+                        raise WorkflowError("wall-time-exhausted")
+                    baseline = await asyncio.wait_for(
+                        collection.collect("alert.rule"), timeout=timeout
+                    )
+                    baseline_view, baseline_blockers = _model_evidence_view(
+                        baseline,
+                        intake=intake,
+                        now=self._clock().astimezone(UTC),
+                    )
+                    blockers.extend(baseline_blockers)
+                    if not blockers and baseline_view is not None:
+                        state_history.append("selection")
+                        tool_ledger = ModelEvidenceLedger(
+                            collection=collection,
+                            budget=ledger,
+                            intake=intake,
+                            clock=self._clock,
+                        )
+                        selection_payload = {
+                            "input_contract": "evidence-selection-input/v1",
+                            "policy_version": self._policy.version,
+                            "policy_sha256": self._policy.digest,
+                            "alert": intake.model_view(),
+                            "alert_baseline": baseline_view,
+                            "authority": "query-key-selection-only-no-provider-arguments",
+                        }
+                        inventory_version = getattr(collection.result().inventory, "version", None)
+                        output, records, blocker = await self._model_call(
+                            ledger=ledger,
+                            intake=intake,
+                            turn_kind="evidence-selection",
+                            payload=selection_payload,
+                            response_schema_name="model-selection-v1.schema.json",
+                            input_evidence_ids=(cast(str, baseline["evidence_id"]),),
+                            inventory_version=(
+                                inventory_version if isinstance(inventory_version, str) else None
+                            ),
+                            evidence_tool=tool_ledger.get_grafana_evidence,
+                        )
+                        invocations.extend(records)
+                        blockers.extend(tool_ledger.blockers)
+                        if blocker is not None:
+                            blockers.append(blocker)
+                        elif output is not None:
+                            try:
+                                selection = ModelSelection.from_bytes(output.content)
+                            except ContractError:
+                                blockers.append(Blocker("model-output-invalid", "selection"))
+                            else:
+                                expected_query_order = (
+                                    "alert.rule",
+                                    *tool_ledger.query_order,
+                                )
+                                if (
+                                    set(tool_ledger.query_order) != ModelEvidenceLedger._ALLOWED
+                                    or selection.query_keys != expected_query_order
+                                ):
+                                    blockers.append(Blocker("model-tool-sequence", "selection"))
+                    result = collection.result()
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
@@ -1440,7 +1716,8 @@ class InvestigationWorkflow:
                 blockers.append(Blocker("evidence-unavailable", "evidence"))
             except Exception:
                 blockers.append(Blocker("evidence-unavailable", "evidence"))
-            else:
+
+            if result is not None:
                 state_history.append("assessment")
                 try:
                     assessment = await self._validator_call(
@@ -1448,7 +1725,7 @@ class InvestigationWorkflow:
                         lambda: assess_evidence(
                             result,
                             intake=intake,
-                            selected_query_keys=selection.query_keys,
+                            selected_query_keys=QUERY_KEYS,
                             now=self._clock().astimezone(UTC),
                             ledger=ledger,
                         ),

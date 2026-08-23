@@ -220,6 +220,87 @@ def collect_with(
     return result
 
 
+def test_ordered_collection_uses_one_session_and_one_evidence_chain() -> None:
+    session = FakeSession()
+    factory = FakeFactory(session)
+    adapter = subject.EvidenceAdapter(
+        runtime=runtime(),
+        catalog=catalog(),
+        session_factory=factory,
+        inventory_loader=lambda _session: asyncio.sleep(0, result=inventory()),
+        clock=lambda: NOW,
+    )
+
+    async def scenario() -> subject.BatchResult:
+        batch = subject.EvidenceBatch.from_mapping(request())
+        async with adapter.open_collection(batch) as collection:
+            for query_key in subject.QUERY_KEYS:
+                await collection.collect(query_key)
+            assert collection.query_keys == subject.QUERY_KEYS
+            return collection.result()
+
+    result = asyncio.run(scenario())
+
+    assert factory.opened == factory.closed == 1
+    assert [name for name, _arguments in session.calls] == [
+        "alerting_manage_rules",
+        "query_loki_logs",
+        "query_prometheus",
+        "tempo_get-trace",
+    ]
+    assert result.tool_calls_used == 4
+    assert result.maximum_calls_in_flight_observed == 1
+    predecessor = None
+    for envelope in result.envelopes:
+        assert envelope["predecessor_event_sha256"] == predecessor
+        predecessor = envelope["event_sha256"]
+
+
+def test_ordered_collection_rejects_unknown_duplicate_and_parallel_queries() -> None:
+    entered = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def handler(name: str, _arguments: dict[str, Any]) -> types.CallToolResult:
+        if name == "query_prometheus":
+            entered.set()
+            await resume.wait()
+        return success(name)
+
+    session = FakeSession(handler)
+    factory = FakeFactory(session)
+    adapter = subject.EvidenceAdapter(
+        runtime=runtime(),
+        catalog=catalog(),
+        session_factory=factory,
+        inventory_loader=lambda _session: asyncio.sleep(0, result=inventory()),
+        clock=lambda: NOW,
+    )
+
+    async def scenario() -> subject.BatchResult:
+        batch = subject.EvidenceBatch.from_mapping(request())
+        async with adapter.open_collection(batch) as collection:
+            with pytest.raises(subject.AdapterError, match="query_not_allowed"):
+                await collection.collect("dashboard.delete")
+            await collection.collect("alert.rule")
+            with pytest.raises(subject.AdapterError, match="duplicate_query"):
+                await collection.collect("alert.rule")
+            pending = asyncio.create_task(collection.collect("metric.correlated-observations"))
+            await entered.wait()
+            with pytest.raises(subject.AdapterError, match="parallel_query"):
+                await collection.collect("log.correlated-events")
+            resume.set()
+            await pending
+            await collection.collect("log.correlated-events")
+            await collection.collect("trace.by-id")
+            return collection.result()
+
+    result = asyncio.run(scenario())
+
+    assert factory.opened == factory.closed == 1
+    assert result.tool_calls_used == 4
+    assert result.maximum_calls_in_flight_observed == 1
+
+
 def _digest(character: str) -> str:
     return f"sha256:{character * 64}"
 

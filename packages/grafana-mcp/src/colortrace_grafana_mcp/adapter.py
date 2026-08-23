@@ -2320,6 +2320,95 @@ class BatchResult:
         }
 
 
+class EvidenceCollectionSession:
+    def __init__(
+        self,
+        *,
+        session: McpSession,
+        runtime: OfficialMcpRuntime,
+        catalog: QueryCatalog,
+        batch: EvidenceBatch,
+        inventory: FrozenInventory,
+        controls: ExecutionControls,
+        clock: Callable[[], datetime],
+    ) -> None:
+        self._session = session
+        self._runtime = runtime
+        self._catalog = catalog
+        self._batch = batch
+        self._inventory = inventory
+        self._controls = controls
+        self._clock = clock
+        self._budget = _CallBudget(maximum_calls=8, maximum_in_flight=1)
+        self._local_limiter = asyncio.Semaphore(1)
+        self._raw_results: list[_RawCollection] = []
+        self._envelopes: list[Mapping[str, Any]] = []
+        self._seen: set[str] = set()
+        self._in_flight = False
+        self._closed = False
+        self._predecessor = batch.predecessor_event_sha256
+
+    @property
+    def query_keys(self) -> tuple[str, ...]:
+        return tuple(
+            cast(str, envelope["observation"]["query_key"]) for envelope in self._envelopes
+        )
+
+    async def collect(self, query_key: str) -> Mapping[str, Any]:
+        if self._closed:
+            raise AdapterError("collection_session_closed")
+        if self._in_flight:
+            raise AdapterError("parallel_query")
+        if (
+            not isinstance(query_key, str)
+            or query_key not in self._batch.query_keys
+            or query_key not in QUERY_KEYS
+        ):
+            raise AdapterError("query_not_allowed")
+        if query_key in self._seen:
+            raise AdapterError("duplicate_query")
+
+        self._in_flight = True
+        self._seen.add(query_key)
+        try:
+            bound = _bind_call(self._catalog, self._batch, query_key)
+            raw = await _collect_one(
+                self._session,
+                bound,
+                runtime=self._runtime,
+                catalog=self._catalog,
+                local_limiter=self._local_limiter,
+                controls=self._controls,
+                budget=self._budget,
+                clock=self._clock,
+            )
+            envelope = _build_envelope(
+                raw,
+                batch=self._batch,
+                catalog=self._catalog,
+                inventory=self._inventory,
+                predecessor=self._predecessor,
+            )
+            self._raw_results.append(raw)
+            self._envelopes.append(envelope)
+            self._predecessor = cast(str, envelope["event_sha256"])
+            return envelope
+        finally:
+            self._in_flight = False
+
+    def result(self) -> BatchResult:
+        return BatchResult(
+            self._inventory,
+            tuple(self._envelopes),
+            self._budget.calls_used,
+            self._budget.maximum_observed_in_flight,
+            tuple(attempt for raw in self._raw_results for attempt in raw.attempt_records),
+        )
+
+    def close(self) -> None:
+        self._closed = True
+
+
 _ACTION_CORRELATION_ATTRIBUTES = (
     "outcome_id",
     "outcome_sha256",
@@ -2833,6 +2922,34 @@ class EvidenceAdapter:
             raise
         except Exception:
             raise AdapterError("mcp_session_failure") from None
+
+    @asynccontextmanager
+    async def open_collection(
+        self,
+        batch: EvidenceBatch,
+        *,
+        controls: ExecutionControls | None = None,
+    ) -> AsyncIterator[EvidenceCollectionSession]:
+        snapshot = _snapshot_batch(batch)
+        current = self._clock().astimezone(UTC)
+        if snapshot.window_end > current + timedelta(seconds=5):
+            raise AdapterError("invalid_time_range")
+        execution_controls = controls or ExecutionControls()
+        async with self._session_factory(self._runtime) as session:
+            inventory = await self._inventory(session)
+            collection = EvidenceCollectionSession(
+                session=session,
+                runtime=self._runtime,
+                catalog=self._catalog,
+                batch=snapshot,
+                inventory=inventory,
+                controls=execution_controls,
+                clock=self._clock,
+            )
+            try:
+                yield collection
+            finally:
+                collection.close()
 
     def normalize_simulator_action_observations(
         self,
