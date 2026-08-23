@@ -10,7 +10,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -25,6 +25,7 @@ from colortrace_investigation import (
     ModelCall,
     ModelFailure,
     ModelOutput,
+    ModelSelection,
     WorkflowError,
     validate_response_packet,
 )
@@ -133,6 +134,8 @@ class FakeModel:
         delay: float = 0,
         invalid_selection: Mapping[str, Any] | None = None,
         advisory_evidence_ids: tuple[str, ...] | None = None,
+        tool_calls: tuple[str, ...] | None = None,
+        parallel_tool_calls: bool = False,
     ) -> None:
         self.selected = selected
         self.hypotheses = hypotheses
@@ -142,6 +145,8 @@ class FakeModel:
         self.delay = delay
         self.invalid_selection = invalid_selection
         self.advisory_evidence_ids = advisory_evidence_ids
+        self.tool_calls = tool_calls
+        self.parallel_tool_calls = parallel_tool_calls
         self.calls: list[ModelCall] = []
         self.in_flight = 0
         self.maximum_in_flight = 0
@@ -156,6 +161,19 @@ class FakeModel:
             if self.failures:
                 raise self.failures.pop(0)
             if call.turn_kind == "evidence-selection":
+                if call.evidence_tool is not None and self.invalid_selection is None:
+                    query_keys = self.tool_calls or tuple(
+                        query_key for query_key in self.selected if query_key != "alert.rule"
+                    )
+                    if self.parallel_tool_calls:
+                        await asyncio.gather(
+                            *(call.evidence_tool(cast(Any, key)) for key in query_keys[:2])
+                        )
+                        if len(query_keys) > 1:
+                            await call.evidence_tool(cast(Any, query_keys[1]))
+                        query_keys = query_keys[2:]
+                    for query_key in query_keys:
+                        await call.evidence_tool(cast(Any, query_key))
                 value = self.invalid_selection or {
                     "schema": "model-selection/v1",
                     "hypothesis_keys": list(self.hypotheses),
@@ -213,6 +231,7 @@ class FakeSession:
     ) -> types.CallToolResult:
         assert arguments is not None
         assert read_timeout_seconds == timedelta(seconds=20)
+        self.tracker.tool_order.append(name)
         self.tracker.active += 1
         self.tracker.maximum_active = max(self.tracker.maximum_active, self.tracker.active)
         try:
@@ -491,16 +510,11 @@ class FakeEvidence:
         self.collections = 0
         self.last_result: mcp_subject.BatchResult | None = None
         self.errors: list[str] = []
+        self.tool_order: list[str] = []
 
-    async def collect(
+    def _adapter(
         self,
-        batch: mcp_subject.EvidenceBatch,
-        *,
-        controls: mcp_subject.ExecutionControls | None = None,
-    ) -> mcp_subject.BatchResult:
-        self.collections += 1
-        if self.unavailable:
-            raise mcp_subject.AdapterError("mcp_session_failure")
+    ) -> tuple[mcp_subject.EvidenceAdapter, Any]:
         session = FakeSession(
             denial=self.denial,
             contradiction=self.contradiction,
@@ -530,13 +544,65 @@ class FakeEvidence:
         async def load_inventory(_session: mcp_subject.McpSession) -> mcp_subject.FrozenInventory:
             return inventory
 
-        adapter = mcp_subject.EvidenceAdapter(
-            runtime=runtime,
-            catalog=mcp_subject.QueryCatalog.load(Path("config/grafana-mcp/query-catalog.json")),
-            session_factory=factory,
-            inventory_loader=load_inventory,
-            clock=lambda: self.clock,
+        return (
+            mcp_subject.EvidenceAdapter(
+                runtime=runtime,
+                catalog=mcp_subject.QueryCatalog.load(
+                    Path("config/grafana-mcp/query-catalog.json")
+                ),
+                session_factory=factory,
+                inventory_loader=load_inventory,
+                clock=lambda: self.clock,
+            ),
+            session,
         )
+
+    @asynccontextmanager
+    async def open_collection(
+        self,
+        batch: mcp_subject.EvidenceBatch,
+        *,
+        controls: mcp_subject.ExecutionControls | None = None,
+    ) -> AsyncIterator[Any]:
+        self.collections += 1
+        if self.unavailable:
+            raise mcp_subject.AdapterError("mcp_session_failure")
+        adapter, _session = self._adapter()
+
+        class CollectionProxy:
+            def __init__(self, delegate: Any) -> None:
+                self.delegate = delegate
+
+            @property
+            def query_keys(self) -> tuple[str, ...]:
+                return cast(tuple[str, ...], self.delegate.query_keys)
+
+            async def collect(self, query_key: str) -> Mapping[str, Any]:
+                return cast(Mapping[str, Any], await self.delegate.collect(query_key))
+
+            def result(self) -> mcp_subject.BatchResult:
+                result = cast(mcp_subject.BatchResult, self.delegate.result())
+                if self_outer.argument_drift and result.attempts:
+                    attempts = list(result.attempts)
+                    attempts[0] = replace(attempts[0], arguments_sha256="sha256:" + "0" * 64)
+                    result = replace(result, attempts=tuple(attempts))
+                self_outer.last_result = result
+                return result
+
+        self_outer = self
+        async with adapter.open_collection(batch, controls=controls) as collection:
+            yield CollectionProxy(collection)
+
+    async def collect(
+        self,
+        batch: mcp_subject.EvidenceBatch,
+        *,
+        controls: mcp_subject.ExecutionControls | None = None,
+    ) -> mcp_subject.BatchResult:
+        self.collections += 1
+        if self.unavailable:
+            raise mcp_subject.AdapterError("mcp_session_failure")
+        adapter, _session = self._adapter()
         result = await adapter.collect(batch, controls=controls)
         if self.argument_drift:
             attempts = list(result.attempts)
@@ -717,7 +783,7 @@ def test_canonical_packet_is_resolved_cited_and_bounded(
         "validator_calls": 6,
         "trusted_transient_retries": 0,
         "model_visible_bytes": packet["budget_use"]["model_visible_bytes"],
-        "maximum_calls_in_flight_observed": 2,
+        "maximum_calls_in_flight_observed": 1,
     }
     assert packet["budget_use"]["elapsed_ms"] <= 120_000
     assert packet["budget_use"]["model_visible_bytes"] <= 1_048_576
@@ -730,9 +796,27 @@ def test_canonical_packet_is_resolved_cited_and_bounded(
             assert claim["source_validator_result_id"] in result_ids
     assert packet["model_advisory"]["trust"] == "untrusted-model-output"
     assert len(model.calls) == 2
+    assert model.calls[0].evidence_tool is not None
+    assert model.calls[1].evidence_tool is None
     assert model.maximum_in_flight == 1
-    assert evidence.maximum_active == 2
+    assert evidence.maximum_active == 1
     assert evidence.opened == evidence.closed == 1
+    assert evidence.tool_order == [
+        "alerting_manage_rules",
+        "query_loki_logs",
+        "query_prometheus",
+        "tempo_get-trace",
+    ]
+    assert evidence.last_result is not None
+    assert [attempt.query_key for attempt in evidence.last_result.attempts] == list(
+        mcp_subject.QUERY_KEYS
+    )
+    assert b"unit-test-viewer-token" not in investigation_contracts.canonical_json_bytes(
+        evidence.last_result.to_dict()
+    )
+    assert packet["invocation_records"][0]["input_evidence_ids"] == [
+        evidence.last_result.envelopes[0]["evidence_id"]
+    ]
 
 
 def test_hidden_fixture_and_repeated_structured_facts_are_stable(
@@ -901,8 +985,69 @@ def test_incomplete_model_batch_fails_unresolved_without_dropping_admitted_calls
     )
     assert packet["status"] == "unresolved"
     assert packet["budget_use"]["mcp_attempts"] == len(selected)
-    assert evidence.maximum_active == 2
-    assert "incomplete-capability-set" in {item["code"] for item in packet["unresolved_items"]}
+    assert evidence.maximum_active == 1
+    codes = {item["code"] for item in packet["unresolved_items"]}
+    assert {"incomplete-evidence", "model-tool-sequence"} <= codes
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_code"),
+    [
+        (
+            FakeModel(
+                tool_calls=(
+                    "dashboard.delete",
+                    "log.correlated-events",
+                    "metric.correlated-observations",
+                    "trace.by-id",
+                )
+            ),
+            "query-not-allowed",
+        ),
+        (
+            FakeModel(
+                tool_calls=(
+                    "log.correlated-events",
+                    "log.correlated-events",
+                    "metric.correlated-observations",
+                    "trace.by-id",
+                )
+            ),
+            "duplicate-tool-call",
+        ),
+        (FakeModel(parallel_tool_calls=True), "parallel-tool-call"),
+    ],
+)
+def test_unknown_duplicate_and_parallel_model_tool_calls_fail_closed(
+    policy: InvestigationPolicy,
+    bundles: dict[str, Path],
+    model: FakeModel,
+    expected_code: str,
+) -> None:
+    packet, _, evidence = asyncio.run(execute(policy, bundles["canonical"], model=model))
+
+    assert packet["status"] == "unresolved"
+    assert packet["candidate_plan"] is None
+    assert expected_code in {item["code"] for item in packet["unresolved_items"]}
+    assert evidence.opened == evidence.closed == 1
+    assert evidence.maximum_active == 1
+
+
+def test_mcp_attempt_budget_exhaustion_inside_model_tool_loop_fails_closed(
+    policy: InvestigationPolicy, bundles: dict[str, Path]
+) -> None:
+    constrained = replace(
+        policy,
+        budgets=replace(policy.budgets, maximum_mcp_attempts=1),
+    )
+    packet, _, evidence = asyncio.run(execute(constrained, bundles["canonical"]))
+
+    assert packet["status"] == "unresolved"
+    assert packet["candidate_plan"] is None
+    assert packet["no_action_reason"] == "budget-exhausted"
+    assert "budget-exhausted" in {item["code"] for item in packet["unresolved_items"]}
+    assert packet["budget_use"]["mcp_attempts"] == 1
+    assert evidence.tool_order == ["alerting_manage_rules"]
 
 
 def test_injection_remains_quoted_and_cannot_change_facts_or_tools(
@@ -940,7 +1085,7 @@ def test_injection_remains_quoted_and_cannot_change_facts_or_tools(
     )
 
 
-def test_invalid_model_tool_arguments_are_rejected_before_evidence(
+def test_invalid_model_tool_arguments_stop_after_alert_baseline(
     policy: InvestigationPolicy, bundles: dict[str, Path]
 ) -> None:
     evidence = FakeEvidence()
@@ -956,8 +1101,14 @@ def test_invalid_model_tool_arguments_are_rejected_before_evidence(
         execute(policy, bundles["canonical"], model=model, evidence=evidence)
     )
     assert packet["status"] == "unresolved"
-    assert evidence.collections == 0
+    assert evidence.collections == 1
+    assert evidence.last_result is not None
+    assert [item["observation"]["query_key"] for item in evidence.last_result.envelopes] == [
+        "alert.rule"
+    ]
+    assert "assessment" not in packet["state_history"]
     assert "model-output-invalid" in {item["code"] for item in packet["unresolved_items"]}
+    assert "incomplete-evidence" in {item["code"] for item in packet["unresolved_items"]}
 
 
 def test_drafting_rejects_citation_outside_quoted_evidence(
@@ -984,15 +1135,17 @@ def test_one_trusted_model_retry_then_second_timeout_is_terminal(
 ) -> None:
     model = FakeModel(
         failures=[
-            ModelFailure("timeout", transient=True),
-            ModelFailure("timeout", transient=True),
+            ModelFailure("timeout", transient=True, input_tokens=10, output_tokens=2),
+            ModelFailure("timeout", transient=True, input_tokens=10, output_tokens=2),
         ]
     )
     packet, _, evidence = asyncio.run(execute(policy, bundles["canonical"], model=model))
     assert packet["status"] == "unresolved"
     assert packet["budget_use"]["model_turns"] == 2
+    assert packet["budget_use"]["input_tokens"] == 20
+    assert packet["budget_use"]["output_tokens"] == 4
     assert packet["budget_use"]["trusted_transient_retries"] == 1
-    assert evidence.collections == 0
+    assert evidence.collections == 1
     assert [item["result_class"] for item in packet["invocation_records"]] == [
         "failed",
         "failed",
@@ -1012,7 +1165,56 @@ def test_aggregate_token_overage_is_recorded_and_rejected(
     assert packet["status"] == "unresolved"
     assert packet["budget_use"]["input_tokens"] == 32_001
     assert packet["invocation_records"][0]["result_class"] == "budget-rejected"
-    assert evidence.collections == 0
+    assert evidence.collections == 1
+
+
+def test_multi_turn_token_bound_is_admitted_before_provider_execution(
+    policy: InvestigationPolicy, bundles: dict[str, Path]
+) -> None:
+    bounded = replace(
+        policy,
+        budgets=replace(policy.budgets, maximum_output_tokens=1_800),
+    )
+    model = FakeModel()
+    packet, _, evidence = asyncio.run(execute(bounded, bundles["canonical"], model=model))
+
+    assert model.calls == []
+    assert packet["status"] == "unresolved"
+    assert "token-budget" in {item["code"] for item in packet["unresolved_items"]}
+    assert "assessment" not in packet["state_history"]
+    assert evidence.last_result is not None
+    assert [item["observation"]["query_key"] for item in evidence.last_result.envelopes] == [
+        "alert.rule"
+    ]
+
+
+def test_partial_provider_failure_records_known_and_unobserved_usage(
+    policy: InvestigationPolicy, bundles: dict[str, Path]
+) -> None:
+    failure = ModelFailure(
+        "service",
+        transient=False,
+        input_tokens=10,
+        output_tokens=2,
+        model_calls=2,
+        unobserved_model_calls=1,
+    )
+    packet, _, _ = asyncio.run(
+        execute(policy, bundles["canonical"], model=FakeModel(failures=[failure]))
+    )
+
+    assert packet["status"] == "unresolved"
+    assert packet["budget_use"]["model_turns"] == 2
+    assert packet["budget_use"]["input_tokens"] == 10
+    assert packet["budget_use"]["output_tokens"] == 2
+    assert packet["budget_use"]["unavailable_input_tokens_reserved"] > 0
+    assert packet["budget_use"]["unavailable_output_tokens_reserved"] == 512
+    assert packet["invocation_records"][0]["usage"] == {
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "model_calls": 2,
+        "unobserved_model_calls": 1,
+    }
 
 
 def test_model_visible_content_and_attempt_budgets_fail_closed(
@@ -1062,7 +1264,7 @@ def test_policy_and_google_runtime_pins_fail_closed(
             AdkVertexGateway(project_id="colortrace-test")
 
 
-def test_vertex_gateway_uses_adk_root_chat_mode_for_one_bounded_call() -> None:
+def test_vertex_gateway_registers_typed_bounded_grafana_function_tool() -> None:
     observed: dict[str, Any] = {}
 
     class FakeRunner:
@@ -1071,9 +1273,25 @@ def test_vertex_gateway_uses_adk_root_chat_mode_for_one_bounded_call() -> None:
             observed["output_schema"] = agent.output_schema
             observed["response_schema"] = agent.generate_content_config.response_schema
             observed["response_json_schema"] = agent.generate_content_config.response_json_schema
+            observed["tool_count"] = len(agent.tools)
+            declaration = agent.tools[0]._get_declaration()
+            observed["tool_name"] = declaration.name
+            observed["tool_schema"] = declaration.parameters_json_schema
 
         async def run_async(self, *, run_config: Any, **_: Any) -> AsyncIterator[Any]:
             observed["maximum_calls"] = run_config.max_llm_calls
+            for _ in range(3):
+                yield SimpleNamespace(
+                    usage_metadata=SimpleNamespace(
+                        prompt_token_count=10,
+                        candidates_token_count=2,
+                        thoughts_token_count=0,
+                    ),
+                    error_code=None,
+                    finish_reason=None,
+                    content=None,
+                    is_final_response=lambda: False,
+                )
             yield SimpleNamespace(
                 usage_metadata=SimpleNamespace(
                     prompt_token_count=100,
@@ -1096,6 +1314,10 @@ def test_vertex_gateway_uses_adk_root_chat_mode_for_one_bounded_call() -> None:
         {"input_contract": "evidence-selection-input/v1"},
         {"type": "object"},
         512,
+        lambda _query_key: asyncio.sleep(
+            0,
+            result={"schema": "grafana-evidence-tool-result/v1", "status": "collected"},
+        ),
     )
     with patch("colortrace_investigation.model.Runner", FakeRunner):
         output = asyncio.run(AdkVertexGateway(project_id="colortrace-test").generate(call))
@@ -1105,10 +1327,173 @@ def test_vertex_gateway_uses_adk_root_chat_mode_for_one_bounded_call() -> None:
         "output_schema": None,
         "response_schema": None,
         "response_json_schema": {"type": "object"},
-        "maximum_calls": 1,
+        "tool_count": 1,
+        "tool_name": "get_grafana_evidence",
+        "tool_schema": {
+            "properties": {
+                "query_key": {
+                    "enum": [
+                        "log.correlated-events",
+                        "metric.correlated-observations",
+                        "trace.by-id",
+                    ],
+                    "title": "Query Key",
+                    "type": "string",
+                }
+            },
+            "required": ["query_key"],
+            "title": "get_grafana_evidenceParams",
+            "type": "object",
+        },
+        "maximum_calls": 4,
     }
-    assert output.input_tokens == 100
-    assert output.output_tokens == 20
+    assert output.input_tokens == 130
+    assert output.output_tokens == 26
+    assert output.model_calls == 4
+
+
+def test_pinned_adk_runner_executes_the_three_tool_calls_in_sequence() -> None:
+    from google.adk.models.base_llm import BaseLlm
+    from google.adk.models.llm_response import LlmResponse
+    from google.genai import types as genai_types
+
+    query_keys = list(mcp_subject.QUERY_KEYS[1:])
+
+    class ScriptedLlm(BaseLlm):
+        call_index: int = 0
+
+        async def generate_content_async(
+            self, _llm_request: Any, stream: bool = False
+        ) -> AsyncIterator[Any]:
+            assert stream is False
+            index = self.call_index
+            self.call_index += 1
+            if index < len(query_keys):
+                content = genai_types.Content(
+                    role="model",
+                    parts=[
+                        genai_types.Part.from_function_call(
+                            name="get_grafana_evidence",
+                            args={"query_key": query_keys[index]},
+                        )
+                    ],
+                )
+            else:
+                content = genai_types.Content(
+                    role="model",
+                    parts=[
+                        genai_types.Part.from_text(
+                            text=json.dumps(
+                                {
+                                    "schema": "model-selection/v1",
+                                    "hypothesis_keys": ["color-resource-drift"],
+                                    "query_keys": list(mcp_subject.QUERY_KEYS),
+                                },
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            )
+                        )
+                    ],
+                )
+            yield LlmResponse(
+                content=content,
+                finish_reason=genai_types.FinishReason.STOP,
+                usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
+                    prompt_token_count=10,
+                    candidates_token_count=2,
+                    total_token_count=12,
+                ),
+            )
+
+    observed: list[str] = []
+    active = 0
+    maximum_active = 0
+
+    async def evidence_tool(query_key: Any) -> Mapping[str, Any]:
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        try:
+            await asyncio.sleep(0)
+            observed.append(query_key)
+            return {
+                "schema": "grafana-evidence-tool-result/v1",
+                "status": "collected",
+                "query_key": query_key,
+                "evidence_id": "sha256:" + "a" * 64,
+                "retrieved_at": "2026-08-13T00:05:00.000Z",
+                "display_excerpt": "{}",
+                "display_excerpt_truncated": False,
+                "trust": "untrusted-provider-data",
+            }
+        finally:
+            active -= 1
+
+    call = ModelCall(
+        "evidence-selection",
+        {"input_contract": "evidence-selection-input/v1"},
+        {"type": "object"},
+        512,
+        evidence_tool,
+    )
+    with patch(
+        "colortrace_investigation.model.Gemini",
+        return_value=ScriptedLlm(model="scripted-tool-loop"),
+    ):
+        output = asyncio.run(AdkVertexGateway(project_id="colortrace-test").generate(call))
+
+    assert observed == query_keys
+    assert maximum_active == 1
+    assert output.model_calls == 4
+    assert output.input_tokens == 40
+    assert output.output_tokens == 8
+    assert ModelSelection.from_bytes(output.content).query_keys == mcp_subject.QUERY_KEYS
+
+
+def test_vertex_gateway_preserves_partial_usage_on_mid_loop_provider_failure() -> None:
+    from google.genai import errors as genai_errors
+
+    class FailingRunner:
+        def __init__(self, **_: Any) -> None:
+            return
+
+        async def run_async(self, **_: Any) -> AsyncIterator[Any]:
+            yield SimpleNamespace(
+                usage_metadata=SimpleNamespace(
+                    prompt_token_count=10,
+                    candidates_token_count=2,
+                    thoughts_token_count=0,
+                ),
+                error_code=None,
+                finish_reason=None,
+                content=None,
+                is_final_response=lambda: False,
+            )
+            raise genai_errors.ServerError(503, {"error": {"message": "untrusted"}})
+
+        async def close(self) -> None:
+            return
+
+    async def evidence_tool(_query_key: Any) -> Mapping[str, Any]:
+        return {"schema": "grafana-evidence-tool-result/v1", "status": "collected"}
+
+    call = ModelCall(
+        "evidence-selection",
+        {"input_contract": "evidence-selection-input/v1"},
+        {"type": "object"},
+        512,
+        evidence_tool,
+    )
+    with patch("colortrace_investigation.model.Runner", FailingRunner):
+        with pytest.raises(ModelFailure) as caught:
+            asyncio.run(AdkVertexGateway(project_id="colortrace-test").generate(call))
+
+    assert caught.value.code == "service"
+    assert caught.value.input_tokens == 10
+    assert caught.value.output_tokens == 2
+    assert caught.value.model_calls == 2
+    assert caught.value.unobserved_model_calls == 1
+    assert "untrusted" not in str(caught.value)
 
 
 def test_model_instructions_pin_each_output_contract() -> None:

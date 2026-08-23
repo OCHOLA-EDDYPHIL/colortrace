@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import suppress
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic as system_monotonic
@@ -27,7 +27,12 @@ from colortrace_investigation.contracts import (
     sha256,
     timestamp,
 )
-from colortrace_investigation.workflow import EvidenceCollector, EvidenceResult, ValidatorGateway
+from colortrace_investigation.workflow import (
+    EvidenceCollection,
+    EvidenceCollector,
+    EvidenceResult,
+    ValidatorGateway,
+)
 
 from .contracts import (
     CLAIM_HEARTBEAT_SECONDS,
@@ -64,13 +69,7 @@ class RecordingEvidenceCollector:
         self.tool_calls_used = 0
         self.maximum_calls_in_flight_observed = 0
 
-    async def collect(
-        self,
-        batch: EvidenceBatch,
-        *,
-        controls: ExecutionControls | None = None,
-    ) -> EvidenceResult:
-        result = await self._delegate.collect(batch, controls=controls)
+    def _record(self, result: EvidenceResult) -> None:
         if self.batches:
             raise SliceContractError("evidence-batch-duplicate")
         inventory = cast(SupportsInventory, result.inventory).to_dict()
@@ -96,6 +95,28 @@ class RecordingEvidenceCollector:
             self.maximum_calls_in_flight_observed,
             result.maximum_calls_in_flight_observed,
         )
+
+    @asynccontextmanager
+    async def open_collection(
+        self,
+        batch: EvidenceBatch,
+        *,
+        controls: ExecutionControls | None = None,
+    ) -> AsyncIterator[EvidenceCollection]:
+        async with self._delegate.open_collection(batch, controls=controls) as collection:
+            try:
+                yield collection
+            finally:
+                self._record(collection.result())
+
+    async def collect(
+        self,
+        batch: EvidenceBatch,
+        *,
+        controls: ExecutionControls | None = None,
+    ) -> EvidenceResult:
+        result = await self._delegate.collect(batch, controls=controls)
+        self._record(result)
         return result
 
 

@@ -12,7 +12,8 @@
   "limitations": [
     "model-output-is-not-evidence",
     "model-prose-is-non-authoritative",
-    "model-cannot-supply-tool-arguments",
+    "model-cannot-supply-provider-arguments",
+    "model-tool-calls-require-bounded-ledger",
     "model-cannot-classify-claims-or-scope",
     "model-cannot-authorize-or-execute-actions",
     "structured-facts-require-deterministic-validation"
