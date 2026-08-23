@@ -26,7 +26,9 @@ from .demo_facade import (
     APPROVAL_REQUEST_SCHEMA,
     CANONICAL_SCENARIO,
     CLOSURE_REQUEST_SCHEMA,
+    EXECUTION_PROOF_SCHEMA,
     EXECUTION_SCHEMA,
+    INVESTIGATION_PROOF_SCHEMA,
     LEASE_SECONDS,
     PREPARATION_SCHEMA,
     RECEIPT_SCHEMA,
@@ -82,6 +84,7 @@ from .response_plans import ResponsePlanApi, ResponsePlanCoordinator
 from .runtime import (
     ApiRuntimeConfig,
     ApiRuntimeConfigurationError,
+    CanonicalDemoRuntimeConfig,
     create_application,
     create_runtime_app,
 )
@@ -91,6 +94,7 @@ from .stored_service import StoredIncidentService, StoredIncidentStore
 __all__ = [
     "ApiRuntimeConfig",
     "ApiRuntimeConfigurationError",
+    "CanonicalDemoRuntimeConfig",
     "CanonicalSimulatorTaskResolver",
     "CloudTaskAlreadyExists",
     "CloudTaskNotFound",
@@ -107,6 +111,7 @@ __all__ = [
     "DemoFacadeError",
     "DemoVisual",
     "DemoWorkflowPort",
+    "EXECUTION_PROOF_SCHEMA",
     "EXECUTION_SCHEMA",
     "GoogleAuthIdTokenClaimsVerifier",
     "GoogleCloudTasksRestClient",
@@ -118,6 +123,7 @@ __all__ = [
     "IncidentReadService",
     "IncidentService",
     "JwksResolver",
+    "INVESTIGATION_PROOF_SCHEMA",
     "LEASE_SECONDS",
     "OidcTokenVerifier",
     "OidcVerificationError",

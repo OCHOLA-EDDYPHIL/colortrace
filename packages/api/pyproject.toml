@@ -11,6 +11,8 @@ license-files = []
 requires-python = ">=3.12"
 dependencies = [
     "colortrace-fixture",
+    "colortrace-grafana-mcp",
+    "colortrace-investigation",
     "colortrace-persistence",
     "colortrace-recovery",
     "colortrace-response-plans",
@@ -29,6 +31,8 @@ colortrace-demo = "colortrace_api.demo:main"
 
 [tool.uv.sources]
 colortrace-fixture = {workspace = true}
+colortrace-grafana-mcp = {workspace = true}
+colortrace-investigation = {workspace = true}
 colortrace-persistence = {workspace = true}
 colortrace-recovery = {workspace = true}
 colortrace-response-plans = {workspace = true}

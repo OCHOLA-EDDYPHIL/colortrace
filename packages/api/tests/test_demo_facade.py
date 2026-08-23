@@ -12,7 +12,9 @@ from colortrace_api import (
     APPROVAL_REQUEST_SCHEMA,
     CANONICAL_SCENARIO,
     CLOSURE_REQUEST_SCHEMA,
+    EXECUTION_PROOF_SCHEMA,
     EXECUTION_SCHEMA,
+    INVESTIGATION_PROOF_SCHEMA,
     PREPARATION_SCHEMA,
     RESET_REQUEST_SCHEMA,
     RUN_REQUEST_SCHEMA,
@@ -22,7 +24,7 @@ from colortrace_api import (
     SQLiteDemoRunStore,
     create_app,
 )
-from colortrace_recovery import document_sha256
+from colortrace_recovery import CHECK_NAMES, document_sha256
 from fastapi.testclient import TestClient
 
 SOURCE_COMMIT = "a" * 40
@@ -126,6 +128,118 @@ class FakeWorkflow:
     def reconcile(self, request: Mapping[str, Any]) -> Mapping[str, Any] | None:
         self.reconcile_calls.append(request)
         return self.reconciliation
+
+
+class ProofWorkflow(FakeWorkflow):
+    def preparation(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        result = super().preparation(request)
+        query_tools = (
+            ("alert.rule", "alerting_manage_rules"),
+            ("log.correlated-events", "query_loki_logs"),
+            ("metric.correlated-observations", "query_prometheus"),
+            ("trace.by-id", "tempo_get-trace"),
+        )
+        result["investigation"] = {
+            "schema": INVESTIGATION_PROOF_SCHEMA,
+            "packet_id": f"response-packet:{'6' * 64}",
+            "packet_sha256": f"sha256:{'6' * 64}",
+            "status": "resolved",
+            "model_invocations": [
+                {
+                    "invocation_id": f"model-invocation:{digit * 64}",
+                    "turn_kind": turn,
+                    "model": "gemini-3.5-flash",
+                    "framework": "google-adk",
+                    "result_class": "accepted",
+                    "inventory_sha256": f"sha256:{'7' * 64}",
+                    "output_sha256": f"sha256:{digit * 64}",
+                    "trace_id": digit * 32,
+                }
+                for digit, turn in (
+                    ("8", "evidence-selection"),
+                    ("9", "response-drafting"),
+                )
+            ],
+            "evidence": [
+                {
+                    "evidence_id": f"sha256:{index * 64}",
+                    "query_key": query,
+                    "tool": tool,
+                    "inventory_sha256": f"sha256:{'7' * 64}",
+                    "content_sha256": f"sha256:{index * 64}",
+                    "freshness": "current",
+                }
+                for index, (query, tool) in zip("abcd", query_tools, strict=True)
+            ],
+            "validators": [
+                {
+                    "result_id": f"validator-result:{'e' * 64}",
+                    "validator": "colortrace-validator",
+                    "validator_version": "1.0.0",
+                    "status": "resolved",
+                    "derivation_sha256": f"sha256:{'e' * 64}",
+                }
+            ],
+            "scope": {
+                "state": "resolved",
+                "affected_count": 4,
+                "safe_count": 3,
+                "unknown_count": 0,
+            },
+            "budget_use": {
+                "elapsed_ms": 1,
+                "model_turns": 2,
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "mcp_attempts": 4,
+                "validator_calls": 6,
+            },
+            "plan": {
+                "status": "pending",
+                "version": PLAN_VERSION,
+                "plan_sha256": PLAN_SHA256,
+                "target_sha256": TARGET_SHA256,
+            },
+        }
+        return result
+
+    def execution(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        result = super().execution(request)
+        result["execution"] = {
+            "schema": EXECUTION_PROOF_SCHEMA,
+            "action": {
+                "action_id": f"simulator-action:{'a' * 64}",
+                "status": "succeeded",
+                "outcome_id": OUTCOME_ID,
+                "outcome_sha256": OUTCOME_SHA256,
+                "publication_generation_before": 1,
+                "publication_generation_after": 2,
+                "affected_count": 4,
+                "safe_count": 3,
+                "safe_complement_before_sha256": f"sha256:{'b' * 64}",
+                "safe_complement_after_sha256": f"sha256:{'b' * 64}",
+                "safe_complement_proof_sha256": f"sha256:{'c' * 64}",
+                "publication_receipt_sha256": f"sha256:{'d' * 64}",
+            },
+            "recovery": {
+                "status": "recovery_verified",
+                "workflow_id": WORKFLOW_ID,
+                "workflow_version": WORKFLOW_VERSION,
+                "packet_id": PACKET_ID,
+                "packet_sha256": PACKET_SHA256,
+                "evidence_count": 21,
+                "evidence_request_sha256": f"sha256:{'e' * 64}",
+                "checks": [
+                    {
+                        "check": check,
+                        "status": "passed",
+                        "result_sha256": f"sha256:{index:064x}",
+                    }
+                    for index, check in enumerate(CHECK_NAMES, start=1)
+                ],
+            },
+        }
+        return result
 
 
 class FakeRecovery:
@@ -283,6 +397,11 @@ def test_durable_run_binds_approval_execution_closure_and_receipt(tmp_path: Path
         "href": f"/v1/demo/runs/{RUN_IDS[0]}",
         "after_milliseconds": 1_000,
     }
+    assert set(started["visual_comparison"]) == {"expected", "observed", "diff"}
+    assert started["visual_comparison"]["observed"]["href"] == (
+        f"/v1/demo/runs/{RUN_IDS[0]}/visuals/observed"
+    )
+    assert started["visual_comparison"]["observed"]["label"] == ("illustrative-authored-fixture")
     assert "approval_nonce" not in facade.get(RUN_IDS[0])
 
     with pytest.raises(DemoFacadeError, match="demo-active-run-exists"):
@@ -295,6 +414,12 @@ def test_durable_run_binds_approval_execution_closure_and_receipt(tmp_path: Path
     assert replayed_recovery == recovered
     assert recovered["phase"] == "awaiting-closure"
     assert recovered["version"] == 4
+    assert set(recovered["visual_comparison"]) == {
+        "expected",
+        "observed",
+        "recovered",
+        "diff",
+    }
     assert len(workflow.execute_calls) == 1
     assert workflow.execute_calls[0] == {
         "schema": "colortrace-demo-execution-request/v1",
@@ -334,6 +459,55 @@ def test_durable_run_binds_approval_execution_closure_and_receipt(tmp_path: Path
         "recovered",
         "diff",
     }
+
+
+def test_bounded_proofs_are_persisted_projected_and_receipted(tmp_path: Path) -> None:
+    visual_root = tmp_path / "visuals"
+    visual_root.mkdir()
+    workflow = ProofWorkflow(_write_visuals(visual_root))
+    facade, _workflow, _recovery, _clock, _root = _facade(
+        tmp_path,
+        workflow=workflow,
+    )
+
+    started = _start(facade)
+    recovered = facade.approve(RUN_IDS[0], _approval(started))
+
+    assert started["investigation"]["scope"] == {
+        "state": "resolved",
+        "affected_count": 4,
+        "safe_count": 3,
+        "unknown_count": 0,
+    }
+    assert [item["query_key"] for item in started["investigation"]["evidence"]] == [
+        "alert.rule",
+        "log.correlated-events",
+        "metric.correlated-observations",
+        "trace.by-id",
+    ]
+    assert (
+        recovered["execution"]["action"]["safe_complement_before_sha256"]
+        == (recovered["execution"]["action"]["safe_complement_after_sha256"])
+    )
+    assert recovered["execution"]["recovery"]["evidence_count"] == 21
+
+    closed = facade.close(RUN_IDS[0], _closure(recovered))
+    receipt = facade.receipt(RUN_IDS[0])
+
+    assert closed["investigation"] == started["investigation"]
+    assert closed["execution"] == recovered["execution"]
+    assert [item["stage"] for item in receipt["proofs"]] == [
+        "execution",
+        "investigation",
+    ]
+    assert all(item["sha256"].startswith("sha256:") for item in receipt["proofs"])
+
+    with sqlite3.connect(tmp_path / "demo.sqlite3") as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="demo-proofs-immutable"):
+            connection.execute(
+                "UPDATE demo_proofs SET proof_sha256 = ? WHERE run_id = ?",
+                (f"sha256:{'f' * 64}", RUN_IDS[0]),
+            )
 
 
 @pytest.mark.parametrize(
