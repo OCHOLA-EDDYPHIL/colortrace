@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ from pathlib import Path
 SOURCE_ROOT = Path(__file__).parents[3]
 SCRIPT = SOURCE_ROOT / "infra" / "single-host" / "scripts" / "build-images.sh"
 BUILD_CONFIG = SOURCE_ROOT / "infra" / "single-host" / "cloudbuild.images.yaml"
+OBSERVABILITY_DOCKERFILE = SOURCE_ROOT / "Dockerfile.observability"
 FIXTURE_DIGESTS = (
     SOURCE_ROOT / "packages" / "fixture-generator" / "fixtures" / "canonical-digests.json"
 )
@@ -36,6 +38,11 @@ class BuildImagesTests(unittest.TestCase):
         self.assertIn("- caddy\n    name:", configuration)
         self.assertIn("- grafana\n    name:", configuration)
         self.assertIn("- loki\n    name:", configuration)
+        observability = OBSERVABILITY_DOCKERFILE.read_text(encoding="utf-8")
+        self.assertIn(
+            'org.opencontainers.image.source="https://github.com/OCHOLA-EDDYPHIL/colortrace"',
+            observability,
+        )
 
     def _repository(self, temporary: Path) -> tuple[Path, str]:
         repository = temporary / "repository"
@@ -96,10 +103,21 @@ if sys.argv[1:3] == ["builds", "submit"]:
 if sys.argv[1:3] == ["builds", "describe"]:
     registry = os.environ["FAKE_REGISTRY"]
     commit = os.environ["FAKE_COMMIT"]
+    source_tree = os.environ["FAKE_SOURCE_TREE"]
+    source_date_epoch = os.environ["FAKE_SOURCE_DATE_EPOCH"]
+    service_account = os.environ["FAKE_SERVICE_ACCOUNT"]
+    substitution_commit = os.environ.get("FAKE_SUBSTITUTION_COMMIT", commit)
     components = ["runtime", "web", "caddy", "grafana", "loki", "tempo"]
     print(json.dumps({
         "id": "build-123",
         "status": "SUCCESS",
+        "serviceAccount": service_account,
+        "substitutions": {
+            "_REGISTRY": registry,
+            "_SOURCE_COMMIT": substitution_commit,
+            "_SOURCE_TREE": source_tree,
+            "_SOURCE_DATE_EPOCH": source_date_epoch,
+        },
         "createTime": "2026-08-23T00:00:00Z",
         "finishTime": "2026-08-23T00:10:00Z",
         "results": {"images": [
@@ -126,15 +144,42 @@ raise SystemExit(2)
         binary_directory: Path,
         log: Path,
         output: Path,
+        environment_overrides: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         registry_host = "us-central1-docker.pkg.dev"
+        repository_head = subprocess.run(
+            ["git", "-C", repository, "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        source_tree = subprocess.run(
+            ["git", "-C", repository, "show", "--no-patch", "--format=%T", repository_head],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        source_date_epoch = subprocess.run(
+            ["git", "-C", repository, "show", "--no-patch", "--format=%ct", repository_head],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
         environment = {
             **os.environ,
             "FAKE_GCLOUD_LOG": str(log),
             "FAKE_REGISTRY": f"{registry_host}/colortrace-test-project/ct-singlehost-images",
             "FAKE_COMMIT": commit,
+            "FAKE_SOURCE_TREE": source_tree,
+            "FAKE_SOURCE_DATE_EPOCH": source_date_epoch,
+            "FAKE_SERVICE_ACCOUNT": (
+                "projects/colortrace-test-project/serviceAccounts/"
+                "ct-singlehost-builder@colortrace-test-project.iam.gserviceaccount.com"
+            ),
             "PATH": f"{binary_directory}:{os.environ['PATH']}",
         }
+        if environment_overrides is not None:
+            environment.update(environment_overrides)
         return subprocess.run(
             [
                 repository / "infra" / "single-host" / "scripts" / "build-images.sh",
@@ -167,6 +212,7 @@ raise SystemExit(2)
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             manifest = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
             self.assertEqual(manifest["schema"], "colortrace-single-host-image-build/v2")
             self.assertEqual(manifest["build"]["id"], "build-123")
             self.assertEqual(manifest["build"]["project"], "colortrace-test-project")
@@ -208,6 +254,34 @@ raise SystemExit(2)
                 calls[0],
             )
             self.assertEqual(calls[1][:3], ["builds", "describe", "build-123"])
+
+    def test_described_build_identity_must_match_submission(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            repository, commit = self._repository(temporary)
+            binary_directory, log = self._fake_gcloud(temporary, commit)
+
+            for overrides in (
+                {
+                    "FAKE_SERVICE_ACCOUNT": (
+                        "projects/colortrace-test-project/serviceAccounts/"
+                        "different@colortrace-test-project.iam.gserviceaccount.com"
+                    )
+                },
+                {"FAKE_SUBSTITUTION_COMMIT": "0" * 40},
+            ):
+                output = temporary / f"mismatch-{len(list(temporary.iterdir()))}.json"
+                completed = self._run(
+                    repository,
+                    commit,
+                    binary_directory,
+                    log,
+                    output,
+                    overrides,
+                )
+
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertFalse(output.exists())
 
     def test_dirty_worktree_is_rejected_before_cloud_build(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

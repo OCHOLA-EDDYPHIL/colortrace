@@ -136,7 +136,6 @@ resource "google_compute_instance" "host" {
   depends_on = [
     google_artifact_registry_repository_iam_member.host_reader,
     google_project_iam_member.host_vertex_predictor,
-    google_project_iam_member.operator,
     google_secret_manager_secret_iam_member.host_access_gate,
   ]
 }

@@ -47,7 +47,16 @@ def _build_manifest(document: dict[str, Any], values: dict[str, str]) -> dict[st
         "loki": ("Dockerfile.observability", "loki"),
         "tempo": ("Dockerfile.observability", "tempo"),
     }
-    if document.get("id") != values["build_id"] or document.get("status") != "SUCCESS":
+    if (
+        document.get("id") != values["build_id"]
+        or document.get("status") != "SUCCESS"
+        or document.get("serviceAccount") != values["service_account"]
+        or document.get("substitutions", {}).get("_REGISTRY") != values["registry"]
+        or document.get("substitutions", {}).get("_SOURCE_COMMIT") != values["source_commit"]
+        or document.get("substitutions", {}).get("_SOURCE_TREE") != values["source_tree"]
+        or document.get("substitutions", {}).get("_SOURCE_DATE_EPOCH")
+        != values["source_date_epoch"]
+    ):
         raise ValueError
     images: dict[str, dict[str, str]] = {}
     for component in components:

@@ -123,6 +123,13 @@ printf '%s' "$build_result" | jq -e \
       error("described build identifier does not match")
     elif .status != "SUCCESS" then
       error("build did not succeed: " + (.status // "missing"))
+    elif .serviceAccount != $service_account then
+      error("described build service account does not match")
+    elif .substitutions._REGISTRY != $registry
+      or .substitutions._SOURCE_COMMIT != $source_commit
+      or .substitutions._SOURCE_TREE != $source_tree
+      or .substitutions._SOURCE_DATE_EPOCH != $source_date_epoch then
+      error("described build substitutions do not match")
     else
       . as $build
       | {
@@ -155,7 +162,7 @@ printf '%s' "$build_result" | jq -e \
     end
   ' >"$manifest_tmp"
 
-chmod 0644 "$manifest_tmp"
+chmod 0600 "$manifest_tmp"
 mv "$manifest_tmp" "$output"
 manifest_tmp=''
 printf '%s\n' "$output"

@@ -93,11 +93,13 @@ run "foundation_has_no_billable_host" {
     condition = (
       length(google_project_iam_member.host_vertex_predictor) == 0
       && length(google_project_iam_custom_role.vertex_predictor) == 0
-      && length(google_project_iam_member.operator) == 0
+      && length(google_project_iam_member.operator_project_inspector) == 0
+      && length(google_project_iam_custom_role.operator_project_inspector) == 0
+      && length(google_compute_instance_iam_member.operator_os_admin) == 0
+      && length(google_iap_tunnel_instance_iam_member.operator_iap_ssh) == 0
+      && length(google_service_account_iam_member.operator_host) == 0
       && length(google_compute_instance_iam_member.resume_instance_starter) == 0
       && length(google_project_iam_custom_role.resume_instance_starter) == 0
-      && length(google_compute_instance_iam_member.operator_instance_inspector) == 0
-      && length(google_project_iam_custom_role.operator_instance_inspector) == 0
       && length(google_project_iam_member.operator_build) == 0
       && length(google_service_account_iam_member.operator_build) == 0
       && length(google_secret_manager_secret_iam_member.host_access_gate) == 0
@@ -150,6 +152,7 @@ run "image_builder_precedes_host_admission" {
       length(google_compute_instance.host) == 0
       && toset(keys(google_project_iam_member.operator_build)) == toset([
         "roles/cloudbuild.builds.editor",
+        "roles/serviceusage.serviceUsageConsumer",
       ])
       && google_service_account_iam_member.operator_build[0].role == "roles/iam.serviceAccountUser"
       && google_service_account_iam_member.operator_build[0].member == "user:operator@example.test"
@@ -325,10 +328,21 @@ run "bounded_single_host_is_admitted" {
 
   assert {
     condition = (
-      toset(keys(google_project_iam_member.operator)) == toset([
-        "roles/compute.osAdminLogin",
-        "roles/iap.tunnelResourceAccessor",
+      toset(google_project_iam_custom_role.operator_project_inspector[0].permissions) == toset([
+        "compute.instances.list",
+        "compute.projects.get",
       ])
+      && google_project_iam_member.operator_project_inspector[0].role == google_project_iam_custom_role.operator_project_inspector[0].id
+      && google_compute_instance_iam_member.operator_os_admin[0].role == "roles/compute.osAdminLogin"
+      && google_compute_instance_iam_member.operator_os_admin[0].member == "user:operator@example.test"
+      && google_compute_instance_iam_member.operator_os_admin[0].instance_name == google_compute_instance.host[0].name
+      && google_iap_tunnel_instance_iam_member.operator_iap_ssh[0].role == "roles/iap.tunnelResourceAccessor"
+      && google_iap_tunnel_instance_iam_member.operator_iap_ssh[0].member == "user:operator@example.test"
+      && google_iap_tunnel_instance_iam_member.operator_iap_ssh[0].instance == google_compute_instance.host[0].name
+      && one(google_iap_tunnel_instance_iam_member.operator_iap_ssh[0].condition).expression == "destination.port == 22"
+      && google_service_account_iam_member.operator_host[0].service_account_id == google_service_account.host.name
+      && google_service_account_iam_member.operator_host[0].role == "roles/iam.serviceAccountUser"
+      && google_service_account_iam_member.operator_host[0].member == "user:operator@example.test"
       && toset(google_project_iam_custom_role.vertex_predictor[0].permissions) == toset(["aiplatform.endpoints.predict"])
       && google_project_iam_member.host_vertex_predictor[0].role == google_project_iam_custom_role.vertex_predictor[0].id
       && toset(google_project_iam_custom_role.resume_instance_starter[0].permissions) == toset([
@@ -339,12 +353,10 @@ run "bounded_single_host_is_admitted" {
       && google_compute_instance_iam_member.resume_instance_starter[0].member == "serviceAccount:resume@example.test"
       && google_compute_instance_iam_member.resume_instance_starter[0].member != "user:operator@example.test"
       && google_compute_instance_iam_member.resume_instance_starter[0].instance_name == google_compute_instance.host[0].name
-      && toset(google_project_iam_custom_role.operator_instance_inspector[0].permissions) == toset([
-        "compute.instances.get",
+      && toset(keys(google_project_iam_member.operator_build)) == toset([
+        "roles/cloudbuild.builds.editor",
+        "roles/serviceusage.serviceUsageConsumer",
       ])
-      && google_compute_instance_iam_member.operator_instance_inspector[0].member == "user:operator@example.test"
-      && google_compute_instance_iam_member.operator_instance_inspector[0].instance_name == google_compute_instance.host[0].name
-      && toset(keys(google_project_iam_member.operator_build)) == toset(["roles/cloudbuild.builds.editor"])
       && google_service_account_iam_member.operator_build[0].role == "roles/iam.serviceAccountUser"
       && google_secret_manager_secret_iam_member.host_access_gate[0].role == "roles/secretmanager.secretAccessor"
       && google_artifact_registry_repository_iam_member.host_reader[0].role == "roles/artifactregistry.reader"

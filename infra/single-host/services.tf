@@ -5,6 +5,7 @@ locals {
     "cloudbuild.googleapis.com",
     "compute.googleapis.com",
     "iam.googleapis.com",
+    "iamcredentials.googleapis.com",
     "iap.googleapis.com",
     "logging.googleapis.com",
     "oslogin.googleapis.com",

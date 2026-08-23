@@ -17,13 +17,9 @@ resource "google_service_account" "builder" {
 }
 
 locals {
-  operator_project_roles = toset([
-    "roles/compute.osAdminLogin",
-    "roles/iap.tunnelResourceAccessor",
-  ])
-
   operator_build_project_roles = toset([
     "roles/cloudbuild.builds.editor",
+    "roles/serviceusage.serviceUsageConsumer",
   ])
 }
 
@@ -48,12 +44,62 @@ resource "google_project_iam_member" "host_vertex_predictor" {
   member  = google_service_account.host.member
 }
 
-resource "google_project_iam_member" "operator" {
-  for_each = var.enable_instance ? local.operator_project_roles : toset([])
+resource "google_project_iam_custom_role" "operator_project_inspector" {
+  count = var.enable_instance ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "${replace(var.resource_prefix, "-", "_")}_project_inspector"
+  title       = "ColorTrace project inspection"
+  description = "Allows only the project and instance-list lookups required by the guarded gcloud SSH workflow."
+  permissions = [
+    "compute.instances.list",
+    "compute.projects.get",
+  ]
+  stage = "GA"
+
+  depends_on = [google_project_service.required["iam.googleapis.com"]]
+}
+
+resource "google_project_iam_member" "operator_project_inspector" {
+  count = var.enable_instance ? 1 : 0
 
   project = var.project_id
-  role    = each.key
+  role    = google_project_iam_custom_role.operator_project_inspector[0].id
   member  = coalesce(var.operator_member, "user:invalid@example.invalid")
+}
+
+resource "google_compute_instance_iam_member" "operator_os_admin" {
+  count = var.enable_instance ? 1 : 0
+
+  project       = var.project_id
+  zone          = var.zone
+  instance_name = google_compute_instance.host[0].name
+  role          = "roles/compute.osAdminLogin"
+  member        = coalesce(var.operator_member, "user:invalid@example.invalid")
+}
+
+resource "google_iap_tunnel_instance_iam_member" "operator_iap_ssh" {
+  count = var.enable_instance ? 1 : 0
+
+  project  = var.project_id
+  zone     = var.zone
+  instance = google_compute_instance.host[0].name
+  role     = "roles/iap.tunnelResourceAccessor"
+  member   = coalesce(var.operator_member, "user:invalid@example.invalid")
+
+  condition {
+    title       = "${var.resource_prefix}-iap-ssh-only"
+    description = "Restricts the exact-instance IAP tunnel to SSH."
+    expression  = "destination.port == 22"
+  }
+}
+
+resource "google_service_account_iam_member" "operator_host" {
+  count = var.enable_instance ? 1 : 0
+
+  service_account_id = google_service_account.host.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = coalesce(var.operator_member, "user:invalid@example.invalid")
 }
 
 resource "google_project_iam_custom_role" "resume_instance_starter" {
@@ -80,29 +126,6 @@ resource "google_compute_instance_iam_member" "resume_instance_starter" {
   instance_name = google_compute_instance.host[0].name
   role          = google_project_iam_custom_role.resume_instance_starter[0].id
   member        = coalesce(var.resume_member, "user:invalid@example.invalid")
-}
-
-resource "google_project_iam_custom_role" "operator_instance_inspector" {
-  count = var.enable_instance ? 1 : 0
-
-  project     = var.project_id
-  role_id     = "${replace(var.resource_prefix, "-", "_")}_instance_inspector"
-  title       = "ColorTrace instance inspection"
-  description = "Allows the deployment operator to inspect the single staging VM without start or stop authority."
-  permissions = ["compute.instances.get"]
-  stage       = "GA"
-
-  depends_on = [google_project_service.required["iam.googleapis.com"]]
-}
-
-resource "google_compute_instance_iam_member" "operator_instance_inspector" {
-  count = var.enable_instance ? 1 : 0
-
-  project       = var.project_id
-  zone          = var.zone
-  instance_name = google_compute_instance.host[0].name
-  role          = google_project_iam_custom_role.operator_instance_inspector[0].id
-  member        = coalesce(var.operator_member, "user:invalid@example.invalid")
 }
 
 resource "google_project_iam_member" "builder_logs" {

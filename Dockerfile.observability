@@ -218,7 +218,7 @@ COPY --from=grafana-plugin-verified --chown=472:0 /plugins/loki /usr/share/grafa
 COPY --from=grafana-plugin-verified --chown=472:0 /plugins/tempo /usr/share/grafana/data/plugins-bundled/tempo
 COPY --chown=472:0 config/observability/images.lock.json /usr/share/colortrace/provenance/observability-images.lock.json
 LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
-      org.opencontainers.image.source="https://github.com/ColorTrace/ColorTrace" \
+      org.opencontainers.image.source="https://github.com/OCHOLA-EDDYPHIL/colortrace" \
       org.opencontainers.image.version="13.2.0-colortrace.1" \
       org.colortrace.source-tree="${SOURCE_TREE}" \
       org.colortrace.upstream-revision="13.2.0-distroless-slim@sha256:19adcd07c96e2a99da64dd5e19b5ad115ca8e449ecac100ca5ab5c0a3da9a158" \
