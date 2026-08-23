@@ -883,6 +883,19 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
 
   const acceptRun = useCallback(
     (next: DemoRun, nonce: string | null = approvalNonceRef.current) => {
+      const current = runRef.current;
+      if (current?.run_id === next.run_id) {
+        if (
+          current.incident_id !== next.incident_id ||
+          current.scenario_id !== next.scenario_id ||
+          current.source_commit !== next.source_commit ||
+          current.build_sha256 !== next.build_sha256
+        ) {
+          setActionError("The service returned conflicting immutable run bindings.");
+          return;
+        }
+        if (next.version < current.version) return;
+      }
       const usableNonce = next.phase === "awaiting-approval" ? nonce : null;
       approvalNonceRef.current = usableNonce;
       runRef.current = next;
@@ -1343,7 +1356,6 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
           idempotency_key: key,
         })
         .then((next) => {
-          setApprovalNonce(null);
           acceptRun(next, null);
         })
         .catch((error: unknown) => setActionError(errorMessage(error, "mutate")))

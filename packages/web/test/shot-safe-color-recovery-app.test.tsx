@@ -177,6 +177,52 @@ describe("shot-safe color recovery", () => {
     });
   });
 
+  it("does not let an older poll response reverse an accepted recovery", async () => {
+    const adapter = adapterFixture();
+    let resolvePoll: ((run: ReturnType<typeof demoRun>) => void) | undefined;
+    vi.mocked(adapter.start).mockResolvedValue(
+      demoRun("awaiting-approval", {
+        poll: { href: `/v1/demo/runs/${RUN_ID}`, after_milliseconds: 250 },
+      }),
+    );
+    vi.mocked(adapter.get).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolvePoll = resolve;
+        }),
+    );
+    render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
+    expect(await screen.findByRole("heading", { name: "Expected versus observed" })).toBeVisible();
+    expect(await screen.findByAltText("Declared expected output for job-b-02")).toBeVisible();
+    expect(await screen.findByAltText(/Observed output with a visible color shift/u)).toBeVisible();
+    expect(await screen.findByAltText(/Illustrative pixel difference/u)).toBeVisible();
+    await decodeRenderedImages();
+    fireEvent.change(screen.getByLabelText("Retype run nonce"), { target: { value: NONCE } });
+    fireEvent.change(screen.getByLabelText("Type approval phrase"), {
+      target: { value: "APPROVE_COLORTRACE_SIMULATOR_ACTION" },
+    });
+    fireEvent.click(
+      screen.getByLabelText(
+        /I approve only the returned run, incident, plan, and target bindings/u,
+      ),
+    );
+    await waitFor(() => expect(adapter.get).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Approve recovery action" }));
+    expect(await screen.findByRole("heading", { name: "Recovered output" })).toBeVisible();
+
+    await act(async () => {
+      resolvePoll?.(demoRun("awaiting-approval"));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("heading", { name: "Recovered output" })).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Approve recovery action" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("restores only session-scoped state and fails closed without the nonce", async () => {
     const adapter = adapterFixture();
     const storage = memoryStorage({ "colortrace.demo.run-id": RUN_ID });

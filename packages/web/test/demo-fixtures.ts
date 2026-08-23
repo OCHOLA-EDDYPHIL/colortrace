@@ -185,7 +185,18 @@ export function demoRun(
     source_commit: "a".repeat(40),
     build_sha256: BUILD_DIGEST,
     phase,
-    version: phase === "awaiting-approval" ? 2 : phase === "awaiting-closure" ? 4 : 6,
+    version:
+      phase === "preparing"
+        ? 1
+        : phase === "awaiting-approval"
+          ? 2
+          : phase === "executing"
+            ? 3
+            : phase === "awaiting-closure"
+              ? 4
+              : phase === "closing"
+                ? 5
+                : 6,
     lease_expires_at: terminal ? null : "2099-08-23T12:15:00.000Z",
     poll: { href: `/v1/demo/runs/${RUN_ID}`, after_milliseconds: 1_000 },
     approval: {
