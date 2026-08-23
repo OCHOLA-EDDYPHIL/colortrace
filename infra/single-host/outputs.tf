@@ -19,6 +19,13 @@ output "resource_inventory" {
       google_service_account_iam_member.operator_host[0].role,
     ]) : []
     operator_build_roles = sort(keys(google_project_iam_member.operator_build))
+    operator_artifact_reader = (
+      var.operator_member == null ? null : {
+        member     = google_artifact_registry_repository_iam_member.operator_reader[0].member
+        repository = google_artifact_registry_repository.images.repository_id
+        role       = google_artifact_registry_repository_iam_member.operator_reader[0].role
+      }
+    )
     host_iam_roles = (
       var.enable_instance ? [google_project_iam_custom_role.vertex_predictor[0].id] : []
     )

@@ -150,6 +150,16 @@ resource "google_service_account_iam_member" "operator_build" {
   member             = coalesce(var.operator_member, "user:invalid@example.invalid")
 }
 
+resource "google_artifact_registry_repository_iam_member" "operator_reader" {
+  count = var.operator_member == null ? 0 : 1
+
+  project    = var.project_id
+  location   = google_artifact_registry_repository.images.location
+  repository = google_artifact_registry_repository.images.name
+  role       = "roles/artifactregistry.reader"
+  member     = coalesce(var.operator_member, "user:invalid@example.invalid")
+}
+
 resource "google_artifact_registry_repository_iam_member" "host_reader" {
   count = var.enable_instance ? 1 : 0
 
