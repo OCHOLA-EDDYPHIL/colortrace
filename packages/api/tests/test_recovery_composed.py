@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import sqlite3
 from collections import Counter
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -9,21 +12,38 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
 
+import pytest
 from colortrace_api import (
+    APPROVAL_REQUEST_SCHEMA,
+    CANONICAL_SCENARIO,
+    CLOSURE_REQUEST_SCHEMA,
+    RESET_REQUEST_SCHEMA,
+    RUN_REQUEST_SCHEMA,
+    DemoFacade,
+    DemoFacadeError,
     Principal,
     RecoveryCoordinator,
     RecoveryVerificationWorker,
     ResponsePlanCoordinator,
     SimulatorActionCoordinator,
+    SQLiteDemoRunStore,
     SQLiteRecoveryVerificationTaskStore,
     build_recovery_verification_task,
     create_app,
     create_recovery_worker_app,
 )
+from colortrace_api.demo_workflow import CanonicalDemoWorkflow
 from colortrace_api.recovery_closure import LocalRecoveryClosureFence
-from colortrace_fixture.fixture import CANONICAL_SEED, build_scenario
+from colortrace_api.simulator_runtime import LocalSimulatorRuntime
+from colortrace_fixture.fixture import CANONICAL_SEED, build_scenario, validate_existing
 from colortrace_grafana_mcp import EvidenceAdapter, OfficialMcpRuntime, QueryCatalog
 from colortrace_grafana_mcp import adapter as grafana_adapter
+from colortrace_investigation import (
+    ColorStateValidatorGateway,
+    InvestigationPolicy,
+    ModelCall,
+    ModelOutput,
+)
 from colortrace_recovery import (
     DeterministicRecoveryVerifier,
     RecoveryClosureService,
@@ -45,6 +65,7 @@ from colortrace_simulator.authority import (
 )
 from colortrace_simulator.bundle import LocalPublicationPort
 from colortrace_simulator.repository import SQLiteSimulatorRepository
+from colortrace_vertical_slice import SqliteIncidentStore, VerticalSliceApi, VerticalSliceWorker
 from fastapi.testclient import TestClient
 from mcp import types
 
@@ -828,3 +849,636 @@ def test_canonical_action_evidence_worker_review_and_human_closure_compose(
     assert stale_response.status_code == 409
     assert stale_response.json() == {"code": "verification-task-expected-version-conflict"}
     assert len(session.calls) == 7
+
+
+DEMO_RUN_IDS = (
+    "demo-run-11111111111111111111111111111111",
+    "demo-run-22222222222222222222222222222222",
+)
+DEMO_INCIDENT_IDS = (
+    "incident-demo-11111111111111111111111111111111",
+    "incident-demo-22222222222222222222222222222222",
+)
+DEMO_NONCES = ("n" * 32, "m" * 32)
+DEMO_ALERT_BINDING = {**BINDING, "alert_rule_uid": "ct-alert-main"}
+
+
+def demo_instant(value: datetime) -> str:
+    return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def canonical_demo_correlation(bundle: Path) -> dict[str, str]:
+    fixture = json.loads((bundle / "runtime/manifests/fixture-runtime-manifest.json").read_text())
+    pointer = next(item for item in fixture["jobs"] if item["job_id"] == "job-b-02")
+    job = json.loads((bundle / pointer["manifest"]).read_text())
+    return {
+        "fixture_id": fixture["fixture_id"],
+        "job_id": job["job_id"],
+        "worker_id": job["worker_id"],
+        "artifact_id": job["output_id"],
+        "trace_id": job["trace_id"],
+        "config_sha256": job["nominal_config_sha256"],
+        "transform_id": job["transform_id"],
+    }
+
+
+class DeterministicCanonicalAlertSource:
+    def __init__(
+        self,
+        correlation: Mapping[str, str],
+        investigation_session: InvestigationOfficialSession,
+    ) -> None:
+        self.correlation = dict(correlation)
+        self.investigation_session = investigation_session
+        self.emitted: list[dict[str, Any]] = []
+
+    def emit(self, *, run_id: str, incident_id: str) -> Mapping[str, Any]:
+        assert incident_id == f"incident-demo-{run_id.removeprefix('demo-run-')}"
+        correlation = {**self.correlation, "run_id": run_id}
+        self.investigation_session.select_run(run_id)
+        value = {
+            "schema": "alert-intake/v1",
+            "incident_id": incident_id,
+            "alert_id": f"alert-{run_id}",
+            "alert_started_at": demo_instant(BASE - timedelta(minutes=5)),
+            "retrieved_at": demo_instant(BASE),
+            "measured_clock_skew_seconds": 0,
+            "binding": DEMO_ALERT_BINDING,
+            "correlation_keys": correlation,
+            "predecessor_event_sha256": None,
+        }
+        self.emitted.append(value)
+        return value
+
+
+class DeterministicInvestigationModel:
+    async def generate(self, call: ModelCall) -> ModelOutput:
+        if call.turn_kind == "evidence-selection":
+            if call.evidence_tool is not None:
+                for query_key in grafana_adapter.QUERY_KEYS[1:]:
+                    await call.evidence_tool(cast(Any, query_key))
+            body = {
+                "schema": "model-selection/v1",
+                "hypothesis_keys": [
+                    "color-resource-drift",
+                    "nominal-config-drift",
+                    "unrelated-event",
+                    "worker-only-failure",
+                ],
+                "query_keys": list(grafana_adapter.QUERY_KEYS),
+            }
+        else:
+            body = {
+                "schema": "model-advisory/v1",
+                "summary": "The cited deterministic result identifies the bounded scope.",
+                "evidence_ids": [
+                    item
+                    for item in call.payload["allowed_evidence_ids"]
+                    if isinstance(item, str) and item.startswith("sha256:")
+                ][:4],
+            }
+        return ModelOutput(
+            json.dumps(body, sort_keys=True, separators=(",", ":")).encode(),
+            1_000,
+            100,
+        )
+
+
+class InvestigationOfficialSession:
+    def __init__(self, correlation: Mapping[str, str]) -> None:
+        self.base_correlation = dict(correlation)
+        self.correlation = {**self.base_correlation, "run_id": DEMO_RUN_IDS[0]}
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def select_run(self, run_id: str) -> None:
+        self.correlation = {**self.base_correlation, "run_id": run_id}
+
+    async def list_tools(self, cursor: str | None = None) -> types.ListToolsResult:
+        assert cursor is None
+        return types.ListToolsResult(tools=[])
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        read_timeout_seconds: timedelta | None = None,
+    ) -> types.CallToolResult:
+        assert arguments is not None
+        assert read_timeout_seconds == timedelta(seconds=20)
+        self.calls.append((name, dict(arguments)))
+        event_time = BASE - timedelta(minutes=3)
+        if name == "query_prometheus":
+            payload: dict[str, Any] = {
+                "data": [
+                    {
+                        "metric": self.correlation,
+                        "value": [int(event_time.timestamp()), "1"],
+                    }
+                ],
+                "warnings": [],
+            }
+        elif name == "query_loki_logs":
+            payload = {
+                "data": [
+                    {
+                        "timestamp": demo_instant(event_time),
+                        "line": json.dumps(
+                            {
+                                **self.correlation,
+                                "event": "declared-reference-observation",
+                            },
+                            sort_keys=True,
+                        ),
+                        "labels": {"service_name": "colortrace-simulator"},
+                        "structuredMetadata": self.correlation,
+                    }
+                ],
+                "metadata": {
+                    "linesReturned": 1,
+                    "maxLinesAllowed": 200,
+                    "resultsTruncated": False,
+                    "totalLinesScanned": 1,
+                    "startTime": arguments["startRfc3339"],
+                    "endTime": arguments["endRfc3339"],
+                },
+            }
+        elif name == "tempo_get-trace":
+            start = str(int(event_time.timestamp() * 1_000_000_000))
+            end = str(int((event_time + timedelta(seconds=1)).timestamp() * 1_000_000_000))
+            payload = {
+                "trace": {
+                    "traceId": self.correlation["trace_id"],
+                    "services": [
+                        {
+                            "serviceName": "colortrace-simulator",
+                            "resource": self.correlation,
+                            "scopes": [
+                                {
+                                    "name": "colortrace.telemetry",
+                                    "spans": [
+                                        {
+                                            "spanId": "2" * 16,
+                                            "name": "fixture.process",
+                                            "startTimeUnixNano": start,
+                                            "endTimeUnixNano": end,
+                                            "attributes": self.correlation,
+                                            "events": [],
+                                            "status": {},
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                },
+                "metrics": {"inspectedBytes": 1},
+                "status": "COMPLETE",
+            }
+        elif name == "alerting_manage_rules":
+            payload = {
+                "uid": arguments["rule_uid"],
+                "title": "ColorTrace correlation alert",
+                "labels": self.correlation,
+                "annotations": {},
+                "data": [],
+                "alerts": [
+                    {
+                        "labels": self.correlation,
+                        "annotations": {},
+                        "state": "firing",
+                        "activeAt": demo_instant(event_time),
+                        "value": "1",
+                    }
+                ],
+            }
+        else:  # pragma: no cover - the query catalog is frozen
+            raise AssertionError(name)
+        return types.CallToolResult(
+            _meta=(
+                {"encoding": "json", "type": "trace", "version": "2"}
+                if name == "tempo_get-trace"
+                else None
+            ),
+            content=[types.TextContent(type="text", text=json.dumps(payload, sort_keys=True))],
+        )
+
+
+class LateBoundRecoverySession:
+    def __init__(
+        self,
+        *,
+        repository: SQLiteSimulatorRepository,
+        publication: LocalPublicationPort,
+        catalog: QueryCatalog,
+    ) -> None:
+        self.repository = repository
+        self.publication = publication
+        self.catalog = catalog
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.incident_id: str | None = None
+        self._batch: grafana_adapter.SimulatorActionEvidenceBatch | None = None
+
+    def select_incident(self, incident_id: str) -> None:
+        self.incident_id = incident_id
+        self._batch = None
+
+    async def list_tools(self, cursor: str | None = None) -> types.ListToolsResult:
+        assert cursor is None
+        return types.ListToolsResult(tools=[])
+
+    def batch(self) -> grafana_adapter.SimulatorActionEvidenceBatch:
+        if self._batch is None:
+            assert self.incident_id is not None
+            outcome = self.repository.outcome_for_incident(self.incident_id)
+            assert outcome is not None
+            snapshot = self.publication.snapshot_for_recovery(outcome)
+            request_digest = hashlib.sha256(self.incident_id.encode()).hexdigest()
+            self._batch = grafana_adapter.SimulatorActionEvidenceBatch.from_documents(
+                outcome=outcome,
+                snapshot=snapshot.to_dict(),
+                evidence_request_id=f"recovery-evidence-request:{request_digest}",
+                evidence_request_sha256=f"sha256:{request_digest}",
+                catalog_sha256=self.catalog.digest,
+                binding=BINDING,
+            )
+        return self._batch
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        read_timeout_seconds: timedelta | None = None,
+    ) -> types.CallToolResult:
+        assert read_timeout_seconds is not None
+        selected_arguments = dict(arguments or {})
+        self.calls.append((name, selected_arguments))
+        batch = self.batch()
+        emitted_at = demo_instant(batch.action_completed_at + timedelta(milliseconds=100))
+        payload = action_payload(name, selected_arguments, batch, emitted_at)
+        return types.CallToolResult(
+            _meta=(
+                {"encoding": "json", "type": "trace", "version": "2"}
+                if name == "tempo_get-trace"
+                else None
+            ),
+            content=[types.TextContent(type="text", text=json.dumps(payload, sort_keys=True))],
+        )
+
+
+def demo_approval(started: Mapping[str, Any]) -> dict[str, Any]:
+    approval = cast(Mapping[str, Any], started["approval"])
+    return {
+        "schema": APPROVAL_REQUEST_SCHEMA,
+        "approval_nonce": started["approval_nonce"],
+        "approval_phrase": approval["phrase"],
+        "expected_run_version": started["version"],
+        "expected_incident_version": approval["incident_version"],
+        "expected_plan_version": approval["plan_version"],
+        "expected_plan_sha256": approval["plan_sha256"],
+        "expected_target_sha256": approval["target_sha256"],
+        "idempotency_key": f"composed-demo-approve:{started['run_id']}",
+    }
+
+
+def demo_closure(recovered: Mapping[str, Any]) -> dict[str, Any]:
+    approval = cast(Mapping[str, Any], recovered["approval"])
+    recovery = cast(Mapping[str, Any], recovered["recovery"])
+    return {
+        "schema": CLOSURE_REQUEST_SCHEMA,
+        "expected_run_version": recovered["version"],
+        "expected_incident_version": approval["incident_version"],
+        "expected_workflow_version": recovery["workflow_version"],
+        "expected_packet_id": recovery["packet_id"],
+        "expected_packet_sha256": recovery["packet_sha256"],
+        "expected_outcome_id": recovery["outcome_id"],
+        "expected_outcome_sha256": recovery["outcome_sha256"],
+        "reason": "The verified composed recovery evidence was reviewed by a human.",
+        "idempotency_key": f"composed-demo-close:{recovered['run_id']}",
+    }
+
+
+def test_demo_facade_composes_alert_through_immutable_closure_receipt(tmp_path: Path) -> None:
+    fixture = tmp_path / "canonical-fixture"
+    oracle = tmp_path / "private-oracle"
+    build_scenario(
+        fixture,
+        oracle_root=oracle,
+        variant_id="canonical",
+        seed=CANONICAL_SEED,
+    )
+    validate_existing(fixture)
+    sealed_oracle = tmp_path / "sealed-offline-oracle"
+    oracle.rename(sealed_oracle)
+    os.chmod(sealed_oracle, 0)
+
+    clock = StepClock(BASE)
+    catalog = QueryCatalog.load(CATALOG_PATH)
+    runtime = OfficialMcpRuntime(
+        "https://grafana.invalid",
+        Path("/private/fake-viewer-token"),
+        Path("/usr/local/bin/mcp-grafana"),
+        b"fake-viewer-token",
+        grafana_adapter._RUNTIME_VERIFICATION,
+    )
+
+    async def load_inventory(_session: object) -> grafana_adapter.FrozenInventory:
+        return frozen_inventory()
+
+    correlation = canonical_demo_correlation(fixture)
+    investigation_session = InvestigationOfficialSession(correlation)
+    investigation_factory = FakeOfficialSessionFactory(cast(Any, investigation_session))
+    investigation_evidence = EvidenceAdapter(
+        runtime=runtime,
+        catalog=catalog,
+        session_factory=cast(Any, investigation_factory),
+        inventory_loader=cast(Any, load_inventory),
+        clock=clock,
+    )
+    incident_database = tmp_path / "incidents.sqlite3"
+    incident_store = SqliteIncidentStore(incident_database)
+    incidents = VerticalSliceApi(incident_store, clock=clock)
+    policy = InvestigationPolicy.load(
+        CATALOG_PATH.parents[1] / "investigation" / "investigation-policy.json",
+        CATALOG_PATH.parents[1] / "investigation" / "model-profile.json",
+    )
+    investigation = VerticalSliceWorker(
+        incident_store,
+        policy=policy,
+        model=DeterministicInvestigationModel(),
+        evidence=investigation_evidence,
+        validator=ColorStateValidatorGateway(),
+        clock=clock,
+        owner_id="composed-demo-investigator",
+    )
+
+    identity_boundary = OIDCTrustBoundary(
+        trusted_issuers=frozenset({ISSUER}),
+        audience=API_AUDIENCE,
+    )
+    plan_authority = CanonicalAuthorityBoundary()
+    response_plan_database = tmp_path / "response-plans.sqlite3"
+    response_plans = ResponsePlanCoordinator(
+        incident_reader=incidents,
+        repository=SQLiteResponsePlanRepository(
+            response_plan_database,
+            authority_boundary=plan_authority,
+        ),
+        authority_boundary=plan_authority,
+        identity_boundary=identity_boundary,
+        clock=clock,
+    )
+
+    publication = LocalPublicationPort.bootstrap(
+        root=tmp_path / "publication-workspace",
+        fixture_bundle=fixture,
+        clock=clock,
+    )
+    baseline_pointer = (publication.root / "state" / "baseline.json").read_bytes()
+    assert (publication.root / "state" / "active.json").read_bytes() == baseline_pointer
+    simulator_database = tmp_path / "simulator.sqlite3"
+    simulator_repository = SQLiteSimulatorRepository(simulator_database)
+    executor_boundary = SimulatorExecutorBoundary()
+    trace_ids = iter(f"{index:032x}" for index in range(1, 11))
+    simulator_service = SimulatorActionService(
+        repository=simulator_repository,
+        dispatch_source=response_plans,
+        authority_boundary=SimulatorAuthorityBoundary(),
+        executor_boundary=executor_boundary,
+        publication=publication,
+        clock=clock,
+        trace_id_factory=trace_ids.__next__,
+    )
+    simulator_runtime = LocalSimulatorRuntime(
+        repository=simulator_repository,
+        service=simulator_service,
+        telemetry_sink=object(),
+        recovery_publication=publication,
+        poll_seconds=0.01,
+    )
+    simulator_actions = SimulatorActionCoordinator(
+        service=simulator_service,
+        executor_boundary=executor_boundary,
+        identity_boundary=identity_boundary,
+        clock=clock,
+    )
+
+    recovery_session = LateBoundRecoverySession(
+        repository=simulator_repository,
+        publication=publication,
+        catalog=catalog,
+    )
+    recovery_factory = FakeOfficialSessionFactory(cast(Any, recovery_session))
+    recovery_evidence = EvidenceAdapter(
+        runtime=runtime,
+        catalog=catalog,
+        session_factory=cast(Any, recovery_factory),
+        inventory_loader=cast(Any, load_inventory),
+        clock=clock,
+    )
+    recovery_database = tmp_path / "recovery.sqlite3"
+    recovery_repository = SQLiteRecoveryRepository(recovery_database)
+    recovery_identity = RecoveryIdentityBoundary(
+        trusted_issuers=frozenset({ISSUER}),
+        audience=API_AUDIENCE,
+    )
+    verification = RecoveryVerificationService(
+        repository=recovery_repository,
+        identity_boundary=recovery_identity,
+        clock=clock,
+    )
+    verifier = DeterministicRecoveryVerifier(
+        outcomes=simulator_repository,
+        publication=publication,
+        collector=recovery_evidence,
+        verification=verification,
+        reads=RecoveryReadService(recovery_repository),
+        evidence_binding=BINDING,
+        evidence_catalog_sha256=catalog.digest,
+        claim_owner="composed-demo-recovery",
+        clock=clock,
+        heartbeat_seconds=0.1,
+    )
+    recovery = RecoveryCoordinator(
+        incident_reader=incidents,
+        aggregate_reader=recovery_repository,
+        closure_service=RecoveryClosureService(
+            repository=recovery_repository,
+            identity_boundary=recovery_identity,
+            clock=clock,
+        ),
+        identity_boundary=recovery_identity,
+        closure_fence=LocalRecoveryClosureFence(
+            repository=simulator_repository,
+            publication=publication,
+        ),
+        clock=clock,
+    )
+
+    visual_root = tmp_path / "demo-visuals"
+    visual_root.mkdir(mode=0o700)
+    alert_source = DeterministicCanonicalAlertSource(correlation, investigation_session)
+    workflow = CanonicalDemoWorkflow(
+        incidents=incidents,
+        investigation=investigation,
+        response_plans=response_plans,
+        simulator_actions=simulator_actions,
+        simulator_runtime=simulator_runtime,
+        recovery=recovery,
+        recovery_runner=SynchronousRecoveryWorkflowRunner(verifier),
+        recovery_identity=recovery_identity,
+        alert_source=alert_source,
+        fixture_bundle=fixture,
+        visual_root=visual_root,
+        issuer=ISSUER,
+        audience=API_AUDIENCE,
+        clock=clock,
+    )
+    facade = DemoFacade(
+        store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+        workflow=workflow,
+        source_commit="a" * 40,
+        visual_root=visual_root,
+        recovery=recovery,
+        scenario_reset=simulator_runtime,
+        closure_principal_factory=workflow.closure_principal,
+        clock=clock,
+        run_id_factory=iter(DEMO_RUN_IDS).__next__,
+    )
+
+    def complete_run(index: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        run_id = DEMO_RUN_IDS[index]
+        incident_id = DEMO_INCIDENT_IDS[index]
+        investigation_offset = len(investigation_session.calls)
+        recovery_offset = len(recovery_session.calls)
+        started = facade.start(
+            {
+                "schema": RUN_REQUEST_SCHEMA,
+                "scenario_id": CANONICAL_SCENARIO,
+                "approval_nonce": DEMO_NONCES[index],
+                "idempotency_key": f"composed-demo-start-{index + 1}",
+            }
+        )
+        assert started["run_id"] == run_id
+        assert started["incident_id"] == incident_id
+        assert started["phase"] == "awaiting-approval"
+        assert alert_source.emitted[-1] == incidents.replay(incident_id)["alert"]
+        assert len(started["investigation"]["evidence"]) == 4
+        assert len(started["investigation"]["model_invocations"]) == 2
+        assert Counter(
+            name for name, _arguments in investigation_session.calls[investigation_offset:]
+        ) == {
+            "alerting_manage_rules": 1,
+            "query_loki_logs": 1,
+            "query_prometheus": 1,
+            "tempo_get-trace": 1,
+        }
+        plan_review = response_plans.review(incident_id)
+        assert plan_review["state"] == "pending"
+        assert plan_review["plan"]["plan_sha256"] == started["approval"]["plan_sha256"]
+
+        recovery_session.select_incident(incident_id)
+        recovered = facade.approve(run_id, demo_approval(started))
+        assert recovered["phase"] == "awaiting-closure"
+        assert recovered["execution"]["action"]["affected_count"] == 4
+        assert recovered["execution"]["action"]["safe_count"] == 3
+        assert recovered["execution"]["action"]["publication_generation_before"] == 1
+        assert recovered["execution"]["action"]["publication_generation_after"] == 2
+        assert len(recovered["execution"]["recovery"]["checks"]) == 7
+        assert recovered["execution"]["recovery"]["evidence_count"] == 21
+        assert response_plans.review(incident_id)["state"] == "approved"
+        assert Counter(name for name, _arguments in recovery_session.calls[recovery_offset:]) == {
+            "query_prometheus": 1,
+            "query_loki_logs": 1,
+            "tempo_get-trace": 5,
+        }
+        aggregate = recovery_repository.durable_aggregate_for_incident(incident_id)
+        assert len(aggregate["evidence"]) == 21
+        assert Counter(item["signal"] for item in aggregate["evidence"]) == {
+            "metric": 8,
+            "log": 8,
+            "trace": 5,
+        }
+
+        closed = facade.close(run_id, demo_closure(recovered))
+        assert closed["phase"] == "closed"
+        recovery_review = recovery.review(incident_id)
+        assert recovery_review["state"] == "closed"
+        assert recovery_review["closure"]["actor"]["kind"] == "human"
+        receipt = facade.receipt(run_id)
+        assert [item["stage"] for item in receipt["proofs"]] == [
+            "execution",
+            "investigation",
+        ]
+        assert receipt["bindings"]["closure_id"] == recovery_review["closure"]["closure_id"]
+        return closed, receipt
+
+    try:
+        first_closed, first_receipt = complete_run(0)
+        assert len(alert_source.emitted) == 1
+        assert recovery_factory.opened == 1
+        assert recovery_factory.closed == 1
+        mutated_pointer = (publication.root / "state" / "active.json").read_bytes()
+        assert mutated_pointer != baseline_pointer
+
+        with pytest.raises(DemoFacadeError, match="demo-visual-kind-invalid"):
+            facade.visual(DEMO_RUN_IDS[0], "oracle")
+        reset = facade.reset(
+            DEMO_RUN_IDS[0],
+            {
+                "schema": RESET_REQUEST_SCHEMA,
+                "expected_run_version": first_closed["version"],
+                "idempotency_key": "composed-demo-reset-first",
+            },
+        )
+        baseline_sha256 = f"sha256:{hashlib.sha256(baseline_pointer).hexdigest()}"
+        assert reset["reset"] is True
+        assert reset["restoration"]["generation"] == 1
+        assert reset["restoration"]["active_pointer_sha256"] == baseline_sha256
+        assert reset["restoration"]["previous_pointer_sha256"] == (
+            f"sha256:{hashlib.sha256(mutated_pointer).hexdigest()}"
+        )
+        assert (publication.root / "state" / "active.json").read_bytes() == baseline_pointer
+        assert facade.receipt(DEMO_RUN_IDS[0]) == first_receipt
+
+        _second_closed, second_receipt = complete_run(1)
+        assert second_receipt["run_id"] == DEMO_RUN_IDS[1]
+        assert len(alert_source.emitted) == 2
+        assert recovery_factory.opened == 2
+        assert recovery_factory.closed == 2
+        assert len(investigation_session.calls) == 8
+        assert len(recovery_session.calls) == 14
+        assert facade.receipt(DEMO_RUN_IDS[0]) == first_receipt
+        with sqlite3.connect(simulator_database) as connection:
+            action_counts = dict(
+                connection.execute(
+                    "SELECT incident_id, COUNT(*) FROM simulator_actions GROUP BY incident_id"
+                ).fetchall()
+            )
+            outcome_counts = dict(
+                connection.execute(
+                    "SELECT actions.incident_id, COUNT(*) "
+                    "FROM simulator_action_outcomes AS outcomes "
+                    "JOIN simulator_actions AS actions ON actions.action_id = outcomes.action_id "
+                    "GROUP BY actions.incident_id"
+                ).fetchall()
+            )
+        assert action_counts == {incident_id: 1 for incident_id in DEMO_INCIDENT_IDS}
+        assert outcome_counts == action_counts
+
+        encoded_receipt = json.dumps([first_receipt, second_receipt], sort_keys=True).encode()
+        assert str(oracle).encode() not in encoded_receipt
+        assert str(sealed_oracle).encode() not in encoded_receipt
+        for database in (
+            incident_database,
+            response_plan_database,
+            simulator_database,
+            recovery_database,
+            tmp_path / "demo.sqlite3",
+        ):
+            stored = database.read_bytes()
+            assert str(oracle).encode() not in stored
+            assert str(sealed_oracle).encode() not in stored
+    finally:
+        simulator_repository.close()
+        recovery_repository.close()
+        os.chmod(sealed_oracle, 0o700)

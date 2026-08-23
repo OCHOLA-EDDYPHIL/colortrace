@@ -1294,8 +1294,13 @@ class FailingDemo:
 
 
 def test_demo_routes_enforce_json_origin_and_bounded_visual_kinds(tmp_path: Path) -> None:
-    facade, _workflow, _recovery, _clock, _root = _facade(tmp_path)
-    client = TestClient(create_app(IncidentService(), demo=facade))
+    facade, _workflow, _recovery, _clock, _root = _facade(
+        tmp_path,
+        run_ids=(RUN_IDS[0], RUN_IDS[1], RUN_IDS[1]),
+    )
+    app = create_app(IncidentService(), demo=facade)
+    client = TestClient(app)
+    fresh_client = TestClient(app)
     body = _start_body()
 
     denied = client.post(
@@ -1329,7 +1334,7 @@ def test_demo_routes_enforce_json_origin_and_bounded_visual_kinds(tmp_path: Path
         json=body,
         headers={"Origin": "http://testserver"},
     )
-    active_conflict = client.post(
+    active_conflict = fresh_client.post(
         "/v1/demo/runs",
         json=_start_body(nonce=SECOND_NONCE, idempotency_key="demo-start-2"),
         headers={"Origin": "http://testserver"},
@@ -1349,13 +1354,34 @@ def test_demo_routes_enforce_json_origin_and_bounded_visual_kinds(tmp_path: Path
         "code": "demo-active-run-exists",
         "run_id": RUN_IDS[0],
     }
-    assert client.get(f"/v1/demo/runs/{RUN_IDS[0]}").status_code == 200
+    recovered_active = fresh_client.get(f"/v1/demo/runs/{active_conflict.json()['run_id']}")
+    assert recovered_active.status_code == 200
+    assert recovered_active.json()["phase"] == "awaiting-approval"
     visual = client.get(f"/v1/demo/runs/{RUN_IDS[0]}/visuals/expected")
     assert visual.status_code == 200
     assert visual.content == _png("expected")
     assert visual.headers["content-type"] == "image/png"
     assert visual.headers["x-content-sha256"].startswith("sha256:")
     assert client.get(f"/v1/demo/runs/{RUN_IDS[0]}/visuals/oracle").status_code == 400
+
+    recovered = facade.approve(RUN_IDS[0], _approval(started.json()))
+    closed = facade.close(RUN_IDS[0], _closure(recovered))
+    terminal_client = TestClient(app)
+    terminal_conflict = terminal_client.post(
+        "/v1/demo/runs",
+        json=_start_body(nonce=SECOND_NONCE, idempotency_key="demo-start-3"),
+        headers={"Origin": "http://testserver"},
+    )
+
+    assert closed["phase"] == "closed"
+    assert terminal_conflict.status_code == 409
+    assert terminal_conflict.json() == {
+        "code": "demo-reset-required",
+        "run_id": RUN_IDS[0],
+    }
+    recovered_terminal = terminal_client.get(f"/v1/demo/runs/{terminal_conflict.json()['run_id']}")
+    assert recovered_terminal.status_code == 200
+    assert recovered_terminal.json()["phase"] == "closed"
 
 
 @pytest.mark.parametrize(
