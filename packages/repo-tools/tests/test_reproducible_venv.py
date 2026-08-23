@@ -18,7 +18,7 @@ from colortrace_repo.reproducible_venv import (
 )
 
 _FIRST_BUILD_TOKEN = "A" * 16
-_SECOND_BUILD_TOKEN = "B" * 16
+_SECOND_BUILD_TOKEN = ("B" * 7) + "-" + ("B" * 6) + "_B"
 
 
 def _record_hash(content: bytes) -> str:
