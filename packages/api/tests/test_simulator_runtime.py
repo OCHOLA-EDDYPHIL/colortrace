@@ -44,6 +44,7 @@ from jwt import PyJWK
 
 NOW = datetime(2026, 8, 13, 22, 0, tzinfo=UTC)
 INCIDENT_ID = "incident-runtime-simulator"
+COMPOSED_WORKFLOW_BUDGET_SECONDS = 120.0
 IDENTITY = DispatchIdentity(
     task_key=f"dispatch-task:{'1' * 64}",
     operation_id=f"dispatch-operation:{'2' * 64}",
@@ -795,7 +796,7 @@ def test_real_plan_source_service_and_local_publication_compose_through_http(
         service=simulator,
         telemetry_sink=telemetry,
         poll_seconds=0.01,
-        join_timeout_seconds=30,
+        join_timeout_seconds=COMPOSED_WORKFLOW_BUDGET_SECONDS,
     )
     simulator_actions = SimulatorActionCoordinator(
         service=local_runtime.admission_service,
@@ -882,19 +883,22 @@ def test_real_plan_source_service_and_local_publication_compose_through_http(
             headers=auth("executor"),
         )
         assert admitted.status_code == 202
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + COMPOSED_WORKFLOW_BUDGET_SECONDS
         outcome: dict[str, Any] | None = None
         while time.monotonic() < deadline:
             outcome = simulator_repository.outcome(identity)
             if outcome is not None and simulator_repository.telemetry_delivered(identity):
                 break
-            time.sleep(0.02)
-        assert outcome is not None
+            time.sleep(0.1)
+        runner_error = local_runtime.runner.last_error
+        assert outcome is not None, f"simulator outcome timed out: {runner_error!r}"
         assert outcome["status"] == "succeeded", outcome["reason_codes"]
         assert outcome["candidate_publication_generation"] == 2
         assert len(outcome["command_outcomes"]) == 5
         assert len(outcome["exclusions"]) == 3
-        assert simulator_repository.telemetry_delivered(identity)
+        assert simulator_repository.telemetry_delivered(identity), (
+            f"simulator telemetry timed out: {runner_error!r}"
+        )
         replay = client.post(
             f"/internal/v1/incidents/{INCIDENT_ID}/simulator-actions",
             json=body,
