@@ -179,6 +179,7 @@ class LocalSimulatorRuntimeFactory(Protocol):
         fixture_bundle_path: Path,
         dispatch_source: StoredDispatchSource,
         executor_boundary: SimulatorExecutorBoundary,
+        otlp_endpoint: str | None,
         clock: Callable[[], datetime] | None,
     ) -> LocalSimulatorRuntime: ...
 
@@ -707,6 +708,7 @@ def _local_simulator_runtime(
     fixture_bundle_path: Path,
     dispatch_source: StoredDispatchSource,
     executor_boundary: SimulatorExecutorBoundary,
+    otlp_endpoint: str | None,
     clock: Callable[[], datetime] | None,
 ) -> LocalSimulatorRuntime:
     repository = SQLiteSimulatorRepository(database_path)
@@ -718,7 +720,7 @@ def _local_simulator_runtime(
             fixture_bundle=fixture_bundle_path,
             clock=selected_clock,
         )
-        sink = ActionOtelSink()
+        sink = ActionOtelSink() if otlp_endpoint is None else ActionOtelSink(otlp_endpoint)
         telemetry_sink = sink
 
         def observe(outcome: Mapping[str, Any]) -> object:
@@ -896,6 +898,7 @@ def _compose_canonical_demo(
             visual_root=visual_root,
             build_provenance=provenance,
             recovery=recovery,
+            scenario_reset=local_simulator,
             closure_principal_factory=workflow.closure_principal,
             clock=clock,
         )
@@ -1018,6 +1021,7 @@ def create_runtime_app(
                 fixture_bundle_path=local_simulator_paths[2],
                 dispatch_source=response_plans,
                 executor_boundary=executor_boundary,
+                otlp_endpoint=None if config.demo is None else config.demo.otlp_endpoint,
                 clock=clock,
             )
         except Exception:

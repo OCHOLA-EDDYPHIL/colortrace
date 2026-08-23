@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import threading
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,7 +25,8 @@ from colortrace_api import (
     SQLiteDemoRunStore,
     create_app,
 )
-from colortrace_recovery import CHECK_NAMES, document_sha256
+from colortrace_recovery import CHECK_NAMES, RecoveryError, document_sha256
+from colortrace_simulator.repository import SimulatorRepositoryError
 from fastapi.testclient import TestClient
 
 SOURCE_COMMIT = "a" * 40
@@ -33,6 +35,7 @@ RUN_IDS = (
     "demo-run-22222222222222222222222222222222",
 )
 NONCE = "n" * 32
+SECOND_NONCE = "m" * 32
 INCIDENT_VERSION = 7
 PLAN_VERSION = 3
 PLAN_SHA256 = f"sha256:{'1' * 64}"
@@ -80,6 +83,7 @@ class FakeWorkflow:
         self.reconcile_calls: list[Mapping[str, Any]] = []
         self.prepare_error: BaseException | None = None
         self.execute_error: BaseException | None = None
+        self.reconcile_error: BaseException | None = None
         self.reconciliation: Mapping[str, Any] | None = None
 
     def preparation(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -127,6 +131,8 @@ class FakeWorkflow:
 
     def reconcile(self, request: Mapping[str, Any]) -> Mapping[str, Any] | None:
         self.reconcile_calls.append(request)
+        if self.reconcile_error is not None:
+            raise self.reconcile_error
         return self.reconciliation
 
 
@@ -242,11 +248,37 @@ class ProofWorkflow(FakeWorkflow):
         return result
 
 
+class ProoflessExecutionWorkflow(ProofWorkflow):
+    def execution(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        return FakeWorkflow.execution(self, request)
+
+
+class BlockingProofWorkflow(ProofWorkflow):
+    def __init__(self, visuals: Mapping[str, Mapping[str, str]]) -> None:
+        super().__init__(visuals)
+        self.prepare_entered = threading.Event()
+        self.release_prepare = threading.Event()
+
+    def prepare(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        self.prepare_calls.append(request)
+        self.prepare_entered.set()
+        if not self.release_prepare.wait(timeout=5):
+            raise TimeoutError("test prepare release timed out")
+        return self.preparation(request)
+
+    def reconcile(self, request: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        self.reconcile_calls.append(request)
+        operation_request = request["operation_request"]
+        assert isinstance(operation_request, Mapping)
+        return self.preparation(operation_request)
+
+
 class FakeRecovery:
     def __init__(self) -> None:
         self.calls: list[tuple[Principal, str, Mapping[str, Any]]] = []
         self.result: dict[str, Any] | None = None
         self.review_error: BaseException | None = None
+        self.close_error_before_result: BaseException | None = None
         self.close_error: BaseException | None = None
 
     def review(self, incident_id: str) -> dict[str, Any]:
@@ -255,6 +287,7 @@ class FakeRecovery:
         return {
             "schema": "recovery-review/v1",
             "incident_id": incident_id,
+            "snapshot": {"incident_id": incident_id},
             "closure": self.result,
         }
 
@@ -265,6 +298,8 @@ class FakeRecovery:
         body: Mapping[str, Any],
     ) -> dict[str, Any]:
         self.calls.append((principal, incident_id, body))
+        if self.close_error_before_result is not None:
+            raise self.close_error_before_result
         result_body = {
             "schema": "recovery-closure-result/v1",
             "incident_id": incident_id,
@@ -300,6 +335,23 @@ class FakeRecovery:
         return self.result
 
 
+class FakeScenarioReset:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def restore_authored_scenario(self, *, operation_id: str) -> Mapping[str, Any]:
+        self.calls.append(operation_id)
+        return {
+            "schema": "simulator-authored-scenario-reset/v1",
+            "operation_id": operation_id,
+            "fixture_id": "colortrace-canonical",
+            "source_batch_sha256": f"sha256:{'a' * 64}",
+            "previous_pointer_sha256": f"sha256:{'b' * 64}",
+            "active_pointer_sha256": f"sha256:{'c' * 64}",
+            "generation": 1,
+        }
+
+
 def _principal(run_id: str = RUN_IDS[0]) -> Principal:
     return Principal(
         subject="demo-operator@example.test",
@@ -319,12 +371,13 @@ def _facade(
     *,
     clock: ManualClock | None = None,
     workflow: FakeWorkflow | None = None,
+    scenario_reset: FakeScenarioReset | None = None,
     run_ids: tuple[str, ...] = RUN_IDS,
 ) -> tuple[DemoFacade, FakeWorkflow, FakeRecovery, ManualClock, Path]:
     visual_root = tmp_path / "visuals"
     visual_root.mkdir(exist_ok=True)
     visuals = _write_visuals(visual_root)
-    selected_workflow = workflow or FakeWorkflow(visuals)
+    selected_workflow = workflow or ProofWorkflow(visuals)
     selected_clock = clock or ManualClock()
     recovery = FakeRecovery()
     values = iter(run_ids)
@@ -334,16 +387,34 @@ def _facade(
         source_commit=SOURCE_COMMIT,
         visual_root=visual_root,
         recovery=recovery,
+        scenario_reset=scenario_reset or FakeScenarioReset(),
         closure_principal=_principal(run_ids[0]),
         clock=selected_clock,
         run_id_factory=values.__next__,
-        nonce_factory=lambda: NONCE,
     )
     return facade, selected_workflow, recovery, selected_clock, visual_root
 
 
-def _start(facade: DemoFacade) -> dict[str, Any]:
-    return facade.start({"schema": RUN_REQUEST_SCHEMA, "scenario_id": CANONICAL_SCENARIO})
+def _start_body(
+    *,
+    nonce: str = NONCE,
+    idempotency_key: str = "demo-start-1",
+) -> dict[str, Any]:
+    return {
+        "schema": RUN_REQUEST_SCHEMA,
+        "scenario_id": CANONICAL_SCENARIO,
+        "approval_nonce": nonce,
+        "idempotency_key": idempotency_key,
+    }
+
+
+def _start(
+    facade: DemoFacade,
+    *,
+    nonce: str = NONCE,
+    idempotency_key: str = "demo-start-1",
+) -> dict[str, Any]:
+    return facade.start(_start_body(nonce=nonce, idempotency_key=idempotency_key))
 
 
 def _approval(started: Mapping[str, Any]) -> dict[str, Any]:
@@ -404,8 +475,14 @@ def test_durable_run_binds_approval_execution_closure_and_receipt(tmp_path: Path
     assert started["visual_comparison"]["observed"]["label"] == ("illustrative-authored-fixture")
     assert "approval_nonce" not in facade.get(RUN_IDS[0])
 
-    with pytest.raises(DemoFacadeError, match="demo-active-run-exists"):
-        _start(facade)
+    assert _start(facade) == started
+    with pytest.raises(DemoFacadeError, match="demo-active-run-exists") as conflict:
+        _start(
+            facade,
+            nonce=SECOND_NONCE,
+            idempotency_key="demo-start-2",
+        )
+    assert conflict.value.run_id == RUN_IDS[0]
 
     approval = _approval(started)
     recovered = facade.approve(RUN_IDS[0], approval)
@@ -461,6 +538,52 @@ def test_durable_run_binds_approval_execution_closure_and_receipt(tmp_path: Path
     }
 
 
+def test_start_retry_after_response_loss_recovers_nonce_and_can_approve(
+    tmp_path: Path,
+) -> None:
+    facade, workflow, recovery, clock, visual_root = _facade(tmp_path)
+    started = _start(facade)
+
+    resumed = DemoFacade(
+        store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+        workflow=workflow,
+        source_commit=SOURCE_COMMIT,
+        visual_root=visual_root,
+        recovery=recovery,
+        closure_principal=_principal(),
+        clock=clock,
+    )
+    replayed = _start(resumed)
+
+    assert replayed == started
+    assert replayed["approval_nonce"] == NONCE
+    assert len(workflow.prepare_calls) == 1
+    assert resumed.approve(RUN_IDS[0], _approval(replayed))["phase"] == "awaiting-closure"
+
+    with sqlite3.connect(tmp_path / "demo.sqlite3") as connection:
+        stored = connection.execute(
+            "SELECT approval_nonce_sha256, start_request_sha256 FROM demo_runs WHERE run_id = ?",
+            (RUN_IDS[0],),
+        ).fetchone()
+        delegated = connection.execute(
+            "SELECT delegated_request_document FROM demo_operations WHERE run_id = ?",
+            (RUN_IDS[0],),
+        ).fetchall()
+    assert stored is not None
+    assert NONCE not in "".join(stored)
+    assert all(NONCE.encode("ascii") not in row[0] for row in delegated)
+
+
+def test_start_idempotency_key_cannot_be_rebound(tmp_path: Path) -> None:
+    facade, workflow, _recovery, _clock, _root = _facade(tmp_path)
+    _start(facade)
+
+    with pytest.raises(DemoFacadeError, match="demo-idempotency-conflict"):
+        _start(facade, nonce=SECOND_NONCE)
+
+    assert len(workflow.prepare_calls) == 1
+
+
 def test_bounded_proofs_are_persisted_projected_and_receipted(tmp_path: Path) -> None:
     visual_root = tmp_path / "visuals"
     visual_root.mkdir()
@@ -510,6 +633,40 @@ def test_bounded_proofs_are_persisted_projected_and_receipted(tmp_path: Path) ->
             )
 
 
+def test_proofless_preparation_is_rejected_and_terminalized(tmp_path: Path) -> None:
+    visual_root = tmp_path / "visuals"
+    visual_root.mkdir()
+    workflow = FakeWorkflow(_write_visuals(visual_root))
+    facade, _workflow, _recovery, _clock, _root = _facade(tmp_path, workflow=workflow)
+
+    with pytest.raises(DemoFacadeError, match="demo-preparation-invalid"):
+        _start(facade)
+
+    assert facade.get(RUN_IDS[0])["phase"] == "unresolved"
+    assert facade.receipt(RUN_IDS[0])["proofs"] == []
+    with pytest.raises(DemoFacadeError, match="demo-reset-required") as conflict:
+        _start(
+            facade,
+            nonce=SECOND_NONCE,
+            idempotency_key="demo-start-2",
+        )
+    assert conflict.value.run_id == RUN_IDS[0]
+
+
+def test_proofless_execution_is_rejected_and_terminalized(tmp_path: Path) -> None:
+    visual_root = tmp_path / "visuals"
+    visual_root.mkdir()
+    workflow = ProoflessExecutionWorkflow(_write_visuals(visual_root))
+    facade, _workflow, _recovery, _clock, _root = _facade(tmp_path, workflow=workflow)
+    started = _start(facade)
+
+    with pytest.raises(DemoFacadeError, match="demo-execution-invalid"):
+        facade.approve(RUN_IDS[0], _approval(started))
+
+    assert facade.get(RUN_IDS[0])["phase"] == "unresolved"
+    assert [item["stage"] for item in facade.receipt(RUN_IDS[0])["proofs"]] == ["investigation"]
+
+
 @pytest.mark.parametrize(
     ("field", "value", "code"),
     [
@@ -553,6 +710,26 @@ def test_operation_idempotency_key_cannot_be_rebound(tmp_path: Path) -> None:
     assert len(workflow.execute_calls) == 1
 
 
+def test_operation_idempotency_binds_the_complete_versioned_request(tmp_path: Path) -> None:
+    facade, workflow, recovery, _clock, _root = _facade(tmp_path)
+    started = _start(facade)
+    approval = _approval(started)
+    recovered = facade.approve(RUN_IDS[0], approval)
+
+    changed_approval = {**approval, "expected_run_version": approval["expected_run_version"] + 1}
+    with pytest.raises(DemoFacadeError, match="demo-idempotency-conflict"):
+        facade.approve(RUN_IDS[0], changed_approval)
+
+    closure = _closure(recovered)
+    facade.close(RUN_IDS[0], closure)
+    changed_closure = {**closure, "expected_run_version": closure["expected_run_version"] + 1}
+    with pytest.raises(DemoFacadeError, match="demo-idempotency-conflict"):
+        facade.close(RUN_IDS[0], changed_closure)
+
+    assert len(workflow.execute_calls) == 1
+    assert len(recovery.calls) == 1
+
+
 def test_visuals_are_allowlisted_and_revalidated_on_every_read(tmp_path: Path) -> None:
     facade, _workflow, _recovery, _clock, visual_root = _facade(tmp_path)
     started = _start(facade)
@@ -583,12 +760,28 @@ def test_expired_lease_releases_lock_and_preserves_receipt(tmp_path: Path) -> No
     assert expired["phase"] == "expired"
     assert expired["terminal_reason"] == "lease-expired"
     assert facade.receipt(RUN_IDS[0])["phase"] == "expired"
-    replacement = _start(facade)
+    facade.reset(
+        RUN_IDS[0],
+        {
+            "schema": RESET_REQUEST_SCHEMA,
+            "expected_run_version": expired["version"],
+            "idempotency_key": "reset-expired-1",
+        },
+    )
+    replacement = _start(
+        facade,
+        nonce=SECOND_NONCE,
+        idempotency_key="demo-start-2",
+    )
     assert replacement["run_id"] == RUN_IDS[1]
 
 
 def test_reset_requires_terminal_state_and_does_not_change_receipt(tmp_path: Path) -> None:
-    facade, _workflow, _recovery, clock, _root = _facade(tmp_path)
+    scenario_reset = FakeScenarioReset()
+    facade, _workflow, _recovery, clock, _root = _facade(
+        tmp_path,
+        scenario_reset=scenario_reset,
+    )
     started = _start(facade)
     reset = {
         "schema": RESET_REQUEST_SCHEMA,
@@ -607,8 +800,54 @@ def test_reset_requires_terminal_state_and_does_not_change_receipt(tmp_path: Pat
 
     assert first == second
     assert first["reset"] is True
+    assert first["restoration"]["generation"] == 1
+    assert len(scenario_reset.calls) == 1
     assert facade.get(RUN_IDS[0])["reset"] is True
     assert facade.receipt(RUN_IDS[0]) == receipt_before
+
+
+def test_reset_restores_scenario_for_two_complete_runs_and_preserves_first_receipt(
+    tmp_path: Path,
+) -> None:
+    scenario_reset = FakeScenarioReset()
+    facade, _workflow, _recovery, _clock, _root = _facade(
+        tmp_path,
+        scenario_reset=scenario_reset,
+    )
+    first = _start(facade)
+    first_recovered = facade.approve(RUN_IDS[0], _approval(first))
+    first_closed = facade.close(RUN_IDS[0], _closure(first_recovered))
+    first_receipt = facade.receipt(RUN_IDS[0])
+    facade.reset(
+        RUN_IDS[0],
+        {
+            "schema": RESET_REQUEST_SCHEMA,
+            "expected_run_version": first_closed["version"],
+            "idempotency_key": "reset-first-run",
+        },
+    )
+
+    second = _start(
+        facade,
+        nonce=SECOND_NONCE,
+        idempotency_key="demo-start-2",
+    )
+    second_recovered = facade.approve(RUN_IDS[1], _approval(second))
+    second_closed = facade.close(RUN_IDS[1], _closure(second_recovered))
+    facade.reset(
+        RUN_IDS[1],
+        {
+            "schema": RESET_REQUEST_SCHEMA,
+            "expected_run_version": second_closed["version"],
+            "idempotency_key": "reset-first-run",
+        },
+    )
+
+    assert second_closed["phase"] == "closed"
+    assert facade.receipt(RUN_IDS[0]) == first_receipt
+    assert facade.receipt(RUN_IDS[1])["run_id"] == RUN_IDS[1]
+    assert len(scenario_reset.calls) == 2
+    assert len(set(scenario_reset.calls)) == 2
 
 
 def test_startup_reconciles_an_interrupted_execution_without_replay(tmp_path: Path) -> None:
@@ -620,7 +859,7 @@ def test_startup_reconciles_an_interrupted_execution_without_replay(tmp_path: Pa
         facade.approve(RUN_IDS[0], _approval(started))
 
     assert facade.get(RUN_IDS[0])["phase"] == "executing"
-    resumed_workflow = FakeWorkflow(workflow.visuals)
+    resumed_workflow = ProofWorkflow(workflow.visuals)
     resumed_workflow.reconciliation = resumed_workflow.execution(workflow.execute_calls[0])
     resumed = DemoFacade(
         store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
@@ -648,6 +887,59 @@ def test_startup_reconciles_an_interrupted_execution_without_replay(tmp_path: Pa
         }
     ]
     assert workflow.execute_calls and resumed_workflow.execute_calls == []
+
+
+def test_foreground_prepare_and_get_reconciliation_are_process_serialized(
+    tmp_path: Path,
+) -> None:
+    visual_root = tmp_path / "visuals"
+    visual_root.mkdir()
+    workflow = BlockingProofWorkflow(_write_visuals(visual_root))
+    facade, _workflow, recovery, clock, _root = _facade(tmp_path, workflow=workflow)
+    reader = DemoFacade(
+        store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+        workflow=workflow,
+        source_commit=SOURCE_COMMIT,
+        visual_root=visual_root,
+        recovery=recovery,
+        closure_principal=_principal(),
+        clock=clock,
+        reconcile_on_startup=False,
+    )
+    started: list[dict[str, Any]] = []
+    observed: list[dict[str, Any]] = []
+    errors: list[BaseException] = []
+    get_entered = threading.Event()
+
+    def run_start() -> None:
+        try:
+            started.append(_start(facade))
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    def run_get() -> None:
+        try:
+            get_entered.set()
+            observed.append(reader.get(RUN_IDS[0]))
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    starter = threading.Thread(target=run_start)
+    getter = threading.Thread(target=run_get)
+    starter.start()
+    assert workflow.prepare_entered.wait(timeout=2)
+    getter.start()
+    assert get_entered.wait(timeout=2)
+    workflow.release_prepare.set()
+    starter.join(timeout=5)
+    getter.join(timeout=5)
+
+    assert not starter.is_alive() and not getter.is_alive()
+    assert errors == []
+    assert started[0]["phase"] == "awaiting-approval"
+    assert observed[0]["phase"] == "awaiting-approval"
+    assert len(workflow.prepare_calls) == 1
+    assert workflow.reconcile_calls == []
 
 
 def test_startup_reconciles_an_interrupted_closure_from_durable_recovery(
@@ -679,10 +971,40 @@ def test_startup_reconciles_an_interrupted_closure_from_durable_recovery(
     assert resumed.receipt(RUN_IDS[0])["bindings"]["closure_id"] == recovery.result["closure_id"]
 
 
+def test_startup_resumes_exact_close_request_after_crash_before_side_effect(
+    tmp_path: Path,
+) -> None:
+    facade, workflow, recovery, clock, visual_root = _facade(tmp_path)
+    started = _start(facade)
+    recovered = facade.approve(RUN_IDS[0], _approval(started))
+    request = _closure(recovered)
+    recovery.close_error_before_result = SystemExit("simulated process stop")
+
+    with pytest.raises(SystemExit, match="simulated process stop"):
+        facade.close(RUN_IDS[0], request)
+
+    assert recovery.result is None
+    recovery.close_error_before_result = None
+    resumed = DemoFacade(
+        store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+        workflow=workflow,
+        source_commit=SOURCE_COMMIT,
+        visual_root=visual_root,
+        recovery=recovery,
+        closure_principal=_principal(),
+        clock=clock,
+    )
+
+    assert resumed.get(RUN_IDS[0])["phase"] == "closed"
+    assert len(recovery.calls) == 2
+    assert recovery.calls[0][2] == recovery.calls[1][2]
+    assert recovery.calls[1][2]["idempotency_key"] == request["idempotency_key"]
+
+
 def test_prepare_response_loss_reconciles_exact_request_after_lease(tmp_path: Path) -> None:
     visual_root = tmp_path / "visuals"
     visual_root.mkdir()
-    workflow = FakeWorkflow(_write_visuals(visual_root))
+    workflow = ProofWorkflow(_write_visuals(visual_root))
     workflow.prepare_error = ConnectionError("response lost")
     clock = ManualClock()
     facade = DemoFacade(
@@ -692,7 +1014,6 @@ def test_prepare_response_loss_reconciles_exact_request_after_lease(tmp_path: Pa
         visual_root=visual_root,
         clock=clock,
         run_id_factory=iter(RUN_IDS).__next__,
-        nonce_factory=lambda: NONCE,
     )
 
     with pytest.raises(DemoFacadeError, match="demo-operation-uncertain"):
@@ -709,12 +1030,120 @@ def test_prepare_response_loss_reconciles_exact_request_after_lease(tmp_path: Pa
         clock=clock,
     )
 
-    assert resumed.get(RUN_IDS[0])["phase"] == "awaiting-approval"
+    replayed = _start(resumed)
+    assert replayed["phase"] == "awaiting-approval"
+    assert replayed["approval_nonce"] == NONCE
     request = workflow.reconcile_calls[0]
     assert request["operation"] == "prepare"
     assert request["operation_request"] == workflow.prepare_calls[0]
     assert request["operation_request_sha256"] == document_sha256(workflow.prepare_calls[0])
     assert request["lease_expired"] is True
+    assert resumed.approve(RUN_IDS[0], _approval(replayed))["phase"] == "awaiting-closure"
+
+
+def test_known_alert_failure_terminalizes_with_receipt_and_unlocks(tmp_path: Path) -> None:
+    visual_root = tmp_path / "visuals"
+    visual_root.mkdir()
+    workflow = ProofWorkflow(_write_visuals(visual_root))
+    workflow.prepare_error = DemoFacadeError("demo-alert-timeout")
+    clock = ManualClock()
+    scenario_reset = FakeScenarioReset()
+    facade = DemoFacade(
+        store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+        workflow=workflow,
+        source_commit=SOURCE_COMMIT,
+        visual_root=visual_root,
+        scenario_reset=scenario_reset,
+        clock=clock,
+        run_id_factory=iter(RUN_IDS).__next__,
+    )
+
+    with pytest.raises(DemoFacadeError, match="demo-alert-timeout"):
+        _start(facade)
+
+    failed = facade.get(RUN_IDS[0])
+    assert failed["phase"] == "unresolved"
+    assert failed["terminal_reason"] == "demo-alert-timeout"
+    assert facade.receipt(RUN_IDS[0])["reason_code"] == "demo-alert-timeout"
+    workflow.prepare_error = None
+    facade.reset(
+        RUN_IDS[0],
+        {
+            "schema": RESET_REQUEST_SCHEMA,
+            "expected_run_version": failed["version"],
+            "idempotency_key": "reset-alert-failure",
+        },
+    )
+    assert (
+        _start(
+            facade,
+            nonce=SECOND_NONCE,
+            idempotency_key="demo-start-2",
+        )["run_id"]
+        == RUN_IDS[1]
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (RecoveryError("recovery-unresolved"), "recovery-unresolved"),
+        (
+            SimulatorRepositoryError("simulator-runner-unavailable"),
+            "simulator-runner-unavailable",
+        ),
+    ],
+)
+def test_known_execution_domain_failures_terminalize(
+    tmp_path: Path,
+    error: BaseException,
+    reason: str,
+) -> None:
+    facade, workflow, _recovery, _clock, _root = _facade(tmp_path)
+    started = _start(facade)
+    workflow.execute_error = error
+
+    with pytest.raises(DemoFacadeError, match="demo-operation-failed"):
+        facade.approve(RUN_IDS[0], _approval(started))
+
+    failed = facade.get(RUN_IDS[0])
+    assert failed["phase"] == "unresolved"
+    assert failed["terminal_reason"] == reason
+
+
+def test_expired_inconclusive_execution_terminalizes_and_unlocks(tmp_path: Path) -> None:
+    facade, workflow, _recovery, clock, _root = _facade(
+        tmp_path,
+        run_ids=(RUN_IDS[0], RUN_IDS[1], RUN_IDS[1]),
+    )
+    started = _start(facade)
+    workflow.execute_error = ConnectionError("response lost")
+    with pytest.raises(DemoFacadeError, match="demo-operation-uncertain"):
+        facade.approve(RUN_IDS[0], _approval(started))
+    workflow.execute_error = None
+    workflow.reconcile_error = ConnectionError("recovery unavailable")
+    clock.value += timedelta(minutes=16)
+
+    failed = _start(facade)
+
+    assert failed["phase"] == "unresolved"
+    assert failed["terminal_reason"] == "restart-reconciliation-timeout"
+    assert facade.receipt(RUN_IDS[0])["reason_code"] == "restart-reconciliation-timeout"
+    workflow.reconcile_error = None
+    facade.reset(
+        RUN_IDS[0],
+        {
+            "schema": RESET_REQUEST_SCHEMA,
+            "expected_run_version": failed["version"],
+            "idempotency_key": "reset-execution-timeout",
+        },
+    )
+    replacement = _start(
+        facade,
+        nonce=SECOND_NONCE,
+        idempotency_key="demo-start-2",
+    )
+    assert replacement["run_id"] == RUN_IDS[1]
 
 
 def test_execution_response_loss_reconciles_exact_request_after_lease(tmp_path: Path) -> None:
@@ -784,8 +1213,6 @@ def test_temporary_closure_lookup_failure_stays_locked_and_later_heals(tmp_path:
         facade.close(RUN_IDS[0], _closure(recovered))
     recovery.close_error = None
     recovery.review_error = ConnectionError("temporarily unavailable")
-    clock.value += timedelta(minutes=16)
-
     resumed = DemoFacade(
         store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
         workflow=workflow,
@@ -797,7 +1224,11 @@ def test_temporary_closure_lookup_failure_stays_locked_and_later_heals(tmp_path:
     )
     assert resumed.get(RUN_IDS[0])["phase"] == "closing"
     with pytest.raises(DemoFacadeError, match="demo-active-run-exists"):
-        _start(resumed)
+        _start(
+            resumed,
+            nonce=SECOND_NONCE,
+            idempotency_key="demo-start-2",
+        )
 
     recovery.review_error = None
     assert resumed.get(RUN_IDS[0])["phase"] == "closed"
@@ -854,10 +1285,18 @@ class IncidentService:
         raise AssertionError(incident_id)
 
 
+class FailingDemo:
+    def __init__(self, code: str) -> None:
+        self.code = code
+
+    def start(self, _body: Mapping[str, Any]) -> dict[str, Any]:
+        raise DemoFacadeError(self.code)
+
+
 def test_demo_routes_enforce_json_origin_and_bounded_visual_kinds(tmp_path: Path) -> None:
     facade, _workflow, _recovery, _clock, _root = _facade(tmp_path)
     client = TestClient(create_app(IncidentService(), demo=facade))
-    body = {"schema": RUN_REQUEST_SCHEMA, "scenario_id": CANONICAL_SCENARIO}
+    body = _start_body()
 
     denied = client.post(
         "/v1/demo/runs",
@@ -866,15 +1305,17 @@ def test_demo_routes_enforce_json_origin_and_bounded_visual_kinds(tmp_path: Path
     )
     wrong_media = client.post(
         "/v1/demo/runs",
-        content='{"schema":"colortrace-demo-run-request/v1"}',
+        content=f'{{"schema":"{RUN_REQUEST_SCHEMA}"}}',
         headers={"Content-Type": "text/plain"},
     )
     duplicate = client.post(
         "/v1/demo/runs",
         content=(
-            '{"schema":"colortrace-demo-run-request/v1",'
+            f'{{"schema":"{RUN_REQUEST_SCHEMA}",'
             '"scenario_id":"ct-shadowed-lut-v1:canonical",'
-            '"scenario_id":"ct-shadowed-lut-v1:canonical"}'
+            '"scenario_id":"ct-shadowed-lut-v1:canonical",'
+            f'"approval_nonce":"{NONCE}",'
+            '"idempotency_key":"demo-start-1"}'
         ),
         headers={"Content-Type": "application/json"},
     )
@@ -888,6 +1329,11 @@ def test_demo_routes_enforce_json_origin_and_bounded_visual_kinds(tmp_path: Path
         json=body,
         headers={"Origin": "http://testserver"},
     )
+    active_conflict = client.post(
+        "/v1/demo/runs",
+        json=_start_body(nonce=SECOND_NONCE, idempotency_key="demo-start-2"),
+        headers={"Origin": "http://testserver"},
+    )
 
     assert denied.status_code == 403
     assert denied.json() == {"code": "demo-origin-denied"}
@@ -898,6 +1344,11 @@ def test_demo_routes_enforce_json_origin_and_bounded_visual_kinds(tmp_path: Path
     assert oversized.status_code == 413
     assert oversized.json() == {"code": "demo-request-too-large"}
     assert started.status_code == 201
+    assert active_conflict.status_code == 409
+    assert active_conflict.json() == {
+        "code": "demo-active-run-exists",
+        "run_id": RUN_IDS[0],
+    }
     assert client.get(f"/v1/demo/runs/{RUN_IDS[0]}").status_code == 200
     visual = client.get(f"/v1/demo/runs/{RUN_IDS[0]}/visuals/expected")
     assert visual.status_code == 200
@@ -905,3 +1356,21 @@ def test_demo_routes_enforce_json_origin_and_bounded_visual_kinds(tmp_path: Path
     assert visual.headers["content-type"] == "image/png"
     assert visual.headers["x-content-sha256"].startswith("sha256:")
     assert client.get(f"/v1/demo/runs/{RUN_IDS[0]}/visuals/oracle").status_code == 400
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "demo-operation-uncertain",
+        "demo-reset-uncertain",
+        "demo-reset-unavailable",
+        "demo-simulator-unavailable",
+    ),
+)
+def test_demo_routes_report_retryable_failures_as_unavailable(code: str) -> None:
+    client = TestClient(create_app(IncidentService(), demo=FailingDemo(code)))
+
+    response = client.post("/v1/demo/runs", json={})
+
+    assert response.status_code == 503
+    assert response.json() == {"code": code}

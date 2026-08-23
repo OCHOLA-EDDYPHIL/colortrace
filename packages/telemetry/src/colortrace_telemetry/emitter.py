@@ -132,6 +132,7 @@ class OtelSink:
 
     def __init__(self, endpoint: str, *, timeout_seconds: float = 10.0) -> None:
         endpoint = endpoint.rstrip("/")
+        self.endpoint = endpoint
         resource = Resource.create(
             {
                 "service.name": SERVICE_NAME,

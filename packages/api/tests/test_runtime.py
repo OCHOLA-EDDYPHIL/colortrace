@@ -339,6 +339,7 @@ def test_canonical_demo_environment_binds_deployment_inputs(tmp_path: Path) -> N
     assert config.demo.source_tree == "b" * 40
     assert config.demo.fixture_bundle_sha256 == values["COLORTRACE_FIXTURE_BUNDLE_SHA256"]
     assert config.demo.grafana_ca_file == tmp_path / "grafana-ca.pem"
+    assert config.demo.otlp_endpoint == "http://otel-lgtm:4318"
 
 
 @pytest.mark.parametrize(

@@ -186,7 +186,10 @@ def _status_for_recovery_error(code: str) -> int:
 def _status_for_demo_error(code: str) -> int:
     if code in {"demo-run-not-found", "demo-visual-not-found"}:
         return 404
-    if code in {"demo-store-unavailable", "demo-visual-unavailable"}:
+    if code.endswith("-unavailable") or code in {
+        "demo-operation-uncertain",
+        "demo-reset-uncertain",
+    }:
         return 503
     if code.endswith("-invalid") or code in {
         "demo-request-invalid",
@@ -460,9 +463,12 @@ def create_app(
 
     @app.exception_handler(DemoFacadeError)
     async def handle_demo_error(_request: Any, error: DemoFacadeError) -> JSONResponse:
+        content = {"code": error.code}
+        if error.run_id is not None:
+            content["run_id"] = error.run_id
         return JSONResponse(
             status_code=_status_for_demo_error(error.code),
-            content={"code": error.code},
+            content=content,
         )
 
     @app.exception_handler(HTTPException)

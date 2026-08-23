@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
 
@@ -87,6 +88,7 @@ class SimulatorSerialRunner:
         self._wake_event = threading.Event()
         self._stop_event = threading.Event()
         self._worker_exited = threading.Event()
+        self._execution_lock = threading.RLock()
         self._state_lock = threading.Lock()
         self._state_changed = threading.Condition(self._state_lock)
         self._thread: threading.Thread | None = None
@@ -206,6 +208,10 @@ class SimulatorSerialRunner:
             self._record_error(error)
 
     def _drain(self) -> None:
+        with self._execution_lock:
+            self._drain_locked()
+
+    def _drain_locked(self) -> None:
         try:
             identities = self._repository.pending_action_identities(limit=self._action_batch_limit)
         except Exception as error:
@@ -223,6 +229,56 @@ class SimulatorSerialRunner:
             except Exception as error:
                 self._record_error(error)
         self._deliver_telemetry()
+
+    def restore_authored_scenario(
+        self,
+        reset: Callable[[], Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
+        deadline = time.monotonic() + self._join_timeout_seconds
+        with self._state_changed:
+            resume_admission = self._accepting
+            self._accepting = False
+            while self._admissions_in_flight:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("simulator-reset-quiesce-timeout")
+                self._state_changed.wait(timeout=remaining)
+        try:
+            with self._execution_lock:
+                reset_owner = (
+                    f"simulator-reset-{hashlib.sha256(self._owner.encode()).hexdigest()[:16]}"
+                )
+                for _attempt in range(1_000):
+                    pending = self._repository.pending_action_identities(limit=100)
+                    if not pending:
+                        break
+                    for identity in pending:
+                        self._service.execute(
+                            identity,
+                            owner=reset_owner,
+                            observe_terminal=False,
+                        )
+                else:
+                    raise RuntimeError("simulator-reset-drain-limit")
+                if self._repository.pending_action_identities(limit=1):
+                    raise RuntimeError("simulator-reset-pending-actions")
+                result = reset()
+                if self._repository.pending_action_identities(limit=1):
+                    raise RuntimeError("simulator-reset-race")
+                return result
+        finally:
+            with self._state_changed:
+                thread = self._thread
+                if (
+                    resume_admission
+                    and not self._closed
+                    and not self._stopping
+                    and thread is not None
+                    and thread.is_alive()
+                    and not self._worker_exited.is_set()
+                ):
+                    self._accepting = True
+                    self._wake_event.set()
 
     def _run(self) -> None:
         try:
@@ -281,6 +337,15 @@ class LocalSimulatorRuntime:
         self.admission_service = WakingSimulatorAdmission(
             runner=self.runner,
         )
+
+    def restore_authored_scenario(self, *, operation_id: str) -> Mapping[str, Any]:
+        resetter = getattr(self.recovery_publication, "restore_authored_scenario", None)
+        if not callable(resetter):
+            raise RuntimeError("simulator-authored-reset-unavailable")
+        result = self.runner.restore_authored_scenario(lambda: resetter(operation_id=operation_id))
+        if not isinstance(result, Mapping):
+            raise RuntimeError("simulator-authored-reset-invalid")
+        return result
 
     @asynccontextmanager
     async def lifespan(self, _app: FastAPI) -> AsyncIterator[None]:
