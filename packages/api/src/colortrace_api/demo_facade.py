@@ -751,6 +751,7 @@ def _validate_preparation(
         or plan["target_sha256"] != result["target_sha256"]
         or {item["query_key"] for item in evidence} != set(_INVESTIGATION_TOOLS)
         or any(item["tool"] != _INVESTIGATION_TOOLS[item["query_key"]] for item in evidence)
+        or any(item["freshness"] != "current" for item in evidence)
         or len(inventory_versions) != 1
         or len(invocations) < 2
         or {item["turn_kind"] for item in accepted_invocations}
