@@ -8,3 +8,10 @@ id = "colortrace-synthetic-test-token"
 description = "Synthetic token used to verify the repository secret gate"
 regex = '''\bct_test_[A-Za-z0-9]{24,}\b'''
 keywords = ["ct_test_"]
+
+[[allowlists]]
+description = "Deliberate invalid Basic-auth probe in the single-host verifier"
+targetRules = ["curl-auth-user"]
+condition = "AND"
+paths = ['''^infra/single-host/scripts/verify-host[.]sh$''']
+regexes = ['''^'colortrace-invalid:invalid'$''']
