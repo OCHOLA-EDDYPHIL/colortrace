@@ -64,10 +64,13 @@ persistent disk, and container logs use bounded rotation.
 The owner/deployer uses `operator_member` and is responsible for reviewed applies, builds, host
 verification, and manual VM stops. Terraform authority and stop permission are held outside this
 module. The module grants Cloud Build editor and Service Usage Consumer at project scope, plus
-`serviceAccountUser` on the exact builder service account. For SSH, it grants a custom project role
-containing only `compute.instances.list` and `compute.projects.get`, OS Admin on the exact VM, IAP
-access on the exact VM restricted to destination port 22, and `serviceAccountUser` on the exact host
-service account.
+`serviceAccountUser` on the exact builder service account and Artifact Registry Reader on the exact
+image repository. On the dedicated build-source bucket, the operator can inspect the bucket and
+create objects; the builder can only read objects. Neither grant applies to Terraform state or
+other buckets. For SSH, the module grants a custom project role containing only
+`compute.instances.list` and `compute.projects.get`, OS Admin on the exact VM, IAP access on the
+exact VM restricted to destination port 22, and `serviceAccountUser` on the exact host service
+account.
 
 The owner controls a dedicated resume service account created outside the module and may impersonate
 it through `CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT`. Token Creator is granted to the owner only
@@ -130,8 +133,9 @@ without an action. If an action result is uncertain, the service does not assume
 ## Supply-chain and admission controls
 
 Cloud Build produces private, digest-addressed runtime, web, Caddy, Grafana, Loki, and Tempo images
-from one clean source commit with a dedicated builder identity. Prometheus is not copied into
-Artifact Registry; the host pulls the digest pinned in
+from one clean source commit with a dedicated builder identity. The source archive uses a separate
+private bucket with one-day cleanup; the build does not read Terraform state. Prometheus is not
+copied into Artifact Registry; the host pulls the digest pinned in
 `config/observability/images.lock.json` from Docker Hub.
 
 `infra/single-host/scripts/build-images.sh` records the build, source, fixture, and six private
@@ -162,9 +166,11 @@ interval.
 
 Terraform admits the VM only when the recorded complete seven-day estimate is positive, no greater
 than the configured ceiling, and strictly below USD 100. This is an input check, not a live billing
-cap. Billing data can lag, budget alerts do not stop resources, and VM power-off does not stop
-charges for the persistent disk, external address, Artifact Registry, Secret Manager, state bucket,
-or other retained resources.
+cap. The profile does not enforce a lifetime workflow count, so operations must bind each estimate
+to a private run allowance and stop new workflows when that allowance is reached. Billing data can
+lag, budget alerts do not stop resources, and VM power-off does not stop charges for the persistent
+disk, external address, Artifact Registry, Secret Manager, state bucket, or other retained
+resources.
 
 The persistent boot disk is one durable copy, not a backup. It is protected from Terraform destroy
 by `prevent_destroy`, but project administrators and infrastructure failures remain capable of data

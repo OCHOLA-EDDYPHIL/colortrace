@@ -26,9 +26,10 @@ Use `infra/single-host` as the only gated hosted profile.
 
 The module creates a dedicated VPC and subnet, fixed external address, Shielded Compute Engine VM,
 30 GiB persistent balanced boot disk, private Artifact Registry repository, separate runtime and
-builder service accounts, and one Secret Manager secret container for the access verifier. The
-host service account receives a custom role containing only `aiplatform.endpoints.predict`, plus
-repository-scoped image read and secret-scoped verifier read access.
+builder service accounts, a private short-retention build-source bucket, and one Secret Manager
+secret container for the access verifier. The host service account receives a custom role
+containing only `aiplatform.endpoints.predict`, plus repository-scoped image read and secret-scoped
+verifier read access.
 
 Cloud Build produces six private digest-addressed images: runtime, web, Caddy, Grafana, Loki, and
 Tempo. Prometheus is pulled directly from Docker Hub at the digest pinned in the observability lock.
@@ -57,9 +58,11 @@ mirrors; it does not enforce a general egress allowlist.
 
 The owner/deployer applies Terraform, performs builds and host verification, and manually stops the
 VM. Its `operator_member` receives Cloud Build editor and Service Usage Consumer at project scope,
-plus exact-builder `serviceAccountUser` for builds. For SSH it receives only the required project
-list/lookups, exact-VM OS Admin, exact-VM IAP restricted to port 22, and exact-host
-`serviceAccountUser`. Terraform and stop powers are held separately.
+exact-builder `serviceAccountUser`, exact-repository image read, and create-only source-object
+access with bucket inspection on the dedicated build-source bucket. The builder can read objects
+only from that bucket. For SSH the operator receives only the required project list/lookups,
+exact-VM OS Admin, exact-VM IAP restricted to port 22, and exact-host `serviceAccountUser`.
+Terraform and stop powers are held separately.
 
 The same owner may impersonate one externally created resume service account. Token Creator is
 bound only on that service account, and the module grants the service account only exact-VM
@@ -70,7 +73,8 @@ organizational separation. Browser users receive only the shared access gate.
 SQLite files and the simulator filesystem on the persistent boot disk are canonical application
 state for this profile. Caddy certificate state, Grafana state, and telemetry state are also on the
 disk. The profile does not use Cloud SQL, Cloud Storage artifact publication, or Cloud Tasks for
-the workflow. The GCS backend stores Terraform state only.
+the workflow. The GCS backend stores Terraform state only. A separate GCS bucket stages immutable
+Cloud Build source archives and removes them after one day.
 
 Startup atomically records the first activation time for a lifecycle generation before it verifies
 a persistent systemd power-off timer. The deadline is exactly seven days later. Stops and restarts
