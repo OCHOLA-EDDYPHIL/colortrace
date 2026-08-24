@@ -248,6 +248,21 @@ run "database_bootstrap_is_private_single_attempt_and_digest_bound" {
   }
 
   assert {
+    condition = (
+      {
+        for env in google_cloud_run_v2_job.database["bootstrap"].template[0].template[0].containers[0].env :
+        env.name => env.value
+      }["COLORTRACE_POSTGRES_ADMIN_PASSWORD_FILE"] == "/run/colortrace-private/postgres-admin"
+      && {
+        for env in google_cloud_run_v2_job.database["bootstrap"].template[0].template[0].containers[0].env :
+        env.name => env.value
+      }["COLORTRACE_POSTGRES_ADMIN_PASSWORD_SOURCE"] == "/var/run/secrets/colortrace/postgres-admin"
+      && google_cloud_run_v2_job.database["bootstrap"].template[0].template[0].containers[0].volume_mounts[0].mount_path == "/var/run/secrets/colortrace"
+    )
+    error_message = "The bootstrap secret source and canonical private target must remain distinct and exact."
+  }
+
+  assert {
     condition     = alltrue([for job in google_cloud_run_v2_job.database : strcontains(job.template[0].template[0].containers[0].image, "@sha256:")])
     error_message = "Every database preparation job must use the exact runtime digest."
   }

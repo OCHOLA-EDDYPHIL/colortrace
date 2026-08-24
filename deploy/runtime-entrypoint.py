@@ -5,7 +5,7 @@ import stat
 import sys
 from pathlib import Path
 
-_PRIVATE_ROOT = Path("/var/run/colortrace-private")
+_PRIVATE_ROOT = Path("/run/colortrace-private")
 _SERVICE_COMMANDS = {
     "api": ("/opt/colortrace/bin/python", "-m", "colortrace_api"),
     "api-readonly": (

@@ -203,7 +203,7 @@ services:
       COLORTRACE_GRAFANA_URL: "https://grafana.internal:8443"
       COLORTRACE_GRAFANA_CA_FILE: "/etc/colortrace/caddy-root.crt"
       COLORTRACE_GRAFANA_TOKEN_SOURCE: "/run/colortrace-secrets/grafana-viewer-token"
-      COLORTRACE_GRAFANA_TOKEN_FILE: "/var/run/colortrace-private/grafana-viewer-token"
+      COLORTRACE_GRAFANA_TOKEN_FILE: "/run/colortrace-private/grafana-viewer-token"
       COLORTRACE_MCP_BINARY: "/usr/local/bin/mcp-grafana"
       COLORTRACE_MCP_LOCK_PATH: "/opt/colortrace-config/grafana-mcp/mcp-grafana.lock.json"
       COLORTRACE_QUERY_CATALOG_PATH: "/opt/colortrace-config/grafana-mcp/query-catalog.json"
@@ -219,7 +219,7 @@ services:
       - /srv/colortrace/config/caddy-root.crt:/etc/colortrace/caddy-root.crt:ro
     tmpfs:
       - /tmp:size=128m,mode=1777
-      - /var/run/colortrace-private:size=64k,uid=65532,gid=65532,mode=0700
+      - /run/colortrace-private:size=64k,uid=65532,gid=65532,mode=0700
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/startup', timeout=2).read()"]
       interval: 2s
