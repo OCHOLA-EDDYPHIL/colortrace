@@ -1602,6 +1602,18 @@ def test_tempo_result_metadata_is_exact() -> None:
         assert result.envelopes[0]["collection"]["error"]["code"] == "malformed_result"
 
 
+def test_tempo_v2_accepts_official_payload_without_status() -> None:
+    payload = payload_for("tempo_get-trace")
+    del payload["status"]
+
+    async def handler(name: str, _arguments: dict[str, Any]) -> types.CallToolResult:
+        return success(name, payload)
+
+    result = collect_with(FakeSession(handler), request("trace.by-id"))
+
+    assert result.envelopes[0]["collection"]["outcome"] == "collected"
+
+
 def test_tempo_v2_accepts_omitted_empty_events_only() -> None:
     payload = payload_for("tempo_get-trace")
     span = payload["trace"]["services"][0]["scopes"][0]["spans"][0]
