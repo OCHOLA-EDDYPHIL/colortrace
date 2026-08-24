@@ -447,6 +447,7 @@ run "bounded_single_host_is_admitted" {
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "/api/datasources/proxy/uid/prometheus/api/v1/query")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "/api/datasources/proxy/uid/loki/loki/api/v1/query")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "/api/datasources/proxy/uid/tempo/api/search")
+      && strcontains(file("${path.module}/../../config/observability/tempo.yaml"), "mcp_server:\n    enabled: true")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "backends_ready")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "configure_container_metadata_boundary")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "compose down --remove-orphans")
