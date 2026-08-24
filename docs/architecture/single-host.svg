@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="1050" viewBox="0 0 1700 1050" role="img" aria-labelledby="title description">
+  <title id="title">ColorTrace gated single-host architecture</title>
+  <desc id="description">A browser user reaches Caddy through the TCP 443 firewall and shared access gate. The owner/deployer applies, stops, and verifies through the control plane plus exact-VM IAP and OS Login access on port 22. The owner has Token Creator only on a dedicated resume service account and impersonates it for exact-VM get and start. Fail-closed startup retrieves a pinned bcrypt verifier from Secret Manager, pulls six admitted images from Artifact Registry and one pinned Prometheus image from Docker Hub, verifies lifecycle state, and writes the Caddy verifier. Caddy bridges separate edge and internal Docker networks. The runtime alone reaches metadata and invokes Vertex AI with a custom prediction permission. Application, telemetry, Caddy, and lifecycle state share one persistent boot disk. ACME, Google identity and APIs, JWKS, and Debian mirrors are explicit outbound dependencies without a general egress allowlist.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#44546a"/>
+    </marker>
+    <style>
+      .title { font: 700 24px system-ui, sans-serif; fill: #182235; }
+      .group { fill: #f5f7fb; stroke: #44546a; stroke-width: 2; }
+      .boundary { fill: none; stroke-width: 2; stroke-dasharray: 7 5; }
+      .edge-boundary { stroke: #6c8ebf; }
+      .internal-boundary { stroke: #4f7f44; }
+      .role { fill: #eaf2ff; stroke: #3a67a8; }
+      .control { fill: #fff2cc; stroke: #b38f00; }
+      .managed { fill: #fce8e6; stroke: #b85450; }
+      .service { fill: #d9ead3; stroke: #4f7f44; }
+      .process { fill: #dae8fc; stroke: #3a67a8; }
+      .observe { fill: #ffe6cc; stroke: #c27832; }
+      .state { fill: #f8cecc; stroke: #b85450; }
+      .box { stroke-width: 2; rx: 10; }
+      .label { font: 600 15px system-ui, sans-serif; fill: #182235; text-anchor: middle; }
+      .small { font: 13px system-ui, sans-serif; fill: #334155; text-anchor: middle; }
+      .edge { fill: none; stroke: #44546a; stroke-width: 2; marker-end: url(#arrow); }
+      .state-edge { fill: none; stroke: #8b5b5b; stroke-width: 2; stroke-dasharray: 7 5; }
+      .edge-label { font: 12px system-ui, sans-serif; fill: #334155; text-anchor: middle; paint-order: stroke; stroke: #ffffff; stroke-width: 5; stroke-linejoin: round; }
+    </style>
+  </defs>
+
+  <text x="850" y="34" class="title" text-anchor="middle">ColorTrace gated single-host topology</text>
+  <rect x="400" y="50" width="950" height="900" rx="18" class="group"/>
+  <text x="875" y="82" class="title" text-anchor="middle">Single Compute Engine VM</text>
+
+  <rect x="20" y="90" width="165" height="60" class="box role"/>
+  <text x="102" y="116" class="label">Owner / deployer</text>
+  <text x="102" y="138" class="small">operator_member</text>
+  <rect x="20" y="235" width="175" height="70" class="box role"/>
+  <text x="107" y="264" class="small" style="font-weight: 600">Resume service account</text>
+  <text x="107" y="287" class="small">resume_member</text>
+  <rect x="20" y="390" width="165" height="60" class="box role"/>
+  <text x="102" y="426" class="label">Browser user</text>
+
+  <rect x="215" y="130" width="155" height="80" class="box control"/>
+  <text x="292" y="163" class="label">Google Cloud</text>
+  <text x="292" y="185" class="small">control plane</text>
+  <rect x="215" y="405" width="155" height="70" class="box control"/>
+  <text x="292" y="446" class="label">VPC firewall + IAP</text>
+
+  <rect x="1390" y="80" width="265" height="60" class="box managed"/>
+  <text x="1522" y="116" class="label">Secret Manager</text>
+  <rect x="1390" y="180" width="265" height="70" class="box managed"/>
+  <text x="1522" y="209" class="label">Artifact Registry</text>
+  <text x="1522" y="231" class="small">6 private image digests</text>
+  <rect x="1390" y="290" width="265" height="70" class="box managed"/>
+  <text x="1522" y="319" class="label">Docker Hub</text>
+  <text x="1522" y="341" class="small">pinned Prometheus digest</text>
+  <rect x="1390" y="485" width="265" height="60" class="box managed"/>
+  <text x="1522" y="521" class="label">Metadata server</text>
+  <rect x="1390" y="600" width="265" height="60" class="box managed"/>
+  <text x="1522" y="636" class="label">Vertex AI</text>
+  <rect x="1390" y="785" width="265" height="100" class="box managed"/>
+  <text x="1522" y="813" class="label">Other outbound dependencies</text>
+  <text x="1522" y="835" class="small">ACME + Google APIs/identity/JWKS</text>
+  <text x="1522" y="856" class="small">+ Debian mirrors</text>
+  <text x="1522" y="877" class="small">no general egress allowlist</text>
+
+  <rect x="900" y="105" width="300" height="100" class="box control"/>
+  <text x="1050" y="137" class="label">Fail-closed startup</text>
+  <text x="1050" y="160" class="small">admission + lifecycle</text>
+  <text x="1050" y="181" class="small">+ package inventory</text>
+
+  <rect x="650" y="105" width="220" height="185" rx="12" class="boundary edge-boundary"/>
+  <text x="760" y="134" class="label">edge Docker network</text>
+  <rect x="680" y="170" width="160" height="65" class="box process"/>
+  <text x="760" y="209" class="label">Web UI</text>
+
+  <rect x="455" y="325" width="245" height="105" class="box service"/>
+  <text x="577" y="357" class="label">Caddy</text>
+  <text x="577" y="380" class="small">TLS 443 + Basic auth</text>
+  <text x="577" y="402" class="small">edge ↔ internal bridge</text>
+
+  <rect x="450" y="500" width="820" height="250" rx="12" class="boundary internal-boundary"/>
+  <text x="860" y="530" class="label">internal Docker network</text>
+  <rect x="1020" y="555" width="210" height="90" class="box service"/>
+  <text x="1125" y="585" class="label">Runtime</text>
+  <text x="1125" y="607" class="small">facade + validators</text>
+  <text x="1125" y="628" class="small">+ simulator</text>
+  <rect x="790" y="555" width="190" height="90" class="box process"/>
+  <text x="885" y="585" class="label">Pinned Grafana MCP</text>
+  <text x="885" y="608" class="small">stdio + read-only catalog</text>
+  <rect x="560" y="555" width="180" height="70" class="box observe"/>
+  <text x="650" y="596" class="label">Grafana</text>
+  <rect x="560" y="660" width="270" height="70" class="box observe"/>
+  <text x="695" y="689" class="label">Prometheus + Loki</text>
+  <text x="695" y="712" class="small">+ Tempo</text>
+
+  <path d="M 475 805 L 1240 805" class="state-edge"/>
+  <path d="M 1200 180 L 1240 180 L 1240 805" class="state-edge"/>
+  <path d="M 455 400 L 475 400 L 475 805" class="state-edge"/>
+  <path d="M 1125 645 L 1125 805" class="state-edge"/>
+  <path d="M 560 590 L 540 590 L 540 805" class="state-edge"/>
+  <path d="M 695 730 L 695 805" class="state-edge"/>
+  <path d="M 850 805 L 850 835" class="state-edge"/>
+  <text x="850" y="790" class="edge-label">durable state</text>
+  <path d="M 625 850 C 625 832 1075 832 1075 850 L 1075 905 C 1075 923 625 923 625 905 Z" class="state" stroke-width="2"/>
+  <ellipse cx="850" cy="850" rx="225" ry="18" class="state" stroke-width="2"/>
+  <text x="850" y="884" class="label">Persistent boot disk</text>
+  <text x="850" y="906" class="small">app + telemetry + Caddy + lifecycle state</text>
+
+  <path d="M 185 420 L 215 430" class="edge"/>
+  <text x="214" y="400" class="edge-label">TLS 443 + shared access code</text>
+  <path d="M 370 440 L 455 378" class="edge"/>
+  <path d="M 185 120 L 205 120 L 205 440 L 215 440" class="edge"/>
+  <text x="186" y="350" class="edge-label">exact-VM IAP + OS Login; port 22</text>
+  <path d="M 185 120 L 215 155" class="edge"/>
+  <text x="240" y="100" class="edge-label">Terraform + manual stop</text>
+  <path d="M 102 150 L 102 235" class="edge"/>
+  <text x="102" y="176" class="edge-label">Token Creator on this SA only</text>
+  <text x="102" y="194" class="edge-label">impersonates</text>
+  <path d="M 195 270 L 215 190" class="edge"/>
+  <text x="275" y="286" class="edge-label">exact VM get + start only</text>
+  <path d="M 370 170 L 400 170" class="edge"/>
+  <text x="385" y="154" class="edge-label">provision / start / stop</text>
+
+  <path d="M 1390 110 L 1200 130" class="edge"/>
+  <text x="1295" y="102" class="edge-label">pinned bcrypt version via VM identity</text>
+  <path d="M 1390 215 L 1200 155" class="edge"/>
+  <text x="1300" y="195" class="edge-label">six admitted digests</text>
+  <path d="M 1390 325 L 1200 180" class="edge"/>
+  <text x="1308" y="280" class="edge-label">one admitted digest</text>
+  <path d="M 900 175 L 880 175 L 880 300 L 700 345" class="edge"/>
+  <text x="790" y="318" class="edge-label">restricted verifier file</text>
+
+  <path d="M 650 325 L 720 235" class="edge"/>
+  <text x="660" y="274" class="edge-label">HTTP on edge</text>
+  <path d="M 700 350 L 930 350 L 930 575 L 1020 575" class="edge"/>
+  <text x="835" y="334" class="edge-label">/v1/demo/* over internal HTTP</text>
+  <path d="M 1020 600 L 980 600" class="edge"/>
+  <text x="1000" y="586" class="edge-label">stdio</text>
+  <path d="M 820 555 L 700 405" class="edge"/>
+  <text x="762" y="472" class="edge-label">HTTPS + viewer token</text>
+  <path d="M 560 410 L 620 555" class="edge"/>
+  <text x="560" y="492" class="edge-label">private HTTP</text>
+  <path d="M 1020 625 L 900 625 L 900 430 L 700 430" class="edge"/>
+  <text x="900" y="648" class="edge-label">HTTP OTLP</text>
+  <path d="M 500 430 L 500 695 L 560 695" class="edge"/>
+  <text x="500" y="646" class="edge-label">private OTLP</text>
+  <path d="M 650 625 L 650 660" class="edge"/>
+  <text x="735" y="648" class="edge-label">read-only private queries</text>
+
+  <path d="M 1390 515 L 1230 580" class="edge"/>
+  <text x="1310" y="530" class="edge-label">runtime fixed IP only</text>
+  <path d="M 1230 620 L 1390 630" class="edge"/>
+  <text x="1310" y="610" class="edge-label">OAuth + custom predict permission</text>
+  <path d="M 1350 835 L 1390 835" class="edge"/>
+  <text x="1370" y="770" class="edge-label">required egress</text>
+</svg>
