@@ -432,6 +432,7 @@ run "bounded_single_host_is_admitted" {
       && strcontains(local.compose_yaml, "ipv4_address: 172.30.0.10")
       && strcontains(local.compose_yaml, "subnet: 172.30.0.0/24")
       && strcontains(local.compose_yaml, "ip_range: 172.30.0.128/25")
+      && strcontains(local.compose_yaml, "    dns:\n      - 8.8.8.8")
       && strcontains(local.compose_yaml, "NODE_EXTRA_CA_CERTS: \"/etc/colortrace/caddy-root.crt\"")
       && strcontains(local.compose_yaml, "OTEL_EXPORTER_OTLP_ENDPOINT: \"http://otel.internal:4318\"")
       && !strcontains(local.compose_yaml, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
