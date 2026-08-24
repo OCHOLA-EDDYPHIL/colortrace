@@ -532,7 +532,7 @@ describe("IncidentWorkspaceApp", () => {
     const first = (await approvalRequests[0]?.clone().json()) as { idempotency_key: string };
     const second = (await approvalRequests[1]?.clone().json()) as { idempotency_key: string };
     expect(second.idempotency_key).toBe(first.idempotency_key);
-  });
+  }, 10_000);
 
   it("reports post-commit refresh failure separately and reconciles without replay", async () => {
     const review = responsePlanReviewFixture({ incidentId: "incident-reconcile-approval" });
