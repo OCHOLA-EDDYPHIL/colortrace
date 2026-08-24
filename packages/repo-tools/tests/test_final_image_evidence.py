@@ -972,7 +972,44 @@ class FinalImageEvidenceTest(unittest.TestCase):
         self.assertIn("find /source/.venv -type f -name '*.py[co]'", runtime)
         self.assertIn("source_date_days=$((SOURCE_DATE_EPOCH / 86400))", runtime)
         self.assertEqual(runtime.count("colortrace-fixture generate"), 2)
-        self.assertEqual(runtime.count("colortrace-fixture validate"), 2)
+        fixture_recipe = runtime.split(
+            "RUN --network=none /source/.venv/bin/colortrace-fixture generate", maxsplit=1
+        )[1].split("\n\nFROM ", maxsplit=1)[0]
+        self.assertNotIn("\nRUN ", fixture_recipe)
+        self.assertEqual(fixture_recipe.count("colortrace-fixture generate"), 1)
+        self.assertEqual(fixture_recipe.count("colortrace-fixture validate-canonical-build"), 2)
+        self.assertNotIn("colortrace-fixture validate \\\n", fixture_recipe)
+        self.assertNotIn("--security=insecure", fixture_recipe)
+        self.assertEqual(fixture_recipe.count("--require-privilege-drop"), 2)
+        self.assertEqual(
+            fixture_recipe.count(
+                "--canonical-digests "
+                "/source/packages/fixture-generator/fixtures/canonical-digests.json"
+            ),
+            2,
+        )
+        self.assertEqual(fixture_recipe.count("--absent-oracle-root /tmp/colortrace-oracle-a"), 2)
+        self.assertEqual(fixture_recipe.count("--absent-oracle-root /tmp/colortrace-oracle-b"), 2)
+        second_generation = "--bundle /tmp/colortrace-fixture-b"
+        oracle_removal = "rm -rf /tmp/colortrace-oracle-a /tmp/colortrace-oracle-b"
+        oracle_a_absence = "test ! -e /tmp/colortrace-oracle-a"
+        oracle_b_absence = "test ! -e /tmp/colortrace-oracle-b"
+        first_validation = "colortrace-fixture validate-canonical-build"
+        self.assertIn(oracle_removal, fixture_recipe)
+        self.assertIn(oracle_a_absence, fixture_recipe)
+        self.assertIn(oracle_b_absence, fixture_recipe)
+        self.assertLess(
+            fixture_recipe.index(second_generation), fixture_recipe.index(oracle_removal)
+        )
+        self.assertLess(
+            fixture_recipe.index(oracle_removal), fixture_recipe.index(oracle_a_absence)
+        )
+        self.assertLess(
+            fixture_recipe.index(oracle_a_absence), fixture_recipe.index(oracle_b_absence)
+        )
+        self.assertLess(
+            fixture_recipe.index(oracle_b_absence), fixture_recipe.index(first_validation)
+        )
         self.assertIn("diff -qr /tmp/colortrace-fixture-a /tmp/colortrace-fixture-b", runtime)
         self.assertIn(
             "COPY --from=build /opt/colortrace-fixture /opt/colortrace/fixture",
