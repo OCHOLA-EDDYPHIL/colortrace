@@ -10,6 +10,7 @@ locals {
     "logging.googleapis.com",
     "oslogin.googleapis.com",
     "secretmanager.googleapis.com",
+    "storage.googleapis.com",
   ])
 }
 

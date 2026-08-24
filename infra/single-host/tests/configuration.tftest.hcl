@@ -102,6 +102,8 @@ run "foundation_has_no_billable_host" {
       && length(google_project_iam_custom_role.resume_instance_starter) == 0
       && length(google_project_iam_member.operator_build) == 0
       && length(google_service_account_iam_member.operator_build) == 0
+      && length(google_artifact_registry_repository_iam_member.operator_reader) == 0
+      && length(google_storage_bucket_iam_member.operator_build_source) == 0
       && length(google_secret_manager_secret_iam_member.host_access_gate) == 0
     )
     error_message = "Runtime and operator authority must remain absent before VM admission."
@@ -123,10 +125,16 @@ run "foundation_has_no_billable_host" {
   assert {
     condition = (
       google_artifact_registry_repository.images.repository_id == "ct-singlehost-images"
+      && google_storage_bucket.build_source.name == "colortrace-test-project-ct-singlehost-build-source"
+      && google_storage_bucket.build_source.public_access_prevention == "enforced"
+      && google_storage_bucket.build_source.uniform_bucket_level_access
+      && google_storage_bucket_iam_member.builder_build_source.role == "roles/storage.objectViewer"
+      && strcontains(file("${path.module}/build-source.tf"), "member = google_service_account.builder.member")
       && google_service_account.builder.account_id == "ct-singlehost-builder"
       && google_artifact_registry_repository_iam_member.builder_writer.role == "roles/artifactregistry.writer"
       && google_project_iam_member.builder_logs.role == "roles/logging.logWriter"
       && contains(keys(google_project_service.required), "cloudbuild.googleapis.com")
+      && contains(keys(google_project_service.required), "storage.googleapis.com")
       && !contains(keys(google_project_service.required), "monitoring.googleapis.com")
     )
     error_message = "Private images must have a dedicated repository, builder identity, and minimal build services."
@@ -156,7 +164,22 @@ run "image_builder_precedes_host_admission" {
       ])
       && google_service_account_iam_member.operator_build[0].role == "roles/iam.serviceAccountUser"
       && google_service_account_iam_member.operator_build[0].member == "user:operator@example.test"
+      && google_artifact_registry_repository_iam_member.operator_reader[0].role == "roles/artifactregistry.reader"
+      && google_artifact_registry_repository_iam_member.operator_reader[0].member == "user:operator@example.test"
+      && toset(keys(google_storage_bucket_iam_member.operator_build_source)) == toset([
+        "roles/storage.legacyBucketReader",
+        "roles/storage.objectCreator",
+      ])
+      && alltrue([
+        for binding in google_storage_bucket_iam_member.operator_build_source :
+        binding.bucket == "colortrace-test-project-ct-singlehost-build-source"
+        && binding.member == "user:operator@example.test"
+      ])
+      && output.resource_inventory.operator_artifact_reader.member == "user:operator@example.test"
+      && output.resource_inventory.operator_artifact_reader.repository == "ct-singlehost-images"
+      && output.resource_inventory.operator_artifact_reader.role == "roles/artifactregistry.reader"
       && output.image_build_identity.registry == "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images"
+      && output.image_build_identity.source_staging == "gs://colortrace-test-project-ct-singlehost-build-source/source"
     )
     error_message = "The operator must be able to build immutable images without admitting the VM."
   }
@@ -358,6 +381,8 @@ run "bounded_single_host_is_admitted" {
         "roles/serviceusage.serviceUsageConsumer",
       ])
       && google_service_account_iam_member.operator_build[0].role == "roles/iam.serviceAccountUser"
+      && google_artifact_registry_repository_iam_member.operator_reader[0].role == "roles/artifactregistry.reader"
+      && google_artifact_registry_repository_iam_member.operator_reader[0].member == "user:operator@example.test"
       && google_secret_manager_secret_iam_member.host_access_gate[0].role == "roles/secretmanager.secretAccessor"
       && google_artifact_registry_repository_iam_member.host_reader[0].role == "roles/artifactregistry.reader"
       && !strcontains(file("${path.module}/identity.tf"), "roles/aiplatform.user")
@@ -367,10 +392,12 @@ run "bounded_single_host_is_admitted" {
 
   assert {
     condition = (
-      strcontains(google_compute_instance.host[0].metadata_startup_script, "STAGING_LIFETIME_HOURS='168'")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "secretmanager.googleapis.com")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "ACCESS_SECRET_VERSION='7'")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "access_hash=$(printf")
+      google_compute_instance.host[0].metadata["startup-script"] == local.startup_script
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "STAGING_LIFETIME_HOURS='168'")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "secretmanager.googleapis.com")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "ACCESS_SECRET_VERSION='7'")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "access_hash=$(printf")
+      && !strcontains(file("${path.module}/compute.tf"), "metadata_startup_script")
     )
     error_message = "The startup contract must schedule the seven-day stop and fetch, never embed, the access verifier."
   }
@@ -411,22 +438,22 @@ run "bounded_single_host_is_admitted" {
       && strcontains(local.compose_yaml, "image: us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/grafana@sha256:6666666666666666666666666666666666666666666666666666666666666666")
       && strcontains(local.compose_yaml, "image: docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0")
       && !strcontains(local.compose_yaml, "otel-lgtm")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "chown -R 65532:65532 \"$ROOT_DIR/caddy-config\" \"$ROOT_DIR/caddy-data\"")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "grafana-datasources.yaml")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "/api/datasources/uid/$datasource_uid/health")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "/api/datasources/proxy/uid/prometheus/api/v1/query")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "/api/datasources/proxy/uid/loki/loki/api/v1/query")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "/api/datasources/proxy/uid/tempo/api/search")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "backends_ready")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "configure_container_metadata_boundary")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "--remove-orphans grafana loki prometheus tempo caddy")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "RUNTIME_CONTAINER_IP='172.30.0.10'")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "METADATA_IP='169.254.169.254'")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "--insert DOCKER-USER 1")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "--jump ACCEPT")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "--jump DROP")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "65532:65532:400")
-      && strcontains(google_compute_instance.host[0].metadata_startup_script, "hmac.compare_digest(source.read_bytes(), target.read_bytes())")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "chown -R 65532:65532 \"$ROOT_DIR/caddy-config\" \"$ROOT_DIR/caddy-data\"")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "grafana-datasources.yaml")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "/api/datasources/uid/$datasource_uid/health")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "/api/datasources/proxy/uid/prometheus/api/v1/query")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "/api/datasources/proxy/uid/loki/loki/api/v1/query")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "/api/datasources/proxy/uid/tempo/api/search")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "backends_ready")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "configure_container_metadata_boundary")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "--remove-orphans grafana loki prometheus tempo caddy")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "RUNTIME_CONTAINER_IP='172.30.0.10'")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "METADATA_IP='169.254.169.254'")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "--insert DOCKER-USER 1")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "--jump ACCEPT")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "--jump DROP")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "65532:65532:400")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "hmac.compare_digest(source.read_bytes(), target.read_bytes())")
       && strcontains(local.caddyfile, "http://otel.internal:4318")
       && strcontains(local.caddyfile, "rewrite * /api/v1/otlp/v1/metrics")
       && strcontains(local.caddyfile, "rewrite * /otlp/v1/logs")
