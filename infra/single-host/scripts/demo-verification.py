@@ -1235,7 +1235,7 @@ cleanup
 sudo --non-interactive docker exec --user 65532:65532 colortrace-runtime \\
   /opt/colortrace/bin/python -m colortrace_grafana_mcp.cli catalog \\
   --grafana-url https://grafana.internal:8443 \\
-  --token-file /var/run/colortrace-private/grafana-viewer-token \\
+  --token-file /run/colortrace-private/grafana-viewer-token \\
   --tls-ca-file /etc/colortrace/caddy-root.crt \\
   --binary /usr/local/bin/mcp-grafana \\
   --lock /opt/colortrace-config/grafana-mcp/mcp-grafana.lock.json \\

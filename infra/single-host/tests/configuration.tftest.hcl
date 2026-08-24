@@ -421,7 +421,9 @@ run "bounded_single_host_is_admitted" {
 
   assert {
     condition = (
-      strcontains(local.compose_yaml, "/var/run/colortrace-private:size=64k,uid=65532,gid=65532,mode=0700")
+      strcontains(local.compose_yaml, "/run/colortrace-private:size=64k,uid=65532,gid=65532,mode=0700")
+      && strcontains(local.compose_yaml, "COLORTRACE_GRAFANA_TOKEN_FILE: \"/run/colortrace-private/grafana-viewer-token\"")
+      && !strcontains(local.compose_yaml, "/var/run/colortrace-private")
       && strcontains(local.compose_yaml, "http://127.0.0.1:8080/health/startup")
       && strcontains(local.compose_yaml, "COLORTRACE_API_ORIGIN: \"https://runtime.internal:8443\"")
       && strcontains(local.compose_yaml, "COLORTRACE_API_AUDIENCE: \"https://runtime.internal:8443\"")
@@ -455,6 +457,8 @@ run "bounded_single_host_is_admitted" {
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "--jump ACCEPT")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "--jump DROP")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "65532:65532:400")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "target=Path(\"/run/colortrace-private/grafana-viewer-token\")")
+      && !strcontains(google_compute_instance.host[0].metadata["startup-script"], "/var/run/colortrace-private")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "hmac.compare_digest(source.read_bytes(), target.read_bytes())")
       && strcontains(local.caddyfile, "http://otel.internal:4318")
       && strcontains(local.caddyfile, "rewrite * /api/v1/otlp/v1/metrics")

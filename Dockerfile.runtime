@@ -126,7 +126,7 @@ RUN apk add --no-cache libcrypto3=3.5.7-r0 libssl3=3.5.7-r0 libstdc++=14.2.0-r6 
     && source_date_days=$((SOURCE_DATE_EPOCH / 86400)) \
     && sed -i "s|^colortrace:!:[^:]*:|colortrace:!:${source_date_days}:|" /etc/shadow \
     && grep -Fqx "colortrace:!:${source_date_days}:0:99999:7:::" /etc/shadow \
-    && install -d -o 65532 -g 65532 -m 0700 /var/run/colortrace-private /tmp/colortrace \
+    && install -d -o 65532 -g 65532 -m 0700 /run/colortrace-private /tmp/colortrace \
     && install -d -o 0 -g 0 -m 0555 /opt/colortrace-config \
     && printf '%s\n' \
         "{\"schema\":\"colortrace-runtime-build-binding/v1\",\"source_commit\":\"${SOURCE_COMMIT}\",\"source_tree\":\"${SOURCE_TREE}\"}" \
