@@ -19,6 +19,22 @@ locals {
     tempo_image           = local.tempo_image
     web_image             = local.web_image
   })
+  startup_script = templatefile("${path.module}/templates/startup.sh.tftpl", {
+    access_secret_id           = google_secret_manager_secret.access_gate.secret_id
+    access_secret_version      = coalesce(var.access_secret_version, "MISSING")
+    caddyfile_base64           = base64encode(local.caddyfile)
+    compose_yaml_base64        = base64encode(local.compose_yaml)
+    grafana_alerting_base64    = filebase64("${path.module}/../../config/telemetry/grafana-alerting.yaml")
+    grafana_datasources_base64 = filebase64("${path.module}/../../config/observability/grafana-datasources.yaml")
+    loki_config_base64         = filebase64("${path.module}/../../config/observability/loki.yaml")
+    prometheus_config_base64   = filebase64("${path.module}/../../config/observability/prometheus.yaml")
+    tempo_config_base64        = filebase64("${path.module}/../../config/observability/tempo.yaml")
+    project_id                 = var.project_id
+    region                     = var.region
+    registry_host              = local.registry_host
+    staging_generation         = coalesce(var.staging_generation, "unbound")
+    staging_lifetime_hours     = local.staging_lifetime_hours
+  })
 }
 
 resource "google_compute_disk" "boot" {
@@ -90,24 +106,8 @@ resource "google_compute_instance" "host" {
     colortrace-staging-generation           = local.staging_generation
     enable-oslogin                          = "TRUE"
     serial-port-enable                      = "FALSE"
+    startup-script                          = local.startup_script
   }
-
-  metadata_startup_script = templatefile("${path.module}/templates/startup.sh.tftpl", {
-    access_secret_id           = google_secret_manager_secret.access_gate.secret_id
-    access_secret_version      = coalesce(var.access_secret_version, "MISSING")
-    caddyfile_base64           = base64encode(local.caddyfile)
-    compose_yaml_base64        = base64encode(local.compose_yaml)
-    grafana_alerting_base64    = filebase64("${path.module}/../../config/telemetry/grafana-alerting.yaml")
-    grafana_datasources_base64 = filebase64("${path.module}/../../config/observability/grafana-datasources.yaml")
-    loki_config_base64         = filebase64("${path.module}/../../config/observability/loki.yaml")
-    prometheus_config_base64   = filebase64("${path.module}/../../config/observability/prometheus.yaml")
-    tempo_config_base64        = filebase64("${path.module}/../../config/observability/tempo.yaml")
-    project_id                 = var.project_id
-    region                     = var.region
-    registry_host              = local.registry_host
-    staging_generation         = coalesce(var.staging_generation, "unbound")
-    staging_lifetime_hours     = local.staging_lifetime_hours
-  })
 
   scheduling {
     automatic_restart   = true

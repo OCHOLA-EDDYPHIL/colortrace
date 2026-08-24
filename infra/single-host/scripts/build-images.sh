@@ -44,6 +44,8 @@ source_date_epoch=$(git -C "$repository_root" show --no-patch --format=%ct "$can
 
 readonly registry="$region-docker.pkg.dev/$project_id/$resource_prefix-images"
 readonly builder_service_account="projects/$project_id/serviceAccounts/$resource_prefix-builder@$project_id.iam.gserviceaccount.com"
+readonly source_bucket="$project_id-$resource_prefix-build-source"
+readonly source_staging_dir="gs://$source_bucket/source"
 readonly snapshot_root=$(mktemp -d)
 manifest_tmp=''
 cleanup() {
@@ -73,6 +75,7 @@ build_id=$(gcloud builds submit "$snapshot_root" \
   --project "$project_id" \
   --region "$region" \
   --config "$build_config" \
+  --gcs-source-staging-dir "$source_staging_dir" \
   --service-account "$builder_service_account" \
   --substitutions "_REGISTRY=$registry,_SOURCE_COMMIT=$candidate_commit,_SOURCE_TREE=$source_tree,_SOURCE_DATE_EPOCH=$source_date_epoch" \
   --format='value(id)' \
@@ -97,6 +100,7 @@ printf '%s' "$build_result" | jq -e \
   --arg region "$region" \
   --arg registry "$registry" \
   --arg service_account "$builder_service_account" \
+  --arg source_bucket "$source_bucket" \
   --arg build_config_sha256 "$build_config_sha256" \
   --arg source_commit "$candidate_commit" \
   --arg source_tree "$source_tree" \
@@ -125,6 +129,11 @@ printf '%s' "$build_result" | jq -e \
       error("build did not succeed: " + (.status // "missing"))
     elif .serviceAccount != $service_account then
       error("described build service account does not match")
+    elif .source.storageSource.bucket != $source_bucket
+      or (.source.storageSource.object | type != "string")
+      or (.source.storageSource.object | startswith("source/") | not)
+      or (.source.storageSource.object | endswith(".tgz") | not) then
+      error("described build source staging location does not match")
     elif .substitutions._REGISTRY != $registry
       or .substitutions._SOURCE_COMMIT != $source_commit
       or .substitutions._SOURCE_TREE != $source_tree

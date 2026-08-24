@@ -47,10 +47,16 @@ def _build_manifest(document: dict[str, Any], values: dict[str, str]) -> dict[st
         "loki": ("Dockerfile.observability", "loki"),
         "tempo": ("Dockerfile.observability", "tempo"),
     }
+    storage_source = document.get("source", {}).get("storageSource", {})
+    source_object = storage_source.get("object")
     if (
         document.get("id") != values["build_id"]
         or document.get("status") != "SUCCESS"
         or document.get("serviceAccount") != values["service_account"]
+        or storage_source.get("bucket") != values["source_bucket"]
+        or not isinstance(source_object, str)
+        or not source_object.startswith("source/")
+        or not source_object.endswith(".tgz")
         or document.get("substitutions", {}).get("_REGISTRY") != values["registry"]
         or document.get("substitutions", {}).get("_SOURCE_COMMIT") != values["source_commit"]
         or document.get("substitutions", {}).get("_SOURCE_TREE") != values["source_tree"]
