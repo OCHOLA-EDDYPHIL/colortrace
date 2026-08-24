@@ -522,6 +522,7 @@ compose() {
 }
 
 compose config --quiet
+compose down --remove-orphans
 printf '%s' "$cloud_token" \
   | docker login --username oauth2accesstoken --password-stdin "$REGISTRY_HOST"
 registry_login_active=true
