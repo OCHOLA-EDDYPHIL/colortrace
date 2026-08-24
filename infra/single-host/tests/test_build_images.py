@@ -13,6 +13,10 @@ SOURCE_ROOT = Path(__file__).parents[3]
 SCRIPT = SOURCE_ROOT / "infra" / "single-host" / "scripts" / "build-images.sh"
 BUILD_CONFIG = SOURCE_ROOT / "infra" / "single-host" / "cloudbuild.images.yaml"
 OBSERVABILITY_DOCKERFILE = SOURCE_ROOT / "Dockerfile.observability"
+DOCKERFILE_FRONTEND = (
+    "# syntax=docker/dockerfile:1.7.0@sha256:"
+    "dbbd5e059e8a07ff7ea6233b213b36aa516b4c53c645f1817a4dd18b83cbea56"
+)
 FIXTURE_DIGESTS = (
     SOURCE_ROOT / "packages" / "fixture-generator" / "fixtures" / "canonical-digests.json"
 )
@@ -20,6 +24,18 @@ FAKE_JQ = Path(__file__).with_name("fake_jq.py")
 
 
 class BuildImagesTests(unittest.TestCase):
+    def test_checksum_dockerfiles_pin_compatible_frontend(self) -> None:
+        checksum_dockerfiles = [
+            dockerfile
+            for dockerfile in SOURCE_ROOT.glob("Dockerfile*")
+            if "ADD --checksum=sha256:" in dockerfile.read_text(encoding="utf-8")
+        ]
+        self.assertGreater(len(checksum_dockerfiles), 0)
+        for dockerfile in checksum_dockerfiles:
+            with self.subTest(dockerfile=dockerfile.name):
+                contents = dockerfile.read_text(encoding="utf-8")
+                self.assertEqual(contents.splitlines()[0], DOCKERFILE_FRONTEND)
+
     def test_build_config_is_pinned_and_sequential(self) -> None:
         configuration = BUILD_CONFIG.read_text(encoding="utf-8")
         builder = (
@@ -28,6 +44,7 @@ class BuildImagesTests(unittest.TestCase):
         )
 
         self.assertEqual(configuration.count(f"name: {builder}"), 6)
+        self.assertEqual(configuration.count("- DOCKER_BUILDKIT=1"), 6)
         self.assertIn("machineType: E2_HIGHCPU_8", configuration)
         self.assertIn("logging: CLOUD_LOGGING_ONLY", configuration)
         self.assertIn("--build-arg=SOURCE_COMMIT=${_SOURCE_COMMIT}", configuration)
