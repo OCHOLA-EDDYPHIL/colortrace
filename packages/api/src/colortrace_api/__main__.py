@@ -5,6 +5,8 @@ from collections.abc import Mapping
 
 import uvicorn
 
+from .runtime import create_application
+
 
 def _bind(environment: Mapping[str, str]) -> tuple[str, int]:
     host = environment.get("COLORTRACE_BIND_HOST", "127.0.0.1")
@@ -20,13 +22,10 @@ def _bind(environment: Mapping[str, str]) -> tuple[str, int]:
 
 
 def main(environment: Mapping[str, str] | None = None) -> None:
-    host, port = _bind(os.environ if environment is None else environment)
-    uvicorn.run(
-        "colortrace_api.runtime:create_application",
-        factory=True,
-        host=host,
-        port=port,
-    )
+    selected = os.environ if environment is None else environment
+    host, port = _bind(selected)
+    application = create_application(selected)
+    uvicorn.run(application, host=host, port=port)
 
 
 if __name__ == "__main__":

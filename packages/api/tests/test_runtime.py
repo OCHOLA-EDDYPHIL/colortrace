@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Mapping
@@ -391,36 +392,71 @@ def test_default_sqlite_composition_when_read_methods_are_available(tmp_path: Pa
     assert missing.json() == {"code": "incident-not-found"}
 
 
-def test_module_cli_uses_the_fail_closed_uvicorn_factory(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, dict[str, object]]] = []
+def test_module_cli_constructs_application_before_uvicorn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    application = object()
 
-    def run(application: str, **options: object) -> None:
-        calls.append((application, options))
+    async def verify_inventory() -> None:
+        calls.append("inventory-verified")
 
+    def create(environment: Mapping[str, str]) -> object:
+        assert environment == {}
+        asyncio.run(verify_inventory())
+        calls.append("application-created")
+        return application
+
+    def run(selected: object, **options: object) -> None:
+        assert selected is application
+        assert options == {"host": "127.0.0.1", "port": 8000}
+        calls.append("uvicorn-started")
+
+    monkeypatch.setattr("colortrace_api.__main__.create_application", create)
     monkeypatch.setattr(uvicorn, "run", run)
-    main()
+    main({})
 
-    assert calls == [
-        (
-            "colortrace_api.runtime:create_application",
-            {"factory": True, "host": "127.0.0.1", "port": 8000},
-        )
-    ]
+    assert calls == ["inventory-verified", "application-created", "uvicorn-started"]
+
+
+def test_module_cli_fails_before_uvicorn_when_application_is_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def create(environment: Mapping[str, str]) -> object:
+        assert environment == {}
+        raise ApiRuntimeConfigurationError("demo-runtime-configuration-invalid")
+
+    def run(application: object, **options: object) -> None:
+        raise AssertionError("Uvicorn must not start for an invalid application")
+
+    monkeypatch.setattr("colortrace_api.__main__.create_application", create)
+    monkeypatch.setattr(uvicorn, "run", run)
+
+    with pytest.raises(ApiRuntimeConfigurationError) as error:
+        main({})
+
+    assert str(error.value) == "demo-runtime-configuration-invalid"
 
 
 def test_module_cli_accepts_the_cloud_run_bind_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, dict[str, object]]] = []
+    calls: list[tuple[object, dict[str, object]]] = []
+    application = object()
+    environment = {"COLORTRACE_BIND_HOST": "0.0.0.0", "PORT": "8080"}
 
-    def run(application: str, **options: object) -> None:
-        calls.append((application, options))
+    def create(selected: Mapping[str, str]) -> object:
+        assert selected == environment
+        return application
 
-    monkeypatch.setattr(uvicorn, "run", run)
-    main({"COLORTRACE_BIND_HOST": "0.0.0.0", "PORT": "8080"})
+    monkeypatch.setattr("colortrace_api.__main__.create_application", create)
+    monkeypatch.setattr(
+        uvicorn, "run", lambda selected, **options: calls.append((selected, options))
+    )
+    main(environment)
 
     assert calls == [
         (
-            "colortrace_api.runtime:create_application",
-            {"factory": True, "host": "0.0.0.0", "port": 8080},
+            application,
+            {"host": "0.0.0.0", "port": 8080},
         )
     ]
 
