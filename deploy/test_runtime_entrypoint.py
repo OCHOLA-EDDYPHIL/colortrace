@@ -18,6 +18,31 @@ def _entrypoint() -> ModuleType:
     return module
 
 
+def test_private_root_uses_canonical_run_path() -> None:
+    entrypoint = _entrypoint()
+
+    assert entrypoint._PRIVATE_ROOT == Path("/run/colortrace-private")
+    assert entrypoint._PRIVATE_ROOT.resolve() == entrypoint._PRIVATE_ROOT
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "Dockerfile.runtime",
+        "infra/single-host/scripts/demo-verification.py",
+        "infra/single-host/templates/compose.yaml.tftpl",
+        "infra/single-host/templates/startup.sh.tftpl",
+        "infra/staging/run.tf",
+    ),
+)
+def test_runtime_surfaces_do_not_use_var_run_alias(relative_path: str) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    content = (repository / relative_path).read_text(encoding="utf-8")
+
+    assert "/run/colortrace-private" in content
+    assert "/var/run/colortrace-private" not in content
+
+
 def test_private_secret_is_copied_to_one_owner_only_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -70,12 +95,16 @@ def test_private_secret_rejects_links_and_nonprivate_targets(
     source.write_text("synthetic-token", encoding="utf-8")
     link = tmp_path / "mounted-link"
     link.symlink_to(source)
+    alias_root = tmp_path / "private-alias"
+    alias_root.symlink_to(private_root, target_is_directory=True)
     monkeypatch.setattr(entrypoint, "_PRIVATE_ROOT", private_root)
 
     with pytest.raises(RuntimeError, match="private-secret-source-invalid"):
         entrypoint._copy_private_secret(str(link), str(private_root / "token"))
     with pytest.raises(RuntimeError, match="private-secret-path-invalid"):
         entrypoint._copy_private_secret(str(source), str(tmp_path / "outside"))
+    with pytest.raises(RuntimeError, match="private-secret-path-invalid"):
+        entrypoint._copy_private_secret(str(source), str(alias_root / "token"))
 
 
 def test_bootstrap_stages_admin_secret_and_removes_source_path_from_child_environment(

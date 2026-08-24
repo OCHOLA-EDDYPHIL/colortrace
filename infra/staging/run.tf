@@ -259,7 +259,7 @@ resource "google_cloud_run_v2_job" "database" {
 
         dynamic "env" {
           for_each = each.key == "bootstrap" ? {
-            COLORTRACE_POSTGRES_ADMIN_PASSWORD_FILE   = "/var/run/colortrace-private/postgres-admin"
+            COLORTRACE_POSTGRES_ADMIN_PASSWORD_FILE   = "/run/colortrace-private/postgres-admin"
             COLORTRACE_POSTGRES_ADMIN_PASSWORD_SOURCE = "/var/run/secrets/colortrace/postgres-admin"
             COLORTRACE_POSTGRES_ADMIN_USER            = "postgres"
           } : {}

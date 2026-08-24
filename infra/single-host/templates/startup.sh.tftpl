@@ -684,6 +684,6 @@ if test "$runtime_ready" != true || test "$web_ready" != true; then
   exit 1
 fi
 docker exec --user 65532:65532 colortrace-runtime \
-  python -c 'import hmac, os, stat; from pathlib import Path; source=Path("/run/colortrace-secrets/grafana-viewer-token"); target=Path("/var/run/colortrace-private/grafana-viewer-token"); info=target.stat(); assert stat.S_ISREG(info.st_mode); assert info.st_uid == 65532 and info.st_gid == 65532; assert stat.S_IMODE(info.st_mode) == 0o600; assert hmac.compare_digest(source.read_bytes(), target.read_bytes())'
+  python -c 'import hmac, os, stat; from pathlib import Path; source=Path("/run/colortrace-secrets/grafana-viewer-token"); target=Path("/run/colortrace-private/grafana-viewer-token"); info=target.stat(); assert stat.S_ISREG(info.st_mode); assert info.st_uid == 65532 and info.st_gid == 65532; assert stat.S_IMODE(info.st_mode) == 0o600; assert hmac.compare_digest(source.read_bytes(), target.read_bytes())'
 compose ps
 startup_complete=true
