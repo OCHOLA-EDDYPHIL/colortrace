@@ -134,6 +134,8 @@ services:
     platform: linux/amd64
     container_name: colortrace-caddy
     restart: "no"
+    dns:
+      - 8.8.8.8
     read_only: true
     security_opt:
       - no-new-privileges:true
