@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import os
+import resource
 import stat
 import struct
 import subprocess
@@ -48,6 +49,19 @@ OCIO_VERSION = "2.5.2"
 OCIO_WHEEL_SHA256 = "3d0ab1c398d560513c651c7b9c676e68f264a63b97e29fec21722d4270f865aa"
 CANONICAL_SEED = "ct-shadowed-lut-v1:canonical"
 PERMUTED_SEED = "ct-shadowed-lut-v1:hidden-a"
+CANONICAL_DIGESTS_SHA256 = "89cb619af77270f4c3c07a6b1cca9e2761a78050a7c3db3588d29da705cb3a52"
+CANONICAL_PREVALIDATION_TREE_SHA256 = (
+    "63125e9744cb82c9a5b58f6691ea918dcdaaa543b6ee8009045915db538de2a4"
+)
+CANONICAL_PREVALIDATION_DIRECTORIES_SHA256 = (
+    "da498138ffdb297d06d06997e502b5adae80fd8a481ab1f2fe6f54ef6f3ff845"
+)
+CANONICAL_WORKER_TREE_SHA256 = "34e0bcce781d028e101df343c36b9ed6fff363036ab862199a41b1c7ebbedc59"
+CANONICAL_WORKER_DIRECTORIES_SHA256 = (
+    "6a0cff9e08502992ea48ee8d69c47ab8f4a669c255bc4dae2d2b57ad2e74d793"
+)
+CANONICAL_BUILD_UID = 65534
+CANONICAL_BUILD_GID = 65534
 FIXED_T0 = "2026-08-11T00:00:00Z"
 CONFIG_NAME = "config.ocio"
 LUT_LOGICAL_PATH = "luts/show_look.cube"
@@ -96,6 +110,20 @@ MANIFEST_PATH_KEYS = frozenset(
     }
 )
 RUNTIME_RELATIVE_PATH_KEYS = frozenset({"config_root_relative_path", "resolved_root_relative_path"})
+
+CANONICAL_VALIDATOR_OUTPUTS = frozenset(
+    {
+        "reports/diffs/job-a-01.png",
+        "reports/diffs/job-a-02.png",
+        "reports/diffs/job-b-01.png",
+        "reports/diffs/job-b-02.png",
+        "reports/diffs/job-b-03.png",
+        "reports/diffs/job-b-04.png",
+        "reports/validator-invocation-receipt.json",
+        "reports/validator-receipt.json",
+        "reports/validator-report.json",
+    }
+)
 
 CONFIG_TEXT = """ocio_profile_version: 2
 
@@ -1575,14 +1603,7 @@ def run_isolated_validator(script: Path, scenario_root: Path, python: Path) -> d
         raise RuntimeError("validator did not establish the required Landlock boundary")
     write_json(
         reports_root / "validator-invocation-receipt.json",
-        {
-            "schema": "validator-invocation-receipt/v1",
-            "argv_contains_oracle_material": False,
-            "environment_contains_oracle_material": False,
-            "environment_keys": sorted(child_environment),
-            "external_probe_kind": "neutral-sentinel",
-            "external_probe_retained": False,
-        },
+        _validator_invocation_document(child_environment),
     )
     return cast(dict[str, Any], read_json(reports_root / "validator-report.json"))
 
@@ -1619,6 +1640,633 @@ def validate_landlocked_worker(scenario_root: Path, denied_probe: Path) -> dict[
         },
     )
     return report
+
+
+def _validator_invocation_document(child_environment: dict[str, str]) -> dict[str, Any]:
+    return {
+        "schema": "validator-invocation-receipt/v1",
+        "argv_contains_oracle_material": False,
+        "environment_contains_oracle_material": False,
+        "environment_keys": sorted(child_environment),
+        "external_probe_kind": "neutral-sentinel",
+        "external_probe_retained": False,
+    }
+
+
+def _canonical_directory_set(files: dict[str, str]) -> set[str]:
+    directories = {"runtime", "references", "reports"}
+    for relative in files:
+        logical = PurePosixPath(relative)
+        if logical.is_absolute() or any(part in ("", ".", "..") for part in logical.parts):
+            raise ValueError(f"unsafe canonical digest path: {relative!r}")
+        for parent in logical.parents:
+            if parent != PurePosixPath("."):
+                directories.add(parent.as_posix())
+    return directories
+
+
+def _exact_bundle_tree(bundle_root: Path) -> tuple[dict[str, str], set[str]]:
+    files: dict[str, str] = {}
+    directories: set[str] = set()
+    for path in sorted(bundle_root.rglob("*")):
+        relative = path.relative_to(bundle_root).as_posix()
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"symlink prohibited in canonical bundle: {relative}")
+        if any("oracle" in part.casefold() for part in PurePosixPath(relative).parts):
+            raise ValueError(f"oracle-named path prohibited in canonical bundle: {relative}")
+        if stat.S_ISDIR(mode):
+            directories.add(relative)
+        elif stat.S_ISREG(mode):
+            files[relative] = sha256_file(path)
+        else:
+            raise ValueError(f"special file prohibited in canonical bundle: {relative}")
+    return files, directories
+
+
+def _assert_exact_canonical_tree(bundle_root: Path, expected_files: dict[str, str]) -> None:
+    actual_files, actual_directories = _exact_bundle_tree(bundle_root)
+    expected_directories = _canonical_directory_set(expected_files)
+    if actual_files != expected_files:
+        missing = sorted(set(expected_files) - set(actual_files))
+        extra = sorted(set(actual_files) - set(expected_files))
+        changed = sorted(
+            path
+            for path in set(actual_files) & set(expected_files)
+            if actual_files[path] != expected_files[path]
+        )
+        raise RuntimeError(
+            "canonical bundle file map mismatch: "
+            f"missing={missing!r}, extra={extra!r}, changed={changed!r}"
+        )
+    if actual_directories != expected_directories:
+        missing = sorted(expected_directories - actual_directories)
+        extra = sorted(actual_directories - expected_directories)
+        raise RuntimeError(
+            f"canonical bundle directory map mismatch: missing={missing!r}, extra={extra!r}"
+        )
+
+
+def _assert_canonical_tree_seal(
+    bundle_root: Path, *, files_sha256: str, directories_sha256: str
+) -> None:
+    files, directories = _exact_bundle_tree(bundle_root)
+    if sha256_bytes(canonical_json_bytes(files)) != files_sha256:
+        raise RuntimeError("canonical bundle file-map seal mismatch")
+    if sha256_bytes(canonical_json_bytes(sorted(directories))) != directories_sha256:
+        raise RuntimeError("canonical bundle directory-map seal mismatch")
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _load_canonical_digests(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
+        raise ValueError("canonical digest manifest must be one regular, non-linked file")
+    if sha256_file(path) != CANONICAL_DIGESTS_SHA256:
+        raise RuntimeError("canonical digest manifest does not match the checked-in contract")
+    document = read_json(path)
+    expected_keys = {
+        "schema",
+        "files",
+        "fixture_id",
+        "fixture_version",
+        "generator_version",
+        "ocio_version",
+        "oracle_sha256",
+        "seed",
+        "source_pixel_sha256",
+        "tree_sha256",
+    }
+    if not isinstance(document, dict) or set(document) != expected_keys:
+        raise ValueError("canonical digest manifest has an unexpected shape")
+    metadata = {
+        "schema": "fixture-canonical-digests/v1",
+        "fixture_id": FIXTURE_ID,
+        "fixture_version": FIXTURE_VERSION,
+        "generator_version": GENERATOR_VERSION,
+        "ocio_version": OCIO_VERSION,
+        "seed": CANONICAL_SEED,
+    }
+    if any(document[key] != value for key, value in metadata.items()):
+        raise ValueError("canonical digest manifest metadata mismatch")
+    files = document["files"]
+    source_pixels = document["source_pixel_sha256"]
+    if (
+        not isinstance(files, dict)
+        or len(files) != 65
+        or not all(isinstance(key, str) and _is_sha256(value) for key, value in files.items())
+        or not isinstance(source_pixels, dict)
+        or set(source_pixels) != {"chart-01", "chart-02", "chart-03", "chart-04"}
+        or not all(_is_sha256(value) for value in source_pixels.values())
+        or not _is_sha256(document["oracle_sha256"])
+        or not _is_sha256(document["tree_sha256"])
+    ):
+        raise ValueError("canonical digest manifest contains invalid digests")
+    if set(files) & CANONICAL_VALIDATOR_OUTPUTS != CANONICAL_VALIDATOR_OUTPUTS:
+        raise ValueError("canonical digest manifest omits required validator outputs")
+    tree_sha256 = sha256_bytes(canonical_json_bytes(files))
+    if tree_sha256 != document["tree_sha256"]:
+        raise ValueError("canonical digest manifest tree hash mismatch")
+    return cast(dict[str, Any], document)
+
+
+def _assert_canonical_input_metadata(scenario_root: Path) -> None:
+    fixture = read_json(scenario_root / "runtime/manifests/fixture-runtime-manifest.json")
+    expected = {
+        "schema": RUNTIME_MANIFEST_VERSION,
+        "fixture_id": FIXTURE_ID,
+        "fixture_version": FIXTURE_VERSION,
+        "variant_id": "canonical",
+        "seed_sha256": sha256_bytes(CANONICAL_SEED.encode("utf-8")),
+        "image_generator": GENERATOR_VERSION,
+        "comparison_policy": COMPARISON_VERSION,
+        "ocio_version": OCIO_VERSION,
+    }
+    if not isinstance(fixture, dict) or any(
+        fixture.get(key) != value for key, value in expected.items()
+    ):
+        raise RuntimeError("canonical fixture metadata mismatch")
+    if len(fixture.get("jobs", [])) != 6:
+        raise RuntimeError("canonical fixture must contain exactly six jobs")
+    generation = read_json(scenario_root / "reports/generation-receipt.json")
+    if (
+        not isinstance(generation, dict)
+        or generation.get("scenario") != "canonical"
+        or generation.get("variant_id") != "canonical"
+        or generation.get("jobs") != 6
+        or generation.get("ocio_version") != OCIO_VERSION
+        or generation.get("config_sha256_equal") is not True
+        or generation.get("lut_sha256_different") is not True
+    ):
+        raise RuntimeError("canonical generation receipt metadata mismatch")
+
+
+def _assert_canonical_input_permissions(
+    scenario_root: Path, *, require_root_ownership: bool
+) -> None:
+    scenario_stat = scenario_root.stat()
+    if any(
+        name in {"system.posix_acl_access", "system.posix_acl_default"}
+        for name in os.listxattr(scenario_root, follow_symlinks=False)
+    ):
+        raise RuntimeError("canonical bundle root has a POSIX ACL")
+    if require_root_ownership:
+        if scenario_root.parent != Path("/tmp"):
+            raise RuntimeError("privilege-separated canonical assembly must be rooted in /tmp")
+        if scenario_stat.st_uid != 0 or scenario_stat.st_gid != 0:
+            raise RuntimeError("privilege-separated canonical bundle must be root-owned")
+        if stat.S_IMODE(scenario_stat.st_mode) & 0o022:
+            raise RuntimeError("privilege-separated canonical bundle root is group/world-writable")
+        parent_mode = scenario_root.parent.stat().st_mode
+        if not stat.S_ISDIR(parent_mode) or not (parent_mode & stat.S_ISVTX):
+            raise RuntimeError("privilege-separated canonical assembly requires a sticky parent")
+    for subtree in (scenario_root / "runtime", scenario_root / "references"):
+        for path in (subtree, *sorted(subtree.rglob("*"))):
+            path_stat = path.lstat()
+            if stat.S_IMODE(path_stat.st_mode) & 0o222:
+                raise RuntimeError(f"canonical input path is writable: {path}")
+            if require_root_ownership and (path_stat.st_uid != 0 or path_stat.st_gid != 0):
+                raise RuntimeError(f"canonical input path is not root-owned: {path}")
+            extended_attributes = os.listxattr(path, follow_symlinks=False)
+            if any(
+                name in {"system.posix_acl_access", "system.posix_acl_default"}
+                for name in extended_attributes
+            ):
+                raise RuntimeError(f"canonical input path has a POSIX ACL: {path}")
+
+
+def _assert_canonical_report_prestate(reports_root: Path, *, require_root_ownership: bool) -> None:
+    generation = reports_root / "generation-receipt.json"
+    for path, expected_mode in ((reports_root, 0o700), (generation, 0o600)):
+        path_stat = path.lstat()
+        if path.is_symlink() or (
+            path == generation and (not stat.S_ISREG(path_stat.st_mode) or path_stat.st_nlink != 1)
+        ):
+            raise RuntimeError(f"unsafe canonical report pre-state: {path}")
+        if stat.S_IMODE(path_stat.st_mode) != expected_mode:
+            raise RuntimeError(f"canonical report pre-state mode mismatch: {path}")
+        if require_root_ownership and (path_stat.st_uid != 0 or path_stat.st_gid != 0):
+            raise RuntimeError(f"canonical report pre-state is not root-owned: {path}")
+        if any(
+            name in {"system.posix_acl_access", "system.posix_acl_default"}
+            for name in os.listxattr(path, follow_symlinks=False)
+        ):
+            raise RuntimeError(f"canonical report pre-state has a POSIX ACL: {path}")
+
+
+def _assert_canonical_report_semantics(report: dict[str, Any]) -> None:
+    if (
+        report.get("schema") != VALIDATOR_REPORT_VERSION
+        or report.get("fixture_id") != FIXTURE_ID
+        or report.get("variant_id") != "canonical"
+        or report.get("ocio_version") != OCIO_VERSION
+        or report.get("comparison_policy") != COMPARISON_VERSION
+    ):
+        raise RuntimeError("canonical validator report metadata mismatch")
+    expected_states = {
+        "job-a-01": "reference_match",
+        "job-a-02": "reference_match",
+        "job-b-01": "reference_mismatch",
+        "job-b-02": "reference_mismatch",
+        "job-b-03": "reference_mismatch",
+        "job-b-04": "reference_match",
+    }
+    jobs = report.get("jobs")
+    if not isinstance(jobs, list) or len(jobs) != 6:
+        raise RuntimeError("canonical validator report must contain exactly six jobs")
+    actual_states = {
+        item.get("job_id"): item.get("state")
+        for item in jobs
+        if isinstance(item, dict) and item.get("reasons") == []
+    }
+    if actual_states != expected_states or any(item.get("state") == "unresolved" for item in jobs):
+        raise RuntimeError("canonical validator report job-state mismatch")
+    derivatives = report.get("derivatives")
+    if not isinstance(derivatives, list) or len(derivatives) != 1:
+        raise RuntimeError("canonical validator report derivative mismatch")
+    derivative = derivatives[0]
+    if (
+        derivative.get("artifact_id") != "artifact-b-02-derivative"
+        or derivative.get("parent_artifact_id") != "output-job-b-02"
+        or derivative.get("state") != "reference_mismatch"
+        or derivative.get("policy") != "exact-lineage-propagation/v1"
+    ):
+        raise RuntimeError("canonical validator report derivative mismatch")
+    events = report.get("telemetry_events")
+    if not isinstance(events, list) or len(events) != 1:
+        raise RuntimeError("canonical validator report telemetry mismatch")
+    event = events[0]
+    if (
+        event.get("event_id") != "distractor-01"
+        or event.get("overlapping_job_ids") != ["job-b-01", "job-b-04"]
+        or event.get("resource_edges") != []
+        or event.get("lineage_edges") != []
+        or event.get("output_mutation") is not False
+    ):
+        raise RuntimeError("canonical validator report telemetry mismatch")
+    diff_images = report.get("diff_images")
+    if (
+        not isinstance(diff_images, list)
+        or len(diff_images) != 6
+        or {
+            (item.get("job_id"), item.get("path"), item.get("authoritative"))
+            for item in diff_images
+            if isinstance(item, dict)
+        }
+        != {(job_id, f"reports/diffs/{job_id}.png", False) for job_id in expected_states}
+    ):
+        raise RuntimeError("canonical validator report diff-image mismatch")
+
+
+def _assert_absent_canonical_oracle_roots(
+    scenario_root: Path, absent_oracle_roots: tuple[Path, ...]
+) -> None:
+    if scenario_root.name not in {"colortrace-fixture-a", "colortrace-fixture-b"}:
+        raise ValueError("canonical build scenario must use the fixed A/B assembly names")
+    scenario_parent = scenario_root.parent.resolve(strict=True)
+    expected = {
+        scenario_parent / "colortrace-oracle-a",
+        scenario_parent / "colortrace-oracle-b",
+    }
+    supplied: set[Path] = set()
+    for candidate in absent_oracle_roots:
+        absolute = candidate if candidate.is_absolute() else Path.cwd() / candidate
+        supplied.add(absolute.parent.resolve(strict=True) / absolute.name)
+    if supplied != expected:
+        raise ValueError("both fixed sibling oracle roots must be declared absent")
+    for candidate in sorted(expected):
+        try:
+            candidate.lstat()
+        except FileNotFoundError:
+            continue
+        raise RuntimeError(f"oracle root must be absent: {candidate}")
+
+
+def _normalize_canonical_report_outputs(reports_root: Path, *, uid: int, gid: int) -> None:
+    diff_root = reports_root / "diffs"
+    diff_stat = diff_root.lstat()
+    if not stat.S_ISDIR(diff_stat.st_mode) or stat.S_ISLNK(diff_stat.st_mode):
+        raise RuntimeError("canonical diff output is not a real directory")
+    output_paths = [
+        reports_root.parent / relative for relative in sorted(CANONICAL_VALIDATOR_OUTPUTS)
+    ]
+    for path in output_paths:
+        path_stat = path.lstat()
+        if not stat.S_ISREG(path_stat.st_mode) or path_stat.st_nlink != 1:
+            raise RuntimeError(f"unsafe canonical validator output: {path}")
+    if (diff_stat.st_uid, diff_stat.st_gid) != (uid, gid):
+        os.chown(diff_root, uid, gid, follow_symlinks=False)
+    os.chmod(diff_root, 0o700, follow_symlinks=False)
+    for path in output_paths:
+        path_stat = path.lstat()
+        if (path_stat.st_uid, path_stat.st_gid) != (uid, gid):
+            os.chown(path, uid, gid, follow_symlinks=False)
+        os.chmod(path, 0o600, follow_symlinks=False)
+
+
+def _set_opened_identity(
+    descriptor: int, *, uid: int, gid: int, mode: int, allow_chown: bool
+) -> None:
+    current = os.fstat(descriptor)
+    if allow_chown and (current.st_uid, current.st_gid) != (uid, gid):
+        os.fchown(descriptor, uid, gid)
+    os.fchmod(descriptor, mode)
+
+
+def _enable_no_new_privs() -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(38, 1, 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, "cannot enable no_new_privs")
+    if libc.prctl(39, 0, 0, 0, 0) != 1:
+        error = ctypes.get_errno()
+        raise OSError(error, "cannot verify no_new_privs")
+
+
+def _assert_worker_process_boundary() -> None:
+    status = {
+        key: value.strip()
+        for line in Path("/proc/self/status").read_text(encoding="utf-8").splitlines()
+        if ":" in line
+        for key, value in (line.split(":", maxsplit=1),)
+    }
+    if int(status.get("CapEff", "1"), 16) != 0:
+        raise RuntimeError("canonical build validator worker retained effective capabilities")
+    if status.get("NoNewPrivs") != "1":
+        raise RuntimeError("canonical build validator worker did not retain no_new_privs")
+    resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
+    if resource.getrlimit(resource.RLIMIT_NPROC) != (0, 0):
+        raise RuntimeError("canonical build validator worker can create descendant processes")
+
+
+def validate_canonical_build_worker(
+    scenario_root: Path, denied_probe: Path, *, privilege_separated: bool
+) -> dict[str, Any]:
+    scenario_root = scenario_root.resolve(strict=True)
+    if os.geteuid() == 0 or os.getegid() == 0:
+        raise RuntimeError("canonical build validator worker must be unprivileged")
+    if privilege_separated and (
+        os.getresuid() != (CANONICAL_BUILD_UID,) * 3
+        or os.getresgid() != (CANONICAL_BUILD_GID,) * 3
+        or os.getgroups()
+    ):
+        raise RuntimeError("canonical build validator worker identity mismatch")
+    _enable_no_new_privs()
+    _assert_worker_process_boundary()
+    _assert_canonical_input_permissions(scenario_root, require_root_ownership=privilege_separated)
+    if privilege_separated and stat.S_IMODE(scenario_root.stat().st_mode) != 0o555:
+        raise RuntimeError("canonical build validator bundle root is not sealed")
+    reports_root = scenario_root / "reports"
+    generation = reports_root / "generation-receipt.json"
+    expected_uid = CANONICAL_BUILD_UID if privilege_separated else os.geteuid()
+    expected_gid = CANONICAL_BUILD_GID if privilege_separated else os.getegid()
+    for path, expected_mode in ((reports_root, 0o700), (generation, 0o600)):
+        path_stat = path.lstat()
+        if (
+            (path_stat.st_uid, path_stat.st_gid) != (expected_uid, expected_gid)
+            or stat.S_IMODE(path_stat.st_mode) != expected_mode
+            or (path == generation and path_stat.st_nlink != 1)
+        ):
+            raise RuntimeError(f"canonical build validator report boundary mismatch: {path}")
+    derived_oracle_roots = (
+        scenario_root.parent / "colortrace-oracle-a",
+        scenario_root.parent / "colortrace-oracle-b",
+    )
+    _assert_absent_canonical_oracle_roots(scenario_root, derived_oracle_roots)
+    audit_bundle_paths(scenario_root)
+    _assert_canonical_tree_seal(
+        scenario_root,
+        files_sha256=CANONICAL_PREVALIDATION_TREE_SHA256,
+        directories_sha256=CANONICAL_PREVALIDATION_DIRECTORIES_SHA256,
+    )
+    _assert_canonical_input_metadata(scenario_root)
+    try:
+        denied_probe.read_bytes()
+    except PermissionError:
+        pass
+    else:
+        raise RuntimeError("canonical build validator read the neutral external probe")
+    immutable_probe = scenario_root / "runtime/manifests/fixture-runtime-manifest.json"
+    try:
+        descriptor = os.open(immutable_probe, os.O_WRONLY)
+    except PermissionError:
+        pass
+    else:
+        os.close(descriptor)
+        raise RuntimeError("canonical build validator opened an immutable input for writing")
+    report = validate_existing(scenario_root)
+    _assert_canonical_report_semantics(report)
+    audit_bundle_paths(scenario_root)
+    _assert_canonical_tree_seal(
+        scenario_root,
+        files_sha256=CANONICAL_WORKER_TREE_SHA256,
+        directories_sha256=CANONICAL_WORKER_DIRECTORIES_SHA256,
+    )
+    _assert_absent_canonical_oracle_roots(scenario_root, derived_oracle_roots)
+    return report
+
+
+def run_canonical_build_validator(
+    script: Path,
+    scenario_root: Path,
+    python: Path,
+    canonical_digests: Path,
+    absent_oracle_roots: tuple[Path, ...],
+    *,
+    require_privilege_drop: bool,
+) -> dict[str, Any]:
+    supplied_root = scenario_root.absolute()
+    if supplied_root.is_symlink():
+        raise ValueError("canonical build scenario root must not be a symlink")
+    scenario_root = supplied_root.resolve(strict=True)
+    if not scenario_root.is_dir():
+        raise ValueError("canonical build scenario root must be a directory")
+    golden = _load_canonical_digests(canonical_digests)
+    golden_files = cast(dict[str, str], golden["files"])
+    prevalidation_files = {
+        path: digest
+        for path, digest in golden_files.items()
+        if path not in CANONICAL_VALIDATOR_OUTPUTS
+    }
+    worker_files = {
+        path: digest
+        for path, digest in golden_files.items()
+        if path != "reports/validator-invocation-receipt.json"
+    }
+    _assert_absent_canonical_oracle_roots(scenario_root, absent_oracle_roots)
+    audit_bundle_paths(scenario_root)
+    _assert_exact_canonical_tree(scenario_root, prevalidation_files)
+    _assert_canonical_input_metadata(scenario_root)
+    _assert_canonical_input_permissions(
+        scenario_root, require_root_ownership=require_privilege_drop
+    )
+    reports_root = scenario_root / "reports"
+    _assert_canonical_report_prestate(reports_root, require_root_ownership=require_privilege_drop)
+
+    parent_uid = os.geteuid()
+    if require_privilege_drop:
+        if parent_uid != 0:
+            raise RuntimeError("--require-privilege-drop requires a root build parent")
+        child_identity: dict[str, Any] = {
+            "user": CANONICAL_BUILD_UID,
+            "group": CANONICAL_BUILD_GID,
+            "extra_groups": (),
+        }
+    else:
+        if parent_uid == 0:
+            raise RuntimeError("root canonical build validation requires --require-privilege-drop")
+        child_identity = {}
+    if require_privilege_drop:
+        for trusted_path in (script.resolve(strict=True), python.resolve(strict=True)):
+            trusted_stat = trusted_path.stat()
+            if trusted_stat.st_uid != 0 or stat.S_IMODE(trusted_stat.st_mode) & 0o022:
+                raise RuntimeError(
+                    f"canonical validator executable is not root-controlled: {trusted_path}"
+                )
+
+    child_environment = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    descriptor, probe_name = tempfile.mkstemp(
+        prefix=".validator-boundary-", dir=scenario_root.parent
+    )
+    probe_path = Path(probe_name)
+    os.write(descriptor, b"neutral filesystem boundary probe")
+    os.fchmod(descriptor, 0)
+    os.close(descriptor)
+    command = [
+        str(python),
+        str(script),
+        "validate-canonical-build-worker",
+        "--scenario",
+        str(scenario_root),
+        "--denied-probe",
+        str(probe_path),
+        "--privilege-separated" if require_privilege_drop else "--functional-nonroot",
+    ]
+    open_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    scenario_fd = os.open(scenario_root, open_flags | os.O_DIRECTORY)
+    reports_fd = os.open(reports_root, open_flags | os.O_DIRECTORY)
+    generation_fd = os.open(reports_root / "generation-receipt.json", open_flags)
+    scenario_original = os.fstat(scenario_fd)
+    reports_original = os.fstat(reports_fd)
+    generation_original = os.fstat(generation_fd)
+    reports_prepared = False
+    try:
+        if any("oracle" in item.casefold() for item in command) or any(
+            "oracle" in item.casefold() for item in child_environment.values()
+        ):
+            raise RuntimeError("canonical validator worker invocation contains oracle material")
+        reports_prepared = True
+        _set_opened_identity(
+            reports_fd,
+            uid=CANONICAL_BUILD_UID if require_privilege_drop else reports_original.st_uid,
+            gid=CANONICAL_BUILD_GID if require_privilege_drop else reports_original.st_gid,
+            mode=0o700,
+            allow_chown=require_privilege_drop,
+        )
+        _set_opened_identity(
+            generation_fd,
+            uid=CANONICAL_BUILD_UID if require_privilege_drop else generation_original.st_uid,
+            gid=CANONICAL_BUILD_GID if require_privilege_drop else generation_original.st_gid,
+            mode=0o600,
+            allow_chown=require_privilege_drop,
+        )
+        os.fchmod(scenario_fd, 0o555)
+        completed = subprocess.run(
+            command,
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=300,
+            env=child_environment,
+            start_new_session=True,
+            umask=0o077,
+            **child_identity,
+        )
+        probe_path.unlink()
+        _set_opened_identity(
+            reports_fd,
+            uid=reports_original.st_uid,
+            gid=reports_original.st_gid,
+            mode=stat.S_IMODE(reports_original.st_mode),
+            allow_chown=require_privilege_drop,
+        )
+        _set_opened_identity(
+            generation_fd,
+            uid=generation_original.st_uid,
+            gid=generation_original.st_gid,
+            mode=stat.S_IMODE(generation_original.st_mode),
+            allow_chown=require_privilege_drop,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"canonical build validator failed: {completed.stderr or completed.stdout}"
+            )
+        _assert_absent_canonical_oracle_roots(scenario_root, absent_oracle_roots)
+        audit_bundle_paths(scenario_root)
+        _assert_exact_canonical_tree(scenario_root, worker_files)
+        report = cast(dict[str, Any], read_json(reports_root / "validator-report.json"))
+        _assert_canonical_report_semantics(report)
+        receipt = read_json(reports_root / "validator-receipt.json")
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("report") != "reports/validator-report.json"
+            or receipt.get("report_sha256") != sha256_file(reports_root / "validator-report.json")
+            or receipt.get("truth_material_inside_runtime_bundle") is not False
+        ):
+            raise RuntimeError("canonical validator receipt mismatch")
+        write_json(
+            reports_root / "validator-invocation-receipt.json",
+            _validator_invocation_document(child_environment),
+        )
+        audit_bundle_paths(scenario_root)
+        _assert_exact_canonical_tree(scenario_root, golden_files)
+        if sha256_bytes(canonical_json_bytes(golden_files)) != golden["tree_sha256"]:
+            raise RuntimeError("canonical validated tree hash mismatch")
+        _assert_absent_canonical_oracle_roots(scenario_root, absent_oracle_roots)
+        _normalize_canonical_report_outputs(
+            reports_root, uid=reports_original.st_uid, gid=reports_original.st_gid
+        )
+        return report
+    finally:
+        probe_path.unlink(missing_ok=True)
+        try:
+            if reports_prepared:
+                _set_opened_identity(
+                    reports_fd,
+                    uid=reports_original.st_uid,
+                    gid=reports_original.st_gid,
+                    mode=stat.S_IMODE(reports_original.st_mode),
+                    allow_chown=require_privilege_drop,
+                )
+                _set_opened_identity(
+                    generation_fd,
+                    uid=generation_original.st_uid,
+                    gid=generation_original.st_gid,
+                    mode=stat.S_IMODE(generation_original.st_mode),
+                    allow_chown=require_privilege_drop,
+                )
+        finally:
+            try:
+                _set_opened_identity(
+                    scenario_fd,
+                    uid=scenario_original.st_uid,
+                    gid=scenario_original.st_gid,
+                    mode=stat.S_IMODE(scenario_original.st_mode),
+                    allow_chown=False,
+                )
+            finally:
+                os.close(generation_fd)
+                os.close(reports_fd)
+                os.close(scenario_fd)
 
 
 def scan_oracle_leaks(
@@ -2010,6 +2658,17 @@ def parse_args() -> argparse.Namespace:
     validate_worker = sub.add_parser("validate-worker", help=argparse.SUPPRESS)
     validate_worker.add_argument("--scenario", type=Path, required=True)
     validate_worker.add_argument("--denied-probe", type=Path, required=True)
+    canonical_build = sub.add_parser("validate-canonical-build", help=argparse.SUPPRESS)
+    canonical_build.add_argument("--scenario", type=Path, required=True)
+    canonical_build.add_argument("--canonical-digests", type=Path, required=True)
+    canonical_build.add_argument("--absent-oracle-root", type=Path, action="append", required=True)
+    canonical_build.add_argument("--require-privilege-drop", action="store_true", required=True)
+    canonical_worker = sub.add_parser("validate-canonical-build-worker", help=argparse.SUPPRESS)
+    canonical_worker.add_argument("--scenario", type=Path, required=True)
+    canonical_worker.add_argument("--denied-probe", type=Path, required=True)
+    canonical_worker_mode = canonical_worker.add_mutually_exclusive_group(required=True)
+    canonical_worker_mode.add_argument("--privilege-separated", action="store_true")
+    canonical_worker_mode.add_argument("--functional-nonroot", action="store_true")
     evaluate = sub.add_parser("evaluate")
     evaluate.add_argument("--scenario", type=Path, required=True)
     evaluate.add_argument("--oracle", type=Path, required=True)
@@ -2042,6 +2701,21 @@ def main() -> int:
         run_isolated_validator(script, args.scenario.resolve(), python)
     elif args.command == "validate-worker":
         validate_landlocked_worker(args.scenario, args.denied_probe)
+    elif args.command == "validate-canonical-build":
+        run_canonical_build_validator(
+            script,
+            args.scenario,
+            python,
+            args.canonical_digests,
+            tuple(args.absent_oracle_root),
+            require_privilege_drop=args.require_privilege_drop,
+        )
+    elif args.command == "validate-canonical-build-worker":
+        validate_canonical_build_worker(
+            args.scenario,
+            args.denied_probe,
+            privilege_separated=args.privilege_separated,
+        )
     elif args.command == "evaluate":
         report = read_json(args.scenario.resolve() / "reports" / "validator-report.json")
         evaluate_scenario(args.scenario.resolve(), args.oracle.resolve(), report)
