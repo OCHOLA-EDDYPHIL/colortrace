@@ -8,6 +8,7 @@ output "resource_inventory" {
     builder_account     = google_service_account.builder.email
     access_secret       = google_secret_manager_secret.access_gate.id
     artifact_repository = google_artifact_registry_repository.images.id
+    build_source_bucket = google_storage_bucket.build_source.name
     enabled_services    = sort(keys(google_project_service.required))
     public_address      = var.enable_instance ? google_compute_address.public[0].address : null
     instance            = var.enable_instance ? google_compute_instance.host[0].id : null
@@ -19,6 +20,16 @@ output "resource_inventory" {
       google_service_account_iam_member.operator_host[0].role,
     ]) : []
     operator_build_roles = sort(keys(google_project_iam_member.operator_build))
+    operator_build_source_roles = sort(
+      keys(google_storage_bucket_iam_member.operator_build_source)
+    )
+    operator_artifact_reader = (
+      var.operator_member == null ? null : {
+        member     = google_artifact_registry_repository_iam_member.operator_reader[0].member
+        repository = google_artifact_registry_repository.images.repository_id
+        role       = google_artifact_registry_repository_iam_member.operator_reader[0].role
+      }
+    )
     host_iam_roles = (
       var.enable_instance ? [google_project_iam_custom_role.vertex_predictor[0].id] : []
     )
@@ -39,6 +50,7 @@ output "image_build_identity" {
     region          = var.region
     registry        = "${local.registry_host}/${var.project_id}/${google_artifact_registry_repository.images.repository_id}"
     service_account = google_service_account.builder.email
+    source_staging  = "gs://${google_storage_bucket.build_source.name}/source"
   }
 }
 

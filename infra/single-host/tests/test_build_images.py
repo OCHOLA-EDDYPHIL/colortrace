@@ -105,6 +105,10 @@ if sys.argv[1:3] == ["builds", "describe"]:
     commit = os.environ["FAKE_COMMIT"]
     source_tree = os.environ["FAKE_SOURCE_TREE"]
     source_date_epoch = os.environ["FAKE_SOURCE_DATE_EPOCH"]
+    source_bucket = os.environ.get(
+        "FAKE_SOURCE_BUCKET",
+        "colortrace-test-project-ct-singlehost-build-source",
+    )
     service_account = os.environ["FAKE_SERVICE_ACCOUNT"]
     substitution_commit = os.environ.get("FAKE_SUBSTITUTION_COMMIT", commit)
     components = ["runtime", "web", "caddy", "grafana", "loki", "tempo"]
@@ -112,6 +116,10 @@ if sys.argv[1:3] == ["builds", "describe"]:
         "id": "build-123",
         "status": "SUCCESS",
         "serviceAccount": service_account,
+        "source": {"storageSource": {
+            "bucket": source_bucket,
+            "object": "source/candidate.tgz",
+        }},
         "substitutions": {
             "_REGISTRY": registry,
             "_SOURCE_COMMIT": substitution_commit,
@@ -253,6 +261,10 @@ raise SystemExit(2)
                 "ct-singlehost-builder@colortrace-test-project.iam.gserviceaccount.com",
                 calls[0],
             )
+            self.assertIn(
+                "gs://colortrace-test-project-ct-singlehost-build-source/source",
+                calls[0],
+            )
             self.assertEqual(calls[1][:3], ["builds", "describe", "build-123"])
 
     def test_described_build_identity_must_match_submission(self) -> None:
@@ -269,6 +281,7 @@ raise SystemExit(2)
                     )
                 },
                 {"FAKE_SUBSTITUTION_COMMIT": "0" * 40},
+                {"FAKE_SOURCE_BUCKET": "unowned-build-source"},
             ):
                 output = temporary / f"mismatch-{len(list(temporary.iterdir()))}.json"
                 completed = self._run(
