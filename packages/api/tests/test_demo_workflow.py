@@ -494,6 +494,44 @@ def test_alert_probe_waits_for_exact_firing_grafana_instance() -> None:
     assert all(batch.query_keys == ("alert.rule",) for batch in evidence.calls)
 
 
+def test_alert_probe_stamps_retrieval_after_new_firing_instance() -> None:
+    now = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
+    intake = _alert_intake(now)
+    correlation = cast(dict[str, str], intake["correlation_keys"])
+    elapsed = 0.0
+
+    class BoundaryEvidence:
+        async def collect(self, batch: Any) -> Any:
+            nonlocal elapsed
+            elapsed = 1.0
+            return SimpleNamespace(
+                envelopes=(
+                    {
+                        "collection": {"outcome": "collected"},
+                        "content": {
+                            "alerts": [
+                                {
+                                    "labels": correlation,
+                                    "annotations": {},
+                                    "state": "firing",
+                                    "activeAt": "2026-08-23T12:00:00.500Z",
+                                    "value": "1",
+                                }
+                            ]
+                        },
+                    },
+                )
+            )
+
+    accepted = GrafanaMcpAlertProbe(
+        evidence=cast(Any, BoundaryEvidence()),
+        clock=lambda: now + timedelta(seconds=elapsed),
+    ).wait_for_firing(intake)
+
+    assert accepted["alert_started_at"] == "2026-08-23T12:00:00.500Z"
+    assert accepted["retrieved_at"] == "2026-08-23T12:00:01.000Z"
+
+
 def test_alert_probe_fails_closed_when_no_matching_instance_fires() -> None:
     now = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
     intake = _alert_intake(now)
