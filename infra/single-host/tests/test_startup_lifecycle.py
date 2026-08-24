@@ -376,6 +376,18 @@ else:
         self.assertLess(timer_index, docker_index)
         self.assertLess(docker_index, workload_index)
 
+    def test_workload_startup_recreates_the_compose_network_before_pull(self) -> None:
+        startup = STARTUP_TEMPLATE.read_text(encoding="utf-8")
+
+        config_index = startup.index("compose config --quiet")
+        down_index = startup.index("compose down --remove-orphans")
+        pull_index = startup.index("compose pull")
+        workload_index = startup.index("compose up --detach --remove-orphans")
+
+        self.assertLess(config_index, down_index)
+        self.assertLess(down_index, pull_index)
+        self.assertLess(pull_index, workload_index)
+
 
 if __name__ == "__main__":
     unittest.main()
