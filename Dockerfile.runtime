@@ -80,7 +80,7 @@ RUN --mount=type=cache,id=colortrace-runtime-uv,target=/root/.cache/uv,sharing=l
     && { /source/.venv/lib/python3.12/site-packages/PyOpenColorIO/bin/ociolutimage --help \
         >/dev/null || test "$?" -eq 1; } \
     && test -z "$(find /source/.venv -type f -name '*.py[co]' -print -quit)"
-RUN /source/.venv/bin/colortrace-fixture generate \
+RUN --network=none /source/.venv/bin/colortrace-fixture generate \
         --bundle /tmp/colortrace-fixture-a \
         --oracle /tmp/colortrace-oracle-a \
         --variant canonical \
@@ -90,14 +90,25 @@ RUN /source/.venv/bin/colortrace-fixture generate \
         --oracle /tmp/colortrace-oracle-b \
         --variant canonical \
         --seed ct-shadowed-lut-v1:canonical \
-    && /source/.venv/bin/colortrace-fixture validate \
+    && rm -rf /tmp/colortrace-oracle-a /tmp/colortrace-oracle-b \
+    && test ! -e /tmp/colortrace-oracle-a \
+    && test ! -e /tmp/colortrace-oracle-b \
+    && /source/.venv/bin/colortrace-fixture validate-canonical-build \
         --scenario /tmp/colortrace-fixture-a \
-    && /source/.venv/bin/colortrace-fixture validate \
+        --canonical-digests /source/packages/fixture-generator/fixtures/canonical-digests.json \
+        --absent-oracle-root /tmp/colortrace-oracle-a \
+        --absent-oracle-root /tmp/colortrace-oracle-b \
+        --require-privilege-drop \
+    && /source/.venv/bin/colortrace-fixture validate-canonical-build \
         --scenario /tmp/colortrace-fixture-b \
+        --canonical-digests /source/packages/fixture-generator/fixtures/canonical-digests.json \
+        --absent-oracle-root /tmp/colortrace-oracle-a \
+        --absent-oracle-root /tmp/colortrace-oracle-b \
+        --require-privilege-drop \
     && diff -qr /tmp/colortrace-fixture-a /tmp/colortrace-fixture-b \
     && test -z "$(find /tmp/colortrace-fixture-a -iname '*oracle*' -print -quit)" \
     && mv /tmp/colortrace-fixture-a /opt/colortrace-fixture \
-    && rm -rf /tmp/colortrace-fixture-b /tmp/colortrace-oracle-a /tmp/colortrace-oracle-b
+    && rm -rf /tmp/colortrace-fixture-b
 
 FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS runtime-base
 ARG SOURCE_COMMIT

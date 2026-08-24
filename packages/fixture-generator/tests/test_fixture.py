@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -9,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import colortrace_fixture.fixture as fixture_module
 import PyOpenColorIO as ocio
 import pytest
 from colortrace_fixture.fixture import (
@@ -25,6 +27,7 @@ from colortrace_fixture.fixture import (
     deterministic_tree_index,
     evaluate_scenario,
     read_json,
+    run_canonical_build_validator,
     run_isolated_validator,
     scan_oracle_leaks,
     sha256_file,
@@ -68,6 +71,26 @@ def generated(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
 
 def manifests(bundle: Path, fixture: dict[str, Any]) -> list[dict[str, Any]]:
     return [read_json(bundle / item["manifest"]) for item in fixture["jobs"]]
+
+
+def canonical_build_input(
+    generated: dict[str, Any], tmp_path: Path
+) -> tuple[Path, tuple[Path, Path]]:
+    root = tmp_path / "colortrace-fixture-a"
+    shutil.copytree(generated["canonical"]["bundle"], root)
+    reports = root / "reports"
+    for name in (
+        "landlock-receipt.json",
+        "validator-invocation-receipt.json",
+        "validator-receipt.json",
+        "validator-report.json",
+    ):
+        (reports / name).unlink(missing_ok=True)
+    shutil.rmtree(reports / "diffs", ignore_errors=True)
+    return root, (
+        tmp_path / "colortrace-oracle-a",
+        tmp_path / "colortrace-oracle-b",
+    )
 
 
 def test_pinned_real_ocio_and_structural_resource_resolution(generated: dict[str, Any]) -> None:
@@ -165,6 +188,180 @@ def test_full_same_seed_replay_and_complete_golden_map(generated: dict[str, Any]
     assert (
         hashlib.sha256(canonical_json_bytes(canonical_index)).hexdigest() == golden["tree_sha256"]
     )
+
+
+def test_canonical_build_validator_matches_complete_golden_without_landlock(
+    generated: dict[str, Any], tmp_path: Path
+) -> None:
+    root, oracle_roots = canonical_build_input(generated, tmp_path)
+    golden_path = PACKAGE_ROOT / "fixtures/canonical-digests.json"
+    report = run_canonical_build_validator(
+        SCRIPT,
+        root,
+        PYTHON,
+        golden_path,
+        oracle_roots,
+        require_privilege_drop=False,
+    )
+    golden = read_json(golden_path)
+    assert deterministic_tree_index(root, ("runtime", "references", "reports")) == golden["files"]
+    assert (
+        hashlib.sha256(canonical_json_bytes(golden["files"])).hexdigest() == golden["tree_sha256"]
+    )
+    assert len(report["jobs"]) == 6
+    assert sum(job["state"] == "reference_match" for job in report["jobs"]) == 3
+    assert sum(job["state"] == "reference_mismatch" for job in report["jobs"]) == 3
+    assert all(job["state"] != "unresolved" for job in report["jobs"])
+    assert (root / "reports/validator-invocation-receipt.json").is_file()
+    assert not (root / "reports/landlock-receipt.json").exists()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "changed",
+        "missing",
+        "extra",
+        "stale-landlock",
+        "stale-receipt",
+        "noncanonical",
+        "writable-directory",
+    ],
+)
+def test_canonical_build_validator_rejects_prevalidation_tree_drift(
+    generated: dict[str, Any], tmp_path: Path, mutation: str
+) -> None:
+    root, oracle_roots = canonical_build_input(generated, tmp_path)
+    input_path = root / "runtime/manifests/fixture-runtime-manifest.json"
+    if mutation == "changed":
+        input_path.chmod(0o600)
+        input_path.write_bytes(input_path.read_bytes() + b"\n")
+        input_path.chmod(0o444)
+    elif mutation == "missing":
+        parent_mode = input_path.parent.stat().st_mode & 0o777
+        input_path.parent.chmod(0o755)
+        input_path.unlink()
+        input_path.parent.chmod(parent_mode)
+    elif mutation == "extra":
+        (root / "unexpected.txt").write_text("unexpected", encoding="utf-8")
+    elif mutation == "stale-landlock":
+        (root / "reports/landlock-receipt.json").write_text("{}", encoding="utf-8")
+    elif mutation == "stale-receipt":
+        (root / "reports/validator-invocation-receipt.json").write_text("{}", encoding="utf-8")
+    elif mutation == "writable-directory":
+        (root / "runtime/workers").chmod(0o777)
+    else:
+        fixture = read_json(input_path)
+        fixture["variant_id"] = "not-canonical"
+        input_path.chmod(0o600)
+        input_path.write_bytes(canonical_json_bytes(fixture))
+        input_path.chmod(0o444)
+    with pytest.raises((RuntimeError, ValueError), match="canonical bundle|file map|writable"):
+        run_canonical_build_validator(
+            SCRIPT,
+            root,
+            PYTHON,
+            PACKAGE_ROOT / "fixtures/canonical-digests.json",
+            oracle_roots,
+            require_privilege_drop=False,
+        )
+
+
+@pytest.mark.parametrize("kind", ["file", "directory", "dangling-symlink"])
+def test_canonical_build_validator_rejects_present_oracle_sibling(
+    generated: dict[str, Any], tmp_path: Path, kind: str
+) -> None:
+    root, oracle_roots = canonical_build_input(generated, tmp_path)
+    oracle = oracle_roots[0]
+    if kind == "file":
+        oracle.write_text("truth", encoding="utf-8")
+    elif kind == "directory":
+        oracle.mkdir()
+    else:
+        oracle.symlink_to(tmp_path / "missing-oracle-target")
+    with pytest.raises(RuntimeError, match="oracle root must be absent"):
+        run_canonical_build_validator(
+            SCRIPT,
+            root,
+            PYTHON,
+            PACKAGE_ROOT / "fixtures/canonical-digests.json",
+            oracle_roots,
+            require_privilege_drop=False,
+        )
+
+
+def test_public_validator_remains_fail_closed_when_landlock_is_unavailable(
+    generated: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    validate_called = False
+
+    def unavailable(_root: Path) -> int:
+        raise OSError(errno.ENOSYS, "Landlock is unavailable")
+
+    def unexpected_validate(_root: Path) -> dict[str, Any]:
+        nonlocal validate_called
+        validate_called = True
+        return {}
+
+    monkeypatch.setattr(fixture_module, "enter_bundle_landlock", unavailable)
+    monkeypatch.setattr(fixture_module, "validate_existing", unexpected_validate)
+    probe = tmp_path / "neutral-probe"
+    probe.write_bytes(b"probe")
+    with pytest.raises(OSError) as error:
+        fixture_module.validate_landlocked_worker(generated["canonical"]["bundle"], probe)
+    assert error.value.errno == errno.ENOSYS
+    assert validate_called is False
+
+
+def test_canonical_build_semantics_reject_unresolved_output(generated: dict[str, Any]) -> None:
+    report = json.loads(json.dumps(generated["canonical"]["report"]))
+    report["jobs"][0]["state"] = "unresolved"
+    report["jobs"][0]["reasons"] = ["synthetic-test"]
+    with pytest.raises(RuntimeError, match="job-state mismatch"):
+        fixture_module._assert_canonical_report_semantics(report)
+
+
+def test_canonical_build_failure_does_not_mutate_worker_hardlink_target(
+    generated: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, oracle_roots = canonical_build_input(generated, tmp_path)
+    reports = root / "reports"
+    generation = reports / "generation-receipt.json"
+    external = tmp_path / "external-worker-file"
+    external.write_bytes(b"external")
+    external.chmod(0o640)
+    original_external = external.stat()
+    original_modes = {
+        path: (path.stat().st_uid, path.stat().st_gid, path.stat().st_mode & 0o777)
+        for path in (root, reports, generation)
+    }
+
+    def hostile_worker(*args: Any, **kwargs: Any) -> Any:
+        del kwargs
+        os.link(external, reports / "validator-report.json")
+        return fixture_module.subprocess.CompletedProcess(args[0], 1, "", "forced failure")
+
+    monkeypatch.setattr(fixture_module.subprocess, "run", hostile_worker)
+    with pytest.raises(RuntimeError, match="forced failure"):
+        run_canonical_build_validator(
+            SCRIPT,
+            root,
+            PYTHON,
+            PACKAGE_ROOT / "fixtures/canonical-digests.json",
+            oracle_roots,
+            require_privilege_drop=False,
+        )
+    after_external = external.stat()
+    assert (after_external.st_uid, after_external.st_gid, after_external.st_mode & 0o777) == (
+        original_external.st_uid,
+        original_external.st_gid,
+        original_external.st_mode & 0o777,
+    )
+    assert {
+        path: (path.stat().st_uid, path.stat().st_gid, path.stat().st_mode & 0o777)
+        for path in (root, reports, generation)
+    } == original_modes
+    assert not list(tmp_path.glob(".validator-boundary-*"))
 
 
 def test_permutation_removes_canonical_identities_but_preserves_rule(
