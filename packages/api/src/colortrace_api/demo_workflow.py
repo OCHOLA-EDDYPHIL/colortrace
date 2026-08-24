@@ -162,7 +162,14 @@ class GrafanaMcpAlertProbe:
                 active_at = matches[0].get("activeAt")
                 if not isinstance(active_at, str):
                     raise DemoFacadeError("demo-alert-probe-failed")
-                accepted = {**candidate, "alert_started_at": active_at}
+                accepted = {
+                    **candidate,
+                    "alert_started_at": active_at,
+                    "retrieved_at": self._clock()
+                    .astimezone(UTC)
+                    .isoformat(timespec="milliseconds")
+                    .replace("+00:00", "Z"),
+                }
                 try:
                     AlertIntake.from_mapping(accepted)
                 except ContractError:
