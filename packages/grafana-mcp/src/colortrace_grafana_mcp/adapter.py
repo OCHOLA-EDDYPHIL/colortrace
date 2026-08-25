@@ -1709,7 +1709,7 @@ def _validate_provider_payload(bound: BoundCall, payload: Any) -> None:
         trace = payload.get("trace")
         metrics = payload.get("metrics")
         if (
-            payload.get("status") != "COMPLETE"
+            ("status" in payload and payload["status"] != "COMPLETE")
             or not isinstance(trace, dict)
             or trace.get("traceId") != bound.arguments["trace_id"]
             or not isinstance(trace.get("services"), list)
