@@ -49,6 +49,7 @@ _MAX_VISUAL_BYTES = 8 * 1024 * 1024
 _MAX_JSON_BYTES = 1024 * 1024
 _ALERT_WAIT_SECONDS = 70.0
 _ALERT_POLL_SECONDS = 2.0
+_MAX_RECOVERY_SETTLE_SECONDS = 30.0
 _VISUAL_SOURCES = {
     "expected": "references/display/reference-chart-02-look.png",
     "observed": "runtime/display/output-job-b-02.png",
@@ -273,7 +274,15 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
         issuer: str,
         audience: str,
         clock: Callable[[], datetime] = _utc_now,
+        recovery_settle_seconds: float = 0.0,
+        sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
+        if (
+            not isinstance(recovery_settle_seconds, (int, float))
+            or isinstance(recovery_settle_seconds, bool)
+            or not 0.0 <= recovery_settle_seconds <= _MAX_RECOVERY_SETTLE_SECONDS
+        ):
+            raise ValueError("demo-recovery-settle-invalid")
         self._incidents = incidents
         self._investigation = investigation
         self._plans = response_plans
@@ -288,6 +297,8 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
         self._issuer = issuer
         self._audience = audience
         self._clock = clock
+        self._recovery_settle_seconds = float(recovery_settle_seconds)
+        self._sleeper = sleeper
 
     def _principal(self, incident_id: str, *, role: str, kind: str) -> Principal:
         now = self._clock().astimezone(UTC)
@@ -847,6 +858,8 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
         self._simulator_runtime.service.deliver_pending_telemetry(limit=100)
         if outcome.get("status") != "succeeded":
             raise DemoFacadeError("demo-simulator-action-failed")
+        if self._recovery_settle_seconds:
+            self._sleeper(self._recovery_settle_seconds)
         packet, recovery_review = self._verified_packet(request, outcome)
         return self._execution_result(
             request,

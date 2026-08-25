@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +17,10 @@ from colortrace_vertical_slice import SliceContractError
 
 def _digest(value: Any) -> str:
     return f"sha256:{hashlib.sha256(canonical_json_bytes(value)).hexdigest()}"
+
+
+def _noop_sleep(_seconds: float) -> None:
+    pass
 
 
 def _png(label: str) -> bytes:
@@ -687,6 +691,9 @@ def _successful_outcome() -> dict[str, Any]:
 
 def _executing_workflow(
     tmp_path: Path,
+    *,
+    recovery_settle_seconds: float = 0.0,
+    sleeper: Callable[[float], None] = _noop_sleep,
 ) -> tuple[
     CanonicalDemoWorkflow,
     ExecutingPlans,
@@ -734,6 +741,8 @@ def _executing_workflow(
         visual_root=visual_root,
         issuer="https://identity.example.test",
         audience="colortrace-api",
+        recovery_settle_seconds=recovery_settle_seconds,
+        sleeper=sleeper,
     )
     return workflow, plans, actions, simulator, repository, recovery, runner
 
@@ -772,6 +781,28 @@ def test_execute_binds_authority_action_recovery_and_visual(tmp_path: Path) -> N
     assert result["execution"]["recovery"]["evidence_count"] == 21
     assert len(result["execution"]["recovery"]["checks"]) == 7
     assert result["visuals"][0]["kind"] == "recovered"
+
+
+def test_execute_waits_for_post_action_telemetry_before_recovery(tmp_path: Path) -> None:
+    waits: list[float] = []
+    dependencies: dict[str, Any] = {}
+
+    def settle(seconds: float) -> None:
+        assert dependencies["simulator"].delivery_calls == 1
+        assert dependencies["runner"].calls == []
+        waits.append(seconds)
+
+    workflow, _plans, _actions, simulator, _repository, _recovery, runner = _executing_workflow(
+        tmp_path,
+        recovery_settle_seconds=10.0,
+        sleeper=settle,
+    )
+    dependencies.update(simulator=simulator, runner=runner)
+
+    workflow.execute(_execution_request())
+
+    assert waits == [10.0]
+    assert len(runner.calls) == 1
 
 
 def test_execute_reconciliation_uses_authoritative_outcome_without_reexecution(
