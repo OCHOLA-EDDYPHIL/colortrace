@@ -331,6 +331,8 @@ def test_runtime_binding_projects_strict_observations(scenario: Path) -> None:
         "reference_match": 3,
         "reference_mismatch": 3,
     }
+    first_run_trace_ids: list[str] = []
+    second_run_trace_ids: list[str] = []
     for job in runtime.jobs:
         correlation = job.correlation("telemetry-run-00").to_dict()
         assert tuple(correlation) == (
@@ -344,6 +346,15 @@ def test_runtime_binding_projects_strict_observations(scenario: Path) -> None:
             "resource_sha256",
             "transform_id",
         )
+        assert job.correlation().trace_id == job.trace_id
+        assert job.correlation(runtime.source_run_id).trace_id == job.trace_id
+        assert job.correlation("telemetry-run-00").trace_id == correlation["trace_id"]
+        assert correlation["trace_id"] != job.trace_id
+        first_run_trace_ids.append(correlation["trace_id"])
+        second_run_trace_ids.append(job.correlation("telemetry-run-01").trace_id)
+    assert len(set(first_run_trace_ids)) == 6
+    assert len(set(second_run_trace_ids)) == 6
+    assert set(first_run_trace_ids).isdisjoint(second_run_trace_ids)
 
 
 def test_report_contract_rejects_unversioned_fields(scenario: Path) -> None:
