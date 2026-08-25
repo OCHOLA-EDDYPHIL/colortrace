@@ -93,6 +93,7 @@ SOURCE_TREE_ENV = "COLORTRACE_SOURCE_TREE"
 RUNTIME_IMAGE_ENV = "COLORTRACE_RUNTIME_IMAGE"
 PUBLIC_URL_ENV = "COLORTRACE_PUBLIC_URL"
 STAGING_GENERATION_ENV = "COLORTRACE_STAGING_GENERATION"
+_POST_ACTION_TELEMETRY_SETTLE_SECONDS = 10.0
 VERTEX_PROJECT_ID_ENV = "COLORTRACE_VERTEX_PROJECT_ID"
 VERTEX_LOCATION_ENV = "COLORTRACE_VERTEX_LOCATION"
 GRAFANA_URL_ENV = "COLORTRACE_GRAFANA_URL"
@@ -886,6 +887,7 @@ def _compose_canonical_demo(
             issuer=issuer,
             audience=audience,
             clock=clock,
+            recovery_settle_seconds=_POST_ACTION_TELEMETRY_SETTLE_SECONDS,
         )
         provenance = _demo_build_provenance(
             config,
