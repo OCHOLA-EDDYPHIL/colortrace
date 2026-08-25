@@ -343,6 +343,18 @@ class DeclaredReferenceObservation:
         }
 
 
+def _runtime_trace_id(source_trace_id: str, run_id: str) -> str:
+    payload = b"\0".join(
+        (
+            b"colortrace-runtime-trace/v1",
+            source_trace_id.encode("ascii"),
+            run_id.encode("ascii"),
+        )
+    )
+    value = int.from_bytes(hashlib.sha256(payload).digest()[:16], "big") or 1
+    return f"{value:032x}"
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeJob:
     source_manifest_sha256: str
@@ -358,13 +370,17 @@ class RuntimeJob:
     observation: DeclaredReferenceObservation
 
     def correlation(self, run_id: str | None = None) -> Correlation:
+        selected_run_id = _require_identifier("run_id", run_id or self.source_run_id)
+        selected_trace_id = self.trace_id
+        if selected_run_id != self.source_run_id:
+            selected_trace_id = _runtime_trace_id(self.trace_id, selected_run_id)
         return Correlation(
             fixture_id=self.fixture_id,
-            run_id=_require_identifier("run_id", run_id or self.source_run_id),
+            run_id=selected_run_id,
             job_id=self.job_id,
             worker_id=self.worker_id,
             artifact_id=self.artifact_id,
-            trace_id=self.trace_id,
+            trace_id=selected_trace_id,
             config_sha256=self.config_sha256,
             resource_sha256=self.resource_sha256,
             transform_id=self.transform_id,
