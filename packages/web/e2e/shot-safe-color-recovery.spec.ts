@@ -180,7 +180,7 @@ test("completes the visual-first recovery flow with exact bound approval", async
   await page.getByRole("button", { name: "Investigate with Gemini + Grafana" }).click();
 
   await expect(page.getByRole("heading", { name: "Expected versus observed" })).toBeFocused();
-  const expectedVisual = page.getByAltText("Declared expected output for job-b-02");
+  const expectedVisual = page.getByAltText("Declared expected output");
   const observedVisual = page.getByAltText(/Observed output with a visible color shift/u);
   const diffVisual = page.getByAltText(
     "Illustrative pixel difference between expected and observed output",
@@ -190,10 +190,12 @@ test("completes the visual-first recovery flow with exact bound approval", async
   await expect(expectedVisual).toHaveJSProperty("naturalWidth", 64);
   await expect(observedVisual).toHaveJSProperty("naturalWidth", 64);
   await expect(diffVisual).toHaveJSProperty("naturalWidth", 64);
-  await expect(page.locator('[data-scope-group="affected"] strong')).toHaveText("4");
-  await expect(page.locator('[data-scope-group="safe"] strong')).toHaveText("3");
-  await expect(page.locator('[data-scope-group="unknown"] strong')).toHaveText("0");
-  await expect(page.locator(".shot-timeline li")).toHaveCount(7);
+  await expect(
+    page.getByRole("heading", { name: "Same configuration, different resolved LUT" }),
+  ).toBeVisible();
+  await expect(page.getByText("Nominal configuration hashes match")).toBeVisible();
+  await expect(page.getByText("Resolved LUT hashes differ")).toBeVisible();
+  await expect(page.locator(".shot-command")).toHaveCount(5);
 
   const accessibility = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
@@ -208,7 +210,7 @@ test("completes the visual-first recovery flow with exact bound approval", async
 
   const approve = page.getByRole("button", { name: "Approve recovery action" });
   await expect(approve).toBeDisabled();
-  await page.getByLabel("Retype run nonce").fill(NONCE);
+  await page.getByLabel("Retype review nonce").fill(NONCE);
   await page.getByLabel("Type approval phrase").fill("APPROVE_COLORTRACE_SIMULATOR_ACTION");
   await page
     .getByLabel(/I approve only the returned run, incident, plan, and target bindings/u)
@@ -216,7 +218,7 @@ test("completes the visual-first recovery flow with exact bound approval", async
   await expect(approve).toBeEnabled();
   await approve.click();
 
-  await expect(page.getByAltText("Recovered output for job-b-02")).toBeVisible();
+  await expect(page.getByAltText("Recovered output")).toBeVisible();
   expect(
     await page.evaluate(() => ({
       nonce: sessionStorage.getItem("colortrace.demo.approval-nonce"),
@@ -238,10 +240,12 @@ test("completes the visual-first recovery flow with exact bound approval", async
   await expect(page.getByRole("heading", { name: /durable receipt/u })).toBeVisible();
   await expect(page.getByText(shortDigestForTest(receipt().receipt_sha256))).toBeVisible();
   await page.getByText("Technical details", { exact: true }).click();
-  await expect(page.getByText("log.correlated-events", { exact: true })).toBeVisible();
-  await expect(page.getByText("query_loki_logs", { exact: true })).toBeVisible();
-  await expect(page.getByText("post-action-telemetry-correlation", { exact: true })).toBeVisible();
-  await expect(page.getByText(PLAN_DIGEST, { exact: true })).toBeVisible();
+  await expect(page.getByText("log.correlated-events", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("query_loki_logs", { exact: true }).first()).toBeVisible();
+  await expect(
+    page.getByText("post-action-telemetry-correlation", { exact: true }).first(),
+  ).toBeVisible();
+  await expect(page.getByText(PLAN_DIGEST, { exact: true }).first()).toBeVisible();
   expect(
     await page.evaluate(() => ({
       nonce: sessionStorage.getItem("colortrace.demo.approval-nonce"),
@@ -279,7 +283,7 @@ test("keeps the clean-session flow usable on a small reduced-motion viewport", a
   await expect(page.getByRole("link", { name: "Skip to recovery workspace" })).toBeFocused();
   await page.getByRole("button", { name: "Investigate with Gemini + Grafana" }).click();
   await expect(page.getByRole("heading", { name: "Expected versus observed" })).toBeFocused();
-  const expectedVisual = page.getByAltText("Declared expected output for job-b-02");
+  const expectedVisual = page.getByAltText("Declared expected output");
   const observedVisual = page.getByAltText(/Observed output with a visible color shift/u);
   await expect(expectedVisual).toBeVisible();
   await expect(expectedVisual).toHaveJSProperty("naturalWidth", 64);
@@ -378,7 +382,7 @@ test("recovers an active conflict without inheriting an approval nonce", async (
   await page.getByRole("button", { name: "Investigate with Gemini + Grafana" }).click();
 
   await expect(
-    page.getByRole("heading", { name: "Approval cannot continue in this browser" }),
+    page.getByRole("heading", { name: "Review cannot continue in this browser" }),
   ).toBeVisible();
   expect(
     await page.evaluate(() => ({
@@ -412,11 +416,9 @@ test("resumes with the session nonce without leaking or reusing it", async ({ pa
     NONCE,
   );
   await page.reload();
-  await expect(
-    page.getByRole("heading", { name: "Confirm the exact run and action" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Decide the exact plan" })).toBeVisible();
 
-  await page.getByLabel("Retype run nonce").fill(NONCE);
+  await page.getByLabel("Retype review nonce").fill(NONCE);
   await page.getByLabel("Type approval phrase").fill("APPROVE_COLORTRACE_SIMULATOR_ACTION");
   await page
     .getByLabel(/I approve only the returned run, incident, plan, and target bindings/u)

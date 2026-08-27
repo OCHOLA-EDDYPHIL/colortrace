@@ -14,10 +14,12 @@ import {
 import {
   BUILD_DIGEST,
   demoReceipt,
+  demoRejectedRun,
   demoReset,
   demoRun,
   executionProof,
   investigationProof,
+  investigationProofV1,
   NONCE,
   RUN_ID,
   sealDemoReceipt,
@@ -55,8 +57,8 @@ describe("demo API adapter", () => {
     expect(digest(codePointOrderVector)).toBe(
       "sha256:4874d36535a1b5dfdad7f2b3af83f87debd2f0795ae7d2d09447e17223c42dd0",
     );
-    expect(digest(investigationProof())).toBe(
-      "sha256:ab19b7e0decc3376174e730fb16594897341f47b4d00ea3741aaa64d39f160fc",
+    expect(digest(investigationProofV1())).toBe(
+      "sha256:84f71a42568b86c26c56c3eb0f1f9fd64adfdef38e09acf4d9a7b709d30e093d",
     );
     expect(digest(executionProof())).toBe(
       "sha256:2f3cbaad549894daf44046ea9d107a5cad8f80ecbc0b104670c030a019946446",
@@ -65,7 +67,7 @@ describe("demo API adapter", () => {
       "sha256:a5ff48f8c5356c7c6dc51fb9b3578fcc63e786cde2a3db789b2d11daf9e660bd",
     );
     expect(demoReceipt().receipt_sha256).toBe(
-      "sha256:66b90d1224562b615e887852b428946427672b89f89b1dee13daf8d1c2e19896",
+      "sha256:c1799cc1e183630e715c02f494fa8db6e73422a97802073cc5ff7b4eaf6e7ee0",
     );
   });
 
@@ -109,6 +111,184 @@ describe("demo API adapter", () => {
     await expect(
       adapter.start({ approval_nonce: NONCE, idempotency_key: "demo-start-1" }),
     ).rejects.toMatchObject({ code: "demo-response-invalid" });
+  });
+
+  it("reads stored v1 proofs but requires the v2 review projection from a new run", async () => {
+    const legacy = runResponse({
+      approval_nonce: undefined,
+      investigation: investigationProofV1(),
+    });
+    const adapter = createDemoAdapter({
+      baseUrl: "https://colortrace.example",
+      fetch: vi.fn(
+        async () =>
+          new Response(JSON.stringify(legacy), {
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    });
+
+    await expect(adapter.get(RUN_ID)).resolves.toMatchObject({
+      investigation: { schema: "colortrace-demo-investigation-proof/v1" },
+    });
+    await expect(
+      adapter.start({ approval_nonce: NONCE, idempotency_key: "demo-start-legacy" }),
+    ).rejects.toMatchObject({ code: "demo-response-invalid" });
+  });
+
+  it("reads a stored terminal v1 run without applying v2 review invariants", async () => {
+    const investigation = investigationProofV1();
+    const legacy = demoRun("closed", {
+      investigation: {
+        ...investigation,
+        plan: { ...investigation.plan, status: "approved" },
+      },
+    });
+    const adapter = createDemoAdapter({
+      baseUrl: "https://colortrace.example",
+      fetch: async () =>
+        new Response(JSON.stringify(legacy), {
+          headers: { "Content-Type": "application/json" },
+        }),
+    });
+
+    await expect(adapter.get(RUN_ID)).resolves.toMatchObject({
+      phase: "closed",
+      terminal: true,
+      investigation: {
+        schema: "colortrace-demo-investigation-proof/v1",
+        plan: { status: "approved" },
+      },
+    });
+  });
+
+  it("rejects a stored v1 run whose approval and investigation bindings diverge", async () => {
+    const investigation = investigationProofV1();
+    const legacy = runResponse({
+      approval_nonce: undefined,
+      investigation: {
+        ...investigation,
+        plan: { ...investigation.plan, target_sha256: `sha256:${"f".repeat(64)}` },
+      },
+    });
+    const adapter = createDemoAdapter({
+      baseUrl: "https://colortrace.example",
+      fetch: async () =>
+        new Response(JSON.stringify(legacy), {
+          headers: { "Content-Type": "application/json" },
+        }),
+    });
+
+    await expect(adapter.get(RUN_ID)).rejects.toMatchObject({ code: "demo-response-invalid" });
+  });
+
+  it("rejects malformed or unsafe v2 review projections", async () => {
+    const response = runResponse();
+    const investigation = investigationProof();
+    const malformed = [
+      {
+        ...investigation,
+        comparison: {
+          ...investigation.comparison,
+          renders: investigation.comparison.renders.map((render) => ({
+            ...render,
+            resolved_lut_sha256: investigation.comparison.renders[0]?.resolved_lut_sha256,
+          })),
+        },
+      },
+      {
+        ...investigation,
+        evidence: investigation.evidence.map((item, index) =>
+          index === 0 ? { ...item, display_excerpt: "unsafe\u0000text" } : item,
+        ),
+      },
+      {
+        ...investigation,
+        plan: {
+          ...investigation.plan,
+          command_summaries: investigation.plan.command_summaries.slice(0, 4),
+        },
+      },
+      {
+        ...investigation,
+        claims: investigation.claims.map((claim, index) =>
+          index === 0
+            ? {
+                ...claim,
+                source_validator_result_id: `validation-result:${"f".repeat(64)}`,
+              }
+            : claim,
+        ),
+      },
+      { ...investigation, packet_id: `response-packet:${"f".repeat(64)}` },
+      {
+        ...investigation,
+        validators: investigation.validators.map((validator) => ({
+          ...validator,
+          result_id: `validator-result:${validator.derivation_sha256.slice("sha256:".length)}`,
+        })),
+        claims: investigation.claims.map((claim) => ({
+          ...claim,
+          source_validator_result_id: `validator-result:${investigation.validators[0]?.derivation_sha256.slice("sha256:".length)}`,
+        })),
+      },
+      {
+        ...investigation,
+        plan: { ...investigation.plan, commands_sha256: `sha256:${"f".repeat(64)}` },
+      },
+    ];
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify({ ...response, investigation: malformed.shift() }), {
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    const adapter = createDemoAdapter({ baseUrl: "https://colortrace.example", fetch: fetchMock });
+
+    for (const idempotencyKey of [
+      "bad-comparison",
+      "bad-evidence",
+      "bad-plan",
+      "bad-validator-reference",
+      "bad-packet-relation",
+      "bad-validator-relation",
+      "bad-command-digest",
+    ]) {
+      await expect(
+        adapter.start({ approval_nonce: NONCE, idempotency_key: idempotencyKey }),
+      ).rejects.toMatchObject({ code: "demo-response-invalid" });
+    }
+  });
+
+  it("posts an exact bound rejection and accepts its terminal run", async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify(demoRejectedRun("unsafe-scope")), {
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    const adapter = createDemoAdapter({ baseUrl: "https://colortrace.example", fetch: fetchMock });
+    const request = {
+      schema: "colortrace-demo-rejection-request/v1" as const,
+      approval_nonce: NONCE,
+      expected_run_version: 2,
+      expected_incident_version: 7,
+      expected_plan_version: 3,
+      expected_plan_sha256: `sha256:${"1".repeat(64)}`,
+      expected_target_sha256: `sha256:${"2".repeat(64)}`,
+      reason_code: "unsafe-scope" as const,
+      idempotency_key: "demo-reject-1",
+    };
+
+    await expect(adapter.reject(RUN_ID, request)).resolves.toMatchObject({
+      phase: "unresolved",
+      terminal: true,
+      terminal_reason: "plan-rejected-unsafe-scope",
+    });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      `https://colortrace.example/v1/demo/runs/${RUN_ID}/reject`,
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(request);
   });
 
   it("rejects an investigation proof that violates the canonical facade bindings", async () => {

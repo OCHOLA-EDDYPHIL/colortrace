@@ -55,6 +55,172 @@ def _write_visuals(path: Path) -> None:
         (path / f"{kind}.png").write_bytes(contents)
 
 
+def _v2_investigation(investigation: dict[str, Any], approval: dict[str, Any]) -> None:
+    resource_sha256 = "sha256:" + "4" * 64
+    nominal_sha256 = "sha256:" + "5" * 64
+    targets = [
+        {
+            "schema": "simulator-target/v1",
+            "namespace": "colortrace-simulator",
+            "kind": "color-resource",
+            "id": resource_sha256,
+        },
+        *[
+            {
+                "schema": "simulator-target/v1",
+                "namespace": "colortrace-simulator",
+                "kind": "frame",
+                "id": f"frame-{index}",
+            }
+            for index in range(1, 4)
+        ],
+        {
+            "schema": "simulator-target/v1",
+            "namespace": "colortrace-simulator",
+            "kind": "derivative",
+            "id": "derivative-1",
+        },
+    ]
+    exclusions = [
+        {
+            "schema": "simulator-target/v1",
+            "namespace": "colortrace-simulator",
+            "kind": "frame",
+            "id": f"protected-frame-{index}",
+        }
+        for index in range(1, 4)
+    ]
+    command_summaries: list[dict[str, Any]] = [
+        {
+            "schema": "simulator-quarantine-command/v1",
+            "command_id": "command-quarantine",
+            "namespace": "colortrace-simulator",
+            "target": targets[0],
+            "expected_resource_sha256": resource_sha256,
+            "mode": "quarantine-and-install-approved-replacement",
+        }
+    ]
+    for index, target in enumerate(targets[1:], start=1):
+        command = {
+            "schema": "simulator-targeted-rerender-command/v1",
+            "command_id": f"command-rerender-{index}",
+            "namespace": "colortrace-simulator",
+            "target": target,
+            "job_id": f"job-{index}",
+            "transform_id": "look/main/v1",
+            "source_id": f"source-{index}",
+            "source_manifest_sha256": f"sha256:{index:064x}",
+            "source_png_sha256": f"sha256:{index + 4:064x}",
+            "expected_config_sha256": nominal_sha256,
+            "lineage_parent_artifact_id": f"artifact-{index}",
+        }
+        if target["kind"] == "frame":
+            command.update(
+                {
+                    "expected_output_sha256": f"sha256:{index + 8:064x}",
+                    "expected_display_sha256": f"sha256:{index + 12:064x}",
+                }
+            )
+        else:
+            command.update(
+                {
+                    "expected_derivative_sha256": f"sha256:{index + 8:064x}",
+                    "expected_derivative_display_sha256": f"sha256:{index + 12:064x}",
+                }
+            )
+        command_summaries.append(command)
+    bindings = {
+        "schema": "simulator-action-envelope/v1",
+        "fixture_id": "ct-shadowed-lut-v1",
+        "fixture_manifest_sha256": "sha256:" + "a" * 64,
+        "fixture_generation": 1,
+        "source_batch_id": "source-batch-1",
+        "source_batch_sha256": "sha256:" + "b" * 64,
+        "runtime_manifest_sha256": "sha256:" + "c" * 64,
+        "runtime_generation": 1,
+        "expected_publication_pointer_sha256": "sha256:" + "d" * 64,
+        "expected_publication_generation": 1,
+        "expected_resource_sha256": resource_sha256,
+        "replacement_resource_logical_path": "luts/show_look.cube",
+        "replacement_resource_sha256": "sha256:" + "8" * 64,
+        "declared_resource_manifest_sha256": "sha256:" + "e" * 64,
+        "ocio_version": "2.5.2",
+        "preservation_manifest_sha256": "sha256:" + "f" * 64,
+        "safe_complement_sha256": "sha256:" + "9" * 64,
+        "lineage_manifest_sha256": "sha256:" + "0" * 64,
+        "lineage_generation": 1,
+    }
+    approval["target_sha256"] = _digest(targets)
+    investigation["schema"] = "colortrace-demo-investigation-proof/v2"
+    for validator in investigation["validators"]:
+        validator["result_id"] = "validation-result:" + validator["derivation_sha256"].removeprefix(
+            "sha256:"
+        )
+    investigation["adjudication"] = {
+        "model_role": "evidence-selection-and-advisory-drafting",
+        "model_authority": "advisory-only",
+        "validator_role": "deterministic-claim-adjudication",
+        "decision_mode": "deterministic-validation",
+    }
+    investigation["comparison"] = {
+        "renders": [
+            {
+                "job_id": f"job-{worker.lower()}-02",
+                "worker_id": worker,
+                "status": "succeeded",
+                "nominal_config_sha256": nominal_sha256,
+                "resolved_lut_sha256": f"sha256:{digit * 64}",
+            }
+            for worker, digit in (("A", "6"), ("B", "7"))
+        ],
+        "nominal_config_match": True,
+        "resolved_lut_match": False,
+    }
+    evidence_ids = [item["evidence_id"] for item in investigation["evidence"]]
+    investigation["claims"] = [
+        {
+            "claim_id": "claim-confirmed",
+            "claim_type": "resource-divergence",
+            "subject": {"kind": "resource", "value": "show-look"},
+            "state": "confirmed",
+            "reason_codes": ["resolved-lut-differs"],
+            "evidence_ids": evidence_ids[:2],
+            "source_validator_result_id": investigation["validators"][0]["result_id"],
+        },
+        {
+            "claim_id": "claim-rejected",
+            "claim_type": "nominal-config-divergence",
+            "subject": {"kind": "config", "value": "show-config"},
+            "state": "rejected",
+            "reason_codes": ["nominal-config-matches"],
+            "evidence_ids": evidence_ids[2:],
+            "source_validator_result_id": investigation["validators"][0]["result_id"],
+        },
+    ]
+    investigation["evidence"] = [
+        {
+            **item,
+            "display_excerpt": f"Bounded evidence for {item['query_key']}.",
+            "display_excerpt_truncated": False,
+        }
+        for item in investigation["evidence"]
+    ]
+    investigation["plan"] = {
+        "status": "pending",
+        "version": approval["plan_version"],
+        "plan_sha256": approval["plan_sha256"],
+        "target_sha256": approval["target_sha256"],
+        "exclusions_sha256": _digest(exclusions),
+        "commands_sha256": _digest(
+            [{**command, "action_envelope": bindings} for command in command_summaries]
+        ),
+        "targets": targets,
+        "protected_exclusions": exclusions,
+        "shared_action_bindings": bindings,
+        "command_summaries": command_summaries,
+    }
+
+
 def _artifact() -> dict[str, Any]:
     registry = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images"
     components = ("runtime", "web", "caddy", "grafana", "loki", "tempo")
@@ -129,6 +295,9 @@ def _artifact() -> dict[str, Any]:
 
 def _workflow(
     artifact: dict[str, Any],
+    *,
+    run_digit: str = "a",
+    proof_version: int = 1,
 ) -> tuple[
     dict[str, Any],
     dict[str, Any],
@@ -136,7 +305,7 @@ def _workflow(
     dict[str, Any],
     dict[str, Any],
 ]:
-    run_id = "demo-run-" + "a" * 32
+    run_id = "demo-run-" + run_digit * 32
     visual_comparison = {
         kind: {
             "href": f"/v1/demo/runs/{run_id}/visuals/{kind}",
@@ -231,6 +400,10 @@ def _workflow(
         "plan_sha256": approval["plan_sha256"],
         "target_sha256": approval["target_sha256"],
     }
+    if proof_version == 2:
+        _v2_investigation(investigation, approval)
+    elif proof_version != 1:
+        raise ValueError("unsupported proof version")
     execution = {
         "schema": "colortrace-demo-execution-proof/v1",
         "action": {
@@ -268,7 +441,7 @@ def _workflow(
     base = {
         "schema": "colortrace-demo-run/v1",
         "run_id": run_id,
-        "incident_id": "incident-demo-" + "a" * 32,
+        "incident_id": "incident-demo-" + run_digit * 32,
         "scenario_id": "ct-shadowed-lut-v1:canonical",
         "source_commit": artifact["source"]["commit"],
         "build_sha256": "sha256:" + "0" * 64,
@@ -424,6 +597,88 @@ def _workflow(
     return started, approved, closed, receipt, reset
 
 
+def _rejected_workflow(
+    artifact: dict[str, Any],
+    *,
+    run_digit: str = "a",
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    started, _approved, closed, approved_receipt, reset = _workflow(
+        artifact,
+        run_digit=run_digit,
+        proof_version=2,
+    )
+    build_sha256 = closed["build_sha256"]
+    started["build_sha256"] = build_sha256
+    rejected = {key: value for key, value in started.items() if key != "approval_nonce"}
+    rejected.update(
+        {
+            "phase": "unresolved",
+            "version": started["version"] + 1,
+            "lease_expires_at": None,
+            "terminal": True,
+            "terminal_reason": "plan-rejected-insufficient-evidence",
+            "receipt_href": f"/v1/demo/runs/{started['run_id']}/receipt",
+        }
+    )
+    approval = rejected["approval"]
+    body = {
+        "schema": "colortrace-demo-receipt/v1",
+        "run_id": rejected["run_id"],
+        "incident_id": rejected["incident_id"],
+        "scenario_id": rejected["scenario_id"],
+        "source_commit": rejected["source_commit"],
+        "build_sha256": build_sha256,
+        "provenance": approved_receipt["provenance"],
+        "phase": "unresolved",
+        "run_version": rejected["version"],
+        "created_at": "2026-08-23T12:00:00.000Z",
+        "terminal_at": "2026-08-23T12:00:15.000Z",
+        "reason_code": rejected["terminal_reason"],
+        "bindings": {
+            "incident_version": approval["incident_version"],
+            "plan_version": approval["plan_version"],
+            "plan_sha256": approval["plan_sha256"],
+            "target_sha256": approval["target_sha256"],
+            "outcome_id": None,
+            "outcome_sha256": None,
+            "workflow_id": None,
+            "workflow_version": None,
+            "packet_id": None,
+            "packet_sha256": None,
+            "closure_id": None,
+            "closure_sha256": None,
+        },
+        "proofs": [
+            {
+                "stage": "investigation",
+                "sha256": _digest(rejected["investigation"]),
+            }
+        ],
+        "visuals": [
+            {
+                "kind": kind,
+                "sha256": rejected["visual_comparison"][kind]["sha256"],
+            }
+            for kind in ("diff", "expected", "observed")
+        ],
+    }
+    receipt_sha256 = _digest(body)
+    receipt = {
+        **body,
+        "receipt_id": f"demo-receipt:{receipt_sha256.removeprefix('sha256:')}",
+        "receipt_sha256": receipt_sha256,
+    }
+    reset.update(
+        {
+            "run_id": rejected["run_id"],
+            "phase": "unresolved",
+            "version": rejected["version"],
+            "receipt_href": rejected["receipt_href"],
+        }
+    )
+    return started, rejected, receipt, reset
+
+
 class VerifyHostTests(unittest.TestCase):
     def test_fresh_workflow_live_bindings_and_restart_are_verified_without_secret_leak(
         self,
@@ -450,18 +705,37 @@ class VerifyHostTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            started, approved, closed, receipt, reset = _workflow(artifact)
+            _stale_started, _stale_approved, stale_closed, _stale_receipt, stale_reset = _workflow(
+                artifact, run_digit="c"
+            )
+            rejection_started, rejected, rejected_receipt, rejected_reset = _rejected_workflow(
+                artifact, run_digit="a"
+            )
+            started, approved, closed, receipt, reset = _workflow(
+                artifact,
+                run_digit="b",
+                proof_version=2,
+            )
             responses = temporary / "responses"
             responses.mkdir()
             for name, value in (
-                ("started", started),
+                ("stale-closed", stale_closed),
+                ("stale-reset", stale_reset),
+                ("rejection-started", rejection_started),
+                ("rejected", rejected),
+                ("rejected-receipt", rejected_receipt),
+                ("rejected-reset", rejected_reset),
+                ("approval-started", started),
                 ("approved", approved),
                 ("closed", closed),
                 ("receipt", receipt),
                 ("reset", reset),
                 (
                     "conflict",
-                    {"code": "demo-reset-required", "run_id": closed["run_id"]},
+                    {
+                        "code": "demo-reset-required",
+                        "run_id": stale_closed["run_id"],
+                    },
                 ),
             ):
                 (responses / f"{name}.json").write_text(json.dumps(value), encoding="utf-8")
@@ -550,7 +824,7 @@ if "--write-out" in arguments and "%{content_type}" in arguments:
 if "--write-out" in arguments and "--data-binary" not in arguments:
     if not authenticated or "--user" in arguments:
         status = "401"
-    elif url.endswith("/v1/session"):
+    elif url.endswith("/v1/session") or url.endswith("/v1/incidents"):
         status = "404"
     elif url.endswith("/reset") and "Origin: https://invalid.example" in arguments:
         status = "403"
@@ -572,27 +846,43 @@ if "--write-out" in arguments and "--data-binary" not in arguments:
 if "--data-binary" in arguments:
     if url.endswith("/v1/demo/runs"):
         counter = pathlib.Path(os.environ["FAKE_START_COUNTER"])
-        if os.environ.get("FAKE_INITIAL_CONFLICT") == "true" and not counter.exists():
-            counter.touch()
+        count = int(counter.read_text()) if counter.exists() else 0
+        counter.write_text(str(count + 1))
+        if os.environ.get("FAKE_INITIAL_CONFLICT") == "true" and count == 0:
             source, status = responses / "conflict.json", "409"
+        elif count <= 1:
+            source, status = responses / "rejection-started.json", "201"
         else:
-            source, status = responses / "started.json", "201"
+            source, status = responses / "approval-started.json", "201"
+    elif url.endswith("/reject"):
+        source, status = responses / "rejected.json", "200"
     elif url.endswith("/approve"):
         source, status = responses / "approved.json", "200"
     elif url.endswith("/close"):
         source, status = responses / "closed.json", "200"
     elif url.endswith("/reset"):
-        source, status = responses / "reset.json", "200"
+        if "cccccccccccccccccccccccccccccccc" in url:
+            source = responses / "stale-reset.json"
+        elif "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in url:
+            source = responses / "rejected-reset.json"
+        else:
+            source = responses / "reset.json"
+        status = "200"
     else:
         raise SystemExit(2)
     shutil.copyfile(source, output)
     print(status, end="")
     raise SystemExit(0)
 if url.endswith("/receipt"):
-    shutil.copyfile(responses / "receipt.json", output)
+    source = (
+        responses / "rejected-receipt.json"
+        if "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in url
+        else responses / "receipt.json"
+    )
+    shutil.copyfile(source, output)
     raise SystemExit(0)
 if "/v1/demo/runs/" in url:
-    shutil.copyfile(responses / "closed.json", output)
+    shutil.copyfile(responses / "stale-closed.json", output)
     raise SystemExit(0)
 raise SystemExit(2)
 """,
@@ -655,15 +945,22 @@ raise SystemExit(124)
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             report = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(report["schema"], "colortrace-single-host-verification/v2")
-            self.assertEqual(report["workflow"]["run_id"], started["run_id"])
-            self.assertEqual(report["workflow"]["recovery_check_count"], 7)
-            self.assertEqual(report["workflow"]["recovery_evidence_count"], 21)
+            self.assertEqual(report["schema"], "colortrace-single-host-verification/v3")
+            self.assertEqual(report["workflows"]["approved"]["run_id"], started["run_id"])
+            self.assertEqual(report["workflows"]["approved"]["recovery_check_count"], 7)
+            self.assertEqual(report["workflows"]["approved"]["recovery_evidence_count"], 21)
+            self.assertEqual(report["workflows"]["rejected"]["run_id"], rejection_started["run_id"])
+            self.assertEqual(
+                report["workflows"]["rejected"]["reason_code"],
+                "insufficient-evidence",
+            )
+            self.assertFalse(report["workflows"]["rejected"]["execution_proof_present"])
+            self.assertFalse(report["workflows"]["rejected"]["action_bindings_present"])
             self.assertTrue(all(value == "pass" for value in report["checks"].values()))
             calls = [json.loads(line) for line in command_log.read_text().splitlines()]
             serialized_calls = json.dumps(calls)
             self.assertNotIn(password, serialized_calls)
-            self.assertIn("docker restart colortrace-runtime", serialized_calls)
+            self.assertEqual(serialized_calls.count("docker restart colortrace-runtime"), 2)
             self.assertIn("python -m colortrace_grafana_mcp.cli catalog", serialized_calls)
             self.assertNotIn("/opt/colortrace/bin/colortrace-grafana-mcp", serialized_calls)
             self.assertIn("colortrace-live-binding-ok", serialized_calls)
@@ -675,12 +972,296 @@ raise SystemExit(124)
                 for call in calls
                 if call[0] == "curl" and "--data-binary" in call and call[-1].endswith("/reset")
             ]
-            self.assertEqual(len(reset_calls), 2)
+            self.assertEqual(len(reset_calls), 3)
+            reject_calls = [
+                call
+                for call in calls
+                if call[0] == "curl" and "--data-binary" in call and call[-1].endswith("/reject")
+            ]
+            self.assertEqual(len(reject_calls), 2)
+            self.assertEqual(reject_calls[0][-1], reject_calls[1][-1])
+            boundary_urls = {
+                call[-1] for call in calls if call[0] == "curl" and "--write-out" in call
+            }
+            self.assertIn(
+                "https://203-0-113-42.sslip.io/v1/demo/runs/"
+                "demo-run-00000000000000000000000000000000",
+                boundary_urls,
+            )
+            self.assertIn(
+                "https://203-0-113-42.sslip.io/v1/incidents",
+                boundary_urls,
+            )
             private_port_calls = [call for call in calls if call[0] == "timeout"]
             self.assertEqual(
                 sorted(int(call[-1]) for call in private_port_calls),
                 [22, 80, 3000, 3100, 3200, 4318, 8080, 8443, 9090, 13000, 13100, 13200, 19090],
             )
+
+    def test_prepare_rejection_binds_nonce_versions_plan_target_and_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            started, _rejected, _receipt, _reset = _rejected_workflow(_artifact())
+            run_path = root / "run.json"
+            request_path = root / "request.json"
+            run_path.write_text(json.dumps(started), encoding="utf-8")
+
+            completed = subprocess.run(
+                [CONTRACT_HELPER, "prepare-rejection", run_path, request_path],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(completed.stdout.strip(), started["run_id"])
+            request = json.loads(request_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                request,
+                {
+                    "schema": "colortrace-demo-rejection-request/v1",
+                    "approval_nonce": started["approval_nonce"],
+                    "expected_run_version": started["version"],
+                    "expected_incident_version": started["approval"]["incident_version"],
+                    "expected_plan_version": started["approval"]["plan_version"],
+                    "expected_plan_sha256": started["approval"]["plan_sha256"],
+                    "expected_target_sha256": started["approval"]["target_sha256"],
+                    "reason_code": "insufficient-evidence",
+                    "idempotency_key": f"reject:{started['run_id']}",
+                },
+            )
+
+    def test_v2_investigation_rejects_unknown_projection_field(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            started, _rejected, _receipt, _reset = _rejected_workflow(_artifact())
+            started["investigation"]["unexpected"] = "unsafe-expansion"
+            run_path = root / "run.json"
+            run_path.write_text(json.dumps(started), encoding="utf-8")
+
+            completed = subprocess.run(
+                [
+                    CONTRACT_HELPER,
+                    "prepare-rejection",
+                    run_path,
+                    root / "request.json",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 65)
+            self.assertIn("investigation-proof-invalid", completed.stderr)
+
+    def test_v2_claim_requires_an_existing_source_validator_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            started, _rejected, _receipt, _reset = _rejected_workflow(_artifact())
+            started["investigation"]["claims"][0]["source_validator_result_id"] = (
+                "validator-result:" + "f" * 64
+            )
+            run_path = root / "run.json"
+            run_path.write_text(json.dumps(started), encoding="utf-8")
+
+            completed = subprocess.run(
+                [
+                    CONTRACT_HELPER,
+                    "prepare-rejection",
+                    run_path,
+                    root / "request.json",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 65)
+            self.assertIn("investigation-proof-invalid", completed.stderr)
+
+    def test_v2_investigation_rejects_noncanonical_derived_bindings(self) -> None:
+        for case in ("packet", "validator", "commands"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                started, _rejected, _receipt, _reset = _rejected_workflow(_artifact())
+                investigation = started["investigation"]
+                if case == "packet":
+                    investigation["packet_id"] = "response-packet:" + "f" * 64
+                elif case == "validator":
+                    result_id = "validation-result:" + "f" * 64
+                    investigation["validators"][0]["result_id"] = result_id
+                    for claim in investigation["claims"]:
+                        claim["source_validator_result_id"] = result_id
+                else:
+                    investigation["plan"]["commands_sha256"] = "sha256:" + "f" * 64
+                run_path = root / "run.json"
+                run_path.write_text(json.dumps(started), encoding="utf-8")
+
+                completed = subprocess.run(
+                    [
+                        CONTRACT_HELPER,
+                        "prepare-rejection",
+                        run_path,
+                        root / "request.json",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+                self.assertEqual(completed.returncode, 65)
+                self.assertIn("investigation-proof-invalid", completed.stderr)
+
+    def test_rejection_contract_rejects_execution_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            artifact = _artifact()
+            started, rejected, receipt, _reset = _rejected_workflow(artifact)
+            request = {
+                "schema": "colortrace-demo-rejection-request/v1",
+                "approval_nonce": started["approval_nonce"],
+                "expected_run_version": started["version"],
+                "expected_incident_version": started["approval"]["incident_version"],
+                "expected_plan_version": started["approval"]["plan_version"],
+                "expected_plan_sha256": started["approval"]["plan_sha256"],
+                "expected_target_sha256": started["approval"]["target_sha256"],
+                "reason_code": "insufficient-evidence",
+                "idempotency_key": f"reject:{started['run_id']}",
+            }
+            receipt["bindings"]["outcome_id"] = "simulator-action-outcome:" + "f" * 64
+            body = {
+                key: value
+                for key, value in receipt.items()
+                if key not in {"receipt_id", "receipt_sha256"}
+            }
+            receipt["receipt_sha256"] = _digest(body)
+            receipt["receipt_id"] = "demo-receipt:" + receipt["receipt_sha256"].removeprefix(
+                "sha256:"
+            )
+            paths = {}
+            for name, value in (
+                ("artifact", artifact),
+                ("request", request),
+                ("run", rejected),
+                ("receipt", receipt),
+            ):
+                paths[name] = root / f"{name}.json"
+                paths[name].write_text(json.dumps(value), encoding="utf-8")
+
+            completed = subprocess.run(
+                [
+                    CONTRACT_HELPER,
+                    "verify-rejection-contract",
+                    paths["run"],
+                    paths["request"],
+                    paths["receipt"],
+                    paths["artifact"],
+                    "https://203-0-113-42.sslip.io",
+                    "stage-0001",
+                    "1000",
+                    root / "summary.json",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 65)
+            self.assertIn("receipt-binding-invalid", completed.stderr)
+
+    def test_rejection_contract_rejects_request_binding_conflicts(self) -> None:
+        artifact = _artifact()
+        started, rejected, receipt, _reset = _rejected_workflow(artifact)
+        request = {
+            "schema": "colortrace-demo-rejection-request/v1",
+            "approval_nonce": started["approval_nonce"],
+            "expected_run_version": started["version"],
+            "expected_incident_version": started["approval"]["incident_version"],
+            "expected_plan_version": started["approval"]["plan_version"],
+            "expected_plan_sha256": started["approval"]["plan_sha256"],
+            "expected_target_sha256": started["approval"]["target_sha256"],
+            "reason_code": "insufficient-evidence",
+            "idempotency_key": f"reject:{started['run_id']}",
+        }
+        conflicts = {
+            "expected_run_version": request["expected_run_version"] + 1,
+            "expected_incident_version": request["expected_incident_version"] + 1,
+            "expected_plan_sha256": "sha256:" + "f" * 64,
+            "expected_target_sha256": "sha256:" + "e" * 64,
+            "reason_code": "unsafe-scope",
+        }
+        for field, conflicting_value in conflicts.items():
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                conflicting_request = {**request, field: conflicting_value}
+                paths = {}
+                for name, value in (
+                    ("artifact", artifact),
+                    ("request", conflicting_request),
+                    ("run", rejected),
+                    ("receipt", receipt),
+                ):
+                    paths[name] = root / f"{name}.json"
+                    paths[name].write_text(json.dumps(value), encoding="utf-8")
+
+                completed = subprocess.run(
+                    [
+                        CONTRACT_HELPER,
+                        "verify-rejection-contract",
+                        paths["run"],
+                        paths["request"],
+                        paths["receipt"],
+                        paths["artifact"],
+                        "https://203-0-113-42.sslip.io",
+                        "stage-0001",
+                        "1000",
+                        root / "summary.json",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+                self.assertEqual(completed.returncode, 65)
+
+    def test_contract_accepts_stored_v1_investigation_proof(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            artifact = _artifact()
+            _started, _approved, closed, receipt, _reset = _workflow(artifact)
+            visuals = root / "visuals"
+            _write_visuals(visuals)
+            paths = {}
+            for name, value in (
+                ("artifact", artifact),
+                ("run", closed),
+                ("receipt", receipt),
+            ):
+                paths[name] = root / f"{name}.json"
+                paths[name].write_text(json.dumps(value), encoding="utf-8")
+
+            completed = subprocess.run(
+                [
+                    CONTRACT_HELPER,
+                    "verify-contract",
+                    paths["run"],
+                    paths["receipt"],
+                    paths["artifact"],
+                    "https://203-0-113-42.sslip.io",
+                    "stage-0001",
+                    "1000",
+                    visuals,
+                    root / "summary.json",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["run_id"], closed["run_id"])
+            self.assertEqual(summary["proofs"][1]["sha256"], _digest(closed["investigation"]))
 
     def test_contract_rejects_rehashed_receipt_with_wrong_proof_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

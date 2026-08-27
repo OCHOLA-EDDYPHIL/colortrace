@@ -9,6 +9,7 @@ import secrets
 import sqlite3
 import stat
 import threading
+import unicodedata
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from colortrace_recovery import (
     validate_closure_result,
 )
 from colortrace_response_plans import ResponsePlanError
+from colortrace_response_plans.contracts import REJECTION_CODES
 from colortrace_simulator.bundle import SimulatorBundleError
 from colortrace_simulator.repository import SimulatorRepositoryError
 from colortrace_vertical_slice import SliceContractError
@@ -38,6 +40,7 @@ from .recovery import RecoveryApi
 RUN_REQUEST_SCHEMA = "colortrace-demo-run-request/v2"
 RUN_SCHEMA = "colortrace-demo-run/v1"
 APPROVAL_REQUEST_SCHEMA = "colortrace-demo-approval-request/v1"
+REJECTION_REQUEST_SCHEMA = "colortrace-demo-rejection-request/v1"
 CLOSURE_REQUEST_SCHEMA = "colortrace-demo-closure-request/v1"
 RESET_REQUEST_SCHEMA = "colortrace-demo-reset-request/v1"
 RESET_SCHEMA = "colortrace-demo-reset/v1"
@@ -73,8 +76,10 @@ _INVESTIGATION_TOOLS = {
     "trace.by-id": "tempo_get-trace",
 }
 BUILD_PROVENANCE_SCHEMA = "colortrace-demo-build-provenance/v1"
-INVESTIGATION_PROOF_SCHEMA = "colortrace-demo-investigation-proof/v1"
+INVESTIGATION_PROOF_SCHEMA_V1 = "colortrace-demo-investigation-proof/v1"
+INVESTIGATION_PROOF_SCHEMA = "colortrace-demo-investigation-proof/v2"
 EXECUTION_PROOF_SCHEMA = "colortrace-demo-execution-proof/v1"
+_REJECTION_RESULT_SCHEMA = "colortrace-demo-rejection-result/v1"
 _SCENARIO_RESET_RESULT_SCHEMA = "simulator-authored-scenario-reset/v1"
 
 
@@ -109,6 +114,10 @@ class DemoWorkflowPort(Protocol):
 
     def execute(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
+    def reject(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+    def review_rejection(self, request: Mapping[str, Any]) -> Mapping[str, Any] | None: ...
+
     def reconcile(self, request: Mapping[str, Any]) -> Mapping[str, Any] | None: ...
 
 
@@ -122,6 +131,8 @@ class DemoApi(Protocol):
     def get(self, run_id: str) -> dict[str, Any]: ...
 
     def approve(self, run_id: str, body: Mapping[str, Any]) -> dict[str, Any]: ...
+
+    def reject(self, run_id: str, body: Mapping[str, Any]) -> dict[str, Any]: ...
 
     def close(self, run_id: str, body: Mapping[str, Any]) -> dict[str, Any]: ...
 
@@ -199,6 +210,10 @@ def _require_idempotency_key(value: Any) -> str:
 
 def _nonce_sha256(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('ascii')).hexdigest()}"
+
+
+def _canonical_digest(value: Any) -> str:
+    return f"sha256:{hashlib.sha256(canonical_json_bytes(value)).hexdigest()}"
 
 
 def _scenario_reset_operation_id(*, run_id: str, request_sha256: str) -> str:
@@ -336,7 +351,7 @@ def _bounded_count(value: Any, *, maximum: int, code: str) -> int:
     return value
 
 
-def _validate_investigation_proof(value: Any) -> dict[str, Any]:
+def _validate_investigation_proof_v1(value: Any) -> dict[str, Any]:
     fields = {
         "schema",
         "packet_id",
@@ -352,7 +367,7 @@ def _validate_investigation_proof(value: Any) -> dict[str, Any]:
     if (
         not isinstance(value, Mapping)
         or set(value) != fields
-        or value.get("schema") != INVESTIGATION_PROOF_SCHEMA
+        or value.get("schema") != INVESTIGATION_PROOF_SCHEMA_V1
         or value.get("status") not in {"resolved", "unresolved"}
     ):
         raise DemoFacadeError("demo-investigation-proof-invalid")
@@ -514,7 +529,7 @@ def _validate_investigation_proof(value: Any) -> dict[str, Any]:
     ):
         raise DemoFacadeError("demo-investigation-proof-invalid")
     return {
-        "schema": INVESTIGATION_PROOF_SCHEMA,
+        "schema": INVESTIGATION_PROOF_SCHEMA_V1,
         "packet_id": _require_identifier(
             value.get("packet_id"), code="demo-investigation-proof-invalid"
         ),
@@ -556,6 +571,588 @@ def _validate_investigation_proof(value: Any) -> dict[str, Any]:
             ),
         },
     }
+
+
+def _plain_text_excerpt(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 1_024
+        or len(value.encode("utf-8")) > 4_096
+        or any(
+            unicodedata.category(character).startswith("C")
+            for character in value
+            if character not in {"\n", "\t"}
+        )
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    return value
+
+
+_TARGET_FIELDS = frozenset({"schema", "namespace", "kind", "id"})
+
+
+def _validate_review_target(value: Any) -> dict[str, str]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _TARGET_FIELDS
+        or value.get("schema") != "simulator-target/v1"
+        or value.get("namespace") != "colortrace-simulator"
+        or value.get("kind") not in {"color-resource", "frame", "derivative"}
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    return {
+        "schema": "simulator-target/v1",
+        "namespace": "colortrace-simulator",
+        "kind": cast(str, value["kind"]),
+        "id": _require_identifier(value.get("id"), code="demo-investigation-proof-invalid"),
+    }
+
+
+def _validate_review_targets(
+    value: Any,
+    *,
+    minimum: int,
+    maximum: int,
+) -> list[dict[str, str]]:
+    if not isinstance(value, list) or not minimum <= len(value) <= maximum:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    targets = [_validate_review_target(item) for item in value]
+    if len({canonical_json_bytes(item) for item in targets}) != len(targets):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    return targets
+
+
+def _validate_command_summaries(
+    value: Any,
+    *,
+    targets: Sequence[Mapping[str, str]],
+    expected_config_sha256: str,
+    expected_resource_sha256: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) != 5:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    summaries: list[dict[str, Any]] = []
+    command_ids: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        schema = raw.get("schema")
+        target = _validate_review_target(raw.get("target"))
+        command_id = _require_identifier(
+            raw.get("command_id"), code="demo-investigation-proof-invalid"
+        )
+        if command_id in command_ids or raw.get("namespace") != "colortrace-simulator":
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        command_ids.add(command_id)
+        if schema == "simulator-quarantine-command/v1":
+            if (
+                set(raw)
+                != {
+                    "schema",
+                    "command_id",
+                    "namespace",
+                    "target",
+                    "expected_resource_sha256",
+                    "mode",
+                }
+                or target["kind"] != "color-resource"
+                or raw.get("mode") != "quarantine-and-install-approved-replacement"
+                or raw.get("expected_resource_sha256") != expected_resource_sha256
+            ):
+                raise DemoFacadeError("demo-investigation-proof-invalid")
+            summaries.append(
+                {
+                    "schema": schema,
+                    "command_id": command_id,
+                    "namespace": "colortrace-simulator",
+                    "target": target,
+                    "expected_resource_sha256": _require_digest(
+                        raw.get("expected_resource_sha256"),
+                        code="demo-investigation-proof-invalid",
+                    ),
+                    "mode": "quarantine-and-install-approved-replacement",
+                }
+            )
+            continue
+        if schema != "simulator-targeted-rerender-command/v1":
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        common = {
+            "schema",
+            "command_id",
+            "namespace",
+            "target",
+            "job_id",
+            "transform_id",
+            "source_id",
+            "source_manifest_sha256",
+            "source_png_sha256",
+            "expected_config_sha256",
+            "lineage_parent_artifact_id",
+        }
+        artifact_fields = (
+            {"expected_output_sha256", "expected_display_sha256"}
+            if target["kind"] == "frame"
+            else {"expected_derivative_sha256", "expected_derivative_display_sha256"}
+        )
+        if (
+            target["kind"] not in {"frame", "derivative"}
+            or set(raw) != common | artifact_fields
+            or raw.get("transform_id") not in {"look/main/v1", "identity/v1"}
+            or raw.get("expected_config_sha256") != expected_config_sha256
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        summary: dict[str, Any] = {
+            "schema": schema,
+            "command_id": command_id,
+            "namespace": "colortrace-simulator",
+            "target": target,
+            "job_id": _require_identifier(
+                raw.get("job_id"), code="demo-investigation-proof-invalid"
+            ),
+            "transform_id": cast(str, raw["transform_id"]),
+            "source_id": _require_identifier(
+                raw.get("source_id"), code="demo-investigation-proof-invalid"
+            ),
+            "source_manifest_sha256": _require_digest(
+                raw.get("source_manifest_sha256"), code="demo-investigation-proof-invalid"
+            ),
+            "source_png_sha256": _require_digest(
+                raw.get("source_png_sha256"), code="demo-investigation-proof-invalid"
+            ),
+            "expected_config_sha256": _require_digest(
+                raw.get("expected_config_sha256"), code="demo-investigation-proof-invalid"
+            ),
+            "lineage_parent_artifact_id": _require_identifier(
+                raw.get("lineage_parent_artifact_id"),
+                code="demo-investigation-proof-invalid",
+            ),
+        }
+        for field in sorted(artifact_fields):
+            summary[field] = _require_digest(
+                raw.get(field), code="demo-investigation-proof-invalid"
+            )
+        summaries.append(summary)
+    if {canonical_json_bytes(cast(Mapping[str, Any], item["target"])) for item in summaries} != {
+        canonical_json_bytes(item) for item in targets
+    }:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    if sum(item["schema"] == "simulator-quarantine-command/v1" for item in summaries) != 1:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    return summaries
+
+
+def _validate_investigation_proof_v2(value: Any) -> dict[str, Any]:
+    fields = {
+        "schema",
+        "packet_id",
+        "packet_sha256",
+        "status",
+        "adjudication",
+        "model_invocations",
+        "comparison",
+        "claims",
+        "evidence",
+        "validators",
+        "scope",
+        "budget_use",
+        "plan",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or value.get("schema") != INVESTIGATION_PROOF_SCHEMA
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    plan = value.get("plan")
+    plan_fields = {
+        "status",
+        "version",
+        "plan_sha256",
+        "target_sha256",
+        "exclusions_sha256",
+        "commands_sha256",
+        "targets",
+        "protected_exclusions",
+        "shared_action_bindings",
+        "command_summaries",
+    }
+    if not isinstance(plan, Mapping) or set(plan) != plan_fields:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    raw_evidence = value.get("evidence")
+    if not isinstance(raw_evidence, list):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    legacy_evidence: list[dict[str, Any]] = []
+    evidence: list[dict[str, Any]] = []
+    evidence_fields = {
+        "evidence_id",
+        "query_key",
+        "tool",
+        "inventory_sha256",
+        "content_sha256",
+        "freshness",
+        "display_excerpt",
+        "display_excerpt_truncated",
+    }
+    for raw in raw_evidence:
+        if (
+            not isinstance(raw, Mapping)
+            or set(raw) != evidence_fields
+            or not isinstance(raw.get("display_excerpt_truncated"), bool)
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        base = {
+            key: raw[key]
+            for key in raw
+            if key
+            not in {
+                "display_excerpt",
+                "display_excerpt_truncated",
+            }
+        }
+        legacy_evidence.append(base)
+        evidence.append(
+            {
+                **base,
+                "display_excerpt": _plain_text_excerpt(raw.get("display_excerpt")),
+                "display_excerpt_truncated": raw["display_excerpt_truncated"],
+            }
+        )
+    legacy = _validate_investigation_proof_v1(
+        {
+            "schema": INVESTIGATION_PROOF_SCHEMA_V1,
+            "packet_id": value.get("packet_id"),
+            "packet_sha256": value.get("packet_sha256"),
+            "status": value.get("status"),
+            "model_invocations": value.get("model_invocations"),
+            "evidence": legacy_evidence,
+            "validators": value.get("validators"),
+            "scope": value.get("scope"),
+            "budget_use": value.get("budget_use"),
+            "plan": {
+                key: plan.get(key) for key in ("status", "version", "plan_sha256", "target_sha256")
+            },
+        }
+    )
+    if (
+        legacy["packet_id"] != f"response-packet:{legacy['packet_sha256'].removeprefix('sha256:')}"
+        or any(
+            item["result_id"]
+            != f"validation-result:{item['derivation_sha256'].removeprefix('sha256:')}"
+            for item in legacy["validators"]
+        )
+        or len({item["evidence_id"] for item in legacy["evidence"]}) != len(legacy["evidence"])
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    adjudication = value.get("adjudication")
+    if adjudication != {
+        "model_role": "evidence-selection-and-advisory-drafting",
+        "model_authority": "advisory-only",
+        "validator_role": "deterministic-claim-adjudication",
+        "decision_mode": "deterministic-validation",
+    }:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    comparison = value.get("comparison")
+    if (
+        not isinstance(comparison, Mapping)
+        or set(comparison) != {"renders", "nominal_config_match", "resolved_lut_match"}
+        or comparison.get("nominal_config_match") is not True
+        or comparison.get("resolved_lut_match") is not False
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    raw_renders = comparison.get("renders")
+    if not isinstance(raw_renders, list) or len(raw_renders) != 2:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    renders: list[dict[str, str]] = []
+    for raw in raw_renders:
+        if (
+            not isinstance(raw, Mapping)
+            or set(raw)
+            != {
+                "job_id",
+                "worker_id",
+                "status",
+                "nominal_config_sha256",
+                "resolved_lut_sha256",
+            }
+            or raw.get("status") != "succeeded"
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        renders.append(
+            {
+                "job_id": _require_identifier(
+                    raw.get("job_id"), code="demo-investigation-proof-invalid"
+                ),
+                "worker_id": _require_identifier(
+                    raw.get("worker_id"), code="demo-investigation-proof-invalid"
+                ),
+                "status": "succeeded",
+                "nominal_config_sha256": _require_digest(
+                    raw.get("nominal_config_sha256"),
+                    code="demo-investigation-proof-invalid",
+                ),
+                "resolved_lut_sha256": _require_digest(
+                    raw.get("resolved_lut_sha256"),
+                    code="demo-investigation-proof-invalid",
+                ),
+            }
+        )
+    if (
+        len({item["job_id"] for item in renders}) != 2
+        or len({item["worker_id"] for item in renders}) != 2
+        or len({item["nominal_config_sha256"] for item in renders}) != 1
+        or len({item["resolved_lut_sha256"] for item in renders}) != 2
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    raw_claims = value.get("claims")
+    if not isinstance(raw_claims, list) or not 1 <= len(raw_claims) <= 16:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    claims: list[dict[str, Any]] = []
+    claim_ids: set[str] = set()
+    claim_fields = {
+        "claim_id",
+        "claim_type",
+        "subject",
+        "state",
+        "reason_codes",
+        "evidence_ids",
+        "source_validator_result_id",
+    }
+    validator_ids = {item["result_id"] for item in legacy["validators"]}
+    if len(validator_ids) != len(legacy["validators"]):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    for raw in raw_claims:
+        if (
+            not isinstance(raw, Mapping)
+            or set(raw) != claim_fields
+            or raw.get("state") not in {"confirmed", "rejected"}
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        claim_id = _require_identifier(raw.get("claim_id"), code="demo-investigation-proof-invalid")
+        subject = raw.get("subject")
+        reasons = raw.get("reason_codes")
+        links = raw.get("evidence_ids")
+        if (
+            claim_id in claim_ids
+            or not isinstance(subject, Mapping)
+            or set(subject) != {"kind", "value"}
+            or not isinstance(reasons, list)
+            or not 1 <= len(reasons) <= 16
+            or len(set(reasons)) != len(reasons)
+            or any(
+                not isinstance(reason, str) or _REASON_CODE.fullmatch(reason) is None
+                for reason in reasons
+            )
+            or not isinstance(links, list)
+            or not 1 <= len(links) <= 64
+            or len(set(links)) != len(links)
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        claim_ids.add(claim_id)
+        claims.append(
+            {
+                "claim_id": claim_id,
+                "claim_type": _require_identifier(
+                    raw.get("claim_type"), code="demo-investigation-proof-invalid"
+                ),
+                "subject": {
+                    "kind": _require_identifier(
+                        subject.get("kind"), code="demo-investigation-proof-invalid"
+                    ),
+                    "value": _require_identifier(
+                        subject.get("value"), code="demo-investigation-proof-invalid"
+                    ),
+                },
+                "state": raw["state"],
+                "reason_codes": list(reasons),
+                "evidence_ids": [
+                    _require_identifier(link, code="demo-investigation-proof-invalid")
+                    for link in links
+                ],
+                "source_validator_result_id": _require_identifier(
+                    raw.get("source_validator_result_id"),
+                    code="demo-investigation-proof-invalid",
+                ),
+            }
+        )
+    if {item["state"] for item in claims} != {"confirmed", "rejected"} or any(
+        item["source_validator_result_id"] not in validator_ids for item in claims
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    targets = _validate_review_targets(plan.get("targets"), minimum=1, maximum=8)
+    exclusions = _validate_review_targets(plan.get("protected_exclusions"), minimum=0, maximum=8)
+    if (
+        len(targets) != 5
+        or len(exclusions) != 3
+        or {item["kind"] for item in exclusions} != {"frame"}
+        or sum(item["kind"] == "color-resource" for item in targets) != 1
+        or sum(item["kind"] == "frame" for item in targets) != 3
+        or sum(item["kind"] == "derivative" for item in targets) != 1
+        or {canonical_json_bytes(item) for item in targets}
+        & {canonical_json_bytes(item) for item in exclusions}
+        or _canonical_digest(targets) != plan.get("target_sha256")
+        or _canonical_digest(exclusions) != plan.get("exclusions_sha256")
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    bindings = plan.get("shared_action_bindings")
+    binding_fields = {
+        "schema",
+        "fixture_id",
+        "fixture_manifest_sha256",
+        "fixture_generation",
+        "source_batch_id",
+        "source_batch_sha256",
+        "runtime_manifest_sha256",
+        "runtime_generation",
+        "expected_publication_pointer_sha256",
+        "expected_publication_generation",
+        "expected_resource_sha256",
+        "replacement_resource_logical_path",
+        "replacement_resource_sha256",
+        "declared_resource_manifest_sha256",
+        "ocio_version",
+        "preservation_manifest_sha256",
+        "safe_complement_sha256",
+        "lineage_manifest_sha256",
+        "lineage_generation",
+    }
+    if (
+        not isinstance(bindings, Mapping)
+        or set(bindings) != binding_fields
+        or bindings.get("schema") != "simulator-action-envelope/v1"
+        or bindings.get("replacement_resource_logical_path") != "luts/show_look.cube"
+        or bindings.get("ocio_version") != "2.5.2"
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    selected_bindings = {
+        "schema": "simulator-action-envelope/v1",
+        "fixture_id": _require_identifier(
+            bindings.get("fixture_id"), code="demo-investigation-proof-invalid"
+        ),
+        "fixture_manifest_sha256": _require_digest(
+            bindings.get("fixture_manifest_sha256"), code="demo-investigation-proof-invalid"
+        ),
+        "fixture_generation": _require_version(
+            bindings.get("fixture_generation"), code="demo-investigation-proof-invalid"
+        ),
+        "source_batch_id": _require_identifier(
+            bindings.get("source_batch_id"), code="demo-investigation-proof-invalid"
+        ),
+        "source_batch_sha256": _require_digest(
+            bindings.get("source_batch_sha256"), code="demo-investigation-proof-invalid"
+        ),
+        "runtime_manifest_sha256": _require_digest(
+            bindings.get("runtime_manifest_sha256"), code="demo-investigation-proof-invalid"
+        ),
+        "runtime_generation": _require_version(
+            bindings.get("runtime_generation"), code="demo-investigation-proof-invalid"
+        ),
+        "expected_publication_pointer_sha256": _require_digest(
+            bindings.get("expected_publication_pointer_sha256"),
+            code="demo-investigation-proof-invalid",
+        ),
+        "expected_publication_generation": _require_version(
+            bindings.get("expected_publication_generation"),
+            code="demo-investigation-proof-invalid",
+        ),
+        "expected_resource_sha256": _require_digest(
+            bindings.get("expected_resource_sha256"), code="demo-investigation-proof-invalid"
+        ),
+        "replacement_resource_logical_path": "luts/show_look.cube",
+        "replacement_resource_sha256": _require_digest(
+            bindings.get("replacement_resource_sha256"),
+            code="demo-investigation-proof-invalid",
+        ),
+        "declared_resource_manifest_sha256": _require_digest(
+            bindings.get("declared_resource_manifest_sha256"),
+            code="demo-investigation-proof-invalid",
+        ),
+        "ocio_version": _require_identifier(
+            bindings.get("ocio_version"), code="demo-investigation-proof-invalid"
+        ),
+        "preservation_manifest_sha256": _require_digest(
+            bindings.get("preservation_manifest_sha256"),
+            code="demo-investigation-proof-invalid",
+        ),
+        "safe_complement_sha256": _require_digest(
+            bindings.get("safe_complement_sha256"), code="demo-investigation-proof-invalid"
+        ),
+        "lineage_manifest_sha256": _require_digest(
+            bindings.get("lineage_manifest_sha256"), code="demo-investigation-proof-invalid"
+        ),
+        "lineage_generation": _require_version(
+            bindings.get("lineage_generation"), code="demo-investigation-proof-invalid"
+        ),
+    }
+    generations = {
+        selected_bindings["fixture_generation"],
+        selected_bindings["runtime_generation"],
+        selected_bindings["expected_publication_generation"],
+        selected_bindings["lineage_generation"],
+    }
+    resource_targets = [item for item in targets if item["kind"] == "color-resource"]
+    if (
+        resource_targets[0]["id"] != selected_bindings["expected_resource_sha256"]
+        or selected_bindings["expected_resource_sha256"]
+        == selected_bindings["replacement_resource_sha256"]
+        or len(generations) != 1
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    summaries = _validate_command_summaries(
+        plan.get("command_summaries"),
+        targets=targets,
+        expected_config_sha256=renders[0]["nominal_config_sha256"],
+        expected_resource_sha256=selected_bindings["expected_resource_sha256"],
+    )
+    commands = [{**summary, "action_envelope": selected_bindings} for summary in summaries]
+    if _canonical_digest(commands) != plan.get("commands_sha256"):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    return {
+        "schema": INVESTIGATION_PROOF_SCHEMA,
+        "packet_id": legacy["packet_id"],
+        "packet_sha256": legacy["packet_sha256"],
+        "status": legacy["status"],
+        "adjudication": dict(adjudication),
+        "model_invocations": legacy["model_invocations"],
+        "comparison": {
+            "renders": renders,
+            "nominal_config_match": True,
+            "resolved_lut_match": False,
+        },
+        "claims": claims,
+        "evidence": evidence,
+        "validators": legacy["validators"],
+        "scope": legacy["scope"],
+        "budget_use": legacy["budget_use"],
+        "plan": {
+            "status": legacy["plan"]["status"],
+            "version": legacy["plan"]["version"],
+            "plan_sha256": legacy["plan"]["plan_sha256"],
+            "target_sha256": legacy["plan"]["target_sha256"],
+            "exclusions_sha256": _require_digest(
+                plan.get("exclusions_sha256"), code="demo-investigation-proof-invalid"
+            ),
+            "commands_sha256": _require_digest(
+                plan.get("commands_sha256"), code="demo-investigation-proof-invalid"
+            ),
+            "targets": targets,
+            "protected_exclusions": exclusions,
+            "shared_action_bindings": selected_bindings,
+            "command_summaries": summaries,
+        },
+    }
+
+
+def _validate_investigation_proof(
+    value: Any,
+    *,
+    stored: bool = False,
+) -> dict[str, Any]:
+    schema = value.get("schema") if isinstance(value, Mapping) else None
+    if schema == INVESTIGATION_PROOF_SCHEMA:
+        return _validate_investigation_proof_v2(value)
+    if stored and schema == INVESTIGATION_PROOF_SCHEMA_V1:
+        return _validate_investigation_proof_v1(value)
+    raise DemoFacadeError("demo-investigation-proof-invalid")
 
 
 def _validate_execution_proof(value: Any) -> dict[str, Any]:
@@ -1343,7 +1940,7 @@ class SQLiteDemoRunStore:
             stage = cast(str, row["stage"])
             raw = _decode_document(row["proof_document"], code="stored-demo-proof-invalid")
             if stage == "investigation":
-                proof = _validate_investigation_proof(raw)
+                proof = _validate_investigation_proof(raw, stored=True)
             elif stage == "execution":
                 proof = _validate_execution_proof(raw)
             else:  # pragma: no cover - constrained by SQLite
@@ -1868,6 +2465,15 @@ class SQLiteDemoRunStore:
             ).fetchone()
             return None if row is None else self._run(cast(sqlite3.Row, row))
 
+    def rejection_candidate(self) -> dict[str, Any] | None:
+        with self._transaction(write=False) as connection:
+            row = connection.execute(
+                "SELECT runs.* FROM demo_active_run AS active "
+                "JOIN demo_runs AS runs ON runs.run_id = active.run_id "
+                "WHERE active.slot = 1 AND runs.phase = 'awaiting-approval'"
+            ).fetchone()
+            return None if row is None else self._run(cast(sqlite3.Row, row))
+
     def fail(
         self,
         run_id: str,
@@ -1882,6 +2488,37 @@ class SQLiteDemoRunStore:
                 return self._projection(connection, run)
             selected = self._terminalize(
                 connection, run, phase="unresolved", reason=reason, now=now
+            )
+            return self._projection(connection, selected)
+
+    def complete_rejection(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        reason: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        with self._transaction(write=True) as connection:
+            run = self._run(self._row(connection, run_id))
+            if run["phase"] in _TERMINAL_PHASES:
+                if (
+                    run["phase"] != "unresolved"
+                    or run["terminal_reason"] != reason
+                    or run["version"] != expected_version + 1
+                ):
+                    raise DemoFacadeError("demo-run-phase-conflict")
+                return self._projection(connection, run)
+            if run["phase"] != "awaiting-approval":
+                raise DemoFacadeError("demo-run-phase-conflict")
+            if run["version"] != expected_version:
+                raise DemoFacadeError("demo-run-version-conflict")
+            selected = self._terminalize(
+                connection,
+                run,
+                phase="unresolved",
+                reason=reason,
+                now=now,
             )
             return self._projection(connection, selected)
 
@@ -2279,12 +2916,61 @@ class DemoFacade:
         return value.astimezone(UTC)
 
     def _assert_active_build_binding(self) -> None:
+        self._reconcile_rejection_before_expiry()
         active = self._store.active(now=self._now())
         if active is not None and (
             active["source_commit"] != self._source_commit
             or active["build_sha256"] != self._build_sha256
         ):
             raise DemoFacadeError("demo-build-binding-conflict")
+
+    def _reconcile_rejection_before_expiry(self) -> None:
+        active = self._store.rejection_candidate()
+        if active is None:
+            return
+        if (
+            active["source_commit"] != self._source_commit
+            or active["build_sha256"] != self._build_sha256
+        ):
+            return
+        reviewer = getattr(self._workflow, "review_rejection", None)
+        if not callable(reviewer):
+            return
+        request = {
+            "schema": "colortrace-demo-rejection-reconciliation/v1",
+            "run_id": active["run_id"],
+            "incident_id": active["incident_id"],
+            "incident_version": active["incident_version"],
+            "plan_version": active["plan_version"],
+            "plan_sha256": active["plan_sha256"],
+            "target_sha256": active["target_sha256"],
+        }
+        expired = _parse_timestamp(active["lease_expires_at"]) <= self._now()
+        try:
+            raw_rejection = reviewer(request)
+            if raw_rejection is None:
+                return
+            rejection = self._validate_rejection_result(
+                raw_rejection,
+                run=active,
+            )
+            self._store.complete_rejection(
+                cast(str, active["run_id"]),
+                expected_version=cast(int, active["version"]),
+                reason=f"plan-rejected-{rejection['reason_code']}",
+                now=self._now(),
+            )
+        except _KNOWN_OPERATION_ERRORS:
+            if expired:
+                return
+            self._store.fail(
+                cast(str, active["run_id"]),
+                reason="restart-reconciliation-invalid",
+                now=self._now(),
+                expected_phase="awaiting-approval",
+            )
+        except Exception:
+            return
 
     def _record_known_failure(
         self,
@@ -2573,6 +3259,177 @@ class DemoFacade:
             raise DemoFacadeError("demo-operation-uncertain") from error
 
     @staticmethod
+    def _rejection_request(body: Mapping[str, Any]) -> dict[str, Any]:
+        fields = frozenset(
+            {
+                "schema",
+                "approval_nonce",
+                "expected_run_version",
+                "expected_incident_version",
+                "expected_plan_version",
+                "expected_plan_sha256",
+                "expected_target_sha256",
+                "reason_code",
+                "idempotency_key",
+            }
+        )
+        _require_exact(body, fields, REJECTION_REQUEST_SCHEMA)
+        nonce = body.get("approval_nonce")
+        if not isinstance(nonce, str) or _NONCE.fullmatch(nonce) is None:
+            raise DemoFacadeError("demo-approval-nonce-invalid")
+        reason = body.get("reason_code")
+        if reason not in REJECTION_CODES:
+            raise DemoFacadeError("demo-rejection-reason-invalid")
+        return {
+            "schema": REJECTION_REQUEST_SCHEMA,
+            "approval_nonce": nonce,
+            "expected_run_version": _require_version(
+                body.get("expected_run_version"), code="demo-run-version-invalid"
+            ),
+            "expected_incident_version": _require_version(
+                body.get("expected_incident_version"), code="demo-incident-version-invalid"
+            ),
+            "expected_plan_version": _require_version(
+                body.get("expected_plan_version"), code="demo-plan-version-invalid"
+            ),
+            "expected_plan_sha256": _require_digest(
+                body.get("expected_plan_sha256"), code="demo-plan-digest-invalid"
+            ),
+            "expected_target_sha256": _require_digest(
+                body.get("expected_target_sha256"), code="demo-target-digest-invalid"
+            ),
+            "reason_code": reason,
+            "idempotency_key": _require_idempotency_key(body.get("idempotency_key")),
+        }
+
+    @staticmethod
+    def _validate_rejection_result(
+        value: Mapping[str, Any],
+        *,
+        run: Mapping[str, Any],
+        reason_code: str | None = None,
+    ) -> dict[str, Any]:
+        fields = {
+            "schema",
+            "run_id",
+            "incident_id",
+            "incident_version",
+            "plan_version",
+            "plan_sha256",
+            "target_sha256",
+            "reason_code",
+            "decision_id",
+            "decision_sha256",
+        }
+        if (
+            set(value) != fields
+            or value.get("schema") != _REJECTION_RESULT_SCHEMA
+            or value.get("run_id") != run["run_id"]
+            or value.get("incident_id") != run["incident_id"]
+            or value.get("incident_version") != run["incident_version"]
+            or value.get("plan_version") != run["plan_version"]
+            or value.get("plan_sha256") != run["plan_sha256"]
+            or value.get("target_sha256") != run["target_sha256"]
+            or value.get("reason_code") not in REJECTION_CODES
+            or (reason_code is not None and value.get("reason_code") != reason_code)
+        ):
+            raise DemoFacadeError("demo-rejection-decision-invalid")
+        return {
+            **dict(value),
+            "decision_id": _require_identifier(
+                value.get("decision_id"), code="demo-rejection-decision-invalid"
+            ),
+            "decision_sha256": _require_digest(
+                value.get("decision_sha256"), code="demo-rejection-decision-invalid"
+            ),
+        }
+
+    @staticmethod
+    def _rejection_workflow_request(
+        run: Mapping[str, Any],
+        *,
+        reason_code: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return {
+            "schema": "colortrace-demo-rejection-operation/v1",
+            "run_id": run["run_id"],
+            "incident_id": run["incident_id"],
+            "incident_version": run["incident_version"],
+            "plan_version": run["plan_version"],
+            "plan_sha256": run["plan_sha256"],
+            "target_sha256": run["target_sha256"],
+            "reason_code": reason_code,
+            "idempotency_key": idempotency_key,
+        }
+
+    def reject(self, run_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        with self._operation_lock:
+            return self._reject(run_id, body)
+
+    def _reject(self, run_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        if _RUN_ID.fullmatch(run_id) is None:
+            raise DemoFacadeError("demo-run-id-invalid")
+        self._assert_active_build_binding()
+        request = self._rejection_request(body)
+        current = self._store.raw(run_id, now=self._now())
+        if not hmac.compare_digest(
+            cast(str, current["approval_nonce_sha256"]),
+            _nonce_sha256(cast(str, request["approval_nonce"])),
+        ):
+            raise DemoFacadeError("demo-approval-nonce-invalid")
+        bindings = {
+            "expected_incident_version": "incident_version",
+            "expected_plan_version": "plan_version",
+            "expected_plan_sha256": "plan_sha256",
+            "expected_target_sha256": "target_sha256",
+        }
+        if any(request[provided] != current[stored] for provided, stored in bindings.items()):
+            raise DemoFacadeError("demo-rejection-binding-conflict")
+        expected_run_version = cast(int, request["expected_run_version"])
+        if current["phase"] == "awaiting-approval":
+            if current["version"] != expected_run_version:
+                raise DemoFacadeError("demo-run-version-conflict")
+        elif not (
+            current["phase"] == "unresolved"
+            and current["version"] == expected_run_version + 1
+            and cast(str, current["terminal_reason"]).startswith("plan-rejected-")
+        ):
+            raise DemoFacadeError("demo-run-phase-conflict")
+        operation_request = self._rejection_workflow_request(
+            current,
+            reason_code=cast(str, request["reason_code"]),
+            idempotency_key=cast(str, request["idempotency_key"]),
+        )
+        try:
+            raw = self._workflow.reject(operation_request)
+            rejection = self._validate_rejection_result(
+                raw,
+                run=current,
+                reason_code=cast(str, request["reason_code"]),
+            )
+        except ResponsePlanError as error:
+            if error.code == "idempotency-conflict":
+                raise DemoFacadeError("demo-idempotency-conflict") from error
+            raise
+        except DemoFacadeError:
+            raise
+        except Exception as error:
+            raise DemoFacadeError("demo-operation-uncertain") from error
+        terminal_reason = f"plan-rejected-{rejection['reason_code']}"
+        try:
+            return self._store.complete_rejection(
+                run_id,
+                expected_version=expected_run_version,
+                reason=terminal_reason,
+                now=self._now(),
+            )
+        except DemoFacadeError:
+            raise
+        except Exception as error:
+            raise DemoFacadeError("demo-operation-uncertain") from error
+
+    @staticmethod
     def _closure_request(body: Mapping[str, Any]) -> dict[str, Any]:
         fields = frozenset(
             {
@@ -2792,28 +3649,31 @@ class DemoFacade:
         )
 
     def receipt(self, run_id: str) -> dict[str, Any]:
-        if _RUN_ID.fullmatch(run_id) is None:
-            raise DemoFacadeError("demo-run-id-invalid")
-        return self._store.receipt(run_id, now=self._now())
+        with self._operation_lock:
+            if _RUN_ID.fullmatch(run_id) is None:
+                raise DemoFacadeError("demo-run-id-invalid")
+            return self._store.receipt(run_id, now=self._now())
 
     def visual(self, run_id: str, kind: str) -> DemoVisual:
-        if _RUN_ID.fullmatch(run_id) is None:
-            raise DemoFacadeError("demo-run-id-invalid")
-        if kind not in _VISUAL_KINDS:
-            raise DemoFacadeError("demo-visual-kind-invalid")
-        descriptor = self._store.visual_descriptor(run_id, kind, now=self._now())
-        content = self._read_visual(descriptor)
-        return DemoVisual(
-            content=content,
-            media_type=descriptor["media_type"],
-            sha256=descriptor["sha256"],
-        )
+        with self._operation_lock:
+            if _RUN_ID.fullmatch(run_id) is None:
+                raise DemoFacadeError("demo-run-id-invalid")
+            if kind not in _VISUAL_KINDS:
+                raise DemoFacadeError("demo-visual-kind-invalid")
+            descriptor = self._store.visual_descriptor(run_id, kind, now=self._now())
+            content = self._read_visual(descriptor)
+            return DemoVisual(
+                content=content,
+                media_type=descriptor["media_type"],
+                sha256=descriptor["sha256"],
+            )
 
     def reconcile_startup(self) -> None:
         with self._operation_lock:
             self._reconcile_startup()
 
     def _reconcile_startup(self) -> None:
+        self._reconcile_rejection_before_expiry()
         pending_reset = self._store.pending_reset()
         if pending_reset is not None:
             if self._scenario_reset is None:
@@ -2988,6 +3848,7 @@ __all__ = [
     "LEASE_SECONDS",
     "PREPARATION_SCHEMA",
     "RECEIPT_SCHEMA",
+    "REJECTION_REQUEST_SCHEMA",
     "RECONCILIATION_REQUEST_SCHEMA",
     "RESET_REQUEST_SCHEMA",
     "RESET_SCHEMA",

@@ -4,12 +4,16 @@ import {
   type DemoAdapter,
   DemoApiError,
   type DemoInvestigationProof,
+  type DemoPlanCommand,
+  type DemoPlanTarget,
   type DemoPhase,
   type DemoReceipt,
+  type DemoRejectionReason,
   type DemoReset,
   type DemoRun,
   type DemoVisualKind,
   DEMO_APPROVAL_PHRASE,
+  DEMO_REJECTION_REASONS,
   type VerifiedDemoVisual,
   verifyDemoReceiptIntegrity,
 } from "./demo-api.ts";
@@ -21,25 +25,7 @@ const SESSION_RESET_KEY = "colortrace.demo.reset-idempotency-key";
 const REQUIRED_APPROVAL_VISUALS: readonly DemoVisualKind[] = ["expected", "observed", "diff"];
 const RECONCILE_INTERVAL_MILLISECONDS = 1_000;
 
-const CANONICAL_SCOPE = {
-  affected: ["job-b-01", "job-b-02", "job-b-03"],
-  derivative: ["artifact-b-02-derivative"],
-  safe: ["job-a-01", "job-a-02", "job-b-04"],
-  unknown: [] as readonly string[],
-} as const;
-
-const TIMELINE = [
-  { key: "alert", label: "Alert", detail: "Canonical scenario initialized" },
-  { key: "investigation", label: "Investigation", detail: "Facade preparation completed" },
-  { key: "plan", label: "Plan", detail: "Returned plan bindings ready" },
-  { key: "approval", label: "Approval", detail: "Human boundary confirmation" },
-  { key: "action", label: "Action", detail: "Bound simulator action" },
-  { key: "recovery", label: "Recovery", detail: "Recovered output verified" },
-  { key: "closure", label: "Closure", detail: "Immutable receipt recorded" },
-] as const;
-
 type DemoSessionStorage = Pick<Storage, "getItem" | "removeItem" | "setItem">;
-type TimelineState = "complete" | "current" | "waiting" | "stopped";
 type DecodedVisual = Pick<VerifiedDemoVisual, "sha256" | "src">;
 type VisualFailure = {
   readonly sha256: string;
@@ -209,47 +195,6 @@ function phaseLabel(phase: DemoPhase): string {
   }
 }
 
-function timelineStates(
-  run: DemoRun,
-): Readonly<Record<(typeof TIMELINE)[number]["key"], TimelineState>> {
-  const terminalFailure = run.phase === "unresolved" || run.phase === "expired";
-  const approvalComplete =
-    run.phase === "executing" ||
-    run.phase === "awaiting-closure" ||
-    run.phase === "closing" ||
-    run.phase === "closed";
-  const recoveryComplete =
-    run.phase === "awaiting-closure" || run.phase === "closing" || run.phase === "closed";
-  return {
-    alert: "complete",
-    investigation: run.approval === null ? (terminalFailure ? "stopped" : "current") : "complete",
-    plan: run.approval === null ? (terminalFailure ? "stopped" : "waiting") : "complete",
-    approval: approvalComplete
-      ? "complete"
-      : run.phase === "awaiting-approval"
-        ? "current"
-        : terminalFailure
-          ? "stopped"
-          : "waiting",
-    action: recoveryComplete
-      ? "complete"
-      : run.phase === "executing"
-        ? "current"
-        : terminalFailure
-          ? "stopped"
-          : "waiting",
-    recovery: recoveryComplete ? "complete" : terminalFailure ? "stopped" : "waiting",
-    closure:
-      run.phase === "closed"
-        ? "complete"
-        : run.phase === "awaiting-closure" || run.phase === "closing"
-          ? "current"
-          : terminalFailure
-            ? "stopped"
-            : "waiting",
-  };
-}
-
 function LeaseStatus({ expiresAt }: { readonly expiresAt: string | null }) {
   const [now, setNow] = useState(() => Date.now());
 
@@ -326,77 +271,400 @@ function VisualCard({
   );
 }
 
-function ScopeSummary({ investigation }: { readonly investigation?: DemoInvestigationProof }) {
-  const scope = investigation?.scope;
-  const groups = [
-    { key: "affected", label: "Affected outputs", count: scope?.affected_count },
-    { key: "safe", label: "Safe outputs", count: scope?.safe_count },
-    { key: "unknown", label: "Unknown outputs", count: scope?.unknown_count },
-  ] as const;
+function TargetList({
+  emptyText,
+  targets,
+}: {
+  readonly emptyText: string;
+  readonly targets: readonly DemoPlanTarget[];
+}) {
+  if (targets.length === 0) return <p>{emptyText}</p>;
   return (
-    <section aria-labelledby="shot-scope-title" className="shot-panel shot-scope">
-      <div className="shot-section-heading">
-        <div>
-          <p className="shot-eyebrow">Validated investigation scope</p>
-          <h2 id="shot-scope-title">Four affected outputs, three safe</h2>
-        </div>
-        <span className="shot-authority">Authoritative numeric proof</span>
-      </div>
-      <p>
-        Counts come from the returned investigation proof. Names below are canonical scenario
-        context and do not grant action authority.
-      </p>
-      <div className="shot-scope__groups">
-        {groups.map((group) => (
-          <section data-scope-group={group.key} key={group.key}>
-            <strong>{group.count ?? "—"}</strong>
-            <h3>{group.label}</h3>
-          </section>
-        ))}
-      </div>
-      <div className="shot-scope__context">
-        <h3>Canonical names · context only</h3>
-        <p>
-          Primary affected: <code>{CANONICAL_SCOPE.affected.join(", ")}</code>
-        </p>
-        <p>
-          Derivative affected: <code>{CANONICAL_SCOPE.derivative.join(", ")}</code>
-        </p>
-        <p>
-          Safe: <code>{CANONICAL_SCOPE.safe.join(", ")}</code>
-        </p>
-        <p>Unknown: {CANONICAL_SCOPE.unknown.length === 0 ? "none" : "listed in context"}</p>
-      </div>
-    </section>
+    <ul className="shot-target-list">
+      {targets.map((target) => (
+        <li key={`${target.kind}:${target.id}`}>
+          <span>{target.kind}</span>
+          <code>{target.id}</code>
+        </li>
+      ))}
+    </ul>
   );
 }
 
-function ProofTimeline({ run }: { readonly run: DemoRun }) {
-  const states = timelineStates(run);
+function CommandSummary({
+  command,
+  index,
+}: {
+  readonly command: DemoPlanCommand;
+  readonly index: number;
+}) {
+  const isQuarantine = command.schema === "simulator-quarantine-command/v1";
   return (
-    <section aria-labelledby="shot-timeline-title" className="shot-panel shot-timeline">
-      <div className="shot-section-heading">
+    <li className="shot-command">
+      <div className="shot-command__heading">
+        <span>{String(index + 1).padStart(2, "0")}</span>
         <div>
-          <p className="shot-eyebrow">Proof path</p>
-          <h2 id="shot-timeline-title">From alert to closure</h2>
+          <strong>{isQuarantine ? "Quarantine and replace resource" : "Targeted rerender"}</strong>
+          <code>{command.schema}</code>
         </div>
-        <span aria-live="polite" className="shot-phase" data-phase={run.phase}>
-          {phaseLabel(run.phase)}
-        </span>
       </div>
-      <ol>
-        {TIMELINE.map((item) => (
-          <li data-state={states[item.key]} key={item.key}>
-            <span aria-hidden="true" className="shot-timeline__marker" />
+      <dl>
+        <div>
+          <dt>Command ID</dt>
+          <dd>
+            <code>{command.command_id}</code>
+          </dd>
+        </div>
+        <div>
+          <dt>Namespace</dt>
+          <dd>
+            <code>{command.namespace}</code>
+          </dd>
+        </div>
+        <div>
+          <dt>Target</dt>
+          <dd>
+            <code>
+              {command.target.kind}:{command.target.id}
+            </code>
+          </dd>
+        </div>
+        {isQuarantine ? (
+          <>
             <div>
-              <strong>{item.label}</strong>
-              <p>{item.detail}</p>
+              <dt>Expected resource</dt>
+              <dd>
+                <code>{command.expected_resource_sha256}</code>
+              </dd>
             </div>
-            <small>{states[item.key]}</small>
-          </li>
-        ))}
-      </ol>
-    </section>
+            <div>
+              <dt>Mode</dt>
+              <dd>
+                <code>{command.mode}</code>
+              </dd>
+            </div>
+          </>
+        ) : (
+          <>
+            <div>
+              <dt>Job</dt>
+              <dd>
+                <code>{command.job_id}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Source</dt>
+              <dd>
+                <code>{command.source_id}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Transform</dt>
+              <dd>
+                <code>{command.transform_id}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Source manifest</dt>
+              <dd>
+                <code>{command.source_manifest_sha256}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Source PNG</dt>
+              <dd>
+                <code>{command.source_png_sha256}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Expected config</dt>
+              <dd>
+                <code>{command.expected_config_sha256}</code>
+              </dd>
+            </div>
+            {"expected_output_sha256" in command ? (
+              <>
+                <div>
+                  <dt>Expected output</dt>
+                  <dd>
+                    <code>{command.expected_output_sha256}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Expected display</dt>
+                  <dd>
+                    <code>{command.expected_display_sha256}</code>
+                  </dd>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <dt>Expected derivative</dt>
+                  <dd>
+                    <code>{command.expected_derivative_sha256}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Derivative display</dt>
+                  <dd>
+                    <code>{command.expected_derivative_display_sha256}</code>
+                  </dd>
+                </div>
+              </>
+            )}
+            <div>
+              <dt>Lineage parent</dt>
+              <dd>
+                <code>{command.lineage_parent_artifact_id}</code>
+              </dd>
+            </div>
+          </>
+        )}
+      </dl>
+    </li>
+  );
+}
+
+function InvestigationReview({
+  investigation,
+}: {
+  readonly investigation?: DemoInvestigationProof;
+}) {
+  if (investigation === undefined) {
+    return (
+      <section className="shot-panel">
+        <p className="shot-eyebrow">Review evidence</p>
+        <h2>Investigation proof pending</h2>
+      </section>
+    );
+  }
+  if (investigation.schema === "colortrace-demo-investigation-proof/v1") {
+    return (
+      <section aria-labelledby="shot-legacy-proof-title" className="shot-panel shot-legacy-proof">
+        <p className="shot-eyebrow">Stored proof compatibility</p>
+        <h2 id="shot-legacy-proof-title">Investigation proof v1</h2>
+        <p>
+          This stored proof exposes verified counts and digest bindings. Detailed render, claim,
+          excerpt, and command review is available on newly created runs.
+        </p>
+        <dl className="shot-counts">
+          <div>
+            <dt>Affected</dt>
+            <dd>{investigation.scope.affected_count}</dd>
+          </div>
+          <div>
+            <dt>Protected</dt>
+            <dd>{investigation.scope.safe_count}</dd>
+          </div>
+          <div>
+            <dt>Unknown</dt>
+            <dd>{investigation.scope.unknown_count}</dd>
+          </div>
+        </dl>
+      </section>
+    );
+  }
+
+  const { comparison, claims, evidence, plan, scope } = investigation;
+  const actionEnvelopeRows = [
+    ["Action envelope schema", plan.shared_action_bindings.schema],
+    ["Fixture", plan.shared_action_bindings.fixture_id],
+    ["Fixture manifest SHA-256", plan.shared_action_bindings.fixture_manifest_sha256],
+    ["Fixture generation", plan.shared_action_bindings.fixture_generation],
+    ["Source batch", plan.shared_action_bindings.source_batch_id],
+    ["Source batch SHA-256", plan.shared_action_bindings.source_batch_sha256],
+    ["Runtime manifest SHA-256", plan.shared_action_bindings.runtime_manifest_sha256],
+    ["Runtime generation", plan.shared_action_bindings.runtime_generation],
+    [
+      "Expected publication pointer SHA-256",
+      plan.shared_action_bindings.expected_publication_pointer_sha256,
+    ],
+    [
+      "Expected publication generation",
+      plan.shared_action_bindings.expected_publication_generation,
+    ],
+    ["Expected resource", plan.shared_action_bindings.expected_resource_sha256],
+    ["Replacement path", plan.shared_action_bindings.replacement_resource_logical_path],
+    ["Replacement resource", plan.shared_action_bindings.replacement_resource_sha256],
+    [
+      "Declared resource manifest SHA-256",
+      plan.shared_action_bindings.declared_resource_manifest_sha256,
+    ],
+    ["OCIO version", plan.shared_action_bindings.ocio_version],
+    ["Preservation manifest SHA-256", plan.shared_action_bindings.preservation_manifest_sha256],
+    ["Safe complement", plan.shared_action_bindings.safe_complement_sha256],
+    ["Lineage manifest SHA-256", plan.shared_action_bindings.lineage_manifest_sha256],
+    ["Lineage generation", plan.shared_action_bindings.lineage_generation],
+  ] as const;
+  return (
+    <div className="shot-review">
+      <section aria-labelledby="shot-comparison-proof-title" className="shot-panel">
+        <div className="shot-section-heading">
+          <div>
+            <p className="shot-eyebrow">Deterministic comparison</p>
+            <h2 id="shot-comparison-proof-title">Same configuration, different resolved LUT</h2>
+          </div>
+          <span className="shot-authority">Both renders succeeded</span>
+        </div>
+        <div className="shot-render-grid">
+          {comparison.renders.map((render) => (
+            <article key={render.job_id}>
+              <div className="shot-render-heading">
+                <strong>{render.job_id}</strong>
+                <span>{render.status}</span>
+              </div>
+              <dl>
+                <div>
+                  <dt>Worker</dt>
+                  <dd>
+                    <code>{render.worker_id}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Nominal config</dt>
+                  <dd>
+                    <code>{render.nominal_config_sha256}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Resolved LUT</dt>
+                  <dd>
+                    <code>{render.resolved_lut_sha256}</code>
+                  </dd>
+                </div>
+              </dl>
+            </article>
+          ))}
+        </div>
+        <div className="shot-comparison-facts">
+          <span data-result="match">Nominal configuration hashes match</span>
+          <span data-result="different">Resolved LUT hashes differ</span>
+        </div>
+      </section>
+
+      <section aria-labelledby="shot-claims-title" className="shot-panel">
+        <div className="shot-section-heading">
+          <div>
+            <p className="shot-eyebrow">Adjudicated findings</p>
+            <h2 id="shot-claims-title">Confirmed and rejected claims</h2>
+          </div>
+          <span className="shot-authority">Deterministic validation</span>
+        </div>
+        <p className="shot-adjudication-copy">
+          Gemini selected evidence and drafted advisory text. Deterministic validators adjudicated
+          the claims; this review presents both together, with Gemini remaining advisory-only.
+        </p>
+        <ul className="shot-claim-list">
+          {claims.map((claim) => (
+            <li data-claim-state={claim.state} key={claim.claim_id}>
+              <div className="shot-claim-heading">
+                <strong>{claim.claim_type}</strong>
+                <span>{claim.state}</span>
+              </div>
+              <p>
+                <span>{claim.subject.kind}</span> <code>{claim.subject.value}</code>
+              </p>
+              <p>
+                Reasons:{" "}
+                {claim.reason_codes.map((reason) => (
+                  <code key={reason}>{reason}</code>
+                ))}
+              </p>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section aria-labelledby="shot-evidence-title" className="shot-panel">
+        <div className="shot-section-heading">
+          <div>
+            <p className="shot-eyebrow">Bounded evidence</p>
+            <h2 id="shot-evidence-title">Plain-text evidence excerpts</h2>
+          </div>
+          <span className="shot-authority">{evidence.length} current records</span>
+        </div>
+        <p>Excerpts are bounded previews. Content digests identify the authoritative records.</p>
+        <div className="shot-evidence-grid">
+          {evidence.map((item) => (
+            <article key={item.evidence_id}>
+              <div className="shot-evidence-heading">
+                <strong>{item.query_key}</strong>
+                <code>{item.tool}</code>
+              </div>
+              <pre>{item.display_excerpt}</pre>
+              <p>
+                {item.display_excerpt_truncated ? "Excerpt truncated" : "Complete bounded excerpt"}
+              </p>
+              <code>{item.content_sha256}</code>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section aria-labelledby="shot-plan-title" className="shot-panel shot-plan-review">
+        <div className="shot-section-heading">
+          <div>
+            <p className="shot-eyebrow">Immutable response plan</p>
+            <h2 id="shot-plan-title">Exact scope and five typed commands</h2>
+          </div>
+          <span className="shot-authority">Plan version {plan.version}</span>
+        </div>
+        <div className="shot-plan-scope">
+          <section>
+            <h3>Action targets ({plan.targets.length})</h3>
+            <TargetList emptyText="No action targets." targets={plan.targets} />
+          </section>
+          <section>
+            <h3>Protected exclusions ({plan.protected_exclusions.length})</h3>
+            <TargetList emptyText="No protected exclusions." targets={plan.protected_exclusions} />
+          </section>
+        </div>
+        <dl className="shot-plan-bindings">
+          <div>
+            <dt>Plan SHA-256</dt>
+            <dd>
+              <code>{plan.plan_sha256}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Targets SHA-256</dt>
+            <dd>
+              <code>{plan.target_sha256}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Exclusions SHA-256</dt>
+            <dd>
+              <code>{plan.exclusions_sha256}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Commands SHA-256</dt>
+            <dd>
+              <code>{plan.commands_sha256}</code>
+            </dd>
+          </div>
+          {actionEnvelopeRows.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>
+                <code>{value}</code>
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <ol className="shot-command-list">
+          {plan.command_summaries.map((command, index) => (
+            <CommandSummary command={command} index={index} key={command.command_id} />
+          ))}
+        </ol>
+        <p className="shot-scope-counts">
+          Validated scope: {scope.affected_count} affected, {scope.safe_count} protected,{" "}
+          {scope.unknown_count} unknown.
+        </p>
+      </section>
+    </div>
   );
 }
 
@@ -453,7 +721,7 @@ function TechnicalDetails({
           <h3>Bound versions</h3>
           <dl>
             <div>
-              <dt>Run</dt>
+              <dt>Run version</dt>
               <dd>{run.version}</dd>
             </div>
             <div>
@@ -566,6 +834,7 @@ function ApprovalPanel({
   busy,
   nonce,
   onApprove,
+  onReject,
   onRecheck,
   run,
   visualsReady,
@@ -574,25 +843,24 @@ function ApprovalPanel({
   readonly busy: boolean;
   readonly nonce: string | null;
   readonly onApprove: (nonce: string, phrase: string) => void;
+  readonly onReject: (nonce: string, reason: DemoRejectionReason) => void;
   readonly onRecheck: () => void;
   readonly run: DemoRun;
   readonly visualsReady: boolean;
 }) {
   const [nonceInput, setNonceInput] = useState("");
   const [phraseInput, setPhraseInput] = useState("");
+  const [rejectionReason, setRejectionReason] = useState<DemoRejectionReason | "">("");
   const [confirmed, setConfirmed] = useState(false);
-  const exact =
-    nonce !== null &&
-    nonceInput === nonce &&
-    phraseInput === DEMO_APPROVAL_PHRASE &&
-    confirmed &&
-    visualsReady;
+  const nonceMatches = nonce !== null && nonceInput === nonce;
+  const approvalReady =
+    nonceMatches && phraseInput === DEMO_APPROVAL_PHRASE && confirmed && visualsReady;
 
   if (actionError !== null) {
     return (
       <section aria-labelledby="approval-title" className="shot-panel shot-action-panel">
-        <p className="shot-eyebrow">Approval boundary</p>
-        <h2 id="approval-title">Action paused</h2>
+        <p className="shot-eyebrow">Human review boundary</p>
+        <h2 id="approval-title">Decision paused</h2>
         <p className="shot-alert" role="alert">
           {actionError}
         </p>
@@ -605,10 +873,10 @@ function ApprovalPanel({
   if (nonce === null) {
     return (
       <section aria-labelledby="approval-title" className="shot-panel shot-action-panel">
-        <p className="shot-eyebrow">Approval boundary</p>
-        <h2 id="approval-title">Approval cannot continue in this browser</h2>
+        <p className="shot-eyebrow">Human review boundary</p>
+        <h2 id="approval-title">Review cannot continue in this browser</h2>
         <p className="shot-alert" role="alert">
-          The one-time approval nonce is unavailable. No recovery action can be sent.
+          The one-time review nonce is unavailable. No approval or rejection can be sent.
         </p>
         <button className="shot-button shot-button--secondary" onClick={onRecheck} type="button">
           Recheck run state
@@ -619,11 +887,11 @@ function ApprovalPanel({
 
   return (
     <section aria-labelledby="approval-title" className="shot-panel shot-action-panel">
-      <p className="shot-eyebrow">Approval boundary</p>
-      <h2 id="approval-title">Confirm the exact run and action</h2>
+      <p className="shot-eyebrow">Human review boundary</p>
+      <h2 id="approval-title">Decide the exact plan</h2>
       <p>
-        Approval applies only to run version {run.version}, plan version{" "}
-        {run.approval?.plan_version}, and the displayed target digest.
+        Either decision applies only to run version {run.version}, plan version{" "}
+        {run.approval?.plan_version}, and the displayed plan and target digests.
       </p>
       <div className="shot-issued-nonce">
         <span>Run nonce</span>
@@ -631,7 +899,7 @@ function ApprovalPanel({
       </div>
       <div className="shot-form-grid">
         <div>
-          <label htmlFor="shot-approval-nonce">Retype run nonce</label>
+          <label htmlFor="shot-approval-nonce">Retype review nonce</label>
           <input
             autoComplete="off"
             id="shot-approval-nonce"
@@ -640,7 +908,7 @@ function ApprovalPanel({
             value={nonceInput}
           />
         </div>
-        <div>
+        <div className="shot-approval-fields">
           <label htmlFor="shot-approval-phrase">Type approval phrase</label>
           <input
             aria-describedby="shot-approval-phrase-hint"
@@ -655,30 +923,69 @@ function ApprovalPanel({
           </small>
         </div>
       </div>
-      <label className="shot-checkbox">
-        <input
-          checked={confirmed}
-          onChange={(event) => setConfirmed(event.currentTarget.checked)}
-          type="checkbox"
-        />
-        <span>
-          I approve only the returned run, incident, plan, and target bindings; canonical context
-          does not grant authority.
-        </span>
-      </label>
-      <button
-        className="shot-button shot-button--primary"
-        disabled={!exact || busy}
-        onClick={() => onApprove(nonceInput, phraseInput)}
-        type="button"
-      >
-        {busy ? "Applying bound action…" : "Approve recovery action"}
-      </button>
-      {!visualsReady ? (
-        <p className="shot-form-note">
-          Approval unlocks after all comparison images pass digest verification.
-        </p>
-      ) : null}
+      <div className="shot-decision-grid">
+        <section className="shot-decision-option">
+          <div>
+            <p className="shot-eyebrow">Approve</p>
+            <h3>Authorize the bound simulator action</h3>
+            <p>Approval requires the comparison images to pass digest and decode verification.</p>
+          </div>
+          <label className="shot-checkbox">
+            <input
+              checked={confirmed}
+              onChange={(event) => setConfirmed(event.currentTarget.checked)}
+              type="checkbox"
+            />
+            <span>I approve only the returned run, incident, plan, and target bindings.</span>
+          </label>
+          <button
+            className="shot-button shot-button--primary"
+            disabled={!approvalReady || busy}
+            onClick={() => onApprove(nonceInput, phraseInput)}
+            type="button"
+          >
+            {busy ? "Submitting decision…" : "Approve recovery action"}
+          </button>
+          {!visualsReady ? (
+            <p className="shot-form-note">
+              Approval unlocks after all comparison images pass digest verification.
+            </p>
+          ) : null}
+        </section>
+        <section className="shot-decision-option shot-decision-option--reject">
+          <div>
+            <p className="shot-eyebrow">Reject</p>
+            <h3>Stop this plan without dispatch</h3>
+            <p>Rejection records a terminal receipt and sends no simulator action.</p>
+          </div>
+          <label htmlFor="shot-rejection-reason">Rejection reason</label>
+          <select
+            id="shot-rejection-reason"
+            onChange={(event) =>
+              setRejectionReason(event.currentTarget.value as DemoRejectionReason | "")
+            }
+            value={rejectionReason}
+          >
+            <option value="">Select a reason</option>
+            {DEMO_REJECTION_REASONS.map((reason) => (
+              <option key={reason} value={reason}>
+                {reason}
+              </option>
+            ))}
+          </select>
+          <button
+            className="shot-button shot-button--danger"
+            disabled={!nonceMatches || rejectionReason === "" || busy}
+            onClick={() => {
+              if (rejectionReason !== "") onReject(nonceInput, rejectionReason);
+            }}
+            type="button"
+          >
+            {busy ? "Submitting decision…" : "Reject plan"}
+          </button>
+          <p className="shot-form-note">Verified visuals are not required to reject.</p>
+        </section>
+      </div>
     </section>
   );
 }
@@ -766,6 +1073,7 @@ function TerminalPanel({
   readonly run: DemoRun;
 }) {
   const closed = run.phase === "closed";
+  const rejected = run.terminal_reason?.startsWith("plan-rejected-") ?? false;
   return (
     <section
       aria-labelledby="terminal-title"
@@ -774,12 +1082,18 @@ function TerminalPanel({
     >
       <p className="shot-eyebrow">Run result</p>
       <h2 id="terminal-title">
-        {closed ? "Recovery closed with a durable receipt" : "Run stopped without closure"}
+        {closed
+          ? "Recovery closed with a durable receipt"
+          : rejected
+            ? "Plan rejected with a durable receipt"
+            : "Run stopped without closure"}
       </h2>
       <p>
         {closed
           ? "The action, recovered output, and human closure are bound to one immutable receipt."
-          : `No further action is permitted for this run (${run.terminal_reason ?? run.phase}).`}
+          : rejected
+            ? "No simulator action was dispatched. The rejection and exact plan bindings are recorded in the immutable receipt."
+            : `No further action is permitted for this run (${run.terminal_reason ?? run.phase}).`}
       </p>
       {actionError === null ? null : (
         <p className="shot-alert" role="alert">
@@ -805,9 +1119,11 @@ function TerminalPanel({
             </dd>
           </div>
           <div>
-            <dt>Closure</dt>
+            <dt>{rejected ? "Decision reason" : "Closure"}</dt>
             <dd>
-              <code>{shortDigest(receipt.bindings.closure_sha256)}</code>
+              <code>
+                {rejected ? receipt.reason_code : shortDigest(receipt.bindings.closure_sha256)}
+              </code>
             </dd>
           </div>
         </dl>
@@ -848,6 +1164,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
   const [actionError, setActionError] = useState<string | null>(null);
   const [resetNotice, setResetNotice] = useState<DemoReset["restoration"] | null>(null);
   const approvalKey = useRef<string | null>(null);
+  const rejectionKey = useRef<string | null>(null);
   const closureKey = useRef<string | null>(null);
   const pendingStartNonce = useRef<string | null>(resumed.runId === null ? resumed.nonce : null);
   const pendingStartKey = useRef<string | null>(resumed.runId === null ? resumed.startKey : null);
@@ -925,6 +1242,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
       setApprovalNonce(null);
       setActionError(null);
       approvalKey.current = null;
+      rejectionKey.current = null;
       closureKey.current = null;
       pendingStartNonce.current = null;
       pendingStartKey.current = null;
@@ -1362,6 +1680,32 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
     [acceptRun, adapter, run, visualsReady],
   );
 
+  const reject = useCallback(
+    (nonce: string, reason: DemoRejectionReason) => {
+      if (run?.phase !== "awaiting-approval" || run.approval === null) return;
+      const key = rejectionKey.current ?? mutationKey("demo-reject");
+      rejectionKey.current = key;
+      setBusy(true);
+      setActionError(null);
+      void adapter
+        .reject(run.run_id, {
+          schema: "colortrace-demo-rejection-request/v1",
+          approval_nonce: nonce,
+          expected_run_version: run.version,
+          expected_incident_version: run.approval.incident_version,
+          expected_plan_version: run.approval.plan_version,
+          expected_plan_sha256: run.approval.plan_sha256,
+          expected_target_sha256: run.approval.target_sha256,
+          reason_code: reason,
+          idempotency_key: key,
+        })
+        .then((next) => acceptRun(next, null))
+        .catch((error: unknown) => setActionError(errorMessage(error, "mutate")))
+        .finally(() => setBusy(false));
+    },
+    [acceptRun, adapter, run],
+  );
+
   const close = useCallback(() => {
     if (
       run?.phase !== "awaiting-closure" ||
@@ -1479,17 +1823,17 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
             <section aria-labelledby="comparison-title" className="shot-comparison">
               <div className="shot-comparison__intro">
                 <div>
-                  <p className="shot-eyebrow">Canonical representative job · job-b-02</p>
+                  <p className="shot-eyebrow">Bound investigation review</p>
                   <h1 id="comparison-title" ref={contentHeading} tabIndex={-1}>
                     Expected versus observed
                   </h1>
                   <p>
-                    Images illustrate the color fault. Returned plan and target digests establish
-                    action authority; canonical scope context is labeled below.
+                    Images support visual review. Returned deterministic evidence and immutable plan
+                    bindings establish what can be approved or rejected.
                   </p>
                 </div>
                 <div className="shot-identity">
-                  <span>Run {run.version}</span>
+                  <span>Run version {run.version}</span>
                   <code>{run.run_id}</code>
                 </div>
               </div>
@@ -1500,7 +1844,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
               )}
               <div className="shot-visual-grid shot-visual-grid--primary">
                 <VisualCard
-                  alt="Declared expected output for job-b-02"
+                  alt="Declared expected output"
                   kind="expected"
                   onDecoded={markVisualDecoded}
                   onDecodeError={(visual) =>
@@ -1512,7 +1856,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                   visual={visuals.expected}
                 />
                 <VisualCard
-                  alt="Observed output with a visible color shift for job-b-02"
+                  alt="Observed output with a visible color shift"
                   kind="observed"
                   onDecoded={markVisualDecoded}
                   onDecodeError={(visual) =>
@@ -1539,19 +1883,16 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                 />
                 <div className="shot-diff-copy">
                   <p className="shot-eyebrow">Visible signal</p>
-                  <h2>The canonical scenario models a shadowed color transform.</h2>
+                  <h2>The returned images show a visible output difference.</h2>
                   <p>
-                    The image is illustrative. The fixed counts below are scenario context, not
-                    returned scope evidence.
+                    These images are illustrative. The returned comparison, claims, evidence, and
+                    plan below provide the reviewable record.
                   </p>
                 </div>
               </div>
             </section>
 
-            <div className="shot-two-column">
-              <ProofTimeline run={run} />
-              <ScopeSummary investigation={run.investigation} />
-            </div>
+            <InvestigationReview investigation={run.investigation} />
 
             {run.phase === "awaiting-approval" ? (
               <ApprovalPanel
@@ -1559,6 +1900,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                 busy={busy}
                 nonce={approvalNonce}
                 onApprove={approve}
+                onReject={reject}
                 onRecheck={recheck}
                 run={run}
                 visualsReady={visualsReady && visualError === null}
@@ -1601,7 +1943,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                 </div>
                 <div className="shot-recovered__content">
                   <VisualCard
-                    alt="Recovered output for job-b-02"
+                    alt="Recovered output"
                     kind="recovered"
                     onDecoded={markVisualDecoded}
                     onDecodeError={(visual) =>
@@ -1618,8 +1960,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                       <code>{shortDigest(run.execution?.action.safe_complement_proof_sha256)}</code>
                     </p>
                     <p>
-                      Canonical context lists three safe jobs; this statement is not a receipt
-                      binding.
+                      The safe-complement proof is returned by deterministic recovery validation.
                     </p>
                   </div>
                 </div>
@@ -1653,7 +1994,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
       </main>
       <footer className="shot-footer">
         <span>ColorTrace</span>
-        <span>Human approval remains the action boundary.</span>
+        <span>Human review remains the action boundary.</span>
       </footer>
     </div>
   );

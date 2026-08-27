@@ -8,18 +8,30 @@ import os
 import re
 import secrets
 import shlex
+import sys
 import tempfile
+import unicodedata
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 RUN_SCHEMA = "colortrace-demo-run/v1"
 RUN_REQUEST_SCHEMA = "colortrace-demo-run-request/v2"
 APPROVAL_REQUEST_SCHEMA = "colortrace-demo-approval-request/v1"
+REJECTION_REQUEST_SCHEMA = "colortrace-demo-rejection-request/v1"
 CLOSURE_REQUEST_SCHEMA = "colortrace-demo-closure-request/v1"
 RECEIPT_SCHEMA = "colortrace-demo-receipt/v1"
 SCENARIO_ID = "ct-shadowed-lut-v1:canonical"
 APPROVAL_PHRASE = "APPROVE_COLORTRACE_SIMULATOR_ACTION"
+INVESTIGATION_PROOF_SCHEMA_V1 = "colortrace-demo-investigation-proof/v1"
+INVESTIGATION_PROOF_SCHEMA_V2 = "colortrace-demo-investigation-proof/v2"
+REJECTION_REASON = "insufficient-evidence"
+REJECTION_CODES = {
+    "unsafe-scope",
+    "insufficient-evidence",
+    "incorrect-command",
+    "unresolved-risk",
+}
 CHECK_NAMES = [
     "active-publication",
     "approved-resource-state",
@@ -58,7 +70,7 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
 RESET_OPERATION_ID = re.compile(r"^demo-reset:[0-9a-f]{64}$")
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
-MODEL = {
+MODEL: dict[str, Any] = {
     "provider": "vertex-ai",
     "framework": "google-adk",
     "model": "gemini-3.5-flash",
@@ -69,14 +81,14 @@ MODEL = {
         "mcp": "1.29.0",
     },
 }
-MCP_IDENTITY = {
+MCP_IDENTITY: dict[str, Any] = {
     "source_commit": "007e8d82154899a28e19e8dfe9c2bb4452c5211a",
     "source_version": "1.1.0",
     "binary_sha256": ("sha256:5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93"),
     "transport": "stdio",
     "write_tools_enabled": False,
 }
-MCP_CATALOG_IDENTITY = {
+MCP_CATALOG_IDENTITY: dict[str, Any] = {
     "schema": "grafana-mcp-tool-inventory/v1",
     "server_version": "1.1.0",
     "server_commit": MCP_IDENTITY["source_commit"],
@@ -176,7 +188,7 @@ def _require_digest(value: Any, code: str) -> str:
 def _require_identifier(value: Any, code: str) -> str:
     if not _is_identifier(value):
         raise VerificationError(code)
-    return value
+    return cast(str, value)
 
 
 def _is_identifier(value: Any) -> bool:
@@ -332,7 +344,15 @@ def prepare_approval(arguments: argparse.Namespace) -> None:
         run_id=run["run_id"],
         required_kinds={"diff", "expected", "observed"},
     )
-    _validate_investigation(run.get("investigation"))
+    investigation = _validate_investigation(run.get("investigation"))
+    plan = investigation["plan"]
+    if (
+        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V2
+        or plan.get("version") != approval["plan_version"]
+        or plan.get("plan_sha256") != approval["plan_sha256"]
+        or plan.get("target_sha256") != approval["target_sha256"]
+    ):
+        raise VerificationError("approval-projection-invalid")
     request = {
         "schema": APPROVAL_REQUEST_SCHEMA,
         "approval_nonce": nonce,
@@ -347,6 +367,72 @@ def prepare_approval(arguments: argparse.Namespace) -> None:
             approval["target_sha256"], "approval-projection-invalid"
         ),
         "idempotency_key": f"approve:{run['run_id']}",
+    }
+    _atomic_json(arguments.output.resolve(), request)
+    print(run["run_id"])
+
+
+def prepare_rejection(arguments: argparse.Namespace) -> None:
+    run = _load(arguments.run.resolve(strict=True))
+    _require_fields(
+        run,
+        RUN_BASE_FIELDS | {"investigation", "approval_nonce"},
+        "rejection-projection-invalid",
+    )
+    _validate_projection_identity(run)
+    approval = _require_fields(
+        run.get("approval"),
+        {"phrase", "incident_version", "plan_version", "plan_sha256", "target_sha256"},
+        "rejection-projection-invalid",
+    )
+    nonce = run.get("approval_nonce")
+    if (
+        run.get("phase") != "awaiting-approval"
+        or run.get("terminal") is not False
+        or run.get("terminal_reason") is not None
+        or run.get("receipt_href") is not None
+        or run.get("reset") is not False
+        or run.get("recovery") is not None
+        or approval["phrase"] != APPROVAL_PHRASE
+        or not isinstance(approval.get("incident_version"), int)
+        or isinstance(approval.get("incident_version"), bool)
+        or approval["incident_version"] < 1
+        or not isinstance(approval.get("plan_version"), int)
+        or isinstance(approval.get("plan_version"), bool)
+        or approval["plan_version"] < 1
+        or not isinstance(nonce, str)
+        or re.fullmatch(r"[A-Za-z0-9_-]{32,256}", nonce) is None
+    ):
+        raise VerificationError("rejection-projection-invalid")
+    _require_timestamp(run.get("lease_expires_at"), "rejection-projection-invalid")
+    _validate_visual_comparison(
+        run.get("visual_comparison"),
+        run_id=run["run_id"],
+        required_kinds={"diff", "expected", "observed"},
+    )
+    investigation = _validate_investigation(run.get("investigation"))
+    plan = investigation["plan"]
+    if (
+        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V2
+        or plan.get("version") != approval["plan_version"]
+        or plan.get("plan_sha256") != approval["plan_sha256"]
+        or plan.get("target_sha256") != approval["target_sha256"]
+    ):
+        raise VerificationError("rejection-projection-invalid")
+    request = {
+        "schema": REJECTION_REQUEST_SCHEMA,
+        "approval_nonce": nonce,
+        "expected_run_version": run["version"],
+        "expected_incident_version": approval["incident_version"],
+        "expected_plan_version": approval["plan_version"],
+        "expected_plan_sha256": _require_digest(
+            approval["plan_sha256"], "rejection-projection-invalid"
+        ),
+        "expected_target_sha256": _require_digest(
+            approval["target_sha256"], "rejection-projection-invalid"
+        ),
+        "reason_code": REJECTION_REASON,
+        "idempotency_key": f"reject:{run['run_id']}",
     }
     _atomic_json(arguments.output.resolve(), request)
     print(run["run_id"])
@@ -395,7 +481,11 @@ def prepare_closure(arguments: argparse.Namespace) -> None:
         run_id=run["run_id"],
         required_kinds=set(VISUAL_KINDS),
     )
-    _validate_investigation(run.get("investigation"))
+    if (
+        _validate_investigation(run.get("investigation")).get("schema")
+        != INVESTIGATION_PROOF_SCHEMA_V2
+    ):
+        raise VerificationError("closure-projection-invalid")
     _validate_execution(run.get("execution"))
     request = {
         "schema": CLOSURE_REQUEST_SCHEMA,
@@ -648,7 +738,7 @@ def _validate_provenance(
     return selected
 
 
-def _validate_investigation(value: Any) -> dict[str, Any]:
+def _validate_investigation_v1(value: Any) -> dict[str, Any]:
     investigation = _require_fields(
         value,
         {
@@ -715,7 +805,7 @@ def _validate_investigation(value: Any) -> dict[str, Any]:
         "trace.by-id": "tempo_get-trace",
     }
     if (
-        investigation["schema"] != "colortrace-demo-investigation-proof/v1"
+        investigation["schema"] != INVESTIGATION_PROOF_SCHEMA_V1
         or not _is_identifier(investigation.get("packet_id"))
         or investigation["status"] != "resolved"
         or scope != {"state": "resolved", "affected_count": 4, "safe_count": 3, "unknown_count": 0}
@@ -742,7 +832,7 @@ def _validate_investigation(value: Any) -> dict[str, Any]:
         or any(
             not isinstance(item, dict)
             or set(item) != evidence_fields
-            or item.get("tool") != expected_tools.get(item.get("query_key"))
+            or item.get("tool") != expected_tools.get(str(item.get("query_key")))
             or item.get("freshness") != "current"
             or not _is_identifier(item.get("evidence_id"))
             or any(
@@ -753,6 +843,7 @@ def _validate_investigation(value: Any) -> dict[str, Any]:
         )
         or not isinstance(validators, list)
         or not validators
+        or len(validators) > 16
         or any(
             not isinstance(item, dict)
             or set(item)
@@ -771,7 +862,7 @@ def _validate_investigation(value: Any) -> dict[str, Any]:
             for item in validators
         )
         or any(
-            not isinstance(item, int) or isinstance(item, bool) or item < 0
+            not isinstance(item, int) or isinstance(item, bool) or not 0 <= item <= 10_000_000
             for item in budget.values()
         )
         or plan.get("status") != "pending"
@@ -789,6 +880,429 @@ def _validate_investigation(value: Any) -> dict[str, Any]:
     ):
         raise VerificationError("investigation-proof-invalid")
     return investigation
+
+
+def _bounded_integer(value: Any, *, maximum: int = 10_000_000) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= maximum
+
+
+def _plain_text_excerpt(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 1_024
+        and len(value.encode("utf-8")) <= 4_096
+        and all(
+            character in {"\n", "\t"} or not unicodedata.category(character).startswith("C")
+            for character in value
+        )
+    )
+
+
+TARGET_FIELDS = {"schema", "namespace", "kind", "id"}
+
+
+def _validate_review_target(value: Any) -> dict[str, str]:
+    target = _require_fields(value, TARGET_FIELDS, "investigation-proof-invalid")
+    if (
+        target.get("schema") != "simulator-target/v1"
+        or target.get("namespace") != "colortrace-simulator"
+        or target.get("kind") not in {"color-resource", "frame", "derivative"}
+        or not _is_identifier(target.get("id"))
+    ):
+        raise VerificationError("investigation-proof-invalid")
+    return target
+
+
+def _validate_review_targets(
+    value: Any,
+    *,
+    minimum: int,
+    maximum: int,
+) -> list[dict[str, str]]:
+    if not isinstance(value, list) or not minimum <= len(value) <= maximum:
+        raise VerificationError("investigation-proof-invalid")
+    targets = [_validate_review_target(item) for item in value]
+    if len({_canonical(item) for item in targets}) != len(targets):
+        raise VerificationError("investigation-proof-invalid")
+    return targets
+
+
+def _validate_command_summaries(
+    value: Any,
+    *,
+    targets: list[dict[str, str]],
+    expected_config_sha256: str,
+    expected_resource_sha256: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) != 5:
+        raise VerificationError("investigation-proof-invalid")
+    command_ids: set[str] = set()
+    summaries: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise VerificationError("investigation-proof-invalid")
+        target = _validate_review_target(raw.get("target"))
+        command_id = _require_identifier(raw.get("command_id"), "investigation-proof-invalid")
+        if command_id in command_ids or raw.get("namespace") != "colortrace-simulator":
+            raise VerificationError("investigation-proof-invalid")
+        command_ids.add(command_id)
+        schema = raw.get("schema")
+        if schema == "simulator-quarantine-command/v1":
+            if (
+                set(raw)
+                != {
+                    "schema",
+                    "command_id",
+                    "namespace",
+                    "target",
+                    "expected_resource_sha256",
+                    "mode",
+                }
+                or target["kind"] != "color-resource"
+                or raw.get("expected_resource_sha256") != expected_resource_sha256
+                or raw.get("mode") != "quarantine-and-install-approved-replacement"
+            ):
+                raise VerificationError("investigation-proof-invalid")
+        elif schema == "simulator-targeted-rerender-command/v1":
+            common = {
+                "schema",
+                "command_id",
+                "namespace",
+                "target",
+                "job_id",
+                "transform_id",
+                "source_id",
+                "source_manifest_sha256",
+                "source_png_sha256",
+                "expected_config_sha256",
+                "lineage_parent_artifact_id",
+            }
+            artifact_fields = (
+                {"expected_output_sha256", "expected_display_sha256"}
+                if target["kind"] == "frame"
+                else {
+                    "expected_derivative_sha256",
+                    "expected_derivative_display_sha256",
+                }
+            )
+            if (
+                target["kind"] not in {"frame", "derivative"}
+                or set(raw) != common | artifact_fields
+                or raw.get("transform_id") not in {"look/main/v1", "identity/v1"}
+                or raw.get("expected_config_sha256") != expected_config_sha256
+                or not _is_identifier(raw.get("job_id"))
+                or not _is_identifier(raw.get("source_id"))
+                or not _is_identifier(raw.get("lineage_parent_artifact_id"))
+                or any(
+                    DIGEST.fullmatch(str(raw.get(field))) is None
+                    for field in {
+                        "source_manifest_sha256",
+                        "source_png_sha256",
+                        "expected_config_sha256",
+                    }
+                    | artifact_fields
+                )
+            ):
+                raise VerificationError("investigation-proof-invalid")
+        else:
+            raise VerificationError("investigation-proof-invalid")
+        summaries.append(raw)
+    if {_canonical(item["target"]) for item in summaries} != {
+        _canonical(item) for item in targets
+    } or sum(item["schema"] == "simulator-quarantine-command/v1" for item in summaries) != 1:
+        raise VerificationError("investigation-proof-invalid")
+    return summaries
+
+
+def _validate_investigation_v2(value: Any) -> dict[str, Any]:
+    investigation = _require_fields(
+        value,
+        {
+            "schema",
+            "packet_id",
+            "packet_sha256",
+            "status",
+            "adjudication",
+            "model_invocations",
+            "comparison",
+            "claims",
+            "evidence",
+            "validators",
+            "scope",
+            "budget_use",
+            "plan",
+        },
+        "investigation-proof-invalid",
+    )
+    plan = _require_fields(
+        investigation["plan"],
+        {
+            "status",
+            "version",
+            "plan_sha256",
+            "target_sha256",
+            "exclusions_sha256",
+            "commands_sha256",
+            "targets",
+            "protected_exclusions",
+            "shared_action_bindings",
+            "command_summaries",
+        },
+        "investigation-proof-invalid",
+    )
+    raw_evidence = investigation.get("evidence")
+    if not isinstance(raw_evidence, list):
+        raise VerificationError("investigation-proof-invalid")
+    legacy_evidence: list[dict[str, Any]] = []
+    evidence_fields = {
+        "evidence_id",
+        "query_key",
+        "tool",
+        "inventory_sha256",
+        "content_sha256",
+        "freshness",
+        "display_excerpt",
+        "display_excerpt_truncated",
+    }
+    for item in raw_evidence:
+        if (
+            not isinstance(item, dict)
+            or set(item) != evidence_fields
+            or not _plain_text_excerpt(item.get("display_excerpt"))
+            or not isinstance(item.get("display_excerpt_truncated"), bool)
+        ):
+            raise VerificationError("investigation-proof-invalid")
+        legacy_evidence.append(
+            {
+                key: child
+                for key, child in item.items()
+                if key not in {"display_excerpt", "display_excerpt_truncated"}
+            }
+        )
+    _validate_investigation_v1(
+        {
+            "schema": INVESTIGATION_PROOF_SCHEMA_V1,
+            "packet_id": investigation.get("packet_id"),
+            "packet_sha256": investigation.get("packet_sha256"),
+            "status": investigation.get("status"),
+            "model_invocations": investigation.get("model_invocations"),
+            "evidence": legacy_evidence,
+            "validators": investigation.get("validators"),
+            "scope": investigation.get("scope"),
+            "budget_use": investigation.get("budget_use"),
+            "plan": {
+                key: plan.get(key) for key in ("status", "version", "plan_sha256", "target_sha256")
+            },
+        }
+    )
+    validators = investigation["validators"]
+    if (
+        investigation["packet_id"]
+        != f"response-packet:{investigation['packet_sha256'].removeprefix('sha256:')}"
+        or any(
+            item["result_id"]
+            != f"validation-result:{item['derivation_sha256'].removeprefix('sha256:')}"
+            for item in validators
+        )
+        or len({item["result_id"] for item in validators}) != len(validators)
+        or len({item["evidence_id"] for item in raw_evidence}) != len(raw_evidence)
+    ):
+        raise VerificationError("investigation-proof-invalid")
+    if investigation.get("adjudication") != {
+        "model_role": "evidence-selection-and-advisory-drafting",
+        "model_authority": "advisory-only",
+        "validator_role": "deterministic-claim-adjudication",
+        "decision_mode": "deterministic-validation",
+    }:
+        raise VerificationError("investigation-proof-invalid")
+    comparison = _require_fields(
+        investigation.get("comparison"),
+        {"renders", "nominal_config_match", "resolved_lut_match"},
+        "investigation-proof-invalid",
+    )
+    renders = comparison.get("renders")
+    render_fields = {
+        "job_id",
+        "worker_id",
+        "status",
+        "nominal_config_sha256",
+        "resolved_lut_sha256",
+    }
+    if (
+        comparison.get("nominal_config_match") is not True
+        or comparison.get("resolved_lut_match") is not False
+        or not isinstance(renders, list)
+        or len(renders) != 2
+        or any(
+            not isinstance(item, dict)
+            or set(item) != render_fields
+            or item.get("status") != "succeeded"
+            or not _is_identifier(item.get("job_id"))
+            or not _is_identifier(item.get("worker_id"))
+            or DIGEST.fullmatch(str(item.get("nominal_config_sha256"))) is None
+            or DIGEST.fullmatch(str(item.get("resolved_lut_sha256"))) is None
+            for item in renders
+        )
+        or len({item["job_id"] for item in renders}) != 2
+        or len({item["worker_id"] for item in renders}) != 2
+        or len({item["nominal_config_sha256"] for item in renders}) != 1
+        or len({item["resolved_lut_sha256"] for item in renders}) != 2
+    ):
+        raise VerificationError("investigation-proof-invalid")
+    claims = investigation.get("claims")
+    claim_fields = {
+        "claim_id",
+        "claim_type",
+        "subject",
+        "state",
+        "reason_codes",
+        "evidence_ids",
+        "source_validator_result_id",
+    }
+    if not isinstance(claims, list) or not 1 <= len(claims) <= 16:
+        raise VerificationError("investigation-proof-invalid")
+    claim_ids: set[str] = set()
+    for item in claims:
+        if not isinstance(item, dict) or set(item) != claim_fields:
+            raise VerificationError("investigation-proof-invalid")
+        subject = item.get("subject")
+        reasons = item.get("reason_codes")
+        evidence_ids = item.get("evidence_ids")
+        claim_id = item.get("claim_id")
+        if (
+            not _is_identifier(claim_id)
+            or claim_id in claim_ids
+            or not _is_identifier(item.get("claim_type"))
+            or not isinstance(subject, dict)
+            or set(subject) != {"kind", "value"}
+            or not _is_identifier(subject.get("kind"))
+            or not _is_identifier(subject.get("value"))
+            or item.get("state") not in {"confirmed", "rejected"}
+            or not isinstance(reasons, list)
+            or not 1 <= len(reasons) <= 16
+            or len(set(reasons)) != len(reasons)
+            or any(
+                not isinstance(reason, str) or re.fullmatch(r"[a-z][a-z0-9-]{1,63}", reason) is None
+                for reason in reasons
+            )
+            or not isinstance(evidence_ids, list)
+            or not 1 <= len(evidence_ids) <= 64
+            or len(set(evidence_ids)) != len(evidence_ids)
+            or any(not _is_identifier(evidence_id) for evidence_id in evidence_ids)
+            or not _is_identifier(item.get("source_validator_result_id"))
+        ):
+            raise VerificationError("investigation-proof-invalid")
+        claim_ids.add(cast(str, claim_id))
+    validator_ids = {item["result_id"] for item in validators}
+    if {item["state"] for item in claims} != {"confirmed", "rejected"} or any(
+        item["source_validator_result_id"] not in validator_ids for item in claims
+    ):
+        raise VerificationError("investigation-proof-invalid")
+    targets = _validate_review_targets(plan.get("targets"), minimum=1, maximum=8)
+    exclusions = _validate_review_targets(plan.get("protected_exclusions"), minimum=0, maximum=8)
+    target_documents = {_canonical(item) for item in targets}
+    exclusion_documents = {_canonical(item) for item in exclusions}
+    if (
+        len(targets) != 5
+        or len(exclusions) != 3
+        or {item["kind"] for item in exclusions} != {"frame"}
+        or sum(item["kind"] == "color-resource" for item in targets) != 1
+        or sum(item["kind"] == "frame" for item in targets) != 3
+        or sum(item["kind"] == "derivative" for item in targets) != 1
+        or target_documents & exclusion_documents
+        or _document_sha256(targets) != plan.get("target_sha256")
+        or _document_sha256(exclusions) != plan.get("exclusions_sha256")
+        or DIGEST.fullmatch(str(plan.get("commands_sha256"))) is None
+    ):
+        raise VerificationError("investigation-proof-invalid")
+    bindings = _require_fields(
+        plan.get("shared_action_bindings"),
+        {
+            "schema",
+            "fixture_id",
+            "fixture_manifest_sha256",
+            "fixture_generation",
+            "source_batch_id",
+            "source_batch_sha256",
+            "runtime_manifest_sha256",
+            "runtime_generation",
+            "expected_publication_pointer_sha256",
+            "expected_publication_generation",
+            "expected_resource_sha256",
+            "replacement_resource_logical_path",
+            "replacement_resource_sha256",
+            "declared_resource_manifest_sha256",
+            "ocio_version",
+            "preservation_manifest_sha256",
+            "safe_complement_sha256",
+            "lineage_manifest_sha256",
+            "lineage_generation",
+        },
+        "investigation-proof-invalid",
+    )
+    if (
+        bindings.get("schema") != "simulator-action-envelope/v1"
+        or not _is_identifier(bindings.get("fixture_id"))
+        or not _is_identifier(bindings.get("source_batch_id"))
+        or bindings.get("replacement_resource_logical_path") != "luts/show_look.cube"
+        or bindings.get("ocio_version") != "2.5.2"
+        or any(
+            not _bounded_integer(bindings.get(field), maximum=2**31 - 1) or bindings[field] == 0
+            for field in {
+                "fixture_generation",
+                "runtime_generation",
+                "expected_publication_generation",
+                "lineage_generation",
+            }
+        )
+        or any(
+            DIGEST.fullmatch(str(bindings.get(field))) is None
+            for field in {
+                "fixture_manifest_sha256",
+                "source_batch_sha256",
+                "runtime_manifest_sha256",
+                "expected_publication_pointer_sha256",
+                "expected_resource_sha256",
+                "replacement_resource_sha256",
+                "declared_resource_manifest_sha256",
+                "preservation_manifest_sha256",
+                "safe_complement_sha256",
+                "lineage_manifest_sha256",
+            }
+        )
+        or [item for item in targets if item["kind"] == "color-resource"][0]["id"]
+        != bindings.get("expected_resource_sha256")
+        or bindings.get("expected_resource_sha256") == bindings.get("replacement_resource_sha256")
+        or len(
+            {
+                bindings["fixture_generation"],
+                bindings["runtime_generation"],
+                bindings["expected_publication_generation"],
+                bindings["lineage_generation"],
+            }
+        )
+        != 1
+    ):
+        raise VerificationError("investigation-proof-invalid")
+    summaries = _validate_command_summaries(
+        plan.get("command_summaries"),
+        targets=targets,
+        expected_config_sha256=renders[0]["nominal_config_sha256"],
+        expected_resource_sha256=bindings["expected_resource_sha256"],
+    )
+    commands = [{**summary, "action_envelope": bindings} for summary in summaries]
+    if _document_sha256(commands) != plan.get("commands_sha256"):
+        raise VerificationError("investigation-proof-invalid")
+    return investigation
+
+
+def _validate_investigation(value: Any) -> dict[str, Any]:
+    schema = value.get("schema") if isinstance(value, dict) else None
+    if schema == INVESTIGATION_PROOF_SCHEMA_V1:
+        return _validate_investigation_v1(value)
+    if schema == INVESTIGATION_PROOF_SCHEMA_V2:
+        return _validate_investigation_v2(value)
+    raise VerificationError("investigation-proof-invalid")
 
 
 def _validate_execution(value: Any) -> dict[str, Any]:
@@ -1047,6 +1561,191 @@ def verify_contract(arguments: argparse.Namespace) -> None:
     _atomic_json(arguments.output.resolve(), summary)
 
 
+def verify_rejection_contract(arguments: argparse.Namespace) -> None:
+    run = _load(arguments.run.resolve(strict=True))
+    request = _load(arguments.request.resolve(strict=True))
+    receipt = _load(arguments.receipt.resolve(strict=True))
+    binding = _load(arguments.artifact.resolve(strict=True))
+    _require_fields(
+        run,
+        RUN_BASE_FIELDS | {"investigation"},
+        "rejected-run-fields-invalid",
+    )
+    _validate_projection_identity(run)
+    _validate_artifact(binding)
+    try:
+        elapsed_ms = int(arguments.elapsed_ms)
+    except ValueError as error:
+        raise VerificationError("workflow-duration-invalid") from error
+    reason = run.get("terminal_reason")
+    _require_fields(
+        request,
+        {
+            "schema",
+            "approval_nonce",
+            "expected_run_version",
+            "expected_incident_version",
+            "expected_plan_version",
+            "expected_plan_sha256",
+            "expected_target_sha256",
+            "reason_code",
+            "idempotency_key",
+        },
+        "rejection-request-invalid",
+    )
+    if (
+        request.get("schema") != REJECTION_REQUEST_SCHEMA
+        or not isinstance(request.get("approval_nonce"), str)
+        or re.fullmatch(r"[A-Za-z0-9_-]{32,256}", request["approval_nonce"]) is None
+        or not isinstance(request.get("expected_run_version"), int)
+        or isinstance(request.get("expected_run_version"), bool)
+        or request["expected_run_version"] < 1
+        or not isinstance(request.get("expected_incident_version"), int)
+        or isinstance(request.get("expected_incident_version"), bool)
+        or request["expected_incident_version"] < 1
+        or not isinstance(request.get("expected_plan_version"), int)
+        or isinstance(request.get("expected_plan_version"), bool)
+        or request["expected_plan_version"] < 1
+        or DIGEST.fullmatch(str(request.get("expected_plan_sha256"))) is None
+        or DIGEST.fullmatch(str(request.get("expected_target_sha256"))) is None
+        or run.get("version") != request["expected_run_version"] + 1
+        or request.get("reason_code") != REJECTION_REASON
+        or request.get("idempotency_key") != f"reject:{run['run_id']}"
+        or reason != f"plan-rejected-{REJECTION_REASON}"
+        or run.get("phase") != "unresolved"
+        or run.get("terminal") is not True
+        or run.get("lease_expires_at") is not None
+        or run.get("reset") is not False
+        or run.get("receipt_href") != f"/v1/demo/runs/{run['run_id']}/receipt"
+        or run.get("source_commit") != binding["source"]["commit"]
+        or run.get("recovery") is not None
+        or elapsed_ms < 0
+        or elapsed_ms >= 120_000
+    ):
+        raise VerificationError("rejected-run-invalid")
+    expected_visuals = _validate_visual_comparison(
+        run.get("visual_comparison"),
+        run_id=run["run_id"],
+        required_kinds={"diff", "expected", "observed"},
+    )
+    investigation = _validate_investigation(run.get("investigation"))
+    if investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V2:
+        raise VerificationError("rejected-run-invalid")
+    provenance = _validate_provenance(
+        receipt.get("provenance"),
+        binding=binding,
+        public_url=arguments.public_url,
+        generation=arguments.generation,
+    )
+    mcp_inventory_sha256 = provenance["mcp"]["inventory_sha256"]
+    proof_inventory_versions = {item["inventory_sha256"] for item in investigation["evidence"]} | {
+        item["inventory_sha256"] for item in investigation["model_invocations"]
+    }
+    if proof_inventory_versions != {mcp_inventory_sha256}:
+        raise VerificationError("receipt-mcp-inventory-binding-invalid")
+    _require_fields(
+        receipt,
+        {
+            "schema",
+            "run_id",
+            "incident_id",
+            "scenario_id",
+            "source_commit",
+            "build_sha256",
+            "provenance",
+            "phase",
+            "run_version",
+            "created_at",
+            "terminal_at",
+            "reason_code",
+            "bindings",
+            "proofs",
+            "visuals",
+            "receipt_id",
+            "receipt_sha256",
+        },
+        "receipt-fields-invalid",
+    )
+    if (
+        receipt["schema"] != RECEIPT_SCHEMA
+        or receipt["run_id"] != run["run_id"]
+        or receipt["incident_id"] != run.get("incident_id")
+        or receipt["scenario_id"] != SCENARIO_ID
+        or receipt["source_commit"] != binding["source"]["commit"]
+        or receipt["phase"] != "unresolved"
+        or receipt["run_version"] != run["version"]
+        or receipt["reason_code"] != reason
+        or receipt["build_sha256"] != _document_sha256(provenance)
+        or receipt["build_sha256"] != run["build_sha256"]
+        or _require_timestamp(receipt.get("created_at"), "receipt-binding-invalid")
+        > _require_timestamp(receipt.get("terminal_at"), "receipt-binding-invalid")
+    ):
+        raise VerificationError("receipt-binding-invalid")
+    expected_proofs = [{"stage": "investigation", "sha256": _document_sha256(investigation)}]
+    if receipt["proofs"] != expected_proofs:
+        raise VerificationError("receipt-proof-hash-invalid")
+    if receipt["visuals"] != expected_visuals:
+        raise VerificationError("receipt-visuals-invalid")
+    approval = _require_fields(
+        run.get("approval"),
+        {"phrase", "incident_version", "plan_version", "plan_sha256", "target_sha256"},
+        "receipt-binding-invalid",
+    )
+    plan = investigation["plan"]
+    if (
+        approval["phrase"] != APPROVAL_PHRASE
+        or approval["incident_version"] != request.get("expected_incident_version")
+        or approval["plan_version"] != request.get("expected_plan_version")
+        or approval["plan_sha256"] != request.get("expected_plan_sha256")
+        or approval["target_sha256"] != request.get("expected_target_sha256")
+        or plan["version"] != approval["plan_version"]
+        or plan["plan_sha256"] != approval["plan_sha256"]
+        or plan["target_sha256"] != approval["target_sha256"]
+    ):
+        raise VerificationError("receipt-binding-invalid")
+    expected_bindings = {
+        "incident_version": approval["incident_version"],
+        "plan_version": approval["plan_version"],
+        "plan_sha256": approval["plan_sha256"],
+        "target_sha256": approval["target_sha256"],
+        "outcome_id": None,
+        "outcome_sha256": None,
+        "workflow_id": None,
+        "workflow_version": None,
+        "packet_id": None,
+        "packet_sha256": None,
+        "closure_id": None,
+        "closure_sha256": None,
+    }
+    if receipt["bindings"] != expected_bindings:
+        raise VerificationError("receipt-binding-invalid")
+    body = {
+        key: value for key, value in receipt.items() if key not in {"receipt_id", "receipt_sha256"}
+    }
+    receipt_sha256 = _document_sha256(body)
+    if (
+        receipt["receipt_sha256"] != receipt_sha256
+        or receipt["receipt_id"] != f"demo-receipt:{receipt_sha256.removeprefix('sha256:')}"
+    ):
+        raise VerificationError("receipt-hash-invalid")
+    summary = {
+        "run_id": run["run_id"],
+        "source_commit": binding["source"]["commit"],
+        "source_tree": binding["source"]["tree"],
+        "receipt_id": receipt["receipt_id"],
+        "receipt_sha256": receipt_sha256,
+        "build_sha256": receipt["build_sha256"],
+        "workflow_elapsed_ms": elapsed_ms,
+        "reason_code": reason.removeprefix("plan-rejected-"),
+        "execution_proof_present": False,
+        "action_bindings_present": False,
+        "proofs": expected_proofs,
+        "vertex_model": MODEL,
+        "mcp_inventory_sha256": mcp_inventory_sha256,
+    }
+    _atomic_json(arguments.output.resolve(), summary)
+
+
 def remote_script(arguments: argparse.Namespace) -> None:
     binding = _load(arguments.artifact.resolve(strict=True))
     _validate_artifact(binding)
@@ -1256,6 +1955,11 @@ sudo --non-interactive docker exec --user 65532:65532 colortrace-runtime \\
 
 def write_report(arguments: argparse.Namespace) -> None:
     summary = _load(arguments.summary.resolve(strict=True))
+    rejection_summary = (
+        None
+        if arguments.rejection_summary is None
+        else _load(arguments.rejection_summary.resolve(strict=True))
+    )
     binding = _load(arguments.artifact.resolve(strict=True))
     _validate_artifact(binding)
     checks = {
@@ -1278,8 +1982,21 @@ def write_report(arguments: argparse.Namespace) -> None:
         "receipt_persistence_after_restart": "pass",
         "scenario_reset_for_repeatability": "pass",
     }
+    if rejection_summary is not None:
+        checks.update(
+            {
+                "reject_before_action": "pass",
+                "reject_idempotent_replay": "pass",
+                "rejected_receipt_persistence_after_restart": "pass",
+                "rejected_scenario_reset_for_repeatability": "pass",
+            }
+        )
     report = {
-        "schema": "colortrace-single-host-verification/v2",
+        "schema": (
+            "colortrace-single-host-verification/v2"
+            if rejection_summary is None
+            else "colortrace-single-host-verification/v3"
+        ),
         "checked_at": arguments.checked_at,
         "public_url": arguments.public_url,
         "instance": {
@@ -1293,9 +2010,15 @@ def write_report(arguments: argparse.Namespace) -> None:
         "scan_binding_sha256": binding["scan_binding_sha256"],
         "source_commit": binding["source"]["commit"],
         "source_tree": binding["source"]["tree"],
-        "workflow": summary,
         "checks": checks,
     }
+    if rejection_summary is None:
+        report["workflow"] = summary
+    else:
+        report["workflows"] = {
+            "approved": summary,
+            "rejected": rejection_summary,
+        }
     _atomic_json(arguments.output.resolve(), report)
 
 
@@ -1309,6 +2032,10 @@ def _parser() -> argparse.ArgumentParser:
     approval.add_argument("run", type=Path)
     approval.add_argument("output", type=Path)
     approval.set_defaults(handler=prepare_approval)
+    rejection = commands.add_parser("prepare-rejection")
+    rejection.add_argument("run", type=Path)
+    rejection.add_argument("output", type=Path)
+    rejection.set_defaults(handler=prepare_rejection)
     closure = commands.add_parser("prepare-closure")
     closure.add_argument("run", type=Path)
     closure.add_argument("output", type=Path)
@@ -1339,6 +2066,16 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("visuals", type=Path)
     verify.add_argument("output", type=Path)
     verify.set_defaults(handler=verify_contract)
+    verify_rejection = commands.add_parser("verify-rejection-contract")
+    verify_rejection.add_argument("run", type=Path)
+    verify_rejection.add_argument("request", type=Path)
+    verify_rejection.add_argument("receipt", type=Path)
+    verify_rejection.add_argument("artifact", type=Path)
+    verify_rejection.add_argument("public_url")
+    verify_rejection.add_argument("generation")
+    verify_rejection.add_argument("elapsed_ms")
+    verify_rejection.add_argument("output", type=Path)
+    verify_rejection.set_defaults(handler=verify_rejection_contract)
     remote = commands.add_parser("remote-script")
     remote.add_argument("artifact", type=Path)
     remote.add_argument("generation")
@@ -1358,6 +2095,7 @@ def _parser() -> argparse.ArgumentParser:
     report.add_argument("instance")
     report.add_argument("generation")
     report.add_argument("output", type=Path)
+    report.add_argument("--rejection-summary", type=Path)
     report.set_defaults(handler=write_report)
     return parser
 
@@ -1367,7 +2105,7 @@ def main() -> int:
     try:
         arguments.handler(arguments)
     except VerificationError as error:
-        print(f"demo-verification: {error}", file=os.sys.stderr)
+        print(f"demo-verification: {error}", file=sys.stderr)
         return 65
     return 0
 
