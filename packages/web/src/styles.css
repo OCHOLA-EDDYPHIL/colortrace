@@ -2247,6 +2247,12 @@ main {
   color: var(--shot-text);
 }
 
+.shot-button--danger {
+  border-color: rgb(255 170 167 / 55%);
+  background: rgb(110 33 36 / 38%);
+  color: #ffd1cf;
+}
+
 .shot-button:hover:not(:disabled) {
   filter: brightness(1.08);
 }
@@ -2259,6 +2265,7 @@ main {
 .shot-app button:focus-visible,
 .shot-app a:focus-visible,
 .shot-app input:focus-visible,
+.shot-app select:focus-visible,
 .shot-app summary:focus-visible,
 .shot-app [tabindex]:focus-visible {
   outline: 3px solid var(--focus);
@@ -2397,10 +2404,269 @@ main {
   padding: clamp(1rem, 2.4vw, 1.6rem);
 }
 
-.shot-two-column {
+.shot-review {
   display: grid;
-  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
   gap: 1.25rem;
+}
+
+.shot-render-grid,
+.shot-plan-scope,
+.shot-decision-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+  margin-top: 1.2rem;
+}
+
+.shot-render-grid article,
+.shot-plan-scope > section,
+.shot-decision-option,
+.shot-evidence-grid article,
+.shot-command {
+  min-width: 0;
+  border: 1px solid var(--shot-border);
+  border-radius: 0.8rem;
+  padding: 0.9rem;
+  background: var(--shot-surface-raised);
+}
+
+.shot-render-heading,
+.shot-claim-heading,
+.shot-evidence-heading,
+.shot-command__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.shot-render-heading span,
+.shot-claim-heading span {
+  border: 1px solid rgb(169 240 197 / 42%);
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+  color: var(--shot-lime);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: capitalize;
+}
+
+.shot-render-grid dl,
+.shot-plan-bindings,
+.shot-command dl,
+.shot-counts {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.8rem 0 0;
+}
+
+.shot-render-grid dl div,
+.shot-plan-bindings div,
+.shot-command dl div,
+.shot-counts div {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.3fr) minmax(0, 1fr);
+  gap: 0.7rem;
+  border-bottom: 1px solid rgb(51 65 86 / 56%);
+  padding-bottom: 0.4rem;
+}
+
+.shot-render-grid dt,
+.shot-plan-bindings dt,
+.shot-command dt,
+.shot-counts dt {
+  color: var(--shot-muted);
+  font-size: 0.74rem;
+}
+
+.shot-render-grid dd,
+.shot-plan-bindings dd,
+.shot-command dd,
+.shot-counts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.shot-comparison-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 0.9rem;
+}
+
+.shot-comparison-facts span {
+  border: 1px solid rgb(118 225 255 / 42%);
+  border-radius: 999px;
+  padding: 0.45rem 0.7rem;
+  color: var(--shot-cyan);
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.shot-comparison-facts span[data-result="different"] {
+  border-color: rgb(255 210 122 / 45%);
+  color: var(--shot-amber);
+}
+
+.shot-adjudication-copy,
+.shot-scope-counts {
+  color: var(--shot-muted);
+  line-height: 1.6;
+}
+
+.shot-claim-list,
+.shot-target-list,
+.shot-command-list {
+  display: grid;
+  gap: 0.7rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shot-claim-list {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+}
+
+.shot-claim-list li {
+  min-width: 0;
+  border: 1px solid var(--shot-border);
+  border-left: 4px solid var(--shot-lime);
+  border-radius: 0.8rem;
+  padding: 0.9rem;
+  background: var(--shot-surface-raised);
+}
+
+.shot-claim-list li[data-claim-state="rejected"] {
+  border-left-color: var(--shot-amber);
+}
+
+.shot-claim-list li[data-claim-state="rejected"] .shot-claim-heading span {
+  border-color: rgb(255 210 122 / 45%);
+  color: var(--shot-amber);
+}
+
+.shot-claim-list p {
+  margin: 0.7rem 0 0;
+  color: var(--shot-muted);
+  line-height: 1.55;
+}
+
+.shot-claim-list p code {
+  display: inline-block;
+  margin: 0.2rem 0.25rem 0 0;
+  color: var(--shot-text);
+  overflow-wrap: anywhere;
+}
+
+.shot-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 0.8rem;
+  margin-top: 1rem;
+}
+
+.shot-evidence-heading {
+  display: grid;
+}
+
+.shot-evidence-heading code,
+.shot-evidence-grid article > code {
+  color: var(--shot-cyan);
+  overflow-wrap: anywhere;
+}
+
+.shot-evidence-grid pre {
+  min-height: 5rem;
+  margin: 0.8rem 0;
+  border: 1px solid var(--shot-border);
+  border-radius: 0.55rem;
+  padding: 0.75rem;
+  background: #090e16;
+  color: var(--shot-text);
+  font: inherit;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.shot-evidence-grid p {
+  color: var(--shot-muted);
+  font-size: 0.74rem;
+}
+
+.shot-plan-scope h3 {
+  margin-top: 0;
+}
+
+.shot-target-list li {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.3fr) minmax(0, 1fr);
+  gap: 0.6rem;
+}
+
+.shot-target-list span {
+  color: var(--shot-muted);
+  font-size: 0.74rem;
+}
+
+.shot-target-list code,
+.shot-command code,
+.shot-plan-bindings code {
+  overflow-wrap: anywhere;
+}
+
+.shot-plan-bindings {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 1.2rem;
+}
+
+.shot-command-list {
+  counter-reset: shot-command;
+}
+
+.shot-command__heading {
+  justify-content: flex-start;
+}
+
+.shot-command__heading > span {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--shot-border);
+  border-radius: 50%;
+  color: var(--shot-cyan);
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.shot-command__heading > div {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.shot-command__heading code {
+  color: var(--shot-muted);
+}
+
+.shot-counts {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.shot-counts div {
+  display: block;
+  border: 1px solid var(--shot-border);
+  border-radius: 0.7rem;
+  padding: 0.75rem;
+}
+
+.shot-counts dd {
+  margin-top: 0.25rem;
+  font-size: 1.5rem;
 }
 
 .shot-phase,
@@ -2412,153 +2678,6 @@ main {
   color: var(--shot-cyan);
   font-size: 0.72rem;
   font-weight: 750;
-}
-
-.shot-timeline ol {
-  display: grid;
-  gap: 0;
-  margin: 1.25rem 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.shot-timeline li {
-  display: grid;
-  position: relative;
-  grid-template-columns: 1rem minmax(0, 1fr) auto;
-  gap: 0.75rem;
-  min-height: 58px;
-}
-
-.shot-timeline li:not(:last-child)::before {
-  position: absolute;
-  top: 0.95rem;
-  bottom: -0.3rem;
-  left: 0.35rem;
-  width: 1px;
-  background: var(--shot-border);
-  content: "";
-}
-
-.shot-timeline__marker {
-  z-index: 1;
-  width: 0.75rem;
-  height: 0.75rem;
-  margin-top: 0.2rem;
-  border: 2px solid var(--shot-border);
-  border-radius: 50%;
-  background: var(--shot-surface);
-}
-
-.shot-timeline li[data-state="complete"] .shot-timeline__marker {
-  border-color: var(--shot-lime);
-  background: var(--shot-lime);
-}
-
-.shot-timeline li[data-state="current"] .shot-timeline__marker {
-  border-color: var(--shot-cyan);
-  box-shadow: 0 0 0 4px rgb(118 225 255 / 16%);
-}
-
-.shot-timeline li[data-state="stopped"] .shot-timeline__marker {
-  border-color: var(--shot-red);
-}
-
-.shot-timeline li p,
-.shot-timeline li small {
-  margin: 0.15rem 0 0;
-  color: var(--shot-muted);
-  font-size: 0.76rem;
-}
-
-.shot-timeline li small {
-  text-transform: capitalize;
-}
-
-.shot-scope__groups {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.7rem;
-  margin-top: 1.25rem;
-}
-
-.shot-scope__groups section {
-  min-width: 0;
-  border: 1px solid var(--shot-border);
-  border-radius: 0.8rem;
-  padding: 0.9rem;
-  background: var(--shot-surface-raised);
-}
-
-.shot-scope__groups section[data-scope-group="affected"] {
-  border-color: rgb(255 170 167 / 45%);
-}
-
-.shot-scope__groups section[data-scope-group="safe"] {
-  border-color: rgb(169 240 197 / 40%);
-}
-
-.shot-scope__groups strong {
-  display: block;
-  color: var(--shot-text);
-  font-size: 2rem;
-  line-height: 1;
-}
-
-.shot-scope__groups h3 {
-  min-height: 2.3rem;
-  margin: 0.55rem 0;
-  color: var(--shot-muted);
-  font-size: 0.78rem;
-}
-
-.shot-scope__groups ul {
-  display: grid;
-  gap: 0.25rem;
-  margin: 0;
-  padding: 0;
-  color: var(--shot-text);
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 0.7rem;
-  list-style: none;
-  overflow-wrap: anywhere;
-}
-
-.shot-scope__groups p {
-  margin: 0;
-  color: var(--shot-muted);
-  font-size: 0.74rem;
-}
-
-.shot-scope__context {
-  display: grid;
-  gap: 0.4rem;
-  margin-top: 1rem;
-  border-top: 1px solid var(--shot-border);
-  padding-top: 1rem;
-}
-
-.shot-scope__context h3,
-.shot-scope__context p {
-  margin: 0;
-}
-
-.shot-scope__context h3 {
-  color: var(--shot-muted);
-  font-size: 0.78rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.shot-scope__context p {
-  color: var(--shot-muted);
-  font-size: 0.76rem;
-  line-height: 1.55;
-}
-
-.shot-scope__context code {
-  color: var(--shot-text);
-  overflow-wrap: anywhere;
 }
 
 .shot-action-panel {
@@ -2613,6 +2732,37 @@ main {
 
 .shot-form-grid input {
   min-width: 0;
+  min-height: 48px;
+  border: 1px solid var(--shot-border);
+  border-radius: 0.65rem;
+  padding: 0.7rem;
+  background: #090e16;
+  color: var(--shot-text);
+}
+
+.shot-decision-option {
+  display: grid;
+  align-content: start;
+  gap: 0.9rem;
+  margin: 0;
+}
+
+.shot-decision-option--reject {
+  border-color: rgb(255 170 167 / 42%);
+}
+
+.shot-decision-option h3,
+.shot-decision-option p {
+  margin: 0;
+}
+
+.shot-decision-option > label:not(.shot-checkbox) {
+  color: var(--shot-text);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.shot-decision-option select {
   min-height: 48px;
   border: 1px solid var(--shot-border);
   border-radius: 0.65rem;
@@ -2820,13 +2970,9 @@ main {
     min-height: 520px;
   }
 
-  .shot-two-column,
-  .shot-recovered__content {
+  .shot-recovered__content,
+  .shot-plan-bindings {
     grid-template-columns: 1fr;
-  }
-
-  .shot-scope__groups {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -2868,6 +3014,9 @@ main {
   .shot-visual-grid,
   .shot-diff-row,
   .shot-form-grid,
+  .shot-render-grid,
+  .shot-plan-scope,
+  .shot-decision-grid,
   .shot-receipt,
   .shot-technical__content {
     grid-template-columns: 1fr;
@@ -2899,14 +3048,16 @@ main {
     padding-inline: 0.75rem;
   }
 
-  .shot-scope__groups {
-    grid-template-columns: 1fr;
-  }
-
   .shot-visual figcaption {
     align-items: flex-start;
     flex-direction: column;
     gap: 0.3rem;
+  }
+
+  .shot-target-list li,
+  .shot-render-grid dl div,
+  .shot-command dl div {
+    grid-template-columns: 1fr;
   }
 }
 

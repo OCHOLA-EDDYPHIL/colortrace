@@ -27,6 +27,95 @@ def _png(label: str) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + label.encode("ascii")
 
 
+def _target(kind: str, identifier: str) -> dict[str, str]:
+    return {
+        "schema": "simulator-target/v1",
+        "namespace": "colortrace-simulator",
+        "kind": kind,
+        "id": identifier,
+    }
+
+
+def _plan_inputs() -> dict[str, Any]:
+    config = f"sha256:{'2' * 64}"
+    targets = [
+        _target("color-resource", f"sha256:{'3' * 64}"),
+        *(_target("frame", f"frame-{index}") for index in range(3)),
+        _target("derivative", "derivative-1"),
+    ]
+    exclusions = [_target("frame", f"safe-{index}") for index in range(3)]
+    envelope = {
+        "schema": "simulator-action-envelope/v1",
+        "fixture_id": "ct-shadowed-lut-v1:canonical",
+        "fixture_manifest_sha256": f"sha256:{'0' * 64}",
+        "fixture_generation": 1,
+        "source_batch_id": "fixture-run-canonical",
+        "source_batch_sha256": f"sha256:{'1' * 64}",
+        "runtime_manifest_sha256": f"sha256:{'2' * 64}",
+        "runtime_generation": 1,
+        "expected_publication_pointer_sha256": f"sha256:{'3' * 64}",
+        "expected_publication_generation": 1,
+        "expected_resource_sha256": f"sha256:{'3' * 64}",
+        "replacement_resource_logical_path": "luts/show_look.cube",
+        "replacement_resource_sha256": f"sha256:{'4' * 64}",
+        "declared_resource_manifest_sha256": f"sha256:{'5' * 64}",
+        "ocio_version": "2.5.2",
+        "preservation_manifest_sha256": f"sha256:{'6' * 64}",
+        "safe_complement_sha256": f"sha256:{'5' * 64}",
+        "lineage_manifest_sha256": f"sha256:{'8' * 64}",
+        "lineage_generation": 1,
+    }
+    commands: list[dict[str, Any]] = [
+        {
+            "schema": "simulator-quarantine-command/v1",
+            "command_id": "quarantine-resource",
+            "namespace": "colortrace-simulator",
+            "target": targets[0],
+            "expected_resource_sha256": envelope["expected_resource_sha256"],
+            "mode": "quarantine-and-install-approved-replacement",
+            "action_envelope": envelope,
+        }
+    ]
+    for index, target in enumerate(targets[1:4], start=1):
+        commands.append(
+            {
+                "schema": "simulator-targeted-rerender-command/v1",
+                "command_id": f"rerender-frame-{index}",
+                "namespace": "colortrace-simulator",
+                "target": target,
+                "job_id": f"job-b-0{index}",
+                "transform_id": "look/main/v1",
+                "source_id": f"chart-0{index}",
+                "source_manifest_sha256": f"sha256:{index:064x}",
+                "source_png_sha256": f"sha256:{index + 3:064x}",
+                "expected_config_sha256": config,
+                "expected_output_sha256": f"sha256:{index + 6:064x}",
+                "expected_display_sha256": f"sha256:{index + 9:064x}",
+                "lineage_parent_artifact_id": f"source-chart-0{index}",
+                "action_envelope": envelope,
+            }
+        )
+    commands.append(
+        {
+            "schema": "simulator-targeted-rerender-command/v1",
+            "command_id": "rerender-derivative",
+            "namespace": "colortrace-simulator",
+            "target": targets[4],
+            "job_id": "job-b-02",
+            "transform_id": "look/main/v1",
+            "source_id": "chart-02",
+            "source_manifest_sha256": f"sha256:{'6' * 64}",
+            "source_png_sha256": f"sha256:{'7' * 64}",
+            "expected_config_sha256": config,
+            "expected_derivative_sha256": f"sha256:{'8' * 64}",
+            "expected_derivative_display_sha256": f"sha256:{'9' * 64}",
+            "lineage_parent_artifact_id": "output-job-b-02",
+            "action_envelope": envelope,
+        }
+    )
+    return {"targets": targets, "exclusions": exclusions, "commands": commands}
+
+
 def _packet(incident_id: str) -> dict[str, Any]:
     return {
         "packet_id": f"response-packet:{'1' * 64}",
@@ -48,12 +137,34 @@ def _packet(incident_id: str) -> dict[str, Any]:
         ],
         "deterministic_results": [
             {
-                "result_id": f"validator-result:{'6' * 64}",
+                "result_id": f"validation-result:{'6' * 64}",
                 "validator": "colortrace-validator",
                 "validator_version": "1.0.0",
                 "status": "resolved",
                 "derivation_sha256": "6" * 64,
             }
+        ],
+        "claims": [
+            {
+                "claim_id": f"claim:{'7' * 64}",
+                "claim_type": "causal-resource",
+                "subject": {"kind": "resource-sha256", "value": "3" * 64},
+                "state": "confirmed",
+                "reason_codes": ["causal-resource-confirmed"],
+                "evidence_ids": [f"sha256:{'a' * 64}"],
+                "deterministic_result_evidence_id": f"deterministic-result:{'7' * 64}",
+                "source_validator_result_id": f"validation-result:{'6' * 64}",
+            },
+            {
+                "claim_id": f"claim:{'8' * 64}",
+                "claim_type": "nominal-config",
+                "subject": {"kind": "config-sha256", "value": "2" * 64},
+                "state": "rejected",
+                "reason_codes": ["nominal-config-authoritatively-rejected"],
+                "evidence_ids": [f"sha256:{'b' * 64}"],
+                "deterministic_result_evidence_id": f"deterministic-result:{'8' * 64}",
+                "source_validator_result_id": f"validation-result:{'6' * 64}",
+            },
         ],
         "scope": {
             "state": "resolved",
@@ -90,6 +201,7 @@ def _evidence(incident_id: str) -> list[dict[str, Any]]:
             "observation": {"query_key": query},
             "timing": {"freshness": "unresolved"},
             "content_sha256": f"sha256:{digit * 64}",
+            "display_excerpt": f"Current {query} evidence.",
         }
         for digit, (query, tool) in zip("abcd", query_tools, strict=True)
     ]
@@ -156,14 +268,15 @@ class FakePlans:
         return {"state": "pending", "plan": self.plan}
 
     def draft(self, incident_id: str) -> dict[str, Any]:
+        inputs = _plan_inputs()
         return {
             "incident_id": incident_id,
             "incident_version": 7,
             "response_packet_id": f"response-packet:{'1' * 64}",
             "response_packet_sha256": f"sha256:{'1' * 64}",
             "deterministic_scope_sha256": f"sha256:{'2' * 64}",
-            "targets": [{"kind": "frame", "id": "frame-1"}],
-            "exclusions": [{"kind": "frame", "id": "safe-1"}],
+            "targets": inputs["targets"],
+            "exclusions": inputs["exclusions"],
         }
 
     def create(
@@ -180,6 +293,8 @@ class FakePlans:
             "version": 1,
             "plan_sha256": f"sha256:{'7' * 64}",
             "targets": list(body["targets"]),
+            "exclusions": list(body["exclusions"]),
+            "commands": list(body["commands"]),
         }
         return self.plan
 
@@ -189,7 +304,7 @@ class FakePublication:
         self.root = root
 
     def canonical_plan_inputs(self) -> dict[str, Any]:
-        return {"commands": [{"schema": "simulator-command/v1"}]}
+        return _plan_inputs()
 
 
 class FakeRuntime:
@@ -361,6 +476,52 @@ def _fixture(root: Path) -> None:
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
+    for job_id, worker_id, lut in (
+        ("job-a-02", "A", "1" * 64),
+        ("job-b-02", "B", "2" * 64),
+    ):
+        resource_path = f"runtime/manifests/resources/resource-{job_id}.json"
+        job_path = root / "runtime" / "manifests" / "jobs" / f"{job_id}.json"
+        job_path.parent.mkdir(parents=True, exist_ok=True)
+        job_path.write_text(
+            json.dumps(
+                {
+                    "schema": "fixture-job/v1",
+                    "job_id": job_id,
+                    "worker_id": worker_id,
+                    "source_id": "chart-02",
+                    "transform_id": "look/main/v1",
+                    "process_outcome": "success",
+                    "exit_code": 0,
+                    "nominal_config_sha256": "2" * 64,
+                    "resource_manifest": resource_path,
+                }
+            ),
+            encoding="utf-8",
+        )
+        resource = root / resource_path
+        resource.parent.mkdir(parents=True, exist_ok=True)
+        resource.write_text(
+            json.dumps(
+                {
+                    "schema": "resolved-resource-manifest/v1",
+                    "job_id": job_id,
+                    "worker_id": worker_id,
+                    "transform_id": "look/main/v1",
+                    "nominal_config_sha256": "2" * 64,
+                    "captured_before_and_after_processing": True,
+                    "inputs_unchanged": True,
+                    "ordered_resources": [
+                        {
+                            "logical_path": "luts/show_look.cube",
+                            "sha256": lut,
+                            "read_only": True,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
 
 def _workflow(
@@ -584,7 +745,7 @@ def test_prepare_emits_once_and_projects_bounded_live_proof(tmp_path: Path) -> N
         "unknown_count": 0,
     }
     assert {item["freshness"] for item in result["investigation"]["evidence"]} == {"current"}
-    assert result["target_sha256"] == _digest([{"kind": "frame", "id": "frame-1"}])
+    assert result["target_sha256"] == _digest(_plan_inputs()["targets"])
     assert {item["kind"] for item in result["visuals"]} == {
         "expected",
         "observed",

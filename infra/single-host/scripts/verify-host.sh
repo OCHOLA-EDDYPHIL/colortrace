@@ -172,6 +172,8 @@ test "$host_ready" = true
 
 test "$(request_status anonymous "$public_url/")" = 401
 test "$(request_status anonymous --user 'colortrace-invalid:invalid' "$public_url/")" = 401
+readonly nonexistent_run='demo-run-00000000000000000000000000000000'
+test "$(request_status anonymous "$public_url/v1/demo/runs/$nonexistent_run")" = 401
 
 readonly response_headers="$verification_root/headers"
 test "$(request_status authenticated --dump-header "$response_headers" "$public_url/")" = 200
@@ -180,7 +182,7 @@ grep -Eiq '^X-Content-Type-Options:[[:space:]]*nosniff([[:space:]]|\r)*$' "$resp
 grep -Eiq '^X-Frame-Options:[[:space:]]*DENY([[:space:]]|\r)*$' "$response_headers"
 
 test "$(request_status authenticated "$public_url/v1/session")" = 404
-readonly nonexistent_run='demo-run-00000000000000000000000000000000'
+test "$(request_status authenticated "$public_url/v1/incidents")" = 404
 test "$(request_status authenticated \
   --request POST \
   --data '{}' \
@@ -233,8 +235,92 @@ for private_port_probe_pid in "${private_port_probe_pids[@]}"; do
 done
 test "$private_port_boundary_status" -eq 0
 
-readonly start_request="$verification_root/start-request.json"
-readonly started_run="$verification_root/started-run.json"
+readonly rejection_start_request="$verification_root/rejection-start-request.json"
+readonly rejection_started_run="$verification_root/rejection-started-run.json"
+readonly rejection_request="$verification_root/rejection-request.json"
+readonly rejected_run="$verification_root/rejected-run.json"
+readonly rejected_replay="$verification_root/rejected-replay.json"
+readonly rejected_receipt_before="$verification_root/rejected-receipt-before.json"
+readonly rejection_summary="$verification_root/rejection-summary.json"
+readonly rejection_reset_request="$verification_root/rejection-reset-request.json"
+readonly rejection_reset_result="$verification_root/rejection-reset-result.json"
+
+python3 "$contract_helper" new-start "$rejection_start_request"
+rejection_start_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+start_status=$(post_start "$rejection_start_request" "$rejection_started_run")
+if test "$start_status" = 409; then
+  previous_run_id=$(python3 "$contract_helper" conflict-run-id "$rejection_started_run")
+  previous_run="$verification_root/previous-run.json"
+  previous_reset_request="$verification_root/previous-reset-request.json"
+  previous_reset_result="$verification_root/previous-reset-result.json"
+  get_json "/v1/demo/runs/$previous_run_id" "$previous_run"
+  test "$(python3 "$contract_helper" prepare-reset \
+    "$previous_run" "$previous_reset_request")" = "$previous_run_id"
+  post_json 200 "/v1/demo/runs/$previous_run_id/reset" \
+    "$previous_reset_request" "$previous_reset_result"
+  python3 "$contract_helper" verify-reset "$previous_reset_result" "$previous_run"
+  python3 "$contract_helper" new-start "$rejection_start_request"
+  rejection_start_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+  start_status=$(post_start "$rejection_start_request" "$rejection_started_run")
+fi
+test "$start_status" = 201
+rejected_run_id=$(python3 "$contract_helper" prepare-rejection \
+  "$rejection_started_run" "$rejection_request")
+post_json 200 "/v1/demo/runs/$rejected_run_id/reject" \
+  "$rejection_request" "$rejected_run"
+post_json 200 "/v1/demo/runs/$rejected_run_id/reject" \
+  "$rejection_request" "$rejected_replay"
+cmp --silent "$rejected_run" "$rejected_replay"
+get_json "/v1/demo/runs/$rejected_run_id/receipt" "$rejected_receipt_before"
+rejection_finish_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+rejection_elapsed_ms=$(((rejection_finish_ns - rejection_start_ns) / 1000000))
+python3 "$contract_helper" verify-rejection-contract \
+  "$rejected_run" \
+  "$rejection_request" \
+  "$rejected_receipt_before" \
+  "$artifact_binding" \
+  "$public_url" \
+  "$expected_generation" \
+  "$rejection_elapsed_ms" \
+  "$rejection_summary"
+
+readonly remote_check="$verification_root/remote-check.sh"
+python3 "$contract_helper" remote-script \
+  "$artifact_binding" "$expected_generation" "$remote_check"
+
+restart_runtime_and_verify() {
+  gcloud compute ssh "$instance" \
+    --project "$project_id" \
+    --zone "$zone" \
+    --tunnel-through-iap \
+    --quiet \
+    --command 'sudo --non-interactive docker restart colortrace-runtime >/dev/null'
+  local remote_result
+  remote_result=$(gcloud compute ssh "$instance" \
+    --project "$project_id" \
+    --zone "$zone" \
+    --tunnel-through-iap \
+    --quiet \
+    --command "$(cat "$remote_check")")
+  test "$remote_result" = colortrace-live-binding-ok
+}
+
+restart_runtime_and_verify
+readonly rejected_receipt_after_restart="$verification_root/rejected-receipt-after-restart.json"
+get_json "/v1/demo/runs/$rejected_run_id/receipt" "$rejected_receipt_after_restart"
+cmp --silent "$rejected_receipt_before" "$rejected_receipt_after_restart"
+
+test "$(python3 "$contract_helper" prepare-reset \
+  "$rejected_run" "$rejection_reset_request")" = "$rejected_run_id"
+post_json 200 "/v1/demo/runs/$rejected_run_id/reset" \
+  "$rejection_reset_request" "$rejection_reset_result"
+python3 "$contract_helper" verify-reset "$rejection_reset_result" "$rejected_run"
+readonly rejected_receipt_after_reset="$verification_root/rejected-receipt-after-reset.json"
+get_json "/v1/demo/runs/$rejected_run_id/receipt" "$rejected_receipt_after_reset"
+cmp --silent "$rejected_receipt_before" "$rejected_receipt_after_reset"
+
+readonly start_request="$verification_root/approval-start-request.json"
+readonly started_run="$verification_root/approval-started-run.json"
 readonly approval_request="$verification_root/approval-request.json"
 readonly approved_run="$verification_root/approved-run.json"
 readonly closure_request="$verification_root/closure-request.json"
@@ -245,21 +331,6 @@ readonly workflow_summary="$verification_root/workflow-summary.json"
 python3 "$contract_helper" new-start "$start_request"
 workflow_start_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
 start_status=$(post_start "$start_request" "$started_run")
-if test "$start_status" = 409; then
-  previous_run_id=$(python3 "$contract_helper" conflict-run-id "$started_run")
-  previous_run="$verification_root/previous-run.json"
-  previous_reset_request="$verification_root/previous-reset-request.json"
-  previous_reset_result="$verification_root/previous-reset-result.json"
-  get_json "/v1/demo/runs/$previous_run_id" "$previous_run"
-  test "$(python3 "$contract_helper" prepare-reset \
-    "$previous_run" "$previous_reset_request")" = "$previous_run_id"
-  post_json 200 "/v1/demo/runs/$previous_run_id/reset" \
-    "$previous_reset_request" "$previous_reset_result"
-  python3 "$contract_helper" verify-reset "$previous_reset_result" "$previous_run"
-  python3 "$contract_helper" new-start "$start_request"
-  workflow_start_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
-  start_status=$(post_start "$start_request" "$started_run")
-fi
 test "$start_status" = 201
 run_id=$(python3 "$contract_helper" prepare-approval \
   "$started_run" "$approval_request")
@@ -288,23 +359,7 @@ python3 "$contract_helper" verify-contract \
   "$visual_directory" \
   "$workflow_summary"
 
-gcloud compute ssh "$instance" \
-  --project "$project_id" \
-  --zone "$zone" \
-  --tunnel-through-iap \
-  --quiet \
-  --command 'sudo --non-interactive docker restart colortrace-runtime >/dev/null'
-
-readonly remote_check="$verification_root/remote-check.sh"
-python3 "$contract_helper" remote-script \
-  "$artifact_binding" "$expected_generation" "$remote_check"
-remote_result=$(gcloud compute ssh "$instance" \
-  --project "$project_id" \
-  --zone "$zone" \
-  --tunnel-through-iap \
-  --quiet \
-  --command "$(cat "$remote_check")")
-test "$remote_result" = colortrace-live-binding-ok
+restart_runtime_and_verify
 
 readonly mcp_probe="$verification_root/mcp-probe.sh"
 python3 "$contract_helper" mcp-script "$workflow_summary" "$mcp_probe"
@@ -338,5 +393,6 @@ python3 "$contract_helper" write-report \
   "$zone" \
   "$instance" \
   "$expected_generation" \
-  "$output"
+  "$output" \
+  --rejection-summary "$rejection_summary"
 printf '%s\n' "$output"

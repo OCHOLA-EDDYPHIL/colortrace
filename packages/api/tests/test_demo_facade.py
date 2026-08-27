@@ -3,11 +3,11 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from colortrace_api import (
@@ -28,7 +28,8 @@ from colortrace_api import (
 )
 from colortrace_api.runtime import _runtime_lifespan
 from colortrace_api.simulator_runtime import LocalSimulatorRuntime
-from colortrace_recovery import CHECK_NAMES, RecoveryError, document_sha256
+from colortrace_recovery import CHECK_NAMES, RecoveryError, canonical_json_bytes, document_sha256
+from colortrace_response_plans import ResponsePlanError
 from colortrace_simulator import DispatchIdentity
 from colortrace_simulator.repository import SimulatorRepositoryError
 from fastapi.testclient import TestClient
@@ -43,7 +44,31 @@ SECOND_NONCE = "m" * 32
 INCIDENT_VERSION = 7
 PLAN_VERSION = 3
 PLAN_SHA256 = f"sha256:{'1' * 64}"
-TARGET_SHA256 = f"sha256:{'2' * 64}"
+REVIEW_TARGETS = [
+    {
+        "schema": "simulator-target/v1",
+        "namespace": "colortrace-simulator",
+        "kind": kind,
+        "id": identifier,
+    }
+    for kind, identifier in (
+        ("color-resource", f"sha256:{'a' * 64}"),
+        ("frame", "frame-1"),
+        ("frame", "frame-2"),
+        ("frame", "frame-3"),
+        ("derivative", "derivative-1"),
+    )
+]
+REVIEW_EXCLUSIONS = [
+    {
+        "schema": "simulator-target/v1",
+        "namespace": "colortrace-simulator",
+        "kind": "frame",
+        "id": f"safe-{index}",
+    }
+    for index in range(3)
+]
+TARGET_SHA256 = document_sha256(REVIEW_TARGETS)
 OUTCOME_ID = f"simulator-action-outcome:{'3' * 64}"
 OUTCOME_SHA256 = f"sha256:{'3' * 64}"
 WORKFLOW_ID = f"recovery-workflow:{'4' * 64}"
@@ -79,6 +104,90 @@ def _write_visuals(root: Path) -> dict[str, dict[str, str]]:
     return result
 
 
+def _review_plan() -> dict[str, Any]:
+    config = f"sha256:{'b' * 64}"
+    bindings = {
+        "schema": "simulator-action-envelope/v1",
+        "fixture_id": "ct-shadowed-lut-v1:canonical",
+        "fixture_manifest_sha256": f"sha256:{'0' * 64}",
+        "fixture_generation": 1,
+        "source_batch_id": "fixture-run-canonical",
+        "source_batch_sha256": f"sha256:{'1' * 64}",
+        "runtime_manifest_sha256": f"sha256:{'2' * 64}",
+        "runtime_generation": 1,
+        "expected_publication_pointer_sha256": f"sha256:{'3' * 64}",
+        "expected_publication_generation": 1,
+        "expected_resource_sha256": f"sha256:{'a' * 64}",
+        "replacement_resource_logical_path": "luts/show_look.cube",
+        "replacement_resource_sha256": f"sha256:{'c' * 64}",
+        "declared_resource_manifest_sha256": f"sha256:{'5' * 64}",
+        "ocio_version": "2.5.2",
+        "preservation_manifest_sha256": f"sha256:{'6' * 64}",
+        "safe_complement_sha256": f"sha256:{'d' * 64}",
+        "lineage_manifest_sha256": f"sha256:{'8' * 64}",
+        "lineage_generation": 1,
+    }
+    commands: list[dict[str, Any]] = [
+        {
+            "schema": "simulator-quarantine-command/v1",
+            "command_id": "quarantine-resource-1",
+            "namespace": "colortrace-simulator",
+            "target": REVIEW_TARGETS[0],
+            "expected_resource_sha256": bindings["expected_resource_sha256"],
+            "mode": "quarantine-and-install-approved-replacement",
+        }
+    ]
+    for index, target in enumerate(REVIEW_TARGETS[1:4], start=1):
+        commands.append(
+            {
+                "schema": "simulator-targeted-rerender-command/v1",
+                "command_id": f"rerender-frame-{index}",
+                "namespace": "colortrace-simulator",
+                "target": target,
+                "job_id": f"job-b-0{index}",
+                "transform_id": "look/main/v1",
+                "source_id": f"chart-0{index}",
+                "source_manifest_sha256": f"sha256:{index:064x}",
+                "source_png_sha256": f"sha256:{index + 3:064x}",
+                "expected_config_sha256": config,
+                "expected_output_sha256": f"sha256:{index + 6:064x}",
+                "expected_display_sha256": f"sha256:{index + 9:064x}",
+                "lineage_parent_artifact_id": f"source-chart-0{index}",
+            }
+        )
+    commands.append(
+        {
+            "schema": "simulator-targeted-rerender-command/v1",
+            "command_id": "rerender-derivative-1",
+            "namespace": "colortrace-simulator",
+            "target": REVIEW_TARGETS[4],
+            "job_id": "job-b-02",
+            "transform_id": "look/main/v1",
+            "source_id": "chart-02",
+            "source_manifest_sha256": f"sha256:{'1' * 64}",
+            "source_png_sha256": f"sha256:{'2' * 64}",
+            "expected_config_sha256": config,
+            "expected_derivative_sha256": f"sha256:{'3' * 64}",
+            "expected_derivative_display_sha256": f"sha256:{'4' * 64}",
+            "lineage_parent_artifact_id": "output-job-b-02",
+        }
+    )
+    full_commands = [{**command, "action_envelope": bindings} for command in commands]
+    commands_sha256 = f"sha256:{hashlib.sha256(canonical_json_bytes(full_commands)).hexdigest()}"
+    return {
+        "status": "pending",
+        "version": PLAN_VERSION,
+        "plan_sha256": PLAN_SHA256,
+        "target_sha256": TARGET_SHA256,
+        "exclusions_sha256": document_sha256(REVIEW_EXCLUSIONS),
+        "commands_sha256": commands_sha256,
+        "targets": REVIEW_TARGETS,
+        "protected_exclusions": REVIEW_EXCLUSIONS,
+        "shared_action_bindings": bindings,
+        "command_summaries": commands,
+    }
+
+
 class FakeWorkflow:
     def __init__(self, visuals: Mapping[str, Mapping[str, str]]) -> None:
         self.visuals = visuals
@@ -89,6 +198,9 @@ class FakeWorkflow:
         self.execute_error: BaseException | None = None
         self.reconcile_error: BaseException | None = None
         self.reconciliation: Mapping[str, Any] | None = None
+        self.reject_calls: list[Mapping[str, Any]] = []
+        self.rejection_request: Mapping[str, Any] | None = None
+        self.reject_response_loss = False
 
     def preparation(self, request: Mapping[str, Any]) -> dict[str, Any]:
         return {
@@ -139,6 +251,44 @@ class FakeWorkflow:
             raise self.reconcile_error
         return self.reconciliation
 
+    @staticmethod
+    def _rejection_result(request: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "schema": "colortrace-demo-rejection-result/v1",
+            **{
+                key: request[key]
+                for key in (
+                    "run_id",
+                    "incident_id",
+                    "incident_version",
+                    "plan_version",
+                    "plan_sha256",
+                    "target_sha256",
+                    "reason_code",
+                )
+            },
+            "decision_id": f"plan-decision:{'f' * 64}",
+            "decision_sha256": f"sha256:{'f' * 64}",
+        }
+
+    def reject(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        self.reject_calls.append(request)
+        if self.rejection_request is not None and request != self.rejection_request:
+            raise ResponsePlanError("idempotency-conflict")
+        self.rejection_request = dict(request)
+        result = self._rejection_result(request)
+        if self.reject_response_loss:
+            self.reject_response_loss = False
+            raise SystemExit("simulated rejection response loss")
+        return result
+
+    def review_rejection(self, request: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        if self.rejection_request is None:
+            return None
+        return self._rejection_result(
+            {**request, "reason_code": self.rejection_request["reason_code"]}
+        )
+
 
 class ProofWorkflow(FakeWorkflow):
     def preparation(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -154,6 +304,12 @@ class ProofWorkflow(FakeWorkflow):
             "packet_id": f"response-packet:{'6' * 64}",
             "packet_sha256": f"sha256:{'6' * 64}",
             "status": "resolved",
+            "adjudication": {
+                "model_role": "evidence-selection-and-advisory-drafting",
+                "model_authority": "advisory-only",
+                "validator_role": "deterministic-claim-adjudication",
+                "decision_mode": "deterministic-validation",
+            },
             "model_invocations": [
                 {
                     "invocation_id": f"model-invocation:{digit * 64}",
@@ -178,12 +334,54 @@ class ProofWorkflow(FakeWorkflow):
                     "inventory_sha256": f"sha256:{'7' * 64}",
                     "content_sha256": f"sha256:{index * 64}",
                     "freshness": "current",
+                    "display_excerpt": f"Current {query} evidence.",
+                    "display_excerpt_truncated": False,
                 }
                 for index, (query, tool) in zip("abcd", query_tools, strict=True)
             ],
+            "comparison": {
+                "renders": [
+                    {
+                        "job_id": "job-a-02",
+                        "worker_id": "A",
+                        "status": "succeeded",
+                        "nominal_config_sha256": f"sha256:{'b' * 64}",
+                        "resolved_lut_sha256": f"sha256:{'c' * 64}",
+                    },
+                    {
+                        "job_id": "job-b-02",
+                        "worker_id": "B",
+                        "status": "succeeded",
+                        "nominal_config_sha256": f"sha256:{'b' * 64}",
+                        "resolved_lut_sha256": f"sha256:{'d' * 64}",
+                    },
+                ],
+                "nominal_config_match": True,
+                "resolved_lut_match": False,
+            },
+            "claims": [
+                {
+                    "claim_id": f"claim:{'1' * 64}",
+                    "claim_type": "causal-resource",
+                    "subject": {"kind": "resource-sha256", "value": "a" * 64},
+                    "state": "confirmed",
+                    "reason_codes": ["causal-resource-confirmed"],
+                    "evidence_ids": [f"sha256:{'a' * 64}"],
+                    "source_validator_result_id": f"validation-result:{'e' * 64}",
+                },
+                {
+                    "claim_id": f"claim:{'2' * 64}",
+                    "claim_type": "nominal-config",
+                    "subject": {"kind": "config-sha256", "value": "b" * 64},
+                    "state": "rejected",
+                    "reason_codes": ["nominal-config-authoritatively-rejected"],
+                    "evidence_ids": [f"sha256:{'b' * 64}"],
+                    "source_validator_result_id": f"validation-result:{'e' * 64}",
+                },
+            ],
             "validators": [
                 {
-                    "result_id": f"validator-result:{'e' * 64}",
+                    "result_id": f"validation-result:{'e' * 64}",
                     "validator": "colortrace-validator",
                     "validator_version": "1.0.0",
                     "status": "resolved",
@@ -204,12 +402,7 @@ class ProofWorkflow(FakeWorkflow):
                 "mcp_attempts": 4,
                 "validator_calls": 6,
             },
-            "plan": {
-                "status": "pending",
-                "version": PLAN_VERSION,
-                "plan_sha256": PLAN_SHA256,
-                "target_sha256": TARGET_SHA256,
-            },
+            "plan": _review_plan(),
         }
         return result
 
@@ -271,6 +464,40 @@ class NonCurrentEvidenceWorkflow(ProofWorkflow):
         first = evidence[0]
         assert isinstance(first, dict)
         first["freshness"] = self.freshness
+        return result
+
+
+class MalformedReviewWorkflow(ProofWorkflow):
+    def __init__(self, visuals: Mapping[str, Mapping[str, str]], *, mutation: str) -> None:
+        super().__init__(visuals)
+        self.mutation = mutation
+
+    def preparation(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        result = super().preparation(request)
+        investigation = cast(dict[str, Any], result["investigation"])
+        if self.mutation == "unsafe-excerpt":
+            evidence = cast(list[dict[str, Any]], investigation["evidence"])
+            evidence[0]["display_excerpt"] = "unsafe\x00text"
+        elif self.mutation == "unbound-validator":
+            claims = cast(list[dict[str, Any]], investigation["claims"])
+            claims[0]["source_validator_result_id"] = f"validation-result:{'f' * 64}"
+        else:
+            plan = cast(dict[str, Any], investigation["plan"])
+            plan["commands_sha256"] = f"sha256:{'f' * 64}"
+        return result
+
+
+class BlockingRejectWorkflow(ProofWorkflow):
+    def __init__(self, visuals: Mapping[str, Mapping[str, str]]) -> None:
+        super().__init__(visuals)
+        self.reject_entered = threading.Event()
+        self.release_reject = threading.Event()
+
+    def reject(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        result = super().reject(request)
+        self.reject_entered.set()
+        if not self.release_reject.wait(timeout=5):
+            raise TimeoutError("test rejection release timed out")
         return result
 
 
@@ -544,6 +771,27 @@ def _approval(started: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _rejection(
+    started: Mapping[str, Any],
+    *,
+    reason_code: str = "unsafe-scope",
+    idempotency_key: str = "demo-reject-1",
+) -> dict[str, Any]:
+    approval = started["approval"]
+    assert isinstance(approval, Mapping)
+    return {
+        "schema": "colortrace-demo-rejection-request/v1",
+        "approval_nonce": started["approval_nonce"],
+        "expected_run_version": started["version"],
+        "expected_incident_version": approval["incident_version"],
+        "expected_plan_version": approval["plan_version"],
+        "expected_plan_sha256": approval["plan_sha256"],
+        "expected_target_sha256": approval["target_sha256"],
+        "reason_code": reason_code,
+        "idempotency_key": idempotency_key,
+    }
+
+
 def _closure(recovered: Mapping[str, Any]) -> dict[str, Any]:
     recovery = recovered["recovery"]
     assert isinstance(recovery, Mapping)
@@ -685,6 +933,264 @@ def test_start_retry_after_response_loss_recovers_nonce_and_can_approve(
     assert all(NONCE.encode("ascii") not in row[0] for row in delegated)
 
 
+def test_reject_is_bound_idempotent_terminal_and_resettable(tmp_path: Path) -> None:
+    facade, workflow, _recovery, _clock, _root = _facade(tmp_path)
+    started = _start(facade)
+    request = _rejection(started, reason_code="insufficient-evidence")
+
+    rejected = facade.reject(RUN_IDS[0], request)
+    replay = facade.reject(RUN_IDS[0], request)
+
+    assert replay == rejected
+    assert rejected["phase"] == "unresolved"
+    assert rejected["version"] == 3
+    assert rejected["terminal_reason"] == "plan-rejected-insufficient-evidence"
+    assert rejected["receipt_href"] == f"/v1/demo/runs/{RUN_IDS[0]}/receipt"
+    assert workflow.execute_calls == []
+    assert facade.receipt(RUN_IDS[0])["reason_code"] == ("plan-rejected-insufficient-evidence")
+    reset = facade.reset(
+        RUN_IDS[0],
+        {
+            "schema": RESET_REQUEST_SCHEMA,
+            "expected_run_version": rejected["version"],
+            "idempotency_key": "reset-rejected-1",
+        },
+    )
+    assert reset["reset"] is True
+
+
+def test_reject_response_loss_reconciles_from_authoritative_decision(tmp_path: Path) -> None:
+    facade, workflow, recovery, clock, visual_root = _facade(tmp_path)
+    started = _start(facade)
+    request = _rejection(started)
+    workflow.reject_response_loss = True
+
+    with pytest.raises(SystemExit, match="simulated rejection response loss"):
+        facade.reject(RUN_IDS[0], request)
+
+    clock.value += timedelta(minutes=16)
+    resumed = DemoFacade(
+        store=SQLiteDemoRunStore(tmp_path / "demo.sqlite3"),
+        workflow=workflow,
+        source_commit=SOURCE_COMMIT,
+        visual_root=visual_root,
+        recovery=recovery,
+        scenario_reset=FakeScenarioReset(),
+        closure_principal=_principal(),
+        clock=clock,
+    )
+    reconciled = resumed.get(RUN_IDS[0])
+
+    assert reconciled["phase"] == "unresolved"
+    assert reconciled["terminal_reason"] == "plan-rejected-unsafe-scope"
+    assert resumed.reject(RUN_IDS[0], request) == reconciled
+
+
+def test_reject_retry_after_expired_lease_recovers_committed_decision(tmp_path: Path) -> None:
+    facade, workflow, _recovery, clock, _root = _facade(tmp_path)
+    started = _start(facade)
+    request = _rejection(started)
+    workflow.reject_response_loss = True
+    with pytest.raises(SystemExit, match="simulated rejection response loss"):
+        facade.reject(RUN_IDS[0], request)
+    clock.value += timedelta(minutes=16)
+
+    rejected = facade.reject(RUN_IDS[0], request)
+
+    assert rejected["phase"] == "unresolved"
+    assert rejected["terminal_reason"] == "plan-rejected-unsafe-scope"
+    assert workflow.execute_calls == []
+
+
+def test_new_reject_after_expired_lease_does_not_create_a_decision(tmp_path: Path) -> None:
+    facade, workflow, _recovery, clock, _root = _facade(tmp_path)
+    started = _start(facade)
+    clock.value += timedelta(minutes=16)
+
+    with pytest.raises(DemoFacadeError, match="demo-run-phase-conflict"):
+        facade.reject(RUN_IDS[0], _rejection(started))
+
+    assert facade.get(RUN_IDS[0])["phase"] == "expired"
+    assert workflow.reject_calls == []
+
+
+def test_reads_cannot_expire_a_rejection_in_flight(tmp_path: Path) -> None:
+    visual_root = tmp_path / "visuals"
+    visual_root.mkdir()
+    workflow = BlockingRejectWorkflow(_write_visuals(visual_root))
+    facade, _workflow, _recovery, clock, _root = _facade(tmp_path, workflow=workflow)
+    started = _start(facade)
+    results: dict[str, Any] = {}
+
+    rejecting = threading.Thread(
+        target=lambda: results.setdefault(
+            "rejected", facade.reject(RUN_IDS[0], _rejection(started))
+        )
+    )
+    rejecting.start()
+    assert workflow.reject_entered.wait(timeout=5)
+    clock.value += timedelta(minutes=16)
+    reading = threading.Thread(
+        target=lambda: results.update(
+            receipt=facade.receipt(RUN_IDS[0]),
+            visual=facade.visual(RUN_IDS[0], "observed"),
+        )
+    )
+    reading.start()
+    workflow.release_reject.set()
+    rejecting.join(timeout=5)
+    reading.join(timeout=5)
+
+    assert not rejecting.is_alive() and not reading.is_alive()
+    assert results["rejected"]["terminal_reason"] == "plan-rejected-unsafe-scope"
+    assert results["receipt"]["reason_code"] == "plan-rejected-unsafe-scope"
+    assert results["visual"].content == _png("observed")
+
+
+def test_approve_and_reject_race_has_one_decision_winner(tmp_path: Path) -> None:
+    facade, workflow, _recovery, _clock, _root = _facade(tmp_path)
+    started = _start(facade)
+    barrier = threading.Barrier(3)
+    outcomes: list[tuple[str, str]] = []
+
+    def attempt(label: str, operation: Callable[[], Mapping[str, Any]]) -> None:
+        barrier.wait()
+        try:
+            outcomes.append((label, cast(str, operation()["phase"])))
+        except DemoFacadeError as error:
+            outcomes.append((label, error.code))
+
+    approve = threading.Thread(
+        target=attempt,
+        args=("approve", lambda: facade.approve(RUN_IDS[0], _approval(started))),
+    )
+    reject = threading.Thread(
+        target=attempt,
+        args=("reject", lambda: facade.reject(RUN_IDS[0], _rejection(started))),
+    )
+    approve.start()
+    reject.start()
+    barrier.wait()
+    approve.join(timeout=5)
+    reject.join(timeout=5)
+
+    assert not approve.is_alive() and not reject.is_alive()
+    winners = [item for item in outcomes if item[1] in {"awaiting-closure", "unresolved"}]
+    assert len(winners) == 1
+    assert {item[1] for item in outcomes} & {"demo-run-phase-conflict"}
+    assert len(workflow.execute_calls) == (1 if winners[0][0] == "approve" else 0)
+
+
+def test_persisted_v1_investigation_remains_readable_and_rejectable(tmp_path: Path) -> None:
+    visual_root = tmp_path / "visuals"
+    visual_root.mkdir()
+    workflow = ProofWorkflow(_write_visuals(visual_root))
+    clock = ManualClock()
+    store = SQLiteDemoRunStore(tmp_path / "demo.sqlite3")
+    incident_id = "incident-demo-11111111111111111111111111111111"
+    preparation_request = {
+        "schema": "colortrace-demo-preparation-request/v1",
+        "run_id": RUN_IDS[0],
+        "incident_id": incident_id,
+        "scenario_id": CANONICAL_SCENARIO,
+        "source_commit": SOURCE_COMMIT,
+        "idempotency_key": f"prepare:{RUN_IDS[0]}",
+    }
+    preparation = workflow.preparation(preparation_request)
+    current = preparation["investigation"]
+    legacy = {
+        key: current[key]
+        for key in (
+            "packet_id",
+            "packet_sha256",
+            "status",
+            "model_invocations",
+            "validators",
+            "scope",
+            "budget_use",
+        )
+    }
+    legacy["schema"] = "colortrace-demo-investigation-proof/v1"
+    legacy["evidence"] = [
+        {
+            key: value
+            for key, value in item.items()
+            if key not in {"display_excerpt", "display_excerpt_truncated"}
+        }
+        for item in current["evidence"]
+    ]
+    legacy["plan"] = {
+        key: current["plan"][key] for key in ("status", "version", "plan_sha256", "target_sha256")
+    }
+    preparation["investigation"] = legacy
+    start_request = _start_body()
+    store.create(
+        run_id=RUN_IDS[0],
+        incident_id=incident_id,
+        start_idempotency_key=start_request["idempotency_key"],
+        start_request_sha256=document_sha256(start_request),
+        source_commit=SOURCE_COMMIT,
+        build_provenance={
+            "schema": "colortrace-demo-build-provenance/v1",
+            "source_commit": SOURCE_COMMIT,
+        },
+        nonce_sha256=f"sha256:{hashlib.sha256(NONCE.encode('ascii')).hexdigest()}",
+        preparation_request=preparation_request,
+        now=clock(),
+    )
+    store.complete_preparation(RUN_IDS[0], preparation, now=clock())
+
+    facade = DemoFacade(
+        store=store,
+        workflow=workflow,
+        source_commit=SOURCE_COMMIT,
+        visual_root=visual_root,
+        recovery=FakeRecovery(),
+        scenario_reset=FakeScenarioReset(),
+        closure_principal=_principal(),
+        clock=clock,
+    )
+    stored = facade.get(RUN_IDS[0])
+
+    assert stored["investigation"]["schema"] == "colortrace-demo-investigation-proof/v1"
+    rejected = facade.reject(
+        RUN_IDS[0],
+        _rejection({**stored, "approval_nonce": NONCE}),
+    )
+    assert rejected["phase"] == "unresolved"
+    assert workflow.execute_calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    [
+        ("approval_nonce", "x" * 32, "demo-approval-nonce-invalid"),
+        ("expected_run_version", 99, "demo-run-version-conflict"),
+        ("expected_incident_version", 99, "demo-rejection-binding-conflict"),
+        ("expected_plan_version", 99, "demo-rejection-binding-conflict"),
+        ("expected_plan_sha256", f"sha256:{'e' * 64}", "demo-rejection-binding-conflict"),
+        ("expected_target_sha256", f"sha256:{'e' * 64}", "demo-rejection-binding-conflict"),
+        ("reason_code", "because", "demo-rejection-reason-invalid"),
+    ],
+)
+def test_reject_fails_closed_on_invalid_bindings(
+    tmp_path: Path,
+    field: str,
+    value: Any,
+    code: str,
+) -> None:
+    facade, workflow, _recovery, _clock, _root = _facade(tmp_path)
+    started = _start(facade)
+    request = _rejection(started)
+    request[field] = value
+
+    with pytest.raises(DemoFacadeError, match=code):
+        facade.reject(RUN_IDS[0], request)
+
+    assert workflow.reject_calls == []
+    assert facade.get(RUN_IDS[0])["phase"] == "awaiting-approval"
+
+
 def test_start_idempotency_key_cannot_be_rebound(tmp_path: Path) -> None:
     facade, workflow, _recovery, _clock, _root = _facade(tmp_path)
     _start(facade)
@@ -719,6 +1225,33 @@ def test_bounded_proofs_are_persisted_projected_and_receipted(tmp_path: Path) ->
         "metric.correlated-observations",
         "trace.by-id",
     ]
+    assert started["investigation"]["comparison"] == {
+        "renders": [
+            {
+                "job_id": "job-a-02",
+                "worker_id": "A",
+                "status": "succeeded",
+                "nominal_config_sha256": f"sha256:{'b' * 64}",
+                "resolved_lut_sha256": f"sha256:{'c' * 64}",
+            },
+            {
+                "job_id": "job-b-02",
+                "worker_id": "B",
+                "status": "succeeded",
+                "nominal_config_sha256": f"sha256:{'b' * 64}",
+                "resolved_lut_sha256": f"sha256:{'d' * 64}",
+            },
+        ],
+        "nominal_config_match": True,
+        "resolved_lut_match": False,
+    }
+    assert {item["state"] for item in started["investigation"]["claims"]} == {
+        "confirmed",
+        "rejected",
+    }
+    assert len(started["investigation"]["plan"]["command_summaries"]) == 5
+    assert started["investigation"]["plan"]["targets"] == REVIEW_TARGETS
+    assert started["investigation"]["plan"]["protected_exclusions"] == REVIEW_EXCLUSIONS
     assert (
         recovered["execution"]["action"]["safe_complement_before_sha256"]
         == (recovered["execution"]["action"]["safe_complement_after_sha256"])
@@ -780,6 +1313,26 @@ def test_preparation_rejects_noncurrent_evidence_and_terminalizes(
     assert workflow.execute_calls == []
     assert facade.get(RUN_IDS[0])["phase"] == "unresolved"
     assert facade.receipt(RUN_IDS[0])["proofs"] == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["unsafe-excerpt", "unbound-validator", "command-digest"],
+)
+def test_preparation_rejects_unsafe_or_unbound_review_content(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    visual_root = tmp_path / "visuals"
+    visual_root.mkdir()
+    workflow = MalformedReviewWorkflow(_write_visuals(visual_root), mutation=mutation)
+    facade, _workflow, _recovery, _clock, _root = _facade(tmp_path, workflow=workflow)
+
+    with pytest.raises(DemoFacadeError, match="demo-investigation-proof-invalid"):
+        _start(facade)
+
+    assert workflow.execute_calls == []
+    assert facade.get(RUN_IDS[0])["phase"] == "unresolved"
 
 
 def test_proofless_execution_is_rejected_and_terminalized(tmp_path: Path) -> None:
@@ -1619,6 +2172,27 @@ def test_demo_routes_enforce_json_origin_and_bounded_visual_kinds(tmp_path: Path
     recovered_terminal = terminal_client.get(f"/v1/demo/runs/{terminal_conflict.json()['run_id']}")
     assert recovered_terminal.status_code == 200
     assert recovered_terminal.json()["phase"] == "closed"
+
+
+def test_demo_reject_route_needs_no_visual_fetch_and_never_executes(tmp_path: Path) -> None:
+    facade, workflow, _recovery, _clock, visual_root = _facade(tmp_path)
+    client = TestClient(create_app(IncidentService(), demo=facade))
+    started = client.post("/v1/demo/runs", json=_start_body())
+    assert started.status_code == 201
+    (visual_root / "observed.png").unlink()
+
+    rejected = client.post(
+        f"/v1/demo/runs/{RUN_IDS[0]}/reject",
+        json=_rejection(started.json()),
+    )
+
+    assert rejected.status_code == 200
+    assert rejected.json()["phase"] == "unresolved"
+    assert rejected.json()["terminal_reason"] == "plan-rejected-unsafe-scope"
+    assert workflow.execute_calls == []
+    receipt = client.get(f"/v1/demo/runs/{RUN_IDS[0]}/receipt")
+    assert receipt.status_code == 200
+    assert receipt.json()["reason_code"] == "plan-rejected-unsafe-scope"
 
 
 @pytest.mark.parametrize(
