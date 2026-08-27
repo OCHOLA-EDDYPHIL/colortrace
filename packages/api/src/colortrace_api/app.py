@@ -668,6 +668,10 @@ def create_app(
     ) -> dict[str, Any]:
         return demo_api().approve(run_id, body)
 
+    @app.post("/v1/demo/runs/{run_id}/reject")
+    def reject_demo_run(run_id: str, body: dict[str, Any] = demo_body_dependency) -> dict[str, Any]:
+        return demo_api().reject(run_id, body)
+
     @app.post("/v1/demo/runs/{run_id}/close")
     def close_demo_run(run_id: str, body: dict[str, Any] = demo_body_dependency) -> dict[str, Any]:
         return demo_api().close(run_id, body)

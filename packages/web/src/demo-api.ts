@@ -1,5 +1,13 @@
 export const CANONICAL_DEMO_SCENARIO = "ct-shadowed-lut-v1:canonical";
 export const DEMO_APPROVAL_PHRASE = "APPROVE_COLORTRACE_SIMULATOR_ACTION";
+export const DEMO_REJECTION_REASONS = [
+  "unsafe-scope",
+  "insufficient-evidence",
+  "incorrect-command",
+  "unresolved-risk",
+] as const;
+
+export type DemoRejectionReason = (typeof DEMO_REJECTION_REASONS)[number];
 
 export type DemoPhase =
   | "preparing"
@@ -20,7 +28,7 @@ export type DemoVisualDescriptor = {
   readonly label: "illustrative-authored-fixture";
 };
 
-export type DemoInvestigationProof = {
+export type DemoInvestigationProofV1 = {
   readonly schema: "colortrace-demo-investigation-proof/v1";
   readonly packet_id: string;
   readonly packet_sha256: string;
@@ -71,6 +79,135 @@ export type DemoInvestigationProof = {
     readonly target_sha256: string;
   };
 };
+
+export type DemoPlanTarget = {
+  readonly schema: "simulator-target/v1";
+  readonly namespace: "colortrace-simulator";
+  readonly kind: "color-resource" | "frame" | "derivative";
+  readonly id: string;
+};
+
+export type DemoPlanCommand =
+  | {
+      readonly schema: "simulator-quarantine-command/v1";
+      readonly command_id: string;
+      readonly namespace: "colortrace-simulator";
+      readonly target: DemoPlanTarget;
+      readonly expected_resource_sha256: string;
+      readonly mode: "quarantine-and-install-approved-replacement";
+    }
+  | {
+      readonly schema: "simulator-targeted-rerender-command/v1";
+      readonly command_id: string;
+      readonly namespace: "colortrace-simulator";
+      readonly target: DemoPlanTarget;
+      readonly job_id: string;
+      readonly source_id: string;
+      readonly transform_id: "look/main/v1" | "identity/v1";
+      readonly source_manifest_sha256: string;
+      readonly source_png_sha256: string;
+      readonly expected_config_sha256: string;
+      readonly expected_output_sha256: string;
+      readonly expected_display_sha256: string;
+      readonly lineage_parent_artifact_id: string;
+    }
+  | {
+      readonly schema: "simulator-targeted-rerender-command/v1";
+      readonly command_id: string;
+      readonly namespace: "colortrace-simulator";
+      readonly target: DemoPlanTarget;
+      readonly job_id: string;
+      readonly source_id: string;
+      readonly transform_id: "look/main/v1" | "identity/v1";
+      readonly source_manifest_sha256: string;
+      readonly source_png_sha256: string;
+      readonly expected_config_sha256: string;
+      readonly expected_derivative_sha256: string;
+      readonly expected_derivative_display_sha256: string;
+      readonly lineage_parent_artifact_id: string;
+    };
+
+export type DemoActionEnvelope = {
+  readonly schema: "simulator-action-envelope/v1";
+  readonly fixture_id: string;
+  readonly fixture_manifest_sha256: string;
+  readonly fixture_generation: number;
+  readonly source_batch_id: string;
+  readonly source_batch_sha256: string;
+  readonly runtime_manifest_sha256: string;
+  readonly runtime_generation: number;
+  readonly expected_publication_pointer_sha256: string;
+  readonly expected_publication_generation: number;
+  readonly expected_resource_sha256: string;
+  readonly replacement_resource_logical_path: "luts/show_look.cube";
+  readonly replacement_resource_sha256: string;
+  readonly declared_resource_manifest_sha256: string;
+  readonly ocio_version: "2.5.2";
+  readonly preservation_manifest_sha256: string;
+  readonly safe_complement_sha256: string;
+  readonly lineage_manifest_sha256: string;
+  readonly lineage_generation: number;
+};
+
+export type DemoInvestigationProofV2 = {
+  readonly schema: "colortrace-demo-investigation-proof/v2";
+  readonly packet_id: string;
+  readonly packet_sha256: string;
+  readonly status: "resolved";
+  readonly adjudication: {
+    readonly model_role: "evidence-selection-and-advisory-drafting";
+    readonly model_authority: "advisory-only";
+    readonly validator_role: "deterministic-claim-adjudication";
+    readonly decision_mode: "deterministic-validation";
+  };
+  readonly model_invocations: DemoInvestigationProofV1["model_invocations"];
+  readonly comparison: {
+    readonly renders: readonly {
+      readonly job_id: string;
+      readonly worker_id: string;
+      readonly status: "succeeded";
+      readonly nominal_config_sha256: string;
+      readonly resolved_lut_sha256: string;
+    }[];
+    readonly nominal_config_match: true;
+    readonly resolved_lut_match: false;
+  };
+  readonly claims: readonly {
+    readonly claim_id: string;
+    readonly claim_type: string;
+    readonly subject: {
+      readonly kind: string;
+      readonly value: string;
+    };
+    readonly state: "confirmed" | "rejected";
+    readonly reason_codes: readonly string[];
+    readonly evidence_ids: readonly string[];
+    readonly source_validator_result_id: string;
+  }[];
+  readonly evidence: readonly {
+    readonly evidence_id: string;
+    readonly query_key: string;
+    readonly tool: string;
+    readonly inventory_sha256: string;
+    readonly content_sha256: string;
+    readonly freshness: "current";
+    readonly display_excerpt: string;
+    readonly display_excerpt_truncated: boolean;
+  }[];
+  readonly validators: DemoInvestigationProofV1["validators"];
+  readonly scope: DemoInvestigationProofV1["scope"] & { readonly state: "resolved" };
+  readonly budget_use: DemoInvestigationProofV1["budget_use"];
+  readonly plan: DemoInvestigationProofV1["plan"] & {
+    readonly exclusions_sha256: string;
+    readonly commands_sha256: string;
+    readonly targets: readonly DemoPlanTarget[];
+    readonly protected_exclusions: readonly DemoPlanTarget[];
+    readonly shared_action_bindings: DemoActionEnvelope;
+    readonly command_summaries: readonly DemoPlanCommand[];
+  };
+};
+
+export type DemoInvestigationProof = DemoInvestigationProofV1 | DemoInvestigationProofV2;
 
 export type DemoExecutionProof = {
   readonly schema: "colortrace-demo-execution-proof/v1";
@@ -234,6 +371,18 @@ export type DemoApprovalRequest = {
   readonly idempotency_key: string;
 };
 
+export type DemoRejectionRequest = {
+  readonly schema: "colortrace-demo-rejection-request/v1";
+  readonly approval_nonce: string;
+  readonly expected_run_version: number;
+  readonly expected_incident_version: number;
+  readonly expected_plan_version: number;
+  readonly expected_plan_sha256: string;
+  readonly expected_target_sha256: string;
+  readonly reason_code: DemoRejectionReason;
+  readonly idempotency_key: string;
+};
+
 export type DemoClosureRequest = {
   readonly schema: "colortrace-demo-closure-request/v1";
   readonly expected_run_version: number;
@@ -251,6 +400,7 @@ export type DemoAdapter = {
   readonly start: (request: DemoStartRequest, signal?: AbortSignal) => Promise<DemoRun>;
   readonly get: (runId: string, signal?: AbortSignal) => Promise<DemoRun>;
   readonly approve: (runId: string, request: DemoApprovalRequest) => Promise<DemoRun>;
+  readonly reject: (runId: string, request: DemoRejectionRequest) => Promise<DemoRun>;
   readonly close: (runId: string, request: DemoClosureRequest) => Promise<DemoRun>;
   readonly reset: (
     runId: string,
@@ -297,6 +447,7 @@ const PHASES = new Set<DemoPhase>([
 ]);
 const TERMINAL_PHASES = new Set<DemoPhase>(["closed", "unresolved", "expired"]);
 const VISUAL_KINDS = new Set<DemoVisualKind>(["expected", "observed", "recovered", "diff"]);
+const REJECTION_REASONS = new Set<DemoRejectionReason>(DEMO_REJECTION_REASONS);
 const INVESTIGATION_TOOLS = {
   "alert.rule": "alerting_manage_rules",
   "log.correlated-events": "query_loki_logs",
@@ -435,6 +586,27 @@ function requirePattern(value: string, pattern: RegExp): string {
   return value;
 }
 
+function boundedPlainText(value: unknown): string {
+  if (typeof value !== "string") throw new DemoApiError(null, "demo-response-invalid");
+  const characters = Array.from(value);
+  if (
+    characters.length < 1 ||
+    characters.length > 1_024 ||
+    new TextEncoder().encode(value).length > 4_096
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  const forbidden = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}]/u;
+  if (
+    characters.some(
+      (character) => character !== "\n" && character !== "\t" && forbidden.test(character),
+    )
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  return value;
+}
+
 function digestField(value: Record<string, unknown>, key: string): string {
   return requirePattern(stringField(value, key), DIGEST);
 }
@@ -489,7 +661,7 @@ function parseRecovery(value: unknown): DemoRecovery | null {
   };
 }
 
-function parseInvestigation(value: unknown): DemoInvestigationProof {
+function parseInvestigationV1(value: unknown): DemoInvestigationProofV1 {
   const proof = recordWithKeys(value, [
     "schema",
     "packet_id",
@@ -652,6 +824,579 @@ function parseInvestigation(value: unknown): DemoInvestigationProof {
       target_sha256: digestField(plan, "target_sha256"),
     },
   };
+}
+
+function parseInvestigationV2(value: unknown): DemoInvestigationProofV2 {
+  const proof = recordWithKeys(value, [
+    "schema",
+    "packet_id",
+    "packet_sha256",
+    "status",
+    "adjudication",
+    "model_invocations",
+    "comparison",
+    "claims",
+    "evidence",
+    "validators",
+    "scope",
+    "budget_use",
+    "plan",
+  ]);
+  if (
+    proof.schema !== "colortrace-demo-investigation-proof/v2" ||
+    proof.status !== "resolved" ||
+    !Array.isArray(proof.model_invocations) ||
+    proof.model_invocations.length > 6 ||
+    !Array.isArray(proof.claims) ||
+    proof.claims.length < 1 ||
+    proof.claims.length > 16 ||
+    !Array.isArray(proof.evidence) ||
+    proof.evidence.length < 1 ||
+    proof.evidence.length > 8 ||
+    !Array.isArray(proof.validators) ||
+    proof.validators.length < 1 ||
+    proof.validators.length > 16
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+
+  const adjudication = recordWithKeys(proof.adjudication, [
+    "model_role",
+    "model_authority",
+    "validator_role",
+    "decision_mode",
+  ]);
+  if (
+    adjudication.model_role !== "evidence-selection-and-advisory-drafting" ||
+    adjudication.model_authority !== "advisory-only" ||
+    adjudication.validator_role !== "deterministic-claim-adjudication" ||
+    adjudication.decision_mode !== "deterministic-validation"
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+
+  const modelInvocations = proof.model_invocations.map((value) => {
+    const invocation = recordWithKeys(value, [
+      "invocation_id",
+      "turn_kind",
+      "model",
+      "framework",
+      "result_class",
+      "inventory_sha256",
+      "output_sha256",
+      "trace_id",
+    ]);
+    const turnKind = invocation.turn_kind;
+    const resultClass = invocation.result_class;
+    if (
+      (turnKind !== "evidence-selection" && turnKind !== "response-drafting") ||
+      (resultClass !== "accepted" &&
+        resultClass !== "budget-rejected" &&
+        resultClass !== "failed" &&
+        resultClass !== "invalid")
+    ) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    return {
+      invocation_id: requirePattern(stringField(invocation, "invocation_id"), IDENTIFIER),
+      turn_kind: turnKind,
+      model: requirePattern(stringField(invocation, "model"), IDENTIFIER),
+      framework: requirePattern(stringField(invocation, "framework"), IDENTIFIER),
+      result_class: resultClass,
+      inventory_sha256: nullableDigestField(invocation, "inventory_sha256"),
+      output_sha256: nullableDigestField(invocation, "output_sha256"),
+      trace_id: requirePattern(stringField(invocation, "trace_id"), TRACE_ID),
+    } as DemoInvestigationProofV2["model_invocations"][number];
+  });
+
+  const comparison = recordWithKeys(proof.comparison, [
+    "renders",
+    "nominal_config_match",
+    "resolved_lut_match",
+  ]);
+  if (
+    !Array.isArray(comparison.renders) ||
+    comparison.renders.length !== 2 ||
+    comparison.nominal_config_match !== true ||
+    comparison.resolved_lut_match !== false
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  const renders = comparison.renders.map((value) => {
+    const render = recordWithKeys(value, [
+      "job_id",
+      "worker_id",
+      "status",
+      "nominal_config_sha256",
+      "resolved_lut_sha256",
+    ]);
+    if (render.status !== "succeeded") {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    return {
+      job_id: requirePattern(stringField(render, "job_id"), IDENTIFIER),
+      worker_id: requirePattern(stringField(render, "worker_id"), IDENTIFIER),
+      status: "succeeded" as const,
+      nominal_config_sha256: digestField(render, "nominal_config_sha256"),
+      resolved_lut_sha256: digestField(render, "resolved_lut_sha256"),
+    };
+  });
+  if (
+    renders[0]?.job_id === renders[1]?.job_id ||
+    renders[0]?.worker_id === renders[1]?.worker_id ||
+    renders[0]?.nominal_config_sha256 !== renders[1]?.nominal_config_sha256 ||
+    renders[0]?.resolved_lut_sha256 === renders[1]?.resolved_lut_sha256
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+
+  const claimIds = new Set<string>();
+  const claims = proof.claims.map((value) => {
+    const claim = recordWithKeys(value, [
+      "claim_id",
+      "claim_type",
+      "subject",
+      "state",
+      "reason_codes",
+      "evidence_ids",
+      "source_validator_result_id",
+    ]);
+    const claimId = requirePattern(stringField(claim, "claim_id"), IDENTIFIER);
+    const claimType = requirePattern(stringField(claim, "claim_type"), REASON_CODE);
+    const subject = recordWithKeys(claim.subject, ["kind", "value"]);
+    if (
+      claimIds.has(claimId) ||
+      (claim.state !== "confirmed" && claim.state !== "rejected") ||
+      !Array.isArray(claim.reason_codes) ||
+      claim.reason_codes.length < 1 ||
+      claim.reason_codes.length > 16 ||
+      !Array.isArray(claim.evidence_ids) ||
+      claim.evidence_ids.length < 1 ||
+      claim.evidence_ids.length > 64
+    ) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    const reasonCodes = claim.reason_codes.map((reason) =>
+      requirePattern(typeof reason === "string" ? reason : "", REASON_CODE),
+    );
+    const evidenceIds = claim.evidence_ids.map((identifier) =>
+      requirePattern(typeof identifier === "string" ? identifier : "", IDENTIFIER),
+    );
+    if (
+      new Set(reasonCodes).size !== reasonCodes.length ||
+      new Set(evidenceIds).size !== evidenceIds.length
+    ) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    claimIds.add(claimId);
+    return {
+      claim_id: claimId,
+      claim_type: claimType,
+      subject: {
+        kind: requirePattern(stringField(subject, "kind"), REASON_CODE),
+        value: requirePattern(stringField(subject, "value"), IDENTIFIER),
+      },
+      state: claim.state,
+      reason_codes: reasonCodes,
+      evidence_ids: evidenceIds,
+      source_validator_result_id: requirePattern(
+        stringField(claim, "source_validator_result_id"),
+        IDENTIFIER,
+      ),
+    } as DemoInvestigationProofV2["claims"][number];
+  });
+  if (new Set(claims.map((claim) => claim.state)).size !== 2) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+
+  const evidenceIds = new Set<string>();
+  const queryKeys = new Set<string>();
+  const evidence = proof.evidence.map((value) => {
+    const item = recordWithKeys(value, [
+      "evidence_id",
+      "query_key",
+      "tool",
+      "inventory_sha256",
+      "content_sha256",
+      "freshness",
+      "display_excerpt",
+      "display_excerpt_truncated",
+    ]);
+    const evidenceId = requirePattern(stringField(item, "evidence_id"), IDENTIFIER);
+    const queryKey = requirePattern(stringField(item, "query_key"), IDENTIFIER);
+    const excerpt = boundedPlainText(item.display_excerpt);
+    if (evidenceIds.has(evidenceId) || queryKeys.has(queryKey) || item.freshness !== "current") {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    evidenceIds.add(evidenceId);
+    queryKeys.add(queryKey);
+    return {
+      evidence_id: evidenceId,
+      query_key: queryKey,
+      tool: requirePattern(stringField(item, "tool"), IDENTIFIER),
+      inventory_sha256: digestField(item, "inventory_sha256"),
+      content_sha256: digestField(item, "content_sha256"),
+      freshness: "current" as const,
+      display_excerpt: excerpt,
+      display_excerpt_truncated: booleanField(item, "display_excerpt_truncated"),
+    };
+  });
+
+  const validatorIds = new Set<string>();
+  const validators = proof.validators.map((value) => {
+    const validator = recordWithKeys(value, [
+      "result_id",
+      "validator",
+      "validator_version",
+      "status",
+      "derivation_sha256",
+    ]);
+    const resultId = requirePattern(stringField(validator, "result_id"), IDENTIFIER);
+    const derivationSha256 = digestField(validator, "derivation_sha256");
+    if (
+      validatorIds.has(resultId) ||
+      validator.status !== "resolved" ||
+      resultId !== `validation-result:${derivationSha256.slice("sha256:".length)}`
+    ) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    validatorIds.add(resultId);
+    return {
+      result_id: resultId,
+      validator: requirePattern(stringField(validator, "validator"), IDENTIFIER),
+      validator_version: requirePattern(stringField(validator, "validator_version"), IDENTIFIER),
+      status: "resolved" as const,
+      derivation_sha256: derivationSha256,
+    };
+  });
+  if (claims.some((claim) => !validatorIds.has(claim.source_validator_result_id))) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+
+  const scope = recordWithKeys(proof.scope, [
+    "state",
+    "affected_count",
+    "safe_count",
+    "unknown_count",
+  ]);
+  if (scope.state !== "resolved") throw new DemoApiError(null, "demo-response-invalid");
+  const budget = recordWithKeys(proof.budget_use, [
+    "elapsed_ms",
+    "model_turns",
+    "input_tokens",
+    "output_tokens",
+    "mcp_attempts",
+    "validator_calls",
+  ]);
+  const plan = recordWithKeys(proof.plan, [
+    "status",
+    "version",
+    "plan_sha256",
+    "target_sha256",
+    "exclusions_sha256",
+    "commands_sha256",
+    "targets",
+    "protected_exclusions",
+    "shared_action_bindings",
+    "command_summaries",
+  ]);
+  if (
+    (plan.status !== "pending" &&
+      plan.status !== "approved" &&
+      plan.status !== "rejected" &&
+      plan.status !== "stale") ||
+    !Array.isArray(plan.targets) ||
+    plan.targets.length < 1 ||
+    plan.targets.length > 8 ||
+    !Array.isArray(plan.protected_exclusions) ||
+    plan.protected_exclusions.length > 8 ||
+    !Array.isArray(plan.command_summaries) ||
+    plan.command_summaries.length !== 5
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+
+  const parseTarget = (value: unknown): DemoPlanTarget => {
+    const target = recordWithKeys(value, ["schema", "namespace", "kind", "id"]);
+    if (
+      target.schema !== "simulator-target/v1" ||
+      target.namespace !== "colortrace-simulator" ||
+      (target.kind !== "color-resource" && target.kind !== "frame" && target.kind !== "derivative")
+    ) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    return {
+      schema: "simulator-target/v1",
+      namespace: "colortrace-simulator",
+      kind: target.kind,
+      id: requirePattern(stringField(target, "id"), IDENTIFIER),
+    };
+  };
+  const targetKey = (target: DemoPlanTarget): string => `${target.kind}:${target.id}`;
+  const targets = plan.targets.map(parseTarget);
+  const protectedExclusions = plan.protected_exclusions.map(parseTarget);
+  const targetKeys = new Set(targets.map(targetKey));
+  const protectedKeys = new Set(protectedExclusions.map(targetKey));
+  if (
+    targets.length !== 5 ||
+    protectedExclusions.length !== 3 ||
+    targets.filter((target) => target.kind === "color-resource").length !== 1 ||
+    targets.filter((target) => target.kind === "frame").length !== 3 ||
+    targets.filter((target) => target.kind === "derivative").length !== 1 ||
+    protectedExclusions.some((target) => target.kind !== "frame") ||
+    targetKeys.size !== targets.length ||
+    protectedKeys.size !== protectedExclusions.length ||
+    protectedExclusions.some((target) => targetKeys.has(targetKey(target)))
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+
+  const commandIds = new Set<string>();
+  const commandSummaries = plan.command_summaries.map((value) => {
+    if (!isRecord(value)) throw new DemoApiError(null, "demo-response-invalid");
+    const schema = value.schema;
+    if (schema === "simulator-quarantine-command/v1") {
+      const command = recordWithKeys(value, [
+        "schema",
+        "command_id",
+        "namespace",
+        "target",
+        "expected_resource_sha256",
+        "mode",
+      ]);
+      const target = parseTarget(command.target);
+      const commandId = requirePattern(stringField(command, "command_id"), IDENTIFIER);
+      if (
+        commandIds.has(commandId) ||
+        command.namespace !== "colortrace-simulator" ||
+        command.mode !== "quarantine-and-install-approved-replacement" ||
+        target.kind !== "color-resource" ||
+        !targetKeys.has(targetKey(target))
+      ) {
+        throw new DemoApiError(null, "demo-response-invalid");
+      }
+      commandIds.add(commandId);
+      return {
+        schema: "simulator-quarantine-command/v1" as const,
+        command_id: commandId,
+        namespace: "colortrace-simulator" as const,
+        target,
+        expected_resource_sha256: digestField(command, "expected_resource_sha256"),
+        mode: "quarantine-and-install-approved-replacement" as const,
+      };
+    }
+    if (schema === "simulator-targeted-rerender-command/v1") {
+      const preliminaryTarget = parseTarget(value.target);
+      const sharedKeys = [
+        "schema",
+        "command_id",
+        "namespace",
+        "target",
+        "job_id",
+        "transform_id",
+        "source_id",
+        "source_manifest_sha256",
+        "source_png_sha256",
+        "expected_config_sha256",
+        "lineage_parent_artifact_id",
+      ];
+      const command = recordWithKeys(
+        value,
+        preliminaryTarget.kind === "frame"
+          ? [...sharedKeys, "expected_output_sha256", "expected_display_sha256"]
+          : preliminaryTarget.kind === "derivative"
+            ? [...sharedKeys, "expected_derivative_sha256", "expected_derivative_display_sha256"]
+            : [],
+      );
+      const target = parseTarget(command.target);
+      const commandId = requirePattern(stringField(command, "command_id"), IDENTIFIER);
+      const transformId = stringField(command, "transform_id");
+      if (
+        commandIds.has(commandId) ||
+        command.namespace !== "colortrace-simulator" ||
+        (transformId !== "look/main/v1" && transformId !== "identity/v1") ||
+        target.kind === "color-resource" ||
+        !targetKeys.has(targetKey(target))
+      ) {
+        throw new DemoApiError(null, "demo-response-invalid");
+      }
+      commandIds.add(commandId);
+      const shared = {
+        schema: "simulator-targeted-rerender-command/v1" as const,
+        command_id: commandId,
+        namespace: "colortrace-simulator" as const,
+        target,
+        job_id: requirePattern(stringField(command, "job_id"), IDENTIFIER),
+        source_id: requirePattern(stringField(command, "source_id"), IDENTIFIER),
+        transform_id: transformId as "look/main/v1" | "identity/v1",
+        source_manifest_sha256: digestField(command, "source_manifest_sha256"),
+        source_png_sha256: digestField(command, "source_png_sha256"),
+        expected_config_sha256: digestField(command, "expected_config_sha256"),
+        lineage_parent_artifact_id: requirePattern(
+          stringField(command, "lineage_parent_artifact_id"),
+          IDENTIFIER,
+        ),
+      };
+      return target.kind === "frame"
+        ? {
+            ...shared,
+            expected_output_sha256: digestField(command, "expected_output_sha256"),
+            expected_display_sha256: digestField(command, "expected_display_sha256"),
+          }
+        : {
+            ...shared,
+            expected_derivative_sha256: digestField(command, "expected_derivative_sha256"),
+            expected_derivative_display_sha256: digestField(
+              command,
+              "expected_derivative_display_sha256",
+            ),
+          };
+    }
+    throw new DemoApiError(null, "demo-response-invalid");
+  });
+  if (
+    commandSummaries.filter((command) => command.schema === "simulator-quarantine-command/v1")
+      .length !== 1
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+
+  const bindings = recordWithKeys(plan.shared_action_bindings, [
+    "schema",
+    "fixture_id",
+    "fixture_manifest_sha256",
+    "fixture_generation",
+    "source_batch_id",
+    "source_batch_sha256",
+    "runtime_manifest_sha256",
+    "runtime_generation",
+    "expected_publication_pointer_sha256",
+    "expected_publication_generation",
+    "expected_resource_sha256",
+    "replacement_resource_logical_path",
+    "replacement_resource_sha256",
+    "declared_resource_manifest_sha256",
+    "ocio_version",
+    "preservation_manifest_sha256",
+    "safe_complement_sha256",
+    "lineage_manifest_sha256",
+    "lineage_generation",
+  ]);
+  if (
+    bindings.schema !== "simulator-action-envelope/v1" ||
+    bindings.replacement_resource_logical_path !== "luts/show_look.cube" ||
+    bindings.ocio_version !== "2.5.2"
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  const sharedActionBindings: DemoActionEnvelope = {
+    schema: "simulator-action-envelope/v1",
+    fixture_id: requirePattern(stringField(bindings, "fixture_id"), IDENTIFIER),
+    fixture_manifest_sha256: digestField(bindings, "fixture_manifest_sha256"),
+    fixture_generation: integerField(bindings, "fixture_generation"),
+    source_batch_id: requirePattern(stringField(bindings, "source_batch_id"), IDENTIFIER),
+    source_batch_sha256: digestField(bindings, "source_batch_sha256"),
+    runtime_manifest_sha256: digestField(bindings, "runtime_manifest_sha256"),
+    runtime_generation: integerField(bindings, "runtime_generation"),
+    expected_publication_pointer_sha256: digestField(
+      bindings,
+      "expected_publication_pointer_sha256",
+    ),
+    expected_publication_generation: integerField(bindings, "expected_publication_generation"),
+    expected_resource_sha256: digestField(bindings, "expected_resource_sha256"),
+    replacement_resource_logical_path: "luts/show_look.cube",
+    replacement_resource_sha256: digestField(bindings, "replacement_resource_sha256"),
+    declared_resource_manifest_sha256: digestField(bindings, "declared_resource_manifest_sha256"),
+    ocio_version: "2.5.2",
+    preservation_manifest_sha256: digestField(bindings, "preservation_manifest_sha256"),
+    safe_complement_sha256: digestField(bindings, "safe_complement_sha256"),
+    lineage_manifest_sha256: digestField(bindings, "lineage_manifest_sha256"),
+    lineage_generation: integerField(bindings, "lineage_generation"),
+  };
+  const expectedResource = sharedActionBindings.expected_resource_sha256;
+  const replacementResource = sharedActionBindings.replacement_resource_sha256;
+  const commandTargetKeys = new Set(commandSummaries.map((command) => targetKey(command.target)));
+  const generations = new Set([
+    sharedActionBindings.fixture_generation,
+    sharedActionBindings.runtime_generation,
+    sharedActionBindings.expected_publication_generation,
+    sharedActionBindings.lineage_generation,
+  ]);
+  if (
+    expectedResource === replacementResource ||
+    generations.size !== 1 ||
+    targets.find((target) => target.kind === "color-resource")?.id !== expectedResource ||
+    commandTargetKeys.size !== targetKeys.size ||
+    [...commandTargetKeys].some((key) => !targetKeys.has(key)) ||
+    commandSummaries.some((command) =>
+      command.schema === "simulator-quarantine-command/v1"
+        ? command.expected_resource_sha256 !== expectedResource
+        : command.expected_config_sha256 !== renders[0]?.nominal_config_sha256,
+    )
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+
+  const packetId = requirePattern(stringField(proof, "packet_id"), IDENTIFIER);
+  const packetSha256 = digestField(proof, "packet_sha256");
+  if (packetId !== `response-packet:${packetSha256.slice("sha256:".length)}`) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+
+  return {
+    schema: "colortrace-demo-investigation-proof/v2",
+    packet_id: packetId,
+    packet_sha256: packetSha256,
+    status: "resolved",
+    adjudication: {
+      model_role: "evidence-selection-and-advisory-drafting",
+      model_authority: "advisory-only",
+      validator_role: "deterministic-claim-adjudication",
+      decision_mode: "deterministic-validation",
+    },
+    model_invocations: modelInvocations,
+    comparison: {
+      renders,
+      nominal_config_match: true,
+      resolved_lut_match: false,
+    },
+    claims,
+    evidence,
+    validators,
+    scope: {
+      state: "resolved",
+      affected_count: boundedIntegerField(scope, "affected_count", 256),
+      safe_count: boundedIntegerField(scope, "safe_count", 256),
+      unknown_count: boundedIntegerField(scope, "unknown_count", 256),
+    },
+    budget_use: {
+      elapsed_ms: boundedIntegerField(budget, "elapsed_ms", 10_000_000),
+      model_turns: boundedIntegerField(budget, "model_turns", 10_000_000),
+      input_tokens: boundedIntegerField(budget, "input_tokens", 10_000_000),
+      output_tokens: boundedIntegerField(budget, "output_tokens", 10_000_000),
+      mcp_attempts: boundedIntegerField(budget, "mcp_attempts", 10_000_000),
+      validator_calls: boundedIntegerField(budget, "validator_calls", 10_000_000),
+    },
+    plan: {
+      status: plan.status,
+      version: integerField(plan, "version"),
+      plan_sha256: digestField(plan, "plan_sha256"),
+      target_sha256: digestField(plan, "target_sha256"),
+      exclusions_sha256: digestField(plan, "exclusions_sha256"),
+      commands_sha256: digestField(plan, "commands_sha256"),
+      targets,
+      protected_exclusions: protectedExclusions,
+      shared_action_bindings: sharedActionBindings,
+      command_summaries: commandSummaries,
+    },
+  };
+}
+
+function parseInvestigation(value: unknown): DemoInvestigationProof {
+  if (isRecord(value) && value.schema === "colortrace-demo-investigation-proof/v2") {
+    return parseInvestigationV2(value);
+  }
+  return parseInvestigationV1(value);
 }
 
 function parseExecution(value: unknown): DemoExecutionProof {
@@ -884,7 +1629,23 @@ function parseRun(value: unknown, expectedStartNonce?: string): DemoRun {
   ) {
     throw new DemoApiError(null, "demo-response-invalid");
   }
-  if (approval !== null && investigation !== undefined) {
+  if (
+    expectedStartNonce !== undefined &&
+    phase === "awaiting-approval" &&
+    investigation?.schema !== "colortrace-demo-investigation-proof/v2"
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  if (
+    approval !== null &&
+    investigation !== undefined &&
+    (investigation.plan.version !== approval.plan_version ||
+      investigation.plan.plan_sha256 !== approval.plan_sha256 ||
+      investigation.plan.target_sha256 !== approval.target_sha256)
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  if (approval !== null && investigation?.schema === "colortrace-demo-investigation-proof/v2") {
     const inventoryDigests = new Set(investigation.evidence.map((item) => item.inventory_sha256));
     const accepted = investigation.model_invocations.filter(
       (item) => item.result_class === "accepted",
@@ -898,9 +1659,6 @@ function parseRun(value: unknown, expectedStartNonce?: string): DemoRun {
       investigation.scope.safe_count !== 3 ||
       investigation.scope.unknown_count !== 0 ||
       investigation.plan.status !== "pending" ||
-      investigation.plan.version !== approval.plan_version ||
-      investigation.plan.plan_sha256 !== approval.plan_sha256 ||
-      investigation.plan.target_sha256 !== approval.target_sha256 ||
       queryTools.size !== Object.keys(INVESTIGATION_TOOLS).length ||
       Object.entries(INVESTIGATION_TOOLS).some(([key, tool]) => queryTools.get(key) !== tool) ||
       investigation.evidence.some((item) => item.freshness !== "current") ||
@@ -1216,6 +1974,23 @@ async function canonicalDocumentSha256(
   return sha256(canonicalJsonBytes(value).buffer);
 }
 
+async function verifyRunCommandDigest(run: DemoRun, sha256: Sha256Implementation): Promise<void> {
+  const investigation = run.investigation;
+  if (investigation?.schema !== "colortrace-demo-investigation-proof/v2") return;
+  const commands = investigation.plan.command_summaries.map((summary) => ({
+    ...summary,
+    action_envelope: investigation.plan.shared_action_bindings,
+  }));
+  try {
+    if ((await canonicalDocumentSha256(commands, sha256)) !== investigation.plan.commands_sha256) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+  } catch (error) {
+    if (error instanceof DemoApiError) throw error;
+    throw new DemoApiError(null, "demo-response-invalid", { cause: error });
+  }
+}
+
 function receiptBody(receipt: DemoReceipt): Omit<DemoReceipt, "receipt_id" | "receipt_sha256"> {
   const { receipt_id: _receiptId, receipt_sha256: _receiptSha256, ...body } = receipt;
   return body;
@@ -1316,8 +2091,14 @@ export function createDemoAdapter({
     return `/v1/demo/runs/${encodeURIComponent(runId)}${suffix}`;
   }
 
-  function boundRun(value: unknown, runId: string): DemoRun {
-    const parsed = parseRun(value);
+  async function checkedRun(value: unknown, expectedStartNonce?: string): Promise<DemoRun> {
+    const parsed = parseRun(value, expectedStartNonce);
+    await verifyRunCommandDigest(parsed, sha256);
+    return parsed;
+  }
+
+  async function boundRun(value: unknown, runId: string): Promise<DemoRun> {
+    const parsed = await checkedRun(value);
     if (parsed.run_id !== runId) throw new DemoApiError(null, "demo-response-invalid");
     return parsed;
   }
@@ -1327,7 +2108,7 @@ export function createDemoAdapter({
       if (!NONCE.test(request.approval_nonce) || !IDEMPOTENCY_KEY.test(request.idempotency_key)) {
         throw new DemoApiError(null, "demo-request-invalid");
       }
-      const parsed = parseRun(
+      const parsed = await checkedRun(
         await jsonRequest("/v1/demo/runs", {
           body: {
             schema: "colortrace-demo-run-request/v2",
@@ -1344,6 +2125,25 @@ export function createDemoAdapter({
     get: async (runId, signal) => boundRun(await jsonRequest(runPath(runId), { signal }), runId),
     approve: async (runId, request) =>
       boundRun(await jsonRequest(runPath(runId, "/approve"), { body: request }), runId),
+    reject: async (runId, request) => {
+      if (
+        request.schema !== "colortrace-demo-rejection-request/v1" ||
+        !NONCE.test(request.approval_nonce) ||
+        !Number.isSafeInteger(request.expected_run_version) ||
+        request.expected_run_version < 1 ||
+        !Number.isSafeInteger(request.expected_incident_version) ||
+        request.expected_incident_version < 1 ||
+        !Number.isSafeInteger(request.expected_plan_version) ||
+        request.expected_plan_version < 1 ||
+        !DIGEST.test(request.expected_plan_sha256) ||
+        !DIGEST.test(request.expected_target_sha256) ||
+        !REJECTION_REASONS.has(request.reason_code) ||
+        !IDEMPOTENCY_KEY.test(request.idempotency_key)
+      ) {
+        throw new DemoApiError(null, "demo-request-invalid");
+      }
+      return boundRun(await jsonRequest(runPath(runId, "/reject"), { body: request }), runId);
+    },
     close: async (runId, request) =>
       boundRun(await jsonRequest(runPath(runId, "/close"), { body: request }), runId),
     reset: async (runId, expectedVersion, idempotencyKey) =>

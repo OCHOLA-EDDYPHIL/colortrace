@@ -2,10 +2,14 @@ import { createHash } from "node:crypto";
 
 import {
   canonicalJsonBytes,
+  type DemoActionEnvelope,
   type DemoBuildProvenance,
   type DemoExecutionProof,
-  type DemoInvestigationProof,
+  type DemoInvestigationProofV1,
+  type DemoInvestigationProofV2,
+  type DemoPlanCommand,
   type DemoReceipt,
+  type DemoRejectionReason,
   type DemoReset,
   type DemoRun,
   type DemoVisualKind,
@@ -65,7 +69,7 @@ export const VISUAL_DIGESTS: Readonly<Record<DemoVisualKind, string>> = Object.f
   ]),
 ) as Readonly<Record<DemoVisualKind, string>>;
 
-export function investigationProof(): DemoInvestigationProof {
+export function investigationProofV1(): DemoInvestigationProofV1 {
   const queryTools = [
     ["alert.rule", "alerting_manage_rules"],
     ["log.correlated-events", "query_loki_logs"],
@@ -109,7 +113,7 @@ export function investigationProof(): DemoInvestigationProof {
     })),
     validators: [
       {
-        result_id: `validator-result:${"e".repeat(64)}`,
+        result_id: `validation-result:${"e".repeat(64)}`,
         validator: "colortrace-validator",
         validator_version: "1.0.0",
         status: "resolved",
@@ -130,6 +134,204 @@ export function investigationProof(): DemoInvestigationProof {
       version: 3,
       plan_sha256: PLAN_DIGEST,
       target_sha256: TARGET_DIGEST,
+    },
+  };
+}
+
+function target(kind: "color-resource" | "frame" | "derivative", id: string) {
+  return {
+    schema: "simulator-target/v1" as const,
+    namespace: "colortrace-simulator" as const,
+    kind,
+    id,
+  };
+}
+
+export function investigationProof(): DemoInvestigationProofV2 {
+  const legacy = investigationProofV1();
+  const validators = legacy.validators.map((validator) => ({
+    ...validator,
+    result_id: `validation-result:${validator.derivation_sha256.slice("sha256:".length)}`,
+  }));
+  const sourceValidatorResultId = validators[0]?.result_id;
+  if (sourceValidatorResultId === undefined) throw new Error("missing fixture validator");
+  const expectedResource = `sha256:${"a".repeat(64)}`;
+  const replacementResource = `sha256:${"b".repeat(64)}`;
+  const targets = [
+    target("color-resource", expectedResource),
+    target("frame", "frame-b-01"),
+    target("frame", "frame-b-02"),
+    target("frame", "frame-b-03"),
+    target("derivative", "artifact-b-02-derivative"),
+  ];
+  const protectedExclusions = [
+    target("frame", "frame-a-01"),
+    target("frame", "frame-a-02"),
+    target("frame", "frame-b-04"),
+  ];
+  const sourceManifest = `sha256:${"c".repeat(64)}`;
+  const sourcePng = `sha256:${"d".repeat(64)}`;
+  const expectedConfig = `sha256:${"e".repeat(64)}`;
+  const frameCommand = (frame: (typeof targets)[number], index: number) => ({
+    schema: "simulator-targeted-rerender-command/v1" as const,
+    command_id: `rerender-frame-${index}`,
+    namespace: "colortrace-simulator" as const,
+    target: frame,
+    job_id: `job-b-0${index}`,
+    transform_id: "look/main/v1" as const,
+    source_id: `source-b-0${index}`,
+    source_manifest_sha256: sourceManifest,
+    source_png_sha256: sourcePng,
+    expected_config_sha256: expectedConfig,
+    expected_output_sha256: `sha256:${String(index).repeat(64)}`,
+    expected_display_sha256: `sha256:${String(index + 3).repeat(64)}`,
+    lineage_parent_artifact_id: `source-b-0${index}`,
+  });
+  const evidence = legacy.evidence.map((item, index) => ({
+    evidence_id: item.evidence_id,
+    query_key: item.query_key,
+    tool: item.tool,
+    inventory_sha256: item.inventory_sha256,
+    content_sha256: item.content_sha256,
+    freshness: "current" as const,
+    display_excerpt:
+      index === 0
+        ? "Alert firing for the bound render comparison."
+        : index === 1
+          ? "Worker A and worker B completed with the same nominal configuration."
+          : index === 2
+            ? "Resolved LUT digests differ across the compared successful renders."
+            : "<provider-data>Trace joins the render and resolved resource records.</provider-data>",
+    display_excerpt_truncated: index === 3,
+  }));
+  const sharedActionBindings: DemoActionEnvelope = {
+    schema: "simulator-action-envelope/v1",
+    fixture_id: "ct-shadowed-lut-v1:canonical",
+    fixture_manifest_sha256: `sha256:${"1".repeat(64)}`,
+    fixture_generation: 1,
+    source_batch_id: "source-batch-1",
+    source_batch_sha256: `sha256:${"2".repeat(64)}`,
+    runtime_manifest_sha256: `sha256:${"3".repeat(64)}`,
+    runtime_generation: 1,
+    expected_publication_pointer_sha256: `sha256:${"4".repeat(64)}`,
+    expected_publication_generation: 1,
+    expected_resource_sha256: expectedResource,
+    replacement_resource_logical_path: "luts/show_look.cube",
+    replacement_resource_sha256: replacementResource,
+    declared_resource_manifest_sha256: `sha256:${"5".repeat(64)}`,
+    ocio_version: "2.5.2",
+    preservation_manifest_sha256: `sha256:${"8".repeat(64)}`,
+    safe_complement_sha256: `sha256:${"9".repeat(64)}`,
+    lineage_manifest_sha256: `sha256:${"0".repeat(64)}`,
+    lineage_generation: 1,
+  };
+  const commandSummaries: readonly DemoPlanCommand[] = [
+    {
+      schema: "simulator-quarantine-command/v1",
+      command_id: "quarantine-resource-1",
+      namespace: "colortrace-simulator",
+      target: targets[0] as (typeof targets)[number],
+      expected_resource_sha256: expectedResource,
+      mode: "quarantine-and-install-approved-replacement",
+    },
+    frameCommand(targets[1] as (typeof targets)[number], 1),
+    frameCommand(targets[2] as (typeof targets)[number], 2),
+    frameCommand(targets[3] as (typeof targets)[number], 3),
+    {
+      schema: "simulator-targeted-rerender-command/v1",
+      command_id: "rerender-derivative-1",
+      namespace: "colortrace-simulator",
+      target: targets[4] as (typeof targets)[number],
+      job_id: "job-b-02",
+      transform_id: "look/main/v1",
+      source_id: "source-b-02",
+      source_manifest_sha256: sourceManifest,
+      source_png_sha256: sourcePng,
+      expected_config_sha256: expectedConfig,
+      expected_derivative_sha256: `sha256:${"6".repeat(64)}`,
+      expected_derivative_display_sha256: `sha256:${"7".repeat(64)}`,
+      lineage_parent_artifact_id: "artifact-b-02",
+    },
+  ];
+  const commandsSha256 = documentSha256(
+    commandSummaries.map((summary) => ({
+      ...summary,
+      action_envelope: sharedActionBindings,
+    })),
+  );
+  return {
+    schema: "colortrace-demo-investigation-proof/v2",
+    packet_id: legacy.packet_id,
+    packet_sha256: legacy.packet_sha256,
+    status: "resolved",
+    adjudication: {
+      model_role: "evidence-selection-and-advisory-drafting",
+      model_authority: "advisory-only",
+      validator_role: "deterministic-claim-adjudication",
+      decision_mode: "deterministic-validation",
+    },
+    model_invocations: legacy.model_invocations,
+    comparison: {
+      renders: [
+        {
+          job_id: "job-a-02",
+          worker_id: "worker-a",
+          status: "succeeded",
+          nominal_config_sha256: expectedConfig,
+          resolved_lut_sha256: replacementResource,
+        },
+        {
+          job_id: "job-b-02",
+          worker_id: "worker-b",
+          status: "succeeded",
+          nominal_config_sha256: expectedConfig,
+          resolved_lut_sha256: expectedResource,
+        },
+      ],
+      nominal_config_match: true,
+      resolved_lut_match: false,
+    },
+    claims: [
+      {
+        claim_id: `claim:${"1".repeat(64)}`,
+        claim_type: "causal-resource",
+        subject: { kind: "resource-sha256", value: expectedResource },
+        state: "confirmed",
+        reason_codes: ["causal-resource-confirmed"],
+        evidence_ids: evidence.map((item) => item.evidence_id),
+        source_validator_result_id: sourceValidatorResultId,
+      },
+      {
+        claim_id: `claim:${"2".repeat(64)}`,
+        claim_type: "nominal-config",
+        subject: { kind: "config-sha256", value: expectedConfig },
+        state: "rejected",
+        reason_codes: ["nominal-config-authoritatively-rejected"],
+        evidence_ids: evidence.slice(0, 2).map((item) => item.evidence_id),
+        source_validator_result_id: sourceValidatorResultId,
+      },
+      {
+        claim_id: `claim:${"3".repeat(64)}`,
+        claim_type: "worker-alone",
+        subject: { kind: "worker-id", value: "worker-b" },
+        state: "rejected",
+        reason_codes: ["worker-alone-authoritatively-rejected"],
+        evidence_ids: evidence.slice(1, 3).map((item) => item.evidence_id),
+        source_validator_result_id: sourceValidatorResultId,
+      },
+    ],
+    evidence,
+    validators,
+    scope: legacy.scope as DemoInvestigationProofV2["scope"],
+    budget_use: legacy.budget_use,
+    plan: {
+      ...legacy.plan,
+      exclusions_sha256: `sha256:${"f".repeat(64)}`,
+      commands_sha256: commandsSha256,
+      targets,
+      protected_exclusions: protectedExclusions,
+      shared_action_bindings: sharedActionBindings,
+      command_summaries: commandSummaries,
     },
   };
 }
@@ -280,6 +482,52 @@ export function demoReceipt(
     })),
   };
   return sealDemoReceipt(body);
+}
+
+export function demoRejectedRun(reason: DemoRejectionReason = "unsafe-scope"): DemoRun {
+  return demoRun("unresolved", {
+    version: 3,
+    terminal_reason: `plan-rejected-${reason}`,
+  });
+}
+
+export function demoRejectedReceipt(
+  reason: DemoRejectionReason = "unsafe-scope",
+  visualDigests: Readonly<Record<DemoVisualKind, string>> = VISUAL_DIGESTS,
+): DemoReceipt {
+  return sealDemoReceipt({
+    schema: "colortrace-demo-receipt/v1",
+    run_id: RUN_ID,
+    incident_id: "incident-demo-11111111111111111111111111111111",
+    scenario_id: "ct-shadowed-lut-v1:canonical",
+    source_commit: "a".repeat(40),
+    build_sha256: BUILD_DIGEST,
+    provenance: buildProvenance(),
+    phase: "unresolved",
+    run_version: 3,
+    created_at: "2026-08-23T12:00:00.000Z",
+    terminal_at: "2026-08-23T12:02:00.000Z",
+    reason_code: `plan-rejected-${reason}`,
+    bindings: {
+      incident_version: 7,
+      plan_version: 3,
+      plan_sha256: PLAN_DIGEST,
+      target_sha256: TARGET_DIGEST,
+      outcome_id: null,
+      outcome_sha256: null,
+      workflow_id: null,
+      workflow_version: null,
+      packet_id: null,
+      packet_sha256: null,
+      closure_id: null,
+      closure_sha256: null,
+    },
+    proofs: [{ stage: "investigation", sha256: documentSha256(investigationProof()) }],
+    visuals: (["diff", "expected", "observed"] as const).map((kind) => ({
+      kind,
+      sha256: visualDigests[kind],
+    })),
+  });
 }
 
 export function demoReset(): DemoReset {

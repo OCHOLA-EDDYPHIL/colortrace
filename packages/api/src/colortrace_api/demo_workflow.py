@@ -7,6 +7,7 @@ import os
 import re
 import stat
 import time
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,7 +22,8 @@ from colortrace_recovery import (
     SynchronousRecoveryWorkflowRunner,
     canonical_json_bytes,
 )
-from colortrace_response_plans import ResponsePlanError
+from colortrace_response_plans import ResponsePlanError, validate_decision
+from colortrace_response_plans.contracts import REJECTION_CODES
 from colortrace_simulator import DispatchIdentity
 from colortrace_simulator.repository import SimulatorRepositoryError
 from colortrace_telemetry import DeliveryPlan, load_runtime_jobs
@@ -50,11 +52,13 @@ _MAX_JSON_BYTES = 1024 * 1024
 _ALERT_WAIT_SECONDS = 70.0
 _ALERT_POLL_SECONDS = 2.0
 _MAX_RECOVERY_SETTLE_SECONDS = 30.0
+_FIXTURE_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _VISUAL_SOURCES = {
     "expected": "references/display/reference-chart-02-look.png",
     "observed": "runtime/display/output-job-b-02.png",
     "diff": "reports/diffs/job-b-02.png",
 }
+_REJECTION_RESULT_SCHEMA = "colortrace-demo-rejection-result/v1"
 
 
 def _utc_now() -> datetime:
@@ -488,6 +492,154 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
             source_root=selected_root,
         )
 
+    @staticmethod
+    def _bounded_plain_text(value: Any) -> tuple[str, bool]:
+        if not isinstance(value, str) or not value:
+            raise DemoFacadeError("demo-investigation-evidence-invalid")
+        normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+        safe = "".join(
+            character
+            if character in {"\n", "\t"} or not unicodedata.category(character).startswith("C")
+            else "\ufffd"
+            for character in normalized
+        )
+        selected = safe[:1_024]
+        while len(selected.encode("utf-8")) > 4_096:
+            selected = selected[:-1]
+        if not selected:
+            raise DemoFacadeError("demo-investigation-evidence-invalid")
+        return selected, selected != value
+
+    @staticmethod
+    def _fixture_sha256(value: Any) -> str:
+        if not isinstance(value, str) or _FIXTURE_DIGEST.fullmatch(value) is None:
+            raise DemoFacadeError("demo-investigation-comparison-invalid")
+        return f"sha256:{value}"
+
+    def _render_comparison(self) -> dict[str, Any]:
+        renders: list[dict[str, str]] = []
+        for job_id, worker_id in (("job-a-02", "A"), ("job-b-02", "B")):
+            job = self._read_json(
+                self._fixture_bundle / "runtime" / "manifests" / "jobs" / f"{job_id}.json"
+            )
+            resource_path = job.get("resource_manifest")
+            if (
+                job.get("schema") != "fixture-job/v1"
+                or job.get("job_id") != job_id
+                or job.get("worker_id") != worker_id
+                or job.get("source_id") != "chart-02"
+                or job.get("transform_id") != "look/main/v1"
+                or job.get("process_outcome") != "success"
+                or job.get("exit_code") != 0
+                or not isinstance(resource_path, str)
+                or resource_path != f"runtime/manifests/resources/resource-{job_id}.json"
+            ):
+                raise DemoFacadeError("demo-investigation-comparison-invalid")
+            resource = self._read_json(self._fixture_bundle / resource_path)
+            ordered = resource.get("ordered_resources")
+            if (
+                resource.get("schema") != "resolved-resource-manifest/v1"
+                or resource.get("job_id") != job_id
+                or resource.get("worker_id") != worker_id
+                or resource.get("transform_id") != "look/main/v1"
+                or resource.get("nominal_config_sha256") != job.get("nominal_config_sha256")
+                or resource.get("captured_before_and_after_processing") is not True
+                or resource.get("inputs_unchanged") is not True
+                or not isinstance(ordered, list)
+                or len(ordered) != 1
+                or not isinstance(ordered[0], Mapping)
+                or ordered[0].get("logical_path") != "luts/show_look.cube"
+                or ordered[0].get("read_only") is not True
+            ):
+                raise DemoFacadeError("demo-investigation-comparison-invalid")
+            renders.append(
+                {
+                    "job_id": job_id,
+                    "worker_id": worker_id,
+                    "status": "succeeded",
+                    "nominal_config_sha256": self._fixture_sha256(job.get("nominal_config_sha256")),
+                    "resolved_lut_sha256": self._fixture_sha256(ordered[0].get("sha256")),
+                }
+            )
+        nominal_match = len({item["nominal_config_sha256"] for item in renders}) == 1
+        resource_match = len({item["resolved_lut_sha256"] for item in renders}) == 1
+        if not nominal_match or resource_match:
+            raise DemoFacadeError("demo-investigation-comparison-invalid")
+        return {
+            "renders": renders,
+            "nominal_config_match": True,
+            "resolved_lut_match": False,
+        }
+
+    @staticmethod
+    def _plan_review(
+        plan: Mapping[str, Any],
+        *,
+        plan_status: str,
+        target_sha256: str,
+    ) -> dict[str, Any]:
+        targets = plan.get("targets")
+        exclusions = plan.get("exclusions")
+        commands = plan.get("commands")
+        if (
+            not isinstance(targets, list)
+            or not isinstance(exclusions, list)
+            or not isinstance(commands, list)
+            or len(commands) != 5
+        ):
+            raise DemoFacadeError("demo-plan-review-invalid")
+        envelopes = [
+            command.get("action_envelope") for command in commands if isinstance(command, Mapping)
+        ]
+        if (
+            len(envelopes) != 5
+            or not all(isinstance(envelope, Mapping) for envelope in envelopes)
+            or any(envelope != envelopes[0] for envelope in envelopes[1:])
+        ):
+            raise DemoFacadeError("demo-plan-review-invalid")
+        envelope = cast(Mapping[str, Any], envelopes[0])
+        binding_fields = (
+            "schema",
+            "fixture_id",
+            "fixture_manifest_sha256",
+            "fixture_generation",
+            "source_batch_id",
+            "source_batch_sha256",
+            "runtime_manifest_sha256",
+            "runtime_generation",
+            "expected_publication_pointer_sha256",
+            "expected_publication_generation",
+            "expected_resource_sha256",
+            "replacement_resource_logical_path",
+            "replacement_resource_sha256",
+            "declared_resource_manifest_sha256",
+            "ocio_version",
+            "preservation_manifest_sha256",
+            "safe_complement_sha256",
+            "lineage_manifest_sha256",
+            "lineage_generation",
+        )
+        if any(field not in envelope for field in binding_fields):
+            raise DemoFacadeError("demo-plan-review-invalid")
+        summaries = [
+            {key: child for key, child in command.items() if key != "action_envelope"}
+            for command in cast(Sequence[Mapping[str, Any]], commands)
+        ]
+        if _digest(targets) != target_sha256:
+            raise DemoFacadeError("demo-plan-review-invalid")
+        return {
+            "status": plan_status,
+            "version": plan["version"],
+            "plan_sha256": plan["plan_sha256"],
+            "target_sha256": target_sha256,
+            "exclusions_sha256": _digest(exclusions),
+            "commands_sha256": _digest(commands),
+            "targets": list(targets),
+            "protected_exclusions": list(exclusions),
+            "shared_action_bindings": {field: envelope[field] for field in binding_fields},
+            "command_summaries": summaries,
+        }
+
     def _prepared_result(
         self,
         request: Mapping[str, Any],
@@ -520,8 +672,8 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
             ),
         }
 
-    @staticmethod
     def _investigation_proof(
+        self,
         packet: Mapping[str, Any],
         *,
         replay: Mapping[str, Any],
@@ -556,6 +708,9 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
                 and packet.get("unresolved_items") == []
                 else raw_freshness
             )
+            display_excerpt, display_excerpt_truncated = self._bounded_plain_text(
+                item.get("display_excerpt")
+            )
             evidence.append(
                 {
                     "evidence_id": item["evidence_id"],
@@ -564,6 +719,8 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
                     "inventory_sha256": source["inventory_version"],
                     "content_sha256": item["content_sha256"],
                     "freshness": certified_freshness,
+                    "display_excerpt": display_excerpt,
+                    "display_excerpt_truncated": display_excerpt_truncated,
                 }
             )
         validators = [
@@ -578,12 +735,37 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
         ]
         scope = cast(Mapping[str, Any], packet["scope"])
         budget = cast(Mapping[str, Any], packet["budget_use"])
+        claims = [
+            {
+                "claim_id": item["claim_id"],
+                "claim_type": item["claim_type"],
+                "subject": dict(cast(Mapping[str, Any], item["subject"])),
+                "state": item["state"],
+                "reason_codes": list(cast(Sequence[str], item["reason_codes"])),
+                "evidence_ids": list(cast(Sequence[str], item["evidence_ids"])),
+                "source_validator_result_id": item["source_validator_result_id"],
+            }
+            for item in cast(Sequence[Mapping[str, Any]], packet["claims"])
+        ]
+        plan_review = self._plan_review(
+            plan,
+            plan_status=plan_status,
+            target_sha256=target_sha256,
+        )
         return {
             "schema": INVESTIGATION_PROOF_SCHEMA,
             "packet_id": packet["packet_id"],
             "packet_sha256": packet["derivation_sha256"],
             "status": packet["status"],
+            "adjudication": {
+                "model_role": "evidence-selection-and-advisory-drafting",
+                "model_authority": "advisory-only",
+                "validator_role": "deterministic-claim-adjudication",
+                "decision_mode": "deterministic-validation",
+            },
             "model_invocations": model_invocations,
+            "comparison": self._render_comparison(),
+            "claims": claims,
             "evidence": evidence,
             "validators": validators,
             "scope": {
@@ -603,12 +785,7 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
                     "validator_calls",
                 )
             },
-            "plan": {
-                "status": plan_status,
-                "version": plan["version"],
-                "plan_sha256": plan["plan_sha256"],
-                "target_sha256": target_sha256,
-            },
+            "plan": plan_review,
         }
 
     def prepare(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -867,6 +1044,81 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
             packet=packet,
             review=recovery_review,
         )
+
+    @staticmethod
+    def _rejection_result(
+        request: Mapping[str, Any],
+        review: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        plan = review.get("plan")
+        decision = review.get("decision")
+        if (
+            review.get("schema") != "response-plan-review/v1"
+            or review.get("state") != "rejected"
+            or not isinstance(plan, Mapping)
+            or not isinstance(decision, Mapping)
+        ):
+            raise DemoFacadeError("demo-rejection-decision-invalid")
+        try:
+            validate_decision(decision, plan=plan)
+        except ResponsePlanError:
+            raise DemoFacadeError("demo-rejection-decision-invalid") from None
+        if (
+            decision.get("outcome") != "rejected"
+            or decision.get("reason_code") not in REJECTION_CODES
+            or plan.get("incident_id") != request.get("incident_id")
+            or plan.get("incident_version") != request.get("incident_version")
+            or plan.get("version") != request.get("plan_version")
+            or plan.get("plan_sha256") != request.get("plan_sha256")
+            or _digest(plan.get("targets")) != request.get("target_sha256")
+            or (
+                request.get("reason_code") is not None
+                and decision.get("reason_code") != request.get("reason_code")
+            )
+        ):
+            raise DemoFacadeError("demo-rejection-decision-invalid")
+        return {
+            "schema": _REJECTION_RESULT_SCHEMA,
+            "run_id": request["run_id"],
+            "incident_id": request["incident_id"],
+            "incident_version": request["incident_version"],
+            "plan_version": request["plan_version"],
+            "plan_sha256": request["plan_sha256"],
+            "target_sha256": request["target_sha256"],
+            "reason_code": decision["reason_code"],
+            "decision_id": decision["decision_id"],
+            "decision_sha256": decision["decision_sha256"],
+        }
+
+    def reject(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        incident_id = cast(str, request["incident_id"])
+        result = self._plans.reject(
+            self._principal(incident_id, role="response-plan.approver", kind="human"),
+            incident_id,
+            {
+                "expected_incident_version": request["incident_version"],
+                "expected_plan_version": request["plan_version"],
+                "expected_plan_sha256": request["plan_sha256"],
+                "reason_code": request["reason_code"],
+                "idempotency_key": _idempotency(cast(str, request["idempotency_key"]), "reject"),
+            },
+        )
+        authoritative = self._plans.review(incident_id)
+        decision = authoritative.get("decision")
+        if not isinstance(decision, Mapping) or result.get("decision_sha256") != decision.get(
+            "decision_sha256"
+        ):
+            raise DemoFacadeError("demo-rejection-decision-invalid")
+        return self._rejection_result(request, authoritative)
+
+    def review_rejection(self, request: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        review = self._plans.review(cast(str, request["incident_id"]))
+        if review.get("state") != "rejected":
+            return None
+        decision = review.get("decision")
+        if not isinstance(decision, Mapping):
+            raise DemoFacadeError("demo-rejection-decision-invalid")
+        return self._rejection_result(request, review)
 
     def reconcile(self, request: Mapping[str, Any]) -> Mapping[str, Any] | None:
         operation = request.get("operation")
