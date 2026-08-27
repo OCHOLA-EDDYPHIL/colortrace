@@ -3,7 +3,7 @@ FROM ghcr.io/astral-sh/uv@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa
 FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 AS build
 COPY --from=uv /uv /uvx /usr/local/bin/
 RUN apk add --no-cache build-base=0.5-r3 cmake=3.31.7-r1 git=2.49.1-r0 \
-    libcrypto3=3.5.7-r0 libssl3=3.5.7-r0
+    libcrypto3=3.5.8-r0 libssl3=3.5.8-r0
 WORKDIR /source
 COPY pyproject.toml uv.lock LICENSE ./
 COPY packages/ packages/
@@ -30,7 +30,7 @@ RUN case "$SOURCE_COMMIT" in (*[!0-9a-f]*|'') exit 1;; esac \
     && case "$SOURCE_TREE" in (*[!0-9a-f]*|'') exit 1;; esac \
     && test "${#SOURCE_TREE}" = 40 \
     && case "$SOURCE_DATE_EPOCH" in (*[!0-9]*|'') exit 1;; esac \
-    && apk add --no-cache libcrypto3=3.5.7-r0 libssl3=3.5.7-r0 libstdc++=14.2.0-r6 \
+    && apk add --no-cache libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 libstdc++=14.2.0-r6 \
     && addgroup -g 65532 -S colortrace \
     && adduser -u 65532 -S -D -H -h /nonexistent -s /sbin/nologin -G colortrace colortrace \
     && install -d -o 65532 -g 65532 -m 0700 /tmp/colortrace

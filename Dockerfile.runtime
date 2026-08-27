@@ -46,7 +46,7 @@ FROM python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db
 ARG SOURCE_DATE_EPOCH
 COPY --from=uv /uv /uvx /usr/local/bin/
 RUN apk add --no-cache build-base=0.5-r3 cmake=3.31.7-r1 git=2.49.1-r0 \
-    libcrypto3=3.5.7-r0 libssl3=3.5.7-r0
+    libcrypto3=3.5.8-r0 libssl3=3.5.8-r0
 WORKDIR /source
 COPY pyproject.toml uv.lock LICENSE ./
 COPY packages/api/pyproject.toml packages/api/pyproject.toml
@@ -115,7 +115,7 @@ ARG SOURCE_COMMIT
 ARG SOURCE_TREE
 ARG SOURCE_DATE_EPOCH
 ENV PYTHONDONTWRITEBYTECODE=1
-RUN apk add --no-cache libcrypto3=3.5.7-r0 libssl3=3.5.7-r0 libstdc++=14.2.0-r6 \
+RUN apk add --no-cache libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 libstdc++=14.2.0-r6 \
     && case "$SOURCE_COMMIT" in (*[!0-9a-f]*|'') exit 1;; esac \
     && test "${#SOURCE_COMMIT}" = 40 \
     && case "$SOURCE_TREE" in (*[!0-9a-f]*|'') exit 1;; esac \
