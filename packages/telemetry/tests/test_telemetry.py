@@ -774,7 +774,8 @@ def test_grafana_alert_contract_binds_interval_to_exact_rule_group(
     }
 
     def grafana_get(base: str, path: str, **kwargs: object) -> object:
-        del base, kwargs
+        del base
+        assert kwargs == {"timeout_seconds": 15.0}
         if path.startswith("/api/v1/provisioning/alert-rules/"):
             return provisioned_rule
         assert path == "/api/ruler/grafana/api/v1/rules"
