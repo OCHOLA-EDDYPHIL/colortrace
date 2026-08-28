@@ -372,6 +372,19 @@ def _dedupe_blockers(blockers: Sequence[Blocker]) -> list[Blocker]:
     return [unique[key] for key in sorted(unique)]
 
 
+def _invalid_model_invocation(record: Mapping[str, Any], *, error_code: str) -> dict[str, Any]:
+    body = {
+        key: value
+        for key, value in record.items()
+        if key not in {"invocation_id", "derivation_sha256"}
+    }
+    body["result_class"] = "invalid"
+    body["error_code"] = _normalized_code(error_code).replace("-", "_")
+    invalid = finalize_derived_record(body, id_field="invocation_id", id_prefix="model-invocation")
+    validate_contract("model-tool-invocation-v1.schema.json", invalid)
+    return invalid
+
+
 def _bounded_model_excerpt(value: str) -> tuple[str, bool]:
     if len(canonical_json_bytes(value)) <= _MODEL_EVIDENCE_EXCERPT_JSON_BYTES:
         return value, False
@@ -1415,6 +1428,8 @@ class InvestigationWorkflow:
         input_evidence_ids: Sequence[str],
         inventory_version: str | None,
         evidence_tool: EvidenceTool | None = None,
+        attempt_offset: int = 0,
+        allow_transient_retry: bool = True,
     ) -> tuple[ModelOutput | None, list[dict[str, Any]], Blocker | None]:
         encoded = canonical_json_bytes(payload)
         try:
@@ -1455,7 +1470,7 @@ class InvestigationWorkflow:
                     records,
                     Blocker(_normalized_code(error.code), "model", tuple(input_evidence_ids)),
                 )
-            attempt = len(records) + 1
+            attempt = attempt_offset + len(records) + 1
             started = self._monotonic()
             output: ModelOutput | None = None
             failure: ModelFailure | None = None
@@ -1579,7 +1594,8 @@ class InvestigationWorkflow:
                         Blocker("token-budget", "model", tuple(input_evidence_ids)),
                     )
                 if (
-                    failure.transient
+                    allow_transient_retry
+                    and failure.transient
                     and _normalized_code(failure.code).replace("-", "_")
                     in self._policy.trusted_transient_errors
                     and ledger.reserve_retry()
@@ -1860,7 +1876,62 @@ class InvestigationWorkflow:
                         output.content, frozenset(assessment.evidence_ids)
                     )
                 except ContractError as error:
-                    blockers.append(Blocker(_normalized_code(error.code), "drafting"))
+                    invalid_record = _invalid_model_invocation(records[-1], error_code=error.code)
+                    records[-1] = invalid_record
+                    invocations[-1] = invalid_record
+                    if error.code != "model-output-invalid":
+                        blockers.append(Blocker(_normalized_code(error.code), "drafting"))
+                    else:
+                        compact_draft_payload = {
+                            **draft_payload,
+                            "deterministic_facts": {
+                                "claims": [
+                                    {
+                                        key: claim[key]
+                                        for key in (
+                                            "claim_type",
+                                            "subject",
+                                            "state",
+                                            "reason_codes",
+                                        )
+                                    }
+                                    for claim in classified_claims
+                                ],
+                                "scope": {
+                                    key: classified_scope[key]
+                                    for key in ("state", "affected", "safe", "unknown")
+                                },
+                            },
+                        }
+                        retry_output, retry_records, retry_blocker = await self._model_call(
+                            ledger=ledger,
+                            intake=intake,
+                            turn_kind="response-drafting",
+                            payload=compact_draft_payload,
+                            response_schema_name="model-advisory-v1.schema.json",
+                            input_evidence_ids=assessment.evidence_ids,
+                            inventory_version=assessment.inventory_version,
+                            attempt_offset=len(records),
+                            allow_transient_retry=False,
+                        )
+                        invocations.extend(retry_records)
+                        if retry_blocker is not None:
+                            blockers.append(retry_blocker)
+                        elif retry_output is not None:
+                            try:
+                                advisory = ModelAdvisory.from_bytes(
+                                    retry_output.content,
+                                    frozenset(assessment.evidence_ids),
+                                )
+                            except ContractError as retry_error:
+                                invalid_retry_record = _invalid_model_invocation(
+                                    retry_records[-1], error_code=retry_error.code
+                                )
+                                retry_records[-1] = invalid_retry_record
+                                invocations[-1] = invalid_retry_record
+                                blockers.append(
+                                    Blocker(_normalized_code(retry_error.code), "drafting")
+                                )
 
         blockers = _dedupe_blockers(blockers)
         state_history.extend(("finalization", "complete"))
