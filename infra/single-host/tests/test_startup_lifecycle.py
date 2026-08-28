@@ -13,6 +13,9 @@ STARTUP_TEMPLATE = Path(__file__).parents[1] / "templates" / "startup.sh.tftpl"
 COMPOSE_TEMPLATE = Path(__file__).parents[1] / "templates" / "compose.yaml.tftpl"
 GENERATION = "stage-0001"
 LIFETIME_SECONDS = 7 * 24 * 60 * 60
+APT_AUTOMATIC_TIMERS = ("apt-daily.timer", "apt-daily-upgrade.timer")
+APT_AUTOMATIC_SERVICES = ("apt-daily.service", "apt-daily-upgrade.service")
+APT_AUTOMATIC_UNITS = (*APT_AUTOMATIC_TIMERS, *APT_AUTOMATIC_SERVICES)
 
 
 class StartupLifecycleTests(unittest.TestCase):
@@ -27,6 +30,11 @@ class StartupLifecycleTests(unittest.TestCase):
         generation: str = GENERATION,
         timer_deadline: int | None = None,
         systemd_run_fails: bool = False,
+        apt_mask_fails: bool = False,
+        apt_enabled_state: str = "masked",
+        apt_active_state: str = "inactive",
+        apt_services_busy: bool = False,
+        apt_transition_polls: int = 0,
         package_version: str = "1.0",
         setup: Callable[[Path], None] | None = None,
     ) -> dict[str, object]:
@@ -70,6 +78,43 @@ with pathlib.Path(os.environ["FAKE_COMMAND_LOG"]).open("a", encoding="utf-8") as
     handle.write(json.dumps({"command": "systemctl", "args": sys.argv[1:]}) + "\\n")
 
 arguments = sys.argv[1:]
+apt_services = {"apt-daily.service", "apt-daily-upgrade.service"}
+apt_units = {
+    "apt-daily.timer",
+    "apt-daily-upgrade.timer",
+    *apt_services,
+}
+if arguments and arguments[0] == "mask" and set(arguments[1:]) == apt_units:
+    raise SystemExit(1 if os.environ["FAKE_APT_MASK_FAILS"] == "true" else 0)
+if len(arguments) == 2 and arguments[0] == "is-enabled" and arguments[1] in apt_units:
+    state = os.environ["FAKE_APT_ENABLED_STATE"]
+    print(state)
+    raise SystemExit(1 if state == "masked" else 0)
+if (
+    len(arguments) == 4
+    and arguments[0] == "show"
+    and arguments[1] in apt_services
+    and arguments[2:] == ["--property=ActiveState", "--value"]
+):
+    command_log = pathlib.Path(os.environ["FAKE_COMMAND_LOG"])
+    poll_count = sum(
+        1
+        for line in command_log.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["args"][0:1] == ["show"]
+        and json.loads(line)["args"][-2:] == ["--property=ActiveState", "--value"]
+    )
+    transition_polls = int(os.environ["FAKE_APT_TRANSITION_POLLS"])
+    if os.environ["FAKE_APT_SERVICES_BUSY"] == "true":
+        print("active")
+    elif poll_count <= transition_polls:
+        print("activating")
+    else:
+        print("inactive")
+    raise SystemExit(0)
+if len(arguments) == 2 and arguments[0] == "is-active" and arguments[1] in apt_units:
+    state = os.environ["FAKE_APT_ACTIVE_STATE"]
+    print(state)
+    raise SystemExit(3 if state == "inactive" else 0)
 if arguments and arguments[0] == "show":
     if "--property=Persistent" in arguments:
         print("yes")
@@ -138,6 +183,14 @@ else:
                     "readonly CONTROL_DIR='/var/lib/colortrace-lifecycle'",
                     f"readonly CONTROL_DIR={shlex.quote(str(control))}",
                 )
+                .replace(
+                    "readonly APT_SERVICE_QUIESCE_ATTEMPTS=180",
+                    "readonly APT_SERVICE_QUIESCE_ATTEMPTS=2",
+                )
+                .replace(
+                    "readonly APT_SERVICE_QUIESCE_DELAY_SECONDS=5",
+                    "readonly APT_SERVICE_QUIESCE_DELAY_SECONDS=0",
+                )
             )
             lifecycle_source = lifecycle_source.replace("$${", "${")
             lifecycle_source += "\nstartup_complete=true\nexit 0\n"
@@ -153,6 +206,11 @@ else:
                     "FAKE_COMMAND_LOG": str(log),
                     "FAKE_NOW": str(now),
                     "FAKE_SYSTEMD_RUN_FAILS": ("true" if systemd_run_fails else "false"),
+                    "FAKE_APT_MASK_FAILS": ("true" if apt_mask_fails else "false"),
+                    "FAKE_APT_ENABLED_STATE": apt_enabled_state,
+                    "FAKE_APT_ACTIVE_STATE": apt_active_state,
+                    "FAKE_APT_SERVICES_BUSY": ("true" if apt_services_busy else "false"),
+                    "FAKE_APT_TRANSITION_POLLS": str(apt_transition_polls),
                     "FAKE_TIMER_DEADLINE": str(timer_deadline or now + LIFETIME_SECONDS),
                     "FAKE_PACKAGE_VERSION": package_version,
                     "PATH": f"{binaries}:{os.environ['PATH']}",
@@ -189,6 +247,109 @@ else:
                     else None
                 ),
             }
+
+    def test_automatic_apt_is_frozen_before_lifecycle_validation(self) -> None:
+        result = self._run_lifecycle()
+        completed = result["completed"]
+        self.assertIsInstance(completed, subprocess.CompletedProcess)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+        systemctl_calls = [
+            call["args"] for call in result["calls"] if call["command"] == "systemctl"
+        ]
+        self.assertEqual(systemctl_calls[0], ["mask", *APT_AUTOMATIC_UNITS])
+        self.assertEqual(systemctl_calls[1], ["stop", *APT_AUTOMATIC_TIMERS])
+        for call in systemctl_calls:
+            if call[0] == "stop":
+                self.assertTrue(set(call[1:]).isdisjoint(APT_AUTOMATIC_SERVICES))
+        expected_verification = [
+            command
+            for unit in APT_AUTOMATIC_UNITS
+            for command in (["is-enabled", unit], ["is-active", unit])
+        ]
+        verification_calls = [
+            call
+            for call in systemctl_calls
+            if len(call) == 2
+            and call[0] in {"is-enabled", "is-active"}
+            and call[1] in APT_AUTOMATIC_UNITS
+        ]
+        self.assertEqual(verification_calls, expected_verification)
+
+        source = STARTUP_TEMPLATE.read_text(encoding="utf-8")
+        freeze_index = source.index("\nfreeze_automatic_apt\n")
+        lifecycle_index = source.index("\nfresh_lifecycle=false\n")
+        self.assertLess(freeze_index, lifecycle_index)
+
+    def test_automatic_apt_waits_for_running_services_without_stopping_them(self) -> None:
+        result = self._run_lifecycle(apt_transition_polls=2)
+        completed = result["completed"]
+        self.assertIsInstance(completed, subprocess.CompletedProcess)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+        systemctl_calls = [
+            call["args"] for call in result["calls"] if call["command"] == "systemctl"
+        ]
+        service_wait_calls = [
+            call
+            for call in systemctl_calls
+            if len(call) == 4
+            and call[0] == "show"
+            and call[1] in APT_AUTOMATIC_SERVICES
+            and call[2:] == ["--property=ActiveState", "--value"]
+        ]
+        self.assertEqual(
+            service_wait_calls,
+            [
+                ["show", unit, "--property=ActiveState", "--value"]
+                for _attempt in range(2)
+                for unit in APT_AUTOMATIC_SERVICES
+            ],
+        )
+        for call in systemctl_calls:
+            if call[0] == "stop":
+                self.assertTrue(set(call[1:]).isdisjoint(APT_AUTOMATIC_SERVICES))
+
+    def test_automatic_apt_freeze_failure_powers_off_before_lifecycle_acceptance(self) -> None:
+        cases = (
+            {"apt_mask_fails": True},
+            {"apt_enabled_state": "enabled"},
+            {"apt_active_state": "active"},
+            {"apt_services_busy": True},
+        )
+        for options in cases:
+            with self.subTest(options=options):
+                result = self._run_lifecycle(**options)
+                completed = result["completed"]
+                self.assertIsInstance(completed, subprocess.CompletedProcess)
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIsNone(result["current_target"])
+                self.assertNotIn("systemd-run", [call["command"] for call in result["calls"]])
+                if options.get("apt_services_busy"):
+                    service_wait_calls = [
+                        call["args"]
+                        for call in result["calls"]
+                        if call["command"] == "systemctl"
+                        and len(call["args"]) == 4
+                        and call["args"][0] == "show"
+                        and call["args"][1] in APT_AUTOMATIC_SERVICES
+                        and call["args"][2:] == ["--property=ActiveState", "--value"]
+                    ]
+                    self.assertEqual(
+                        service_wait_calls,
+                        [
+                            ["show", unit, "--property=ActiveState", "--value"]
+                            for _attempt in range(2)
+                            for unit in APT_AUTOMATIC_SERVICES
+                        ],
+                    )
+                for call in result["calls"]:
+                    if call["command"] == "systemctl" and call["args"][0] == "stop":
+                        self.assertTrue(set(call["args"][1:]).isdisjoint(APT_AUTOMATIC_SERVICES))
+                self.assertIn(
+                    ["poweroff"],
+                    [call["args"] for call in result["calls"] if call["command"] == "systemctl"],
+                )
 
     def test_new_generation_is_atomically_accepted_before_verified_timer(self) -> None:
         now = 1_800_000_000
