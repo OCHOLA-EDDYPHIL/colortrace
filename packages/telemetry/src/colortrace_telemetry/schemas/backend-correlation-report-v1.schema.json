@@ -65,6 +65,7 @@
         "provisioned",
         "firing",
         "scheduler_interval_seconds",
+        "pending_period_seconds",
         "evidence_window_seconds",
         "execution_error_state",
         "no_data_state"
@@ -74,6 +75,7 @@
         "provisioned": {"const": true},
         "firing": {"const": true},
         "scheduler_interval_seconds": {"const": 10},
+        "pending_period_seconds": {"const": 10},
         "evidence_window_seconds": {"const": 600},
         "execution_error_state": {"const": "Error"},
         "no_data_state": {"const": "NoData"}

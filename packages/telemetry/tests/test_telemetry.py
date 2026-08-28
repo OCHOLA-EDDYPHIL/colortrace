@@ -722,6 +722,7 @@ def test_local_stack_and_alert_contracts_are_pinned() -> None:
     rule = group["rules"][0]
     expression = rule["data"][0]["model"]["expr"]
     assert group["interval"] == "10s"
+    assert rule["for"] == "10s"
     assert rule["noDataState"] == "NoData"
     assert rule["execErrState"] == "Error"
     assert "executionErrorState" not in rule
@@ -740,9 +741,11 @@ def test_local_stack_and_alert_contracts_are_pinned() -> None:
         (REPOSITORY_ROOT / "config/telemetry/query-templates.json").read_text(encoding="utf-8")
     )
     scheduler_interval = alert_contract["scheduler_interval_seconds"]
+    pending_period = alert_contract["pending_period_seconds"]
     assert scheduler_interval == stack["verification"]["alert_scheduler_interval_seconds"]
     assert scheduler_interval == query_templates["alert"]["scheduler_interval_seconds"]
     assert group["interval"] == f"{scheduler_interval}s"
+    assert rule["for"] == f"{pending_period}s"
     assert stack["verification"]["late_minimum_milliseconds"] > scheduler_interval * 1000
     validate_schema("grafana-alert-contract-v1.schema.json", alert_contract)
 
@@ -780,6 +783,28 @@ def test_grafana_alert_contract_binds_interval_to_exact_rule_group(
     monkeypatch.setattr(observer, "_json_get", grafana_get)
     endpoints = BackendEndpoints(*(f"http://127.0.0.1:{port}" for port in range(1, 6)))
     with pytest.raises(AssertionError, match="scheduler interval differs"):
+        observer._alert_contract(endpoints, contract)
+
+
+def test_grafana_alert_contract_rejects_pending_period_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = json.loads(
+        (REPOSITORY_ROOT / "config/telemetry/alert-contract.json").read_text(encoding="utf-8")
+    )
+    alert = yaml.safe_load(
+        (REPOSITORY_ROOT / "config/telemetry/grafana-alerting.yaml").read_text(encoding="utf-8")
+    )
+    provisioned_rule = alert["groups"][0]["rules"][0]
+    provisioned_rule["for"] = "0s"
+
+    monkeypatch.setattr(
+        observer,
+        "_json_get",
+        lambda *args, **kwargs: provisioned_rule,
+    )
+    endpoints = BackendEndpoints(*(f"http://127.0.0.1:{port}" for port in range(1, 6)))
+    with pytest.raises(AssertionError, match="pending period differs"):
         observer._alert_contract(endpoints, contract)
 
 
