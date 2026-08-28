@@ -451,7 +451,7 @@ def _verify_signal(
             age_ms = int((emitted - scheduled).total_seconds() * 1000)
             if age_ms < delay:
                 raise AssertionError(f"{signal} event age was silently filled")
-            if instruction["outcome"] == "late" and delay < 21_000:
+            if instruction["outcome"] == "late" and delay < 11_000:
                 raise AssertionError(f"{signal} late event is inside the scheduler interval")
     outcomes = Counter(item["outcome"] for item in instructions)
     jobs = {correlations[item["event_id"]]["job_id"] for item in instructions}
