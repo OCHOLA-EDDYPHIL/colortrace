@@ -203,6 +203,23 @@ class FakeModel:
             self.in_flight -= 1
 
 
+class DraftSequenceModel(FakeModel):
+    def __init__(self, drafts: list[bytes | ModelFailure], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.drafts = list(drafts)
+
+    async def generate(self, call: ModelCall) -> ModelOutput:
+        output = await super().generate(call)
+        if call.turn_kind == "evidence-selection":
+            return replace(output, model_calls=4)
+        if self.drafts:
+            draft = self.drafts.pop(0)
+            if isinstance(draft, ModelFailure):
+                raise draft
+            return replace(output, content=draft)
+        return output
+
+
 class FakeSession:
     def __init__(
         self,
@@ -1109,6 +1126,130 @@ def test_invalid_model_tool_arguments_stop_after_alert_baseline(
     assert "assessment" not in packet["state_history"]
     assert "model-output-invalid" in {item["code"] for item in packet["unresolved_items"]}
     assert "incomplete-evidence" in {item["code"] for item in packet["unresolved_items"]}
+    assert len(model.calls) == 1
+
+
+def test_invalid_first_draft_retries_once_with_compact_bounded_input(
+    policy: InvestigationPolicy, bundles: dict[str, Path]
+) -> None:
+    model = DraftSequenceModel([b"{}"], input_tokens=10_000, output_tokens=100)
+    packet, _, _ = asyncio.run(execute(policy, bundles["canonical"], model=model))
+
+    assert packet["status"] == "resolved", packet["unresolved_items"]
+    assert packet["budget_use"]["model_turns"] == 6
+    assert packet["budget_use"]["input_tokens"] == 30_000
+    assert len(model.calls) == 3
+    first_draft, retry = model.calls[1:]
+    assert first_draft.turn_kind == retry.turn_kind == "response-drafting"
+    assert first_draft.response_schema == retry.response_schema
+    assert first_draft.maximum_output_tokens == retry.maximum_output_tokens == 1792
+    assert retry.payload["input_contract"] == first_draft.payload["input_contract"]
+    assert retry.payload["policy_version"] == first_draft.payload["policy_version"]
+    assert (
+        retry.payload["quoted_evidence_excerpts"] == first_draft.payload["quoted_evidence_excerpts"]
+    )
+    assert retry.payload["allowed_evidence_ids"] == first_draft.payload["allowed_evidence_ids"]
+    assert retry.payload["authority"] == first_draft.payload["authority"] == "advisory-only"
+    assert retry.payload["deterministic_facts"] == {
+        "claims": [
+            {key: claim[key] for key in ("claim_type", "subject", "state", "reason_codes")}
+            for claim in packet["claims"]
+        ],
+        "scope": {key: packet["scope"][key] for key in ("state", "affected", "safe", "unknown")},
+    }
+    assert first_draft.payload["deterministic_facts"] == {
+        "claims": packet["claims"],
+        "scope": packet["scope"],
+    }
+    assert len(retry.payload["allowed_evidence_ids"]) == 4
+    first_upper_bound = (
+        len(investigation_contracts.canonical_json_bytes(first_draft.payload))
+        + len(investigation_contracts.canonical_json_bytes(first_draft.response_schema))
+        + 4096
+    )
+    retry_upper_bound = (
+        len(investigation_contracts.canonical_json_bytes(retry.payload))
+        + len(investigation_contracts.canonical_json_bytes(retry.response_schema))
+        + 4096
+    )
+    assert 20_000 + first_upper_bound > policy.budgets.maximum_input_tokens
+    assert 20_000 + retry_upper_bound <= policy.budgets.maximum_input_tokens
+    assert retry_upper_bound < first_upper_bound
+    draft_invocations = [
+        item for item in packet["invocation_records"] if item["turn_kind"] == "response-drafting"
+    ]
+    assert [item["attempt"] for item in draft_invocations] == [1, 2]
+    assert [item["result_class"] for item in draft_invocations] == ["invalid", "accepted"]
+    assert [item["error_code"] for item in draft_invocations] == [
+        "model_output_invalid",
+        None,
+    ]
+    assert draft_invocations[0]["output_sha256"] == investigation_contracts.prefixed_sha256(b"{}")
+
+
+def test_second_invalid_draft_fails_closed_without_another_retry(
+    policy: InvestigationPolicy, bundles: dict[str, Path]
+) -> None:
+    model = DraftSequenceModel([b"{}", b"{}"])
+    packet, _, _ = asyncio.run(execute(policy, bundles["canonical"], model=model))
+
+    assert packet["status"] == "unresolved"
+    assert packet["candidate_plan"] is None
+    assert packet["model_advisory"] is None
+    assert len(model.calls) == 3
+    draft_invocations = [
+        item for item in packet["invocation_records"] if item["turn_kind"] == "response-drafting"
+    ]
+    assert [item["attempt"] for item in draft_invocations] == [1, 2]
+    assert [item["result_class"] for item in draft_invocations] == ["invalid", "invalid"]
+    assert [item["error_code"] for item in draft_invocations] == [
+        "model_output_invalid",
+        "model_output_invalid",
+    ]
+    assert {item["code"] for item in packet["unresolved_items"]} == {"model-output-invalid"}
+
+
+def test_invalid_draft_repair_does_not_retry_transient_provider_failure(
+    policy: InvestigationPolicy, bundles: dict[str, Path]
+) -> None:
+    model = DraftSequenceModel(
+        [
+            b"{}",
+            ModelFailure("timeout", transient=True, input_tokens=10, output_tokens=2),
+        ]
+    )
+    packet, _, _ = asyncio.run(execute(policy, bundles["canonical"], model=model))
+
+    assert packet["status"] == "unresolved"
+    assert packet["candidate_plan"] is None
+    assert packet["model_advisory"] is None
+    assert len(model.calls) == 3
+    draft_invocations = [
+        item for item in packet["invocation_records"] if item["turn_kind"] == "response-drafting"
+    ]
+    assert [item["attempt"] for item in draft_invocations] == [1, 2]
+    assert [item["result_class"] for item in draft_invocations] == ["invalid", "failed"]
+    assert [item["error_code"] for item in draft_invocations] == [
+        "model_output_invalid",
+        "timeout",
+    ]
+    assert packet["budget_use"]["trusted_transient_retries"] == 0
+    assert "timeout" in {item["code"] for item in packet["unresolved_items"]}
+
+
+def test_invalid_draft_retry_respects_remaining_input_budget(
+    policy: InvestigationPolicy, bundles: dict[str, Path]
+) -> None:
+    model = DraftSequenceModel([b"{}"], input_tokens=11_000, output_tokens=100)
+    packet, _, _ = asyncio.run(execute(policy, bundles["canonical"], model=model))
+
+    assert packet["status"] == "unresolved"
+    assert packet["candidate_plan"] is None
+    assert packet["model_advisory"] is None
+    assert len(model.calls) == 2
+    assert packet["budget_use"]["model_turns"] == 5
+    assert packet["budget_use"]["input_tokens"] == 22_000
+    assert "token-budget" in {item["code"] for item in packet["unresolved_items"]}
 
 
 def test_drafting_rejects_citation_outside_quoted_evidence(
@@ -1128,6 +1269,14 @@ def test_drafting_rejects_citation_outside_quoted_evidence(
     assert packet["candidate_plan"] is None
     assert packet["model_advisory"] is None
     assert "model-citation-invalid" in {item["code"] for item in packet["unresolved_items"]}
+    assert [
+        item["attempt"]
+        for item in packet["invocation_records"]
+        if item["turn_kind"] == "response-drafting"
+    ] == [1]
+    draft_invocation = packet["invocation_records"][-1]
+    assert draft_invocation["result_class"] == "invalid"
+    assert draft_invocation["error_code"] == "model_citation_invalid"
 
 
 def test_one_trusted_model_retry_then_second_timeout_is_terminal(
