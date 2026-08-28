@@ -23,6 +23,11 @@ readonly METADATA_URL='http://metadata.google.internal/computeMetadata/v1'
 readonly METADATA_IP='169.254.169.254'
 readonly RUNTIME_CONTAINER_IP='172.30.0.10'
 readonly REQUIRED_PACKAGES='ca-certificates curl docker-compose docker.io iptables jq openssl'
+readonly APT_AUTOMATIC_TIMERS='apt-daily.timer apt-daily-upgrade.timer'
+readonly APT_AUTOMATIC_SERVICES='apt-daily.service apt-daily-upgrade.service'
+readonly APT_AUTOMATIC_UNITS="$APT_AUTOMATIC_TIMERS $APT_AUTOMATIC_SERVICES"
+readonly APT_SERVICE_QUIESCE_ATTEMPTS=180
+readonly APT_SERVICE_QUIESCE_DELAY_SECONDS=5
 readonly LIFECYCLE_STATE_VERSION='1'
 
 startup_complete=false
@@ -67,6 +72,42 @@ lifecycle_error() {
   printf 'Invalid or interrupted ColorTrace lifecycle state.\n' >&2
   return 1
 }
+
+freeze_automatic_apt() {
+  local active_state
+  local apt_services_inactive
+  local attempt
+  local enabled_state
+  local unit
+
+  systemctl mask $APT_AUTOMATIC_UNITS || lifecycle_error
+  systemctl stop $APT_AUTOMATIC_TIMERS || lifecycle_error
+
+  apt_services_inactive=false
+  for ((attempt = 0; attempt < APT_SERVICE_QUIESCE_ATTEMPTS; attempt += 1)); do
+    apt_services_inactive=true
+    for unit in $APT_AUTOMATIC_SERVICES; do
+      active_state=$(systemctl show "$unit" --property=ActiveState --value 2>/dev/null || true)
+      if test "$active_state" != inactive; then
+        apt_services_inactive=false
+      fi
+    done
+    if test "$apt_services_inactive" = true; then
+      break
+    fi
+    sleep "$APT_SERVICE_QUIESCE_DELAY_SECONDS"
+  done
+  test "$apt_services_inactive" = true || lifecycle_error
+
+  for unit in $APT_AUTOMATIC_UNITS; do
+    enabled_state=$(systemctl is-enabled "$unit" 2>/dev/null || true)
+    active_state=$(systemctl is-active "$unit" 2>/dev/null || true)
+    test "$enabled_state" = masked || lifecycle_error
+    test "$active_state" = inactive || lifecycle_error
+  done
+}
+
+freeze_automatic_apt
 
 read_record_value() {
   local path=$1

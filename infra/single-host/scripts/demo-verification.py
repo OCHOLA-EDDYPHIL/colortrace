@@ -1807,6 +1807,16 @@ timer_deadline=$(sudo --non-interactive \
   systemctl show --timestamp=unix colortrace-auto-stop.timer \
   --property=NextElapseUSecRealtime --value)
 test "$(date --date="$timer_deadline" +%s)" -eq "$deadline"
+automatic_apt_units='apt-daily.timer
+apt-daily-upgrade.timer
+apt-daily.service
+apt-daily-upgrade.service'
+for unit in $automatic_apt_units; do
+  enabled_state=$(sudo --non-interactive systemctl is-enabled "$unit" 2>/dev/null || true)
+  active_state=$(sudo --non-interactive systemctl is-active "$unit" 2>/dev/null || true)
+  test "$enabled_state" = masked
+  test "$active_state" = inactive
+done
 for component in runtime web caddy grafana loki prometheus tempo; do
   eval "reference=\$image_$component"
   container="colortrace-$component"

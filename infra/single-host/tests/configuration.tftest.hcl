@@ -394,12 +394,27 @@ run "bounded_single_host_is_admitted" {
     condition = (
       google_compute_instance.host[0].metadata["startup-script"] == local.startup_script
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "STAGING_LIFETIME_HOURS='168'")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "APT_AUTOMATIC_TIMERS='apt-daily.timer apt-daily-upgrade.timer'")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "APT_AUTOMATIC_SERVICES='apt-daily.service apt-daily-upgrade.service'")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "APT_SERVICE_QUIESCE_ATTEMPTS=180")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "systemctl mask $APT_AUTOMATIC_UNITS")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "systemctl stop $APT_AUTOMATIC_TIMERS")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "systemctl show \"$unit\" --property=ActiveState --value")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "test \"$apt_services_inactive\" = true || lifecycle_error")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "systemctl is-enabled \"$unit\"")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "systemctl is-active \"$unit\"")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "test \"$enabled_state\" = masked || lifecycle_error")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "test \"$active_state\" = inactive || lifecycle_error")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "freeze_automatic_apt\n\nread_record_value()")
+      && !strcontains(google_compute_instance.host[0].metadata["startup-script"], "systemctl mask --now")
+      && !strcontains(google_compute_instance.host[0].metadata["startup-script"], "systemctl mask --runtime")
+      && !strcontains(google_compute_instance.host[0].metadata["startup-script"], "systemctl stop $APT_AUTOMATIC_UNITS")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "secretmanager.googleapis.com")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "ACCESS_SECRET_VERSION='7'")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "access_hash=$(printf")
       && !strcontains(file("${path.module}/compute.tf"), "metadata_startup_script")
     )
-    error_message = "The startup contract must schedule the seven-day stop and fetch, never embed, the access verifier."
+    error_message = "The startup contract must freeze automatic apt, schedule the seven-day stop, and fetch, never embed, the access verifier."
   }
 
   assert {
