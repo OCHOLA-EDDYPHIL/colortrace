@@ -465,7 +465,7 @@ def test_fifty_run_delivery_matrix_is_observable_without_waiting(scenario: Path)
         }
     late = [row for plan in plans for row in plan.instructions if row.outcome == "late"]
     assert late
-    assert all(21_000 <= row.delay_ms <= 50_000 for row in late)
+    assert all(11_000 <= row.delay_ms <= 40_000 for row in late)
 
     sink = MemorySink()
     receipt = emit_plans(runtime, plans, sink)
@@ -474,7 +474,7 @@ def test_fifty_run_delivery_matrix_is_observable_without_waiting(scenario: Path)
         if event["delivery_delay_ms"]:
             scheduled = datetime.fromisoformat(event["scheduled_at"].replace("Z", "+00:00"))
             emitted = datetime.fromisoformat(event["emitted_at"].replace("Z", "+00:00"))
-            assert int((emitted - scheduled).total_seconds() * 1000) >= 21_000
+            assert int((emitted - scheduled).total_seconds() * 1000) >= 11_000
 
 
 def test_no_grafana_is_candidate_bound_and_fact_free(scenario: Path) -> None:
@@ -721,7 +721,7 @@ def test_local_stack_and_alert_contracts_are_pinned() -> None:
     group = alert["groups"][0]
     rule = group["rules"][0]
     expression = rule["data"][0]["model"]["expr"]
-    assert group["interval"] == "20s"
+    assert group["interval"] == "10s"
     assert rule["noDataState"] == "NoData"
     assert rule["execErrState"] == "Error"
     assert "executionErrorState" not in rule
@@ -760,7 +760,7 @@ def test_grafana_alert_contract_binds_interval_to_exact_rule_group(
     ruler_groups = {
         "ColorTrace": [
             {
-                "interval": "20s",
+                "interval": "10s",
                 "rules": [{"grafana_alert": {"uid": "unrelated-rule"}}],
             },
             {
