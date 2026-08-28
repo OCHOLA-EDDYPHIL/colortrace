@@ -73,7 +73,7 @@ groups:
               type: threshold
         noDataState: NoData
         execErrState: Error
-        for: 0s
+        for: 10s
         annotations:
           alert_contract: grafana-alert-contract/v1
           contract: declared-reference-observation/v1
