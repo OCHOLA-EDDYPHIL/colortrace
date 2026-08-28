@@ -10,7 +10,7 @@
   "live_target": {
     "grafana": "13.2.0",
     "scheduler_source_revision": "6197d8e5f34898d2c8e4108f927b48ca8255b722",
-    "required_scheduler_interval_seconds": 60,
+    "required_scheduler_interval_seconds": 10,
     "local_live_parity_claimed": false,
     "unsupported_drift_outcome": "unresolved"
   },
@@ -31,9 +31,9 @@
     "runs": 50,
     "jobs_per_run": 6,
     "signals_per_job": 3,
-    "late_minimum_milliseconds": 61000,
+    "late_minimum_milliseconds": 11000,
     "evidence_window_seconds": 600,
-    "alert_scheduler_interval_seconds": 60,
+    "alert_scheduler_interval_seconds": 10,
     "maximum_observation_labelsets": 300,
     "maximum_colortrace_metric_series": 600
   }

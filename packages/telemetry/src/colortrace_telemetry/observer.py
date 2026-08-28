@@ -451,7 +451,7 @@ def _verify_signal(
             age_ms = int((emitted - scheduled).total_seconds() * 1000)
             if age_ms < delay:
                 raise AssertionError(f"{signal} event age was silently filled")
-            if instruction["outcome"] == "late" and delay < 61_000:
+            if instruction["outcome"] == "late" and delay < 11_000:
                 raise AssertionError(f"{signal} late event is inside the scheduler interval")
     outcomes = Counter(item["outcome"] for item in instructions)
     jobs = {correlations[item["event_id"]]["job_id"] for item in instructions}
@@ -512,12 +512,12 @@ def _alert_contract(endpoints: BackendEndpoints, contract: Mapping[str, Any]) ->
         raise AssertionError("Grafana alert expression violates the symptom contract")
     groups = _json_get(endpoints.grafana, "/api/ruler/grafana/api/v1/rules")
     serialized = json.dumps(groups, sort_keys=True, separators=(",", ":"))
-    if '"interval":"1m"' not in serialized or f'"uid":"{uid}"' not in serialized:
-        raise AssertionError("Grafana alert scheduler interval is not 60 seconds")
+    if '"interval":"10s"' not in serialized or f'"uid":"{uid}"' not in serialized:
+        raise AssertionError("Grafana alert scheduler interval is not 10 seconds")
     return {
         "uid": uid,
         "provisioned": True,
-        "scheduler_interval_seconds": 60,
+        "scheduler_interval_seconds": 10,
         "evidence_window_seconds": contract["evidence_window_seconds"],
         "execution_error_state": contract["execution_error_state"],
         "no_data_state": contract["no_data_state"],
