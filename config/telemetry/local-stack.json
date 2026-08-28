@@ -31,9 +31,9 @@
     "runs": 50,
     "jobs_per_run": 6,
     "signals_per_job": 3,
-    "late_minimum_milliseconds": 61000,
+    "late_minimum_milliseconds": 21000,
     "evidence_window_seconds": 600,
-    "alert_scheduler_interval_seconds": 60,
+    "alert_scheduler_interval_seconds": 20,
     "maximum_observation_labelsets": 300,
     "maximum_colortrace_metric_series": 600
   }

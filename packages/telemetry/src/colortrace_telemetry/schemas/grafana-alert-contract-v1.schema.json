@@ -46,7 +46,7 @@
       ]
     },
     "excluded_alert_keys": {"const": ["resource_sha256"]},
-    "scheduler_interval_seconds": {"const": 60},
+    "scheduler_interval_seconds": {"const": 20},
     "evidence_window_seconds": {"const": 600},
     "execution_error_state": {"const": "Error"},
     "no_data_state": {"const": "NoData"}

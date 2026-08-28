@@ -451,7 +451,7 @@ def _verify_signal(
             age_ms = int((emitted - scheduled).total_seconds() * 1000)
             if age_ms < delay:
                 raise AssertionError(f"{signal} event age was silently filled")
-            if instruction["outcome"] == "late" and delay < 61_000:
+            if instruction["outcome"] == "late" and delay < 21_000:
                 raise AssertionError(f"{signal} late event is inside the scheduler interval")
     outcomes = Counter(item["outcome"] for item in instructions)
     jobs = {correlations[item["event_id"]]["job_id"] for item in instructions}
@@ -511,13 +511,32 @@ def _alert_contract(endpoints: BackendEndpoints, contract: Mapping[str, Any]) ->
     ):
         raise AssertionError("Grafana alert expression violates the symptom contract")
     groups = _json_get(endpoints.grafana, "/api/ruler/grafana/api/v1/rules")
-    serialized = json.dumps(groups, sort_keys=True, separators=(",", ":"))
-    if '"interval":"1m"' not in serialized or f'"uid":"{uid}"' not in serialized:
-        raise AssertionError("Grafana alert scheduler interval is not 60 seconds")
+    target_groups: list[Mapping[str, Any]] = []
+    if isinstance(groups, Mapping):
+        for namespace_groups in groups.values():
+            if not isinstance(namespace_groups, list):
+                continue
+            for group in namespace_groups:
+                if not isinstance(group, Mapping):
+                    continue
+                rules = group.get("rules")
+                if not isinstance(rules, list):
+                    continue
+                for group_rule in rules:
+                    if not isinstance(group_rule, Mapping):
+                        continue
+                    grafana_alert = group_rule.get("grafana_alert")
+                    if isinstance(grafana_alert, Mapping) and grafana_alert.get("uid") == uid:
+                        target_groups.append(group)
+    scheduler_interval_seconds = int(contract["scheduler_interval_seconds"])
+    if len(target_groups) != 1 or target_groups[0].get("interval") != (
+        f"{scheduler_interval_seconds}s"
+    ):
+        raise AssertionError("Grafana alert scheduler interval differs from its contract")
     return {
         "uid": uid,
         "provisioned": True,
-        "scheduler_interval_seconds": 60,
+        "scheduler_interval_seconds": scheduler_interval_seconds,
         "evidence_window_seconds": contract["evidence_window_seconds"],
         "execution_error_state": contract["execution_error_state"],
         "no_data_state": contract["no_data_state"],
