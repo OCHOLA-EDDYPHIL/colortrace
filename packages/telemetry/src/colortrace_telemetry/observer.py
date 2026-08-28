@@ -477,13 +477,20 @@ def _metric_series(endpoints: BackendEndpoints) -> int:
 
 def _alert_contract(endpoints: BackendEndpoints, contract: Mapping[str, Any]) -> dict[str, Any]:
     uid = str(contract["uid"])
-    rule = _json_get(endpoints.grafana, f"/api/v1/provisioning/alert-rules/{uid}")
+    rule = _json_get(
+        endpoints.grafana,
+        f"/api/v1/provisioning/alert-rules/{uid}",
+        timeout_seconds=15.0,
+    )
     if not isinstance(rule, dict) or rule.get("uid") != uid:
         raise AssertionError("Grafana alert was not provisioned")
     if rule.get("noDataState") != contract["no_data_state"]:
         raise AssertionError("Grafana alert does not expose missing data")
     if rule.get("execErrState") != contract["execution_error_state"]:
         raise AssertionError("Grafana alert does not expose execution errors")
+    pending_period_seconds = int(contract["pending_period_seconds"])
+    if rule.get("for") != f"{pending_period_seconds}s":
+        raise AssertionError("Grafana alert pending period differs from its contract")
     if (
         not isinstance(rule.get("annotations"), dict)
         or rule["annotations"].get("alert_contract") != contract["schema"]
@@ -510,7 +517,11 @@ def _alert_contract(endpoints: BackendEndpoints, contract: Mapping[str, Any]) ->
         or any(field in expression for field in contract["excluded_alert_keys"])
     ):
         raise AssertionError("Grafana alert expression violates the symptom contract")
-    groups = _json_get(endpoints.grafana, "/api/ruler/grafana/api/v1/rules")
+    groups = _json_get(
+        endpoints.grafana,
+        "/api/ruler/grafana/api/v1/rules",
+        timeout_seconds=15.0,
+    )
     target_groups: list[Mapping[str, Any]] = []
     if isinstance(groups, Mapping):
         for namespace_groups in groups.values():
@@ -537,6 +548,7 @@ def _alert_contract(endpoints: BackendEndpoints, contract: Mapping[str, Any]) ->
         "uid": uid,
         "provisioned": True,
         "scheduler_interval_seconds": scheduler_interval_seconds,
+        "pending_period_seconds": pending_period_seconds,
         "evidence_window_seconds": contract["evidence_window_seconds"],
         "execution_error_state": contract["execution_error_state"],
         "no_data_state": contract["no_data_state"],
