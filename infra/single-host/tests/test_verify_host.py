@@ -23,6 +23,12 @@ CHECK_NAMES = [
     "safe-complement-preservation",
     "post-action-telemetry-correlation",
 ]
+APT_AUTOMATIC_UNITS = (
+    "apt-daily.timer",
+    "apt-daily-upgrade.timer",
+    "apt-daily.service",
+    "apt-daily-upgrade.service",
+)
 VISUAL_BYTES = {
     kind: b"\x89PNG\r\n\x1a\ncolortrace-" + kind.encode("ascii")
     for kind in ("diff", "expected", "observed", "recovered")
@@ -787,6 +793,23 @@ if sys.argv[1:4] == ["compute", "instances", "describe"]:
 if sys.argv[1:3] == ["compute", "ssh"]:
     command = sys.argv[sys.argv.index("--command") + 1]
     if "colortrace-live-binding-ok" in command:
+        required_apt_checks = (
+            "apt-daily.timer",
+            "apt-daily-upgrade.timer",
+            "apt-daily.service",
+            "apt-daily-upgrade.service",
+            'systemctl is-enabled "$unit"',
+            'systemctl is-active "$unit"',
+            'test "$enabled_state" = masked',
+            'test "$active_state" = inactive',
+        )
+        if not all(check in command for check in required_apt_checks):
+            raise SystemExit(91)
+        if (
+            os.environ["FAKE_APT_ENABLED_STATE"] != "masked"
+            or os.environ["FAKE_APT_ACTIVE_STATE"] != "inactive"
+        ):
+            raise SystemExit(92)
         print("colortrace-live-binding-ok")
     raise SystemExit(0)
 raise SystemExit(2)
@@ -923,20 +946,57 @@ raise SystemExit(124)
                 "FAKE_RESPONSES": str(responses),
                 "FAKE_INITIAL_CONFLICT": "true",
                 "FAKE_START_COUNTER": str(temporary / "start-counter"),
+                "FAKE_APT_ENABLED_STATE": "masked",
+                "FAKE_APT_ACTIVE_STATE": "inactive",
                 "PATH": f"{binary_directory}:{os.environ['PATH']}",
             }
+            verify_command = [
+                SCRIPT,
+                "https://203-0-113-42.sslip.io",
+                "colortrace",
+                "colortrace-test-project",
+                "us-central1-a",
+                "ct-singlehost-vm",
+                "stage-0001",
+                admission,
+                output,
+            ]
+            for state_name, invalid_state in (
+                ("FAKE_APT_ENABLED_STATE", "enabled"),
+                ("FAKE_APT_ACTIVE_STATE", "active"),
+            ):
+                with self.subTest(state_name=state_name, invalid_state=invalid_state):
+                    invalid_log = temporary / f"invalid-{state_name}.jsonl"
+                    invalid_log.touch()
+                    invalid_output = temporary / f"invalid-{state_name}.json"
+                    invalid_environment = {
+                        **environment,
+                        "FAKE_COMMAND_LOG": str(invalid_log),
+                        "FAKE_START_COUNTER": str(temporary / f"invalid-{state_name}-counter"),
+                        state_name: invalid_state,
+                    }
+                    rejected = subprocess.run(
+                        [*verify_command[:-1], invalid_output],
+                        check=False,
+                        capture_output=True,
+                        env=invalid_environment,
+                        text=True,
+                    )
+                    self.assertNotEqual(rejected.returncode, 0)
+                    invalid_calls = [
+                        json.loads(line) for line in invalid_log.read_text().splitlines()
+                    ]
+                    self.assertTrue(
+                        any(
+                            call[:3] == ["gcloud", "compute", "ssh"]
+                            and "--command" in call
+                            and "colortrace-live-binding-ok" in call[call.index("--command") + 1]
+                            for call in invalid_calls
+                        )
+                    )
+
             completed = subprocess.run(
-                [
-                    SCRIPT,
-                    "https://203-0-113-42.sslip.io",
-                    "colortrace",
-                    "colortrace-test-project",
-                    "us-central1-a",
-                    "ct-singlehost-vm",
-                    "stage-0001",
-                    admission,
-                    output,
-                ],
+                verify_command,
                 check=False,
                 capture_output=True,
                 env=environment,
@@ -967,6 +1027,21 @@ raise SystemExit(124)
             self.assertIn("sha256:" + "7" * 64, serialized_calls)
             self.assertIn("unexpected_pre_drop", serialized_calls)
             self.assertIn("colortrace-internal", serialized_calls)
+            remote_checks = [
+                call[call.index("--command") + 1]
+                for call in calls
+                if call[:3] == ["gcloud", "compute", "ssh"]
+                and "--command" in call
+                and "colortrace-live-binding-ok" in call[call.index("--command") + 1]
+            ]
+            self.assertEqual(len(remote_checks), 2)
+            for command in remote_checks:
+                for unit in APT_AUTOMATIC_UNITS:
+                    self.assertIn(unit, command)
+                self.assertIn('systemctl is-enabled "$unit"', command)
+                self.assertIn('systemctl is-active "$unit"', command)
+                self.assertIn('test "$enabled_state" = masked', command)
+                self.assertIn('test "$active_state" = inactive', command)
             reset_calls = [
                 call
                 for call in calls
