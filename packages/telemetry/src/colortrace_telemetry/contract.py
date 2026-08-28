@@ -698,7 +698,7 @@ class DeliveryPlan:
                 outcome = "on_time"
                 if job.job_id == target_job and signal == target_signal:
                     if mode in (1, 4):
-                        delay_ms = 11_000 + ((case_index * 7) % 30) * 1_000
+                        delay_ms = 21_000 + ((case_index * 7) % 30) * 1_000
                         outcome = "late"
                     elif mode == 2:
                         copies = 2

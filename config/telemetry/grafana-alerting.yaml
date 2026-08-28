@@ -4,7 +4,7 @@ groups:
   - orgId: 1
     name: colortrace-declared-reference-v1
     folder: ColorTrace
-    interval: 10s
+    interval: 20s
     rules:
       - uid: ct-declared-reference-divergence-v1
         title: ColorTrace declared-reference visual divergence

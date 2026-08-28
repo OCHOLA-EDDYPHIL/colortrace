@@ -13,6 +13,6 @@
   "alert": {
     "uid": "ct-declared-reference-divergence-v1",
     "range_seconds": 600,
-    "scheduler_interval_seconds": 10
+    "scheduler_interval_seconds": 20
   }
 }

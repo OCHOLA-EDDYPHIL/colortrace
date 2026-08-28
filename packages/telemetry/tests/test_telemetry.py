@@ -465,7 +465,7 @@ def test_fifty_run_delivery_matrix_is_observable_without_waiting(scenario: Path)
         }
     late = [row for plan in plans for row in plan.instructions if row.outcome == "late"]
     assert late
-    assert all(11_000 <= row.delay_ms <= 40_000 for row in late)
+    assert all(21_000 <= row.delay_ms <= 50_000 for row in late)
 
     sink = MemorySink()
     receipt = emit_plans(runtime, plans, sink)
@@ -474,7 +474,7 @@ def test_fifty_run_delivery_matrix_is_observable_without_waiting(scenario: Path)
         if event["delivery_delay_ms"]:
             scheduled = datetime.fromisoformat(event["scheduled_at"].replace("Z", "+00:00"))
             emitted = datetime.fromisoformat(event["emitted_at"].replace("Z", "+00:00"))
-            assert int((emitted - scheduled).total_seconds() * 1000) >= 11_000
+            assert int((emitted - scheduled).total_seconds() * 1000) >= 21_000
 
 
 def test_no_grafana_is_candidate_bound_and_fact_free(scenario: Path) -> None:
@@ -704,7 +704,7 @@ def test_local_stack_and_alert_contracts_are_pinned() -> None:
     assert stack["live_target"] == {
         "grafana": "13.2.0",
         "scheduler_source_revision": "6197d8e5f34898d2c8e4108f927b48ca8255b722",
-        "required_scheduler_interval_seconds": 10,
+        "required_scheduler_interval_seconds": 60,
         "local_live_parity_claimed": False,
         "unsupported_drift_outcome": "unresolved",
     }
@@ -721,7 +721,7 @@ def test_local_stack_and_alert_contracts_are_pinned() -> None:
     group = alert["groups"][0]
     rule = group["rules"][0]
     expression = rule["data"][0]["model"]["expr"]
-    assert group["interval"] == "10s"
+    assert group["interval"] == "20s"
     assert rule["noDataState"] == "NoData"
     assert rule["execErrState"] == "Error"
     assert "executionErrorState" not in rule
@@ -736,7 +736,51 @@ def test_local_stack_and_alert_contracts_are_pinned() -> None:
     alert_contract = json.loads(
         (REPOSITORY_ROOT / "config/telemetry/alert-contract.json").read_text(encoding="utf-8")
     )
+    query_templates = json.loads(
+        (REPOSITORY_ROOT / "config/telemetry/query-templates.json").read_text(encoding="utf-8")
+    )
+    scheduler_interval = alert_contract["scheduler_interval_seconds"]
+    assert scheduler_interval == stack["verification"]["alert_scheduler_interval_seconds"]
+    assert scheduler_interval == query_templates["alert"]["scheduler_interval_seconds"]
+    assert group["interval"] == f"{scheduler_interval}s"
+    assert stack["verification"]["late_minimum_milliseconds"] > scheduler_interval * 1000
     validate_schema("grafana-alert-contract-v1.schema.json", alert_contract)
+
+
+def test_grafana_alert_contract_binds_interval_to_exact_rule_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = json.loads(
+        (REPOSITORY_ROOT / "config/telemetry/alert-contract.json").read_text(encoding="utf-8")
+    )
+    alert = yaml.safe_load(
+        (REPOSITORY_ROOT / "config/telemetry/grafana-alerting.yaml").read_text(encoding="utf-8")
+    )
+    provisioned_rule = alert["groups"][0]["rules"][0]
+    ruler_groups = {
+        "ColorTrace": [
+            {
+                "interval": "20s",
+                "rules": [{"grafana_alert": {"uid": "unrelated-rule"}}],
+            },
+            {
+                "interval": "60s",
+                "rules": [{"grafana_alert": {"uid": contract["uid"]}}],
+            },
+        ]
+    }
+
+    def grafana_get(base: str, path: str, **kwargs: object) -> object:
+        del base, kwargs
+        if path.startswith("/api/v1/provisioning/alert-rules/"):
+            return provisioned_rule
+        assert path == "/api/ruler/grafana/api/v1/rules"
+        return ruler_groups
+
+    monkeypatch.setattr(observer, "_json_get", grafana_get)
+    endpoints = BackendEndpoints(*(f"http://127.0.0.1:{port}" for port in range(1, 6)))
+    with pytest.raises(AssertionError, match="scheduler interval differs"):
+        observer._alert_contract(endpoints, contract)
 
 
 @pytest.mark.parametrize(
