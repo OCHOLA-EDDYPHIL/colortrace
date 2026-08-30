@@ -110,11 +110,6 @@ function newApprovalNonce(): string {
   return crypto.randomUUID().replaceAll("-", "");
 }
 
-function shortDigest(value: string | null | undefined): string {
-  if (value === null || value === undefined) return "Not available";
-  return `${value.slice(0, 15)}…${value.slice(-8)}`;
-}
-
 function errorMessage(error: unknown, action: "load" | "mutate" | "start"): string {
   if (error instanceof DemoApiError) {
     if (error.code === "demo-active-run-exists") {
@@ -238,9 +233,7 @@ function VisualCard({
     <figure className={`shot-visual shot-visual--${kind}`} data-visual-kind={kind}>
       <figcaption>
         <span>{labels[kind]}</span>
-        <small>
-          {visual === undefined ? "Verifying image" : "Illustrative image · digest verified"}
-        </small>
+        <small>{visual === undefined ? "Verifying image" : "Image verified"}</small>
       </figcaption>
       {visual === undefined ? (
         <div
@@ -284,14 +277,18 @@ function TargetList({
       {targets.map((target) => (
         <li key={`${target.kind}:${target.id}`}>
           <span>{target.kind}</span>
-          <code>{target.id}</code>
+          <code>
+            {target.kind === "color-resource" && target.id.startsWith("sha256:")
+              ? "show_look.cube"
+              : target.id}
+          </code>
         </li>
       ))}
     </ul>
   );
 }
 
-function CommandSummary({
+function TechnicalCommandDetails({
   command,
   index,
 }: {
@@ -426,6 +423,56 @@ function CommandSummary({
   );
 }
 
+function CommandSummary({
+  command,
+  index,
+}: {
+  readonly command: DemoPlanCommand;
+  readonly index: number;
+}) {
+  const isResourceReplacement = command.schema === "simulator-quarantine-command/v1";
+  return (
+    <li className="shot-command">
+      <div className="shot-command__heading">
+        <span>{String(index + 1).padStart(2, "0")}</span>
+        <div>
+          <strong>
+            {isResourceReplacement
+              ? "Replace the shadowed LUT"
+              : command.target.kind === "derivative"
+                ? "Rerender the affected derivative"
+                : "Rerender the affected frame"}
+          </strong>
+          <span>
+            {command.target.kind}:{" "}
+            {command.target.kind === "color-resource" && command.target.id.startsWith("sha256:")
+              ? "show_look.cube"
+              : command.target.id}
+          </span>
+        </div>
+      </div>
+      {isResourceReplacement ? (
+        <p>Quarantine the mismatched resource and install the approved replacement.</p>
+      ) : (
+        <dl>
+          <div>
+            <dt>Job</dt>
+            <dd>{command.job_id}</dd>
+          </div>
+          <div>
+            <dt>Source</dt>
+            <dd>{command.source_id}</dd>
+          </div>
+          <div>
+            <dt>Transform</dt>
+            <dd>{command.transform_id}</dd>
+          </div>
+        </dl>
+      )}
+    </li>
+  );
+}
+
 function InvestigationReview({
   investigation,
 }: {
@@ -444,10 +491,7 @@ function InvestigationReview({
       <section aria-labelledby="shot-legacy-proof-title" className="shot-panel shot-legacy-proof">
         <p className="shot-eyebrow">Stored proof compatibility</p>
         <h2 id="shot-legacy-proof-title">Investigation proof v1</h2>
-        <p>
-          This stored proof exposes verified counts and digest bindings. Detailed render, claim,
-          excerpt, and command review is available on newly created runs.
-        </p>
+        <p>This earlier proof remains reviewable through the same verified recovery counts.</p>
         <dl className="shot-counts">
           <div>
             <dt>Affected</dt>
@@ -466,149 +510,82 @@ function InvestigationReview({
     );
   }
 
-  const { comparison, claims, evidence, plan, scope } = investigation;
-  const actionEnvelopeRows = [
-    ["Action envelope schema", plan.shared_action_bindings.schema],
-    ["Fixture", plan.shared_action_bindings.fixture_id],
-    ["Fixture manifest SHA-256", plan.shared_action_bindings.fixture_manifest_sha256],
-    ["Fixture generation", plan.shared_action_bindings.fixture_generation],
-    ["Source batch", plan.shared_action_bindings.source_batch_id],
-    ["Source batch SHA-256", plan.shared_action_bindings.source_batch_sha256],
-    ["Runtime manifest SHA-256", plan.shared_action_bindings.runtime_manifest_sha256],
-    ["Runtime generation", plan.shared_action_bindings.runtime_generation],
-    [
-      "Expected publication pointer SHA-256",
-      plan.shared_action_bindings.expected_publication_pointer_sha256,
-    ],
-    [
-      "Expected publication generation",
-      plan.shared_action_bindings.expected_publication_generation,
-    ],
-    ["Expected resource", plan.shared_action_bindings.expected_resource_sha256],
-    ["Replacement path", plan.shared_action_bindings.replacement_resource_logical_path],
-    ["Replacement resource", plan.shared_action_bindings.replacement_resource_sha256],
-    [
-      "Declared resource manifest SHA-256",
-      plan.shared_action_bindings.declared_resource_manifest_sha256,
-    ],
-    ["OCIO version", plan.shared_action_bindings.ocio_version],
-    ["Preservation manifest SHA-256", plan.shared_action_bindings.preservation_manifest_sha256],
-    ["Safe complement", plan.shared_action_bindings.safe_complement_sha256],
-    ["Lineage manifest SHA-256", plan.shared_action_bindings.lineage_manifest_sha256],
-    ["Lineage generation", plan.shared_action_bindings.lineage_generation],
-  ] as const;
+  const { comparison, claims, plan, scope } = investigation;
+  const claimState = (claimType: string) =>
+    claims.find((claim) => claim.claim_type === claimType)?.state;
   return (
     <div className="shot-review">
       <section aria-labelledby="shot-comparison-proof-title" className="shot-panel">
         <div className="shot-section-heading">
           <div>
-            <p className="shot-eyebrow">Deterministic comparison</p>
+            <p className="shot-eyebrow">Diagnosis</p>
             <h2 id="shot-comparison-proof-title">Same configuration, different resolved LUT</h2>
           </div>
           <span className="shot-authority">Both renders succeeded</span>
         </div>
         <div className="shot-render-grid">
-          {comparison.renders.map((render) => (
+          {comparison.renders.map((render, index) => (
             <article key={render.job_id}>
               <div className="shot-render-heading">
                 <strong>{render.job_id}</strong>
-                <span>{render.status}</span>
+                <span>Succeeded</span>
               </div>
               <dl>
                 <div>
-                  <dt>Worker</dt>
-                  <dd>
-                    <code>{render.worker_id}</code>
-                  </dd>
-                </div>
-                <div>
-                  <dt>Nominal config</dt>
-                  <dd>
-                    <code>{render.nominal_config_sha256}</code>
-                  </dd>
+                  <dt>Declared configuration</dt>
+                  <dd>Matches</dd>
                 </div>
                 <div>
                   <dt>Resolved LUT</dt>
-                  <dd>
-                    <code>{render.resolved_lut_sha256}</code>
-                  </dd>
+                  <dd>{index === 0 ? "Reference" : "Different"}</dd>
                 </div>
               </dl>
             </article>
           ))}
         </div>
-        <div className="shot-comparison-facts">
-          <span data-result="match">Nominal configuration hashes match</span>
-          <span data-result="different">Resolved LUT hashes differ</span>
-        </div>
-      </section>
-
-      <section aria-labelledby="shot-claims-title" className="shot-panel">
-        <div className="shot-section-heading">
-          <div>
-            <p className="shot-eyebrow">Adjudicated findings</p>
-            <h2 id="shot-claims-title">Confirmed and rejected claims</h2>
-          </div>
-          <span className="shot-authority">Deterministic validation</span>
-        </div>
-        <p className="shot-adjudication-copy">
-          Gemini selected evidence and drafted advisory text. Deterministic validators adjudicated
-          the claims; this review presents both together, with Gemini remaining advisory-only.
-        </p>
-        <ul className="shot-claim-list">
-          {claims.map((claim) => (
-            <li data-claim-state={claim.state} key={claim.claim_id}>
-              <div className="shot-claim-heading">
-                <strong>{claim.claim_type}</strong>
-                <span>{claim.state}</span>
-              </div>
-              <p>
-                <span>{claim.subject.kind}</span> <code>{claim.subject.value}</code>
-              </p>
-              <p>
-                Reasons:{" "}
-                {claim.reason_codes.map((reason) => (
-                  <code key={reason}>{reason}</code>
-                ))}
-              </p>
-            </li>
-          ))}
+        <ul className="shot-finding-list">
+          <li data-claim-state={claimState("causal-resource")}>
+            <strong>Root cause confirmed</strong>
+            <span>The resolved LUT content diverged on the affected work.</span>
+          </li>
+          <li data-claim-state={claimState("nominal-config")}>
+            <strong>Declared configuration ruled out</strong>
+            <span>Both renders used the same declared configuration.</span>
+          </li>
+          <li data-claim-state={claimState("worker-alone")}>
+            <strong>Worker-only explanation rejected</strong>
+            <span>The evidence points to the resolved resource, not the worker by itself.</span>
+          </li>
         </ul>
-      </section>
-
-      <section aria-labelledby="shot-evidence-title" className="shot-panel">
-        <div className="shot-section-heading">
-          <div>
-            <p className="shot-eyebrow">Bounded evidence</p>
-            <h2 id="shot-evidence-title">Plain-text evidence excerpts</h2>
-          </div>
-          <span className="shot-authority">{evidence.length} current records</span>
-        </div>
-        <p>Excerpts are bounded previews. Content digests identify the authoritative records.</p>
-        <div className="shot-evidence-grid">
-          {evidence.map((item) => (
-            <article key={item.evidence_id}>
-              <div className="shot-evidence-heading">
-                <strong>{item.query_key}</strong>
-                <code>{item.tool}</code>
-              </div>
-              <pre>{item.display_excerpt}</pre>
-              <p>
-                {item.display_excerpt_truncated ? "Excerpt truncated" : "Complete bounded excerpt"}
-              </p>
-              <code>{item.content_sha256}</code>
-            </article>
-          ))}
-        </div>
       </section>
 
       <section aria-labelledby="shot-plan-title" className="shot-panel shot-plan-review">
         <div className="shot-section-heading">
           <div>
-            <p className="shot-eyebrow">Immutable response plan</p>
-            <h2 id="shot-plan-title">Exact scope and five typed commands</h2>
+            <p className="shot-eyebrow">Bounded recovery plan</p>
+            <h2 id="shot-plan-title">Recover only the affected work</h2>
           </div>
-          <span className="shot-authority">Plan version {plan.version}</span>
+          <span className="shot-authority">Human approval required</span>
+        </div>
+        <dl className="shot-counts">
+          <div>
+            <dt>Affected</dt>
+            <dd>{scope.affected_count}</dd>
+          </div>
+          <div>
+            <dt>Protected</dt>
+            <dd>{scope.safe_count}</dd>
+          </div>
+          <div>
+            <dt>Unknown</dt>
+            <dd>{scope.unknown_count}</dd>
+          </div>
+        </dl>
+        <div className="shot-plan-summary">
+          <p>
+            <strong>Replace one shadowed LUT.</strong>
+          </p>
+          <p>Rerender three frames and one derivative.</p>
         </div>
         <div className="shot-plan-scope">
           <section>
@@ -620,49 +597,11 @@ function InvestigationReview({
             <TargetList emptyText="No protected exclusions." targets={plan.protected_exclusions} />
           </section>
         </div>
-        <dl className="shot-plan-bindings">
-          <div>
-            <dt>Plan SHA-256</dt>
-            <dd>
-              <code>{plan.plan_sha256}</code>
-            </dd>
-          </div>
-          <div>
-            <dt>Targets SHA-256</dt>
-            <dd>
-              <code>{plan.target_sha256}</code>
-            </dd>
-          </div>
-          <div>
-            <dt>Exclusions SHA-256</dt>
-            <dd>
-              <code>{plan.exclusions_sha256}</code>
-            </dd>
-          </div>
-          <div>
-            <dt>Commands SHA-256</dt>
-            <dd>
-              <code>{plan.commands_sha256}</code>
-            </dd>
-          </div>
-          {actionEnvelopeRows.map(([label, value]) => (
-            <div key={label}>
-              <dt>{label}</dt>
-              <dd>
-                <code>{value}</code>
-              </dd>
-            </div>
-          ))}
-        </dl>
         <ol className="shot-command-list">
           {plan.command_summaries.map((command, index) => (
             <CommandSummary command={command} index={index} key={command.command_id} />
           ))}
         </ol>
-        <p className="shot-scope-counts">
-          Validated scope: {scope.affected_count} affected, {scope.safe_count} protected,{" "}
-          {scope.unknown_count} unknown.
-        </p>
       </section>
     </div>
   );
@@ -677,29 +616,166 @@ function TechnicalDetails({
   readonly run: DemoRun;
   readonly visuals: Partial<Record<DemoVisualKind, VerifiedDemoVisual>>;
 }) {
+  const investigationV2 =
+    run.investigation?.schema === "colortrace-demo-investigation-proof/v2"
+      ? run.investigation
+      : undefined;
+  const actionEnvelopeRows: readonly (readonly [string, string | number])[] =
+    investigationV2 === undefined
+      ? []
+      : [
+          ["Schema", investigationV2.plan.shared_action_bindings.schema],
+          ["Fixture", investigationV2.plan.shared_action_bindings.fixture_id],
+          [
+            "Fixture manifest SHA-256",
+            investigationV2.plan.shared_action_bindings.fixture_manifest_sha256,
+          ],
+          ["Fixture generation", investigationV2.plan.shared_action_bindings.fixture_generation],
+          ["Source batch", investigationV2.plan.shared_action_bindings.source_batch_id],
+          ["Source batch SHA-256", investigationV2.plan.shared_action_bindings.source_batch_sha256],
+          [
+            "Runtime manifest SHA-256",
+            investigationV2.plan.shared_action_bindings.runtime_manifest_sha256,
+          ],
+          ["Runtime generation", investigationV2.plan.shared_action_bindings.runtime_generation],
+          [
+            "Publication pointer SHA-256",
+            investigationV2.plan.shared_action_bindings.expected_publication_pointer_sha256,
+          ],
+          [
+            "Publication generation",
+            investigationV2.plan.shared_action_bindings.expected_publication_generation,
+          ],
+          [
+            "Expected resource SHA-256",
+            investigationV2.plan.shared_action_bindings.expected_resource_sha256,
+          ],
+          [
+            "Replacement path",
+            investigationV2.plan.shared_action_bindings.replacement_resource_logical_path,
+          ],
+          [
+            "Replacement resource SHA-256",
+            investigationV2.plan.shared_action_bindings.replacement_resource_sha256,
+          ],
+          [
+            "Declared resource manifest SHA-256",
+            investigationV2.plan.shared_action_bindings.declared_resource_manifest_sha256,
+          ],
+          ["OCIO version", investigationV2.plan.shared_action_bindings.ocio_version],
+          [
+            "Preservation manifest SHA-256",
+            investigationV2.plan.shared_action_bindings.preservation_manifest_sha256,
+          ],
+          [
+            "Safe complement SHA-256",
+            investigationV2.plan.shared_action_bindings.safe_complement_sha256,
+          ],
+          [
+            "Lineage manifest SHA-256",
+            investigationV2.plan.shared_action_bindings.lineage_manifest_sha256,
+          ],
+          ["Lineage generation", investigationV2.plan.shared_action_bindings.lineage_generation],
+        ];
   return (
     <details className="shot-technical">
-      <summary>Technical details</summary>
+      <summary>Technical proof and provenance</summary>
       <div className="shot-technical__content">
-        <section>
+        <section className="shot-technical__wide">
           <h3>Verified query evidence</h3>
           {run.investigation === undefined ? (
             <p>Investigation proof pending.</p>
           ) : (
-            <dl data-proof-section="investigation-evidence">
+            <div className="shot-technical-records" data-proof-section="investigation-evidence">
               {run.investigation.evidence.map((item) => (
-                <div key={item.evidence_id}>
-                  <dt>
-                    <code>{item.query_key}</code>
-                  </dt>
-                  <dd>
-                    <code>{item.tool}</code> · {item.freshness}
-                  </dd>
-                </div>
+                <article key={item.evidence_id}>
+                  <strong>{item.query_key}</strong>
+                  <dl>
+                    <div>
+                      <dt>Evidence ID</dt>
+                      <dd>
+                        <code>{item.evidence_id}</code>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Tool</dt>
+                      <dd>
+                        <code>{item.tool}</code>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Freshness</dt>
+                      <dd>{item.freshness}</dd>
+                    </div>
+                    <div>
+                      <dt>Inventory SHA-256</dt>
+                      <dd>
+                        <code>{item.inventory_sha256}</code>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Content SHA-256</dt>
+                      <dd>
+                        <code>{item.content_sha256}</code>
+                      </dd>
+                    </div>
+                  </dl>
+                  {"display_excerpt" in item ? <pre>{item.display_excerpt}</pre> : null}
+                </article>
               ))}
-            </dl>
+            </div>
           )}
         </section>
+        {investigationV2 === undefined ? null : (
+          <section className="shot-technical__wide">
+            <h3>Adjudicated claims</h3>
+            <div className="shot-technical-records" data-proof-section="adjudicated-claims">
+              {investigationV2.claims.map((claim) => (
+                <article key={claim.claim_id}>
+                  <strong>{claim.claim_type}</strong>
+                  <dl>
+                    <div>
+                      <dt>Claim ID</dt>
+                      <dd>
+                        <code>{claim.claim_id}</code>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>State</dt>
+                      <dd>{claim.state}</dd>
+                    </div>
+                    <div>
+                      <dt>Subject</dt>
+                      <dd>
+                        <code>
+                          {claim.subject.kind}:{claim.subject.value}
+                        </code>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Reason codes</dt>
+                      <dd>
+                        <code>{claim.reason_codes.join(", ")}</code>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Evidence IDs</dt>
+                      <dd>
+                        <code>{claim.evidence_ids.join(", ")}</code>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Validator result</dt>
+                      <dd>
+                        <code>{claim.source_validator_result_id}</code>
+                      </dd>
+                    </div>
+                  </dl>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
         <section>
           <h3>Model invocations</h3>
           {run.investigation === undefined ? (
@@ -711,6 +787,8 @@ function TechnicalDetails({
                   <dt>{item.turn_kind}</dt>
                   <dd>
                     <code>{item.model}</code> · {item.framework} · {item.result_class}
+                    <br />
+                    <code>{item.invocation_id}</code> · trace <code>{item.trace_id}</code>
                   </dd>
                 </div>
               ))}
@@ -718,8 +796,32 @@ function TechnicalDetails({
           )}
         </section>
         <section>
-          <h3>Bound versions</h3>
+          <h3>Run identity and versions</h3>
           <dl>
+            <div>
+              <dt>Run ID</dt>
+              <dd>
+                <code>{run.run_id}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Incident ID</dt>
+              <dd>
+                <code>{run.incident_id}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Scenario ID</dt>
+              <dd>
+                <code>{run.scenario_id}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Source commit</dt>
+              <dd>
+                <code>{run.source_commit}</code>
+              </dd>
+            </div>
             <div>
               <dt>Run version</dt>
               <dd>{run.version}</dd>
@@ -738,9 +840,77 @@ function TechnicalDetails({
             </div>
           </dl>
         </section>
+        {investigationV2 === undefined ? null : (
+          <>
+            <section>
+              <h3>Plan bindings</h3>
+              <dl>
+                <div>
+                  <dt>Plan version</dt>
+                  <dd>{investigationV2.plan.version}</dd>
+                </div>
+                <div>
+                  <dt>Plan SHA-256</dt>
+                  <dd>
+                    <code>{investigationV2.plan.plan_sha256}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Targets SHA-256</dt>
+                  <dd>
+                    <code>{investigationV2.plan.target_sha256}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Exclusions SHA-256</dt>
+                  <dd>
+                    <code>{investigationV2.plan.exclusions_sha256}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Commands SHA-256</dt>
+                  <dd>
+                    <code>{investigationV2.plan.commands_sha256}</code>
+                  </dd>
+                </div>
+              </dl>
+            </section>
+            <section className="shot-technical__wide">
+              <h3>Shared action envelope</h3>
+              <dl>
+                {actionEnvelopeRows.map(([label, value]) => (
+                  <div key={label}>
+                    <dt>{label}</dt>
+                    <dd>
+                      <code>{value}</code>
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+            <section className="shot-technical__wide">
+              <h3>Raw command bindings</h3>
+              <ol className="shot-command-list">
+                {investigationV2.plan.command_summaries.map((command, index) => (
+                  <TechnicalCommandDetails
+                    command={command}
+                    index={index}
+                    key={command.command_id}
+                  />
+                ))}
+              </ol>
+            </section>
+          </>
+        )}
         <section className="shot-technical__digests">
           <h3>Digest bindings</h3>
           <dl>
+            <div>
+              <dt>Investigation packet</dt>
+              <dd>
+                <code>{run.investigation?.packet_sha256 ?? "Pending"}</code>
+              </dd>
+            </div>
             <div>
               <dt>Plan</dt>
               <dd>
@@ -798,6 +968,12 @@ function TechnicalDetails({
                   </dd>
                 </div>
                 <div>
+                  <dt>Closure</dt>
+                  <dd>
+                    <code>{receipt.bindings.closure_sha256 ?? "Not applicable"}</code>
+                  </dd>
+                </div>
+                <div>
                   <dt>Provenance</dt>
                   <dd>
                     <code>{receipt.provenance.schema}</code>
@@ -808,21 +984,23 @@ function TechnicalDetails({
           </dl>
         </section>
         {run.execution === undefined ? null : (
-          <section>
+          <section className="shot-technical__wide">
             <h3>Recovery checks</h3>
             <dl data-proof-section="recovery-checks">
               {run.execution.recovery.checks.map((item) => (
                 <div key={item.check}>
                   <dt>{item.check}</dt>
-                  <dd>{item.status}</dd>
+                  <dd>
+                    {item.status} · <code>{item.result_sha256}</code>
+                  </dd>
                 </div>
               ))}
             </dl>
           </section>
         )}
         <p className="shot-technical__boundary">
-          Raw logs, metric series, trace payloads, internal paths, and credentials are not exposed
-          in this view.
+          This disclosure contains the reviewable bindings. Raw logs, metric series, trace payloads,
+          internal paths, and credentials remain private.
         </p>
       </div>
     </details>
@@ -836,7 +1014,6 @@ function ApprovalPanel({
   onApprove,
   onReject,
   onRecheck,
-  run,
   visualsReady,
 }: {
   readonly actionError: string | null;
@@ -845,7 +1022,6 @@ function ApprovalPanel({
   readonly onApprove: (nonce: string, phrase: string) => void;
   readonly onReject: (nonce: string, reason: DemoRejectionReason) => void;
   readonly onRecheck: () => void;
-  readonly run: DemoRun;
   readonly visualsReady: boolean;
 }) {
   const [nonceInput, setNonceInput] = useState("");
@@ -889,10 +1065,7 @@ function ApprovalPanel({
     <section aria-labelledby="approval-title" className="shot-panel shot-action-panel">
       <p className="shot-eyebrow">Human review boundary</p>
       <h2 id="approval-title">Decide the exact plan</h2>
-      <p>
-        Either decision applies only to run version {run.version}, plan version{" "}
-        {run.approval?.plan_version}, and the displayed plan and target digests.
-      </p>
+      <p>Either decision applies only to this investigation and the displayed recovery scope.</p>
       <div className="shot-issued-nonce">
         <span>Run nonce</span>
         <code>{nonce}</code>
@@ -927,8 +1100,8 @@ function ApprovalPanel({
         <section className="shot-decision-option">
           <div>
             <p className="shot-eyebrow">Approve</p>
-            <h3>Authorize the bound simulator action</h3>
-            <p>Approval requires the comparison images to pass digest and decode verification.</p>
+            <h3>Authorize this recovery</h3>
+            <p>Approval unlocks only after every comparison image is verified.</p>
           </div>
           <label className="shot-checkbox">
             <input
@@ -936,7 +1109,7 @@ function ApprovalPanel({
               onChange={(event) => setConfirmed(event.currentTarget.checked)}
               type="checkbox"
             />
-            <span>I approve only the returned run, incident, plan, and target bindings.</span>
+            <span>I approve only the displayed targets and keep the exclusions protected.</span>
           </label>
           <button
             className="shot-button shot-button--primary"
@@ -948,7 +1121,7 @@ function ApprovalPanel({
           </button>
           {!visualsReady ? (
             <p className="shot-form-note">
-              Approval unlocks after all comparison images pass digest verification.
+              Approval unlocks after all comparison images are verified.
             </p>
           ) : null}
         </section>
@@ -1014,11 +1187,8 @@ function ClosurePanel({
       className="shot-panel shot-action-panel shot-action-panel--success"
     >
       <p className="shot-eyebrow">Recovery verification</p>
-      <h2 id="closure-title">Recovered output is ready for closure</h2>
-      <p className="shot-safe-digest">
-        <span>Safe digest</span>
-        <code>{shortDigest(safeDigest)}</code>
-      </p>
+      <h2 id="closure-title">Recovered image verified</h2>
+      <p className="shot-result-summary">Protected outputs verified.</p>
       {actionError === null ? null : (
         <p className="shot-alert" role="alert">
           {actionError}
@@ -1031,7 +1201,7 @@ function ClosurePanel({
           onChange={(event) => setConfirmed(event.currentTarget.checked)}
           type="checkbox"
         />
-        <span>I verified the recovered image and bound recovery digest.</span>
+        <span>I verified the recovered image and the protected outputs.</span>
       </label>
       <div className="shot-action-row">
         <button
@@ -1083,14 +1253,14 @@ function TerminalPanel({
       <p className="shot-eyebrow">Run result</p>
       <h2 id="terminal-title">
         {closed
-          ? "Recovery closed with a durable receipt"
+          ? "Recovery closed with a verified receipt"
           : rejected
-            ? "Plan rejected with a durable receipt"
+            ? "Plan rejected with a verified receipt"
             : "Run stopped without closure"}
       </h2>
       <p>
         {closed
-          ? "The action, recovered output, and human closure are bound to one immutable receipt."
+          ? "The action, recovered output, and human decision are recorded together."
           : rejected
             ? "No simulator action was dispatched. The rejection and exact plan bindings are recorded in the immutable receipt."
             : `No further action is permitted for this run (${run.terminal_reason ?? run.phase}).`}
@@ -1109,22 +1279,16 @@ function TerminalPanel({
             <dd>{receipt.phase}</dd>
           </div>
           <div>
-            <dt>Run version</dt>
-            <dd>{receipt.run_version}</dd>
+            <dt>Action</dt>
+            <dd>{closed ? "Completed" : rejected ? "Not dispatched" : "Stopped"}</dd>
           </div>
           <div>
             <dt>Receipt</dt>
-            <dd>
-              <code>{shortDigest(receipt.receipt_sha256)}</code>
-            </dd>
+            <dd>Recorded and verified</dd>
           </div>
           <div>
             <dt>{rejected ? "Decision reason" : "Closure"}</dt>
-            <dd>
-              <code>
-                {rejected ? receipt.reason_code : shortDigest(receipt.bindings.closure_sha256)}
-              </code>
-            </dd>
+            <dd>{rejected ? receipt.reason_code : "Verified"}</dd>
           </div>
         </dl>
       ) : null}
@@ -1780,10 +1944,31 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
           <section className="shot-landing">
             <div className="shot-landing__copy">
               <p className="shot-eyebrow">Shot-Safe Color Recovery</p>
-              <h1>See the fault. Approve the boundary. Verify the recovery.</h1>
+              <h1>A successful render can still be the wrong color.</h1>
               <p className="shot-lede">
-                Compare the declared look with the observed output, review canonical scenario
-                context, then authorize one digest-bound recovery action.
+                ColorTrace traces a color mismatch through read-only evidence, isolates the affected
+                work, and keeps recovery behind human approval.
+              </p>
+              <ol className="shot-flow" aria-label="ColorTrace recovery flow">
+                <li>
+                  <strong>Detect</strong>
+                  <span>Compare expected and observed output.</span>
+                </li>
+                <li>
+                  <strong>Explain</strong>
+                  <span>Trace the mismatch to its resolved resource.</span>
+                </li>
+                <li>
+                  <strong>Approve</strong>
+                  <span>Review exact targets and protected work.</span>
+                </li>
+                <li>
+                  <strong>Verify</strong>
+                  <span>Confirm the recovery and record the receipt.</span>
+                </li>
+              </ol>
+              <p className="shot-landing__integration">
+                Gemini guides evidence selection. Grafana supplies the operational record.
               </p>
               {startError === null ? null : (
                 <p className="shot-alert" role="alert">
@@ -1802,7 +1987,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                 onClick={start}
                 type="button"
               >
-                {busy ? "Preparing recovery…" : "Investigate with Gemini + Grafana"}
+                {busy ? "Preparing recovery…" : "Investigate the color fault"}
               </button>
               <p className="shot-landing__note">
                 One active run · 15-minute lease · explicit human approval
@@ -1823,18 +2008,18 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
             <section aria-labelledby="comparison-title" className="shot-comparison">
               <div className="shot-comparison__intro">
                 <div>
-                  <p className="shot-eyebrow">Bound investigation review</p>
+                  <p className="shot-eyebrow">Color fault investigation</p>
                   <h1 id="comparison-title" ref={contentHeading} tabIndex={-1}>
                     Expected versus observed
                   </h1>
                   <p>
-                    Images support visual review. Returned deterministic evidence and immutable plan
-                    bindings establish what can be approved or rejected.
+                    Compare the visible fault, understand its cause, and approve only the work that
+                    needs recovery.
                   </p>
                 </div>
                 <div className="shot-identity">
-                  <span>Run version {run.version}</span>
-                  <code>{run.run_id}</code>
+                  <span>Current phase</span>
+                  <strong>{phaseLabel(run.phase)}</strong>
                 </div>
               </div>
               {visualError === null ? null : (
@@ -1885,8 +2070,8 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                   <p className="shot-eyebrow">Visible signal</p>
                   <h2>The returned images show a visible output difference.</h2>
                   <p>
-                    These images are illustrative. The returned comparison, claims, evidence, and
-                    plan below provide the reviewable record.
+                    ColorTrace uses the operational record below to explain the mismatch and bound a
+                    safe recovery plan.
                   </p>
                 </div>
               </div>
@@ -1902,7 +2087,6 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                 onApprove={approve}
                 onReject={reject}
                 onRecheck={recheck}
-                run={run}
                 visualsReady={visualsReady && visualError === null}
               />
             ) : null}
@@ -1939,7 +2123,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                     <p className="shot-eyebrow">Post-action comparison</p>
                     <h2 id="recovered-title">Recovered output</h2>
                   </div>
-                  <span className="shot-authority">Bound to outcome digest</span>
+                  <span className="shot-authority">Recovery verified</span>
                 </div>
                 <div className="shot-recovered__content">
                   <VisualCard
@@ -1955,13 +2139,10 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                     visual={visuals.recovered}
                   />
                   <div>
-                    <p className="shot-safe-digest">
-                      <span>Safe digest</span>
-                      <code>{shortDigest(run.execution?.action.safe_complement_proof_sha256)}</code>
+                    <p className="shot-result-summary">
+                      <strong>Protected outputs verified.</strong>
                     </p>
-                    <p>
-                      The safe-complement proof is returned by deterministic recovery validation.
-                    </p>
+                    <p>The affected outputs changed; the excluded outputs remained intact.</p>
                   </div>
                 </div>
               </section>

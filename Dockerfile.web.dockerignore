@@ -11,11 +11,5 @@
 !packages/repo-tools/src/
 !packages/repo-tools/src/colortrace_repo/
 !packages/repo-tools/src/colortrace_repo/image_licenses.py
-!packages/api-client/
-!packages/api-client/**
-!packages/contracts/
-!packages/contracts/**
 !packages/web/
 !packages/web/**
-!packages/workspace-model/
-!packages/workspace-model/**

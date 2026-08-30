@@ -10,10 +10,7 @@ RUN corepack disable \
     && pnpm --version | grep -Fx 11.21.0
 WORKDIR /source
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY packages/api-client/ packages/api-client/
-COPY packages/contracts/ packages/contracts/
 COPY packages/web/ packages/web/
-COPY packages/workspace-model/ packages/workspace-model/
 RUN pnpm install --frozen-lockfile \
     && pnpm --filter @colortrace/web build \
     && install -d /notice-input/react /notice-input/react-dom /notice-input/scheduler \
@@ -35,9 +32,7 @@ ARG SOURCE_DATE_EPOCH
 COPY packages/repo-tools/src/colortrace_repo/image_licenses.py /image_licenses.py
 COPY LICENSE /inputs/LICENSE
 COPY pnpm-lock.yaml /inputs/pnpm-lock.yaml
-COPY packages/api-client/package.json /inputs/first-party/api-client/package.json
 COPY packages/web/package.json /inputs/first-party/web/package.json
-COPY packages/workspace-model/package.json /inputs/first-party/workspace-model/package.json
 COPY --from=node-base /lib/apk/db/installed /inputs/alpine-installed
 COPY --from=node-base /usr/lib/os-release /inputs/os-release
 COPY --from=node-base /usr/local/LICENSE /inputs/node.LICENSE

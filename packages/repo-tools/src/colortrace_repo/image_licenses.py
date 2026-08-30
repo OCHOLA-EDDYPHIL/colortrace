@@ -633,11 +633,7 @@ def build_web_bundle(args: argparse.Namespace) -> None:
         }
     )
     lock_source = _copy_source(args.pnpm_lock, output, "sources/web/pnpm-lock.yaml")
-    first_party_expected = {
-        "@colortrace/api-client",
-        "@colortrace/web",
-        "@colortrace/workspace-model",
-    }
+    first_party_expected = {"@colortrace/web"}
     first_party_actual: set[str] = set()
     _require_directory(args.first_party_web_manifests, "first-party web package metadata root")
     for package_json in sorted(args.first_party_web_manifests.glob("*/package.json")):

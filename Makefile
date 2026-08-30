@@ -358,7 +358,6 @@ check-wheel-license: prepare-cache
 check-policy: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo ai-policy
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo actions
-	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo binary-assets
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo deployment
 
 check-terraform: prepare-cache

@@ -54,12 +54,6 @@ importers:
 
   packages/web:
     dependencies:
-      '@colortrace/api-client':
-        specifier: workspace:*
-        version: link:../api-client
-      '@colortrace/workspace-model':
-        specifier: workspace:*
-        version: link:../workspace-model
       react:
         specifier: 19.2.8
         version: 19.2.8
