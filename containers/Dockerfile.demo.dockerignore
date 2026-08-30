@@ -1,0 +1,8 @@
+*
+!containers/
+!containers/Dockerfile.demo
+!LICENSE
+!pyproject.toml
+!uv.lock
+!packages/
+!packages/**

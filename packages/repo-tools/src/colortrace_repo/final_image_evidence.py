@@ -26,7 +26,6 @@ _SCANNER_SPDX_ALIASES = {
 _SPDX_TOKEN_ALIASES = {"Public-Domain": "LicenseRef-Public-Domain"}
 _PROFILES = {
     "runtime": "private-full",
-    "hosted-runtime": "hosted-readonly",
     "web": "public-readonly",
 }
 _GZIP_LAYER_MEDIA_TYPES = {
@@ -43,11 +42,6 @@ _BUNDLE_ONLY = {
         ("embedded-python-wheel", "pip"),
         ("language-runtime", "python"),
     },
-    "hosted-readonly": {
-        ("application", "colortrace"),
-        ("embedded-python-wheel", "pip"),
-        ("language-runtime", "python"),
-    },
     "public-readonly": {
         ("application", "colortrace"),
         ("bundled-first-party-javascript", "@colortrace/web"),
@@ -59,21 +53,8 @@ _BUNDLE_ONLY = {
 }
 _IMAGE_INPUTS = {
     "runtime": (
-        "Dockerfile.runtime",
-        "Dockerfile.runtime.dockerignore",
-        "LICENSE",
-        "config/grafana-mcp/build/go.mod",
-        "config/grafana-mcp/build/go.sum",
-        "config/grafana-mcp/build/modules.txt",
-        "config/grafana-mcp/mcp-grafana.lock.json",
-        "deploy/runtime-entrypoint.py",
-        "packages/repo-tools/src/colortrace_repo/image_licenses.py",
-        "packages/repo-tools/src/colortrace_repo/reproducible_venv.py",
-        "uv.lock",
-    ),
-    "hosted-runtime": (
-        "Dockerfile.runtime",
-        "Dockerfile.runtime.dockerignore",
+        "containers/Dockerfile.runtime",
+        "containers/Dockerfile.runtime.dockerignore",
         "LICENSE",
         "config/grafana-mcp/build/go.mod",
         "config/grafana-mcp/build/go.sum",
@@ -85,8 +66,8 @@ _IMAGE_INPUTS = {
         "uv.lock",
     ),
     "web": (
-        "Dockerfile.web",
-        "Dockerfile.web.dockerignore",
+        "containers/Dockerfile.web",
+        "containers/Dockerfile.web.dockerignore",
         "LICENSE",
         "deploy/web-server.mjs",
         "package.json",
@@ -1246,8 +1227,8 @@ def build_final_image_evidence(
         return [Finding("", "image.candidate.invalid", "candidate identity is invalid")]
     if _IMAGE_REFERENCE.fullmatch(scanner_image) is None:
         return [Finding("", "image.scanner.invalid", "scanner image is not digest-pinned")]
-    if len(images) != 3 or {value.name for value in images} != set(_PROFILES):
-        return [Finding("", "image.input.invalid", "exactly three named images are required")]
+    if len(images) != len(_PROFILES) or {value.name for value in images} != set(_PROFILES):
+        return [Finding("", "image.input.invalid", "exactly two named images are required")]
     findings: list[Finding] = []
     for value in sorted(images, key=lambda item: item.name):
         try:

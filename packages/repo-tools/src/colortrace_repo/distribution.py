@@ -34,10 +34,6 @@ _PYTHON_PROJECTS: dict[str, tuple[str, str | None]] = {
         "colortrace-investigation",
         "colortrace_investigation/LICENSE",
     ),
-    "packages/persistence/pyproject.toml": (
-        "colortrace-persistence",
-        "colortrace_persistence/LICENSE",
-    ),
     "packages/recovery/pyproject.toml": (
         "colortrace-recovery",
         "colortrace_recovery/LICENSE",

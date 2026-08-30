@@ -1,0 +1,6 @@
+*
+!containers/
+!containers/Dockerfile.dev
+!config/
+!config/grafana-mcp/
+!config/grafana-mcp/**

@@ -35,12 +35,12 @@ PROMETHEUS_UPSTREAM = {
 COMPONENTS = ("runtime", "web", "caddy", "grafana", "loki", "tempo")
 SCAN_COMPONENTS = (*COMPONENTS[:5], "prometheus", COMPONENTS[5])
 BUILD_PATHS: dict[str, tuple[str, str | None]] = {
-    "runtime": ("Dockerfile.runtime", "runtime"),
-    "web": ("Dockerfile.web", None),
-    "caddy": ("Dockerfile.caddy", None),
-    "grafana": ("Dockerfile.observability", "grafana"),
-    "loki": ("Dockerfile.observability", "loki"),
-    "tempo": ("Dockerfile.observability", "tempo"),
+    "runtime": ("containers/Dockerfile.runtime", "runtime"),
+    "web": ("containers/Dockerfile.web", None),
+    "caddy": ("containers/Dockerfile.caddy", None),
+    "grafana": ("containers/Dockerfile.observability", "grafana"),
+    "loki": ("containers/Dockerfile.observability", "loki"),
+    "tempo": ("containers/Dockerfile.observability", "tempo"),
 }
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")

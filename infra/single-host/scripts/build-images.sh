@@ -160,12 +160,12 @@ printf '%s' "$build_result" | jq -e \
           },
           fixture_manifest_sha256: $fixture_manifest_sha256,
           images: {
-            runtime: ($build | image_result("runtime"; "Dockerfile.runtime"; "runtime")),
-            web: ($build | image_result("web"; "Dockerfile.web"; null)),
-            caddy: ($build | image_result("caddy"; "Dockerfile.caddy"; null)),
-            grafana: ($build | image_result("grafana"; "Dockerfile.observability"; "grafana")),
-            loki: ($build | image_result("loki"; "Dockerfile.observability"; "loki")),
-            tempo: ($build | image_result("tempo"; "Dockerfile.observability"; "tempo"))
+            runtime: ($build | image_result("runtime"; "containers/Dockerfile.runtime"; "runtime")),
+            web: ($build | image_result("web"; "containers/Dockerfile.web"; null)),
+            caddy: ($build | image_result("caddy"; "containers/Dockerfile.caddy"; null)),
+            grafana: ($build | image_result("grafana"; "containers/Dockerfile.observability"; "grafana")),
+            loki: ($build | image_result("loki"; "containers/Dockerfile.observability"; "loki")),
+            tempo: ($build | image_result("tempo"; "containers/Dockerfile.observability"; "tempo"))
           }
         }
     end

@@ -8,24 +8,6 @@ from pathlib import Path
 _PRIVATE_ROOT = Path("/run/colortrace-private")
 _SERVICE_COMMANDS = {
     "api": ("/opt/colortrace/bin/python", "-m", "colortrace_api"),
-    "api-readonly": (
-        "/opt/colortrace/bin/python",
-        "-m",
-        "colortrace_api.hosted_read",
-        "serve",
-    ),
-    "bootstrap": (
-        "/opt/colortrace/bin/python",
-        "-m",
-        "colortrace_api.hosted_read",
-        "bootstrap",
-    ),
-    "migrate-seed": (
-        "/opt/colortrace/bin/python",
-        "-m",
-        "colortrace_api.hosted_read",
-        "migrate-seed",
-    ),
 }
 
 
@@ -82,41 +64,22 @@ def _copy_configured_secret(
     *,
     source_name: str,
     target_name: str,
-    required: bool,
 ) -> None:
     source = environment.get(source_name)
     target = environment.get(target_name)
-    if source is None and target is None and not required:
-        return
     if source is None and target is None:
-        raise RuntimeError("private-secret-configuration-invalid")
+        return
     if source is None or target is None:
         raise RuntimeError("private-secret-configuration-invalid")
     _copy_private_secret(source, target)
     environment.pop(source_name)
 
 
-def _prepare_private_runtime(environment: dict[str, str], service: str) -> None:
+def _prepare_private_runtime(environment: dict[str, str]) -> None:
     _copy_configured_secret(
         environment,
         source_name="COLORTRACE_GRAFANA_TOKEN_SOURCE",
         target_name="COLORTRACE_GRAFANA_TOKEN_FILE",
-        required=False,
-    )
-    admin_configured = any(
-        name in environment
-        for name in (
-            "COLORTRACE_POSTGRES_ADMIN_PASSWORD_SOURCE",
-            "COLORTRACE_POSTGRES_ADMIN_PASSWORD_FILE",
-        )
-    )
-    if service != "bootstrap" and admin_configured:
-        raise RuntimeError("private-secret-configuration-invalid")
-    _copy_configured_secret(
-        environment,
-        source_name="COLORTRACE_POSTGRES_ADMIN_PASSWORD_SOURCE",
-        target_name="COLORTRACE_POSTGRES_ADMIN_PASSWORD_FILE",
-        required=service == "bootstrap",
     )
 
 
@@ -125,7 +88,7 @@ def main(arguments: list[str] | None = None) -> None:
     if len(selected) != 1 or selected[0] not in _SERVICE_COMMANDS:
         raise RuntimeError("runtime-service-invalid")
     environment = dict(os.environ)
-    _prepare_private_runtime(environment, selected[0])
+    _prepare_private_runtime(environment)
     command = _SERVICE_COMMANDS[selected[0]]
     os.execve(command[0], command, environment)
 
