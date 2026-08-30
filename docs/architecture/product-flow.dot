@@ -1,0 +1,56 @@
+digraph ColorTraceProductFlow {
+  graph [
+    bgcolor="white",
+    fontname="Arial",
+    fontsize=18,
+    label="ColorTrace recovery flow",
+    labelloc="t",
+    nodesep=0.42,
+    pad=0.30,
+    rankdir=TB,
+    ranksep=0.62,
+    splines=ortho
+  ];
+
+  node [
+    color="#17324D",
+    fillcolor="#F7FAFC",
+    fontcolor="#102A43",
+    fontname="Arial",
+    fontsize=12,
+    margin="0.16,0.11",
+    penwidth=1.6,
+    shape=box,
+    style="rounded,filled"
+  ];
+
+  edge [
+    arrowsize=0.75,
+    color="#334E68",
+    fontcolor="#243B53",
+    fontname="Arial",
+    fontsize=10,
+    penwidth=1.5
+  ];
+
+  mismatch [label="Color mismatch\nA successful render\nuses the wrong LUT", fillcolor="#FFF4E5", color="#9C4A00"];
+  investigate [label="Investigate\nGemini guidance + read-only\nGrafana queries"];
+  proof [label="Establish proof\nDeterministic facts, cause,\nand affected scope", fillcolor="#E8F1FA"];
+  decision [label="Human decision\nApprove or reject\nthe exact plan", shape=diamond, style="filled", fillcolor="#FFF8DB", color="#7A5C00"];
+  recover [label="Approved: recover\nApply one bounded\nsimulator action", fillcolor="#EAF7EE", color="#246B3F"];
+  verify [label="Verify\nCorrected affected outputs +\nunchanged protected outputs", fillcolor="#EAF7EE", color="#246B3F"];
+  receipt [label="Record\nImmutable recovery receipt", fillcolor="#E8F1FA", color="#24557A"];
+  no_action [label="Rejected or withheld\nNo action; state remains unchanged", fillcolor="#F2F4F7", color="#52606D"];
+
+  { rank=same; mismatch; investigate; proof; }
+  { rank=same; decision; no_action; }
+  { rank=same; recover; verify; receipt; }
+
+  mismatch -> investigate;
+  investigate -> proof;
+  proof -> decision;
+  decision -> recover;
+  recover -> verify;
+  verify -> receipt;
+  decision -> no_action;
+}

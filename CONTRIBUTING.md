@@ -1,56 +1,57 @@
 # Contributing to ColorTrace
 
-Start work from a GitHub issue and keep each pull request focused on one purpose. Use a short-lived
-branch, preserve accepted issue boundaries, and resolve review conversations before merging.
+Start from a GitHub issue and keep each pull request focused on one purpose. Use a short-lived
+branch, preserve the accepted product and safety boundaries, and resolve review conversations
+before merging.
 
-Do not commit credentials, private data, proprietary material, internal URLs, or unlicensed assets.
-Report security-sensitive defects privately rather than opening a public issue.
+Do not commit credentials, private data, internal URLs, proprietary material, or unlicensed
+assets. Report security-sensitive defects through the private channel described in
+[SECURITY.md](SECURITY.md).
 
-By contributing, you agree that your contribution is licensed under Apache License 2.0 and that you
-will follow the project Code of Conduct.
+By contributing, you agree that your contribution is licensed under Apache License 2.0 and that
+you will follow the project Code of Conduct.
 
 ## Development setup
 
-Install Docker and GNU Make. The repository builds its pinned development tool image and stores
-reproducible caches under `.cache/`.
+Install Docker and GNU Make. The repository builds a pinned development toolchain and stores local
+caches under `.cache/`.
 
 ```sh
 make bootstrap
 make check-fast
 ```
 
-Use `make check` before a change is ready for review. It adds the telemetry integration and secret
-scan to the fast suite. `make check-bootstrap` verifies the full setup from a clean local clone.
+Run `make check` before a change is ready for review. Use `make check-bootstrap` when a change
+affects first-time setup.
 
-Do not replace pinned tool, package, image, archive, or provider versions with floating references.
-Update the applicable lock, provenance, license, generated-tree, and security policy in the same
-change.
+Keep tool, package, image, archive, and provider versions pinned. Update the related lock,
+provenance, license, generated-tree, and policy files in the same change.
 
-## Core invariants
+## Product and authority invariants
 
 Preserve these boundaries:
 
-- All scenarios and media are generated fixtures. Runtime bundles must not contain the offline
+- All scenarios and media are generated fixtures. Runtime bundles do not contain the offline
   oracle.
-- Gemini and other model output is non-authoritative. Deterministic validators own facts, scope,
-  plan bindings, and action admission.
-- Only a human can approve a bound action and close a recovery.
-- The action executor can mutate only the local simulator and can consume one exact authorization.
-- Idempotency keys bind full mutation requests. Replays must return the original result, and changed
-  requests must fail closed.
-- A terminal receipt is immutable. Reset restores the authored scenario but does not change the
+- Gemini and other model output is advisory. Deterministic validators own the facts, scope, plan,
+  and action admission.
+- Only a human can approve a bound recovery and confirm closure.
+- The executor can change only the local simulator and can consume one exact authorization.
+- Retries return the original mutation result. A changed request with the same identity fails
+  closed.
+- A terminal receipt is immutable. Reset restores the authored scenario without changing the
   prior receipt.
-- Grafana MCP stays read-only, uses `stdio`, and accepts only cataloged queries.
-- The hosted edge exposes only the application and demo facade behind TLS and the access gate.
-  Grafana, observability services, metadata, health routes, and general APIs remain private.
+- Grafana MCP uses `stdio`, stays read-only, and accepts only cataloged queries.
+- The hosted edge exposes only the application and demo facade. Runtime administration,
+  observability services, metadata, and health routes remain private.
 
-Add tests for authorization failure, stale bindings, retries, response loss, restart recovery,
-concurrency, and malformed input when a change touches those paths.
+When a change touches these paths, add focused tests for the relevant failure, stale-data, retry,
+response-loss, restart, concurrency, and malformed-input behavior.
 
 ## Contracts and generated files
 
-Treat checked-in schemas, OpenAPI documents, lockfiles, policy files, and generated clients as
-canonical contracts. Update the source contract first. Then run:
+Checked-in schemas, OpenAPI documents, lockfiles, policy files, and generated clients are
+contracts. Update the source contract first, then run:
 
 ```sh
 make generate
@@ -58,56 +59,72 @@ make check-contract
 make check-generated
 ```
 
-Do not edit generated clients or generated fixture artifacts by hand. Use `make generate-fixture`
-for the canonical local fixture. Keep the generated runtime bundle under `.cache/`; keep the offline
-oracle separate from any runtime or image context.
+Do not edit generated clients or fixture artifacts by hand. Use `make generate-fixture` for the
+canonical local fixture. Keep generated runtime bundles under `.cache/`, with the offline oracle
+outside every runtime and image context.
 
-When a change affects the browser workflow, run the web unit tests and the Playwright suite in the
-pinned environment. Check both the desktop and small-viewport layouts, keyboard flow, reduced
-motion, accessible names, and fail-closed recovery states.
+For browser changes, run the web unit and Playwright suites. These commands run on the host and
+require the Node 24.19.0 and pnpm 11.21.0 versions declared in `package.json`, installed workspace
+dependencies, and Playwright's Chromium browser. Check desktop and small-viewport layouts,
+keyboard flow, reduced motion, accessible names, and fail-closed recovery states.
 
 ```sh
 pnpm --filter @colortrace/web test
 pnpm --filter @colortrace/web test:browser
 ```
 
-## Hosted infrastructure changes
+## Container definitions
 
-The active gated topology is `infra/single-host`. The `infra/staging` module is a separate
-distributed design and is not interchangeable with the single-host profile.
+The six definitions in [`containers`](containers) have one job each:
 
-An infrastructure change must preserve the build-to-scan-to-admission digest chain, immutable image
-references, the dedicated network, public-port limits, IAP and OS Login access, service-account and
-operator separation, the custom Vertex prediction role, the metadata firewall, secret-version
-binding, persistent state, strict cost-estimate admission, and the fail-closed seven-day lifecycle.
+| Definition | Role |
+| --- | --- |
+| `Dockerfile.dev` | Pinned development, quality, and security tools. |
+| `Dockerfile.demo` | Network-isolated command-line demonstration. |
+| `Dockerfile.runtime` | Single-host API, recovery workflow, and Grafana MCP process. |
+| `Dockerfile.web` | React application and its small web server. |
+| `Dockerfile.caddy` | TLS and access-control edge. |
+| `Dockerfile.observability` | Separate Grafana, Loki, and Tempo build targets. |
+
+All six builds use the repository root as their context because they copy files from several
+packages and policy directories. Select a definition explicitly:
+
+```sh
+docker build --file containers/Dockerfile.web .
+```
+
+Each definition has an adjacent `.dockerignore` file that limits its inputs. Keep that file aligned
+with the definition when inputs change. Do not move package code into `containers` to make a build
+look self-contained.
+
+## Single-host infrastructure
+
+The active gated topology is `infra/single-host`. An infrastructure change must preserve the
+dedicated network, one public TLS port, IAP and OS Login access, separate operator identities, the
+restricted Vertex prediction role, the metadata firewall, immutable image admission, persistent
+state, cost-estimate check, and fail-closed seven-day lifecycle.
+
 Run:
 
 ```sh
 make check-terraform
 ```
 
-Never apply Terraform from a dirty worktree. Keep backend configuration, variable files, plans,
-cloud identifiers, hosted addresses, credentials, and verification receipts outside tracked files.
+Never apply Terraform from a dirty worktree. Keep backend settings, variable files, plans, cloud
+identifiers, hosted addresses, credentials, and operator reports outside tracked files.
 
 ## Documentation and diagrams
 
-Document only behavior that exists in the same revision. Keep environment-specific values and
-operational records in private artifacts.
+Document only behavior that exists in the same revision. Use concise language and keep private or
+environment-specific values out of the repository.
 
-The single-host diagram has three synchronized forms:
-
-- `docs/architecture/single-host.mmd` is the Mermaid source.
-- `docs/architecture/single-host.drawio` is the editable draw.io source.
-- `docs/architecture/single-host.svg` is the rendered repository image.
-
-If the topology changes, update all three files in one change. Preserve the same components, trust
-boundaries, arrows, and connection labels in each form. Inspect the SVG after export and validate
-both XML files before review.
+Graphviz `.dot` files in `docs/architecture` are the editable sources for the product and system
+diagrams. Update the matching SVG in the same change and inspect the rendered result.
 
 ## Change hygiene
 
 - Keep unrelated local changes intact.
-- Use `.cache/` for private reports and generated operator files.
+- Use `.cache/` for generated operator files and private reports.
 - Do not add assistant-specific instructions or local workflow state to the repository.
-- Review staged content for secrets, private endpoints, private identifiers, and transient status
+- Review staged content for secrets, private endpoints, private identifiers, and temporary status
   language before each commit.
