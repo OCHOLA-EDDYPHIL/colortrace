@@ -400,6 +400,15 @@ jq --arg generation "$CT_GENERATION" \
   "$CT_LIFECYCLE_TFVARS" >"$CT_NEW_LIFECYCLE_TFVARS"
 chmod 0600 "$CT_NEW_LIFECYCLE_TFVARS"
 
+gcloud compute instances stop "$CT_INSTANCE" \
+  --project="$CT_PROJECT" \
+  --zone="$CT_ZONE" \
+  --quiet
+test "$(gcloud compute instances describe "$CT_INSTANCE" \
+  --project="$CT_PROJECT" \
+  --zone="$CT_ZONE" \
+  --format='value(status)')" = TERMINATED
+
 terraform -chdir=infra/single-host plan \
   -var-file="../../$CT_OPERATOR_TFVARS" \
   -var-file="../../$CT_ADMISSION_TFVARS" \
@@ -413,10 +422,17 @@ metadata. Apply only the reviewed plan:
 ```sh
 terraform -chdir=infra/single-host apply \
   ../../.cache/single-host/lifecycle-new.tfplan
+
+test "$(gcloud compute instances describe "$CT_INSTANCE" \
+  --project="$CT_PROJECT" \
+  --zone="$CT_ZONE" \
+  --format='value(status)')" = TERMINATED
 ```
 
-Stop the VM as the owner/deployer, then use the guarded resume command. The first valid boot
-records the new activation time and creates the 168-hour power-off timer.
+Stop the host before planning so new candidate metadata is never attached to a VM that is still
+running the previous containers. Confirm that it remains stopped after the single in-place update,
+then use the guarded resume command. The first valid boot records the new activation time and
+creates the 168-hour power-off timer.
 
 ## Recover an unhealthy service
 
