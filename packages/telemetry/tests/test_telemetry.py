@@ -32,6 +32,18 @@ from colortrace_telemetry.observer import (
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+ALERT_UID = "ct-declared-reference-divergence-v1"
+
+
+def _ready_ruler_payload(*, interval: str = "10s") -> dict[str, object]:
+    return {
+        "ColorTrace": [
+            {
+                "interval": interval,
+                "rules": [{"grafana_alert": {"uid": ALERT_UID}}],
+            }
+        ]
+    }
 
 
 def _write_json(root: Path, relative: str, value: dict[str, Any]) -> Path:
@@ -555,8 +567,10 @@ def test_grafana_readiness_waits_for_delayed_ruler_api(
     ) -> dict[str, object]:
         del base, query, timeout_seconds
         paths.append(path)
-        if paths == ["/api/health", "/api/ruler/grafana/api/v1/rules"]:
-            raise BackendUnavailable("not ready")
+        if path == "/api/ruler/grafana/api/v1/rules":
+            if paths.count(path) == 1:
+                return {}
+            return _ready_ruler_payload()
         return {}
 
     monkeypatch.setattr(observer, "_json_get", delayed_get)
@@ -575,8 +589,12 @@ def test_grafana_readiness_waits_for_delayed_ruler_api(
         "/api/ruler/grafana/api/v1/rules",
         "/api/health",
         "/api/ruler/grafana/api/v1/rules",
+        "/api/health",
+        "/api/ruler/grafana/api/v1/rules",
+        "/api/health",
+        "/api/ruler/grafana/api/v1/rules",
     ]
-    assert clock.sleeps == [0.25]
+    assert clock.sleeps == [0.25, 0.25, 0.25]
 
 
 def test_grafana_readiness_timeout_is_bounded_and_sanitized(
@@ -594,7 +612,13 @@ def test_grafana_readiness_timeout_is_bounded_and_sanitized(
     monkeypatch.setattr(observer, "_json_get", unavailable_get)
     endpoints = BackendEndpoints(*(f"http://127.0.0.1:{port}" for port in range(1, 6)))
 
-    with pytest.raises(BackendUnavailable, match=r"^Grafana readiness gate timed out$") as error:
+    with pytest.raises(
+        BackendUnavailable,
+        match=(
+            r"^Grafana readiness gate timed out "
+            r"\(target_rule_count=unavailable, observed_intervals=unavailable\)$"
+        ),
+    ) as error:
         wait_for_grafana_readiness(
             endpoints,
             timeout_seconds=0.5,
@@ -608,6 +632,40 @@ def test_grafana_readiness_timeout_is_bounded_and_sanitized(
     assert "secret" not in str(error.value)
     assert error.value.__cause__ is None
     assert error.value.__context__ is None
+
+
+def test_grafana_readiness_timeout_reports_target_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _ReadinessClock()
+
+    def wrong_interval_get(
+        base: str,
+        path: str,
+        *,
+        query: object = None,
+        timeout_seconds: float = 5.0,
+    ) -> object:
+        del base, query, timeout_seconds
+        return _ready_ruler_payload(interval="60s") if path.endswith("/rules") else {}
+
+    monkeypatch.setattr(observer, "_json_get", wrong_interval_get)
+    endpoints = BackendEndpoints(*(f"http://127.0.0.1:{port}" for port in range(1, 6)))
+
+    with pytest.raises(
+        BackendUnavailable,
+        match=(
+            r"^Grafana readiness gate timed out "
+            r"\(target_rule_count=1, observed_intervals=60s\)$"
+        ),
+    ):
+        wait_for_grafana_readiness(
+            endpoints,
+            timeout_seconds=0.5,
+            poll_seconds=0.2,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
 
 
 def test_grafana_readiness_uses_only_exact_grafana_api_surfaces(
@@ -625,7 +683,7 @@ def test_grafana_readiness_uses_only_exact_grafana_api_surfaces(
         del query
         assert 0 < timeout_seconds <= 5.0
         calls.append((base, path))
-        return {}
+        return _ready_ruler_payload() if path.endswith("/rules") else {}
 
     monkeypatch.setattr(observer, "_json_get", available_get)
     endpoints = BackendEndpoints(
@@ -636,7 +694,7 @@ def test_grafana_readiness_uses_only_exact_grafana_api_surfaces(
         grafana="http://grafana.invalid",
     )
 
-    wait_for_grafana_readiness(endpoints)
+    wait_for_grafana_readiness(endpoints, required_consecutive_matches=1)
 
     assert calls == [
         ("http://grafana.invalid", "/api/health"),
@@ -653,8 +711,9 @@ def test_integration_admits_readiness_before_one_shot_emission_and_verification(
     receipt: dict[str, Any] = {"runs": []}
     report: dict[str, Any] = {}
 
-    def readiness(endpoints: BackendEndpoints) -> None:
+    def readiness(endpoints: BackendEndpoints, **kwargs: object) -> None:
         del endpoints
+        assert kwargs == {"stack_config_path": Path("config/telemetry/local-stack.json")}
         calls.append("readiness")
 
     def emit(runtime_value: object, plans_value: object, sink: object) -> dict[str, Any]:
@@ -783,7 +842,13 @@ def test_grafana_alert_contract_binds_interval_to_exact_rule_group(
 
     monkeypatch.setattr(observer, "_json_get", grafana_get)
     endpoints = BackendEndpoints(*(f"http://127.0.0.1:{port}" for port in range(1, 6)))
-    with pytest.raises(AssertionError, match="scheduler interval differs"):
+    with pytest.raises(
+        AssertionError,
+        match=(
+            r"scheduler interval differs from its contract "
+            r"\(target_rule_count=1, observed_intervals=60s\)"
+        ),
+    ):
         observer._alert_contract(endpoints, contract)
 
 

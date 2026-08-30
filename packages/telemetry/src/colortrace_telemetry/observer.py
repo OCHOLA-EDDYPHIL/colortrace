@@ -47,6 +47,7 @@ _GRAFANA_READINESS_PATHS = (
 _GRAFANA_READINESS_TIMEOUT_SECONDS = 60.0
 _GRAFANA_READINESS_POLL_SECONDS = 1.0
 _GRAFANA_READINESS_REQUEST_TIMEOUT_SECONDS = 5.0
+_GRAFANA_READINESS_CONSECUTIVE_MATCHES = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,29 +150,85 @@ def _json_get(
 def _grafana_readiness_probe(
     endpoints: BackendEndpoints,
     *,
+    alert_contract: Mapping[str, Any],
     deadline: float,
     monotonic: Callable[[], float],
-) -> bool:
+) -> tuple[bool, int | None, tuple[str, ...]]:
+    payloads: list[Any] = []
     for path in _GRAFANA_READINESS_PATHS:
         remaining = deadline - monotonic()
         if remaining <= 0:
-            return False
+            return False, None, ()
         try:
-            _json_get(
-                endpoints.grafana,
-                path,
-                timeout_seconds=min(_GRAFANA_READINESS_REQUEST_TIMEOUT_SECONDS, remaining),
+            payloads.append(
+                _json_get(
+                    endpoints.grafana,
+                    path,
+                    timeout_seconds=min(_GRAFANA_READINESS_REQUEST_TIMEOUT_SECONDS, remaining),
+                )
             )
         except BackendUnavailable:
-            return False
-    return True
+            return False, None, ()
+    target_groups = _target_alert_groups(payloads[-1], str(alert_contract["uid"]))
+    observed_intervals = tuple(
+        sorted({_safe_readiness_interval(group.get("interval")) for group in target_groups})
+    )
+    expected_interval = f"{int(alert_contract['scheduler_interval_seconds'])}s"
+    return (
+        len(target_groups) == 1 and observed_intervals == (expected_interval,),
+        len(target_groups),
+        observed_intervals,
+    )
+
+
+def _safe_readiness_interval(value: Any) -> str:
+    if (
+        isinstance(value, str)
+        and 2 <= len(value) <= 16
+        and value[-1] in {"s", "m", "h"}
+        and value[:-1].isdigit()
+    ):
+        return value
+    return "invalid"
+
+
+def _target_alert_groups(payload: Any, uid: str) -> list[Mapping[str, Any]]:
+    target_groups: list[Mapping[str, Any]] = []
+    if not isinstance(payload, Mapping):
+        return target_groups
+    for namespace_groups in payload.values():
+        if not isinstance(namespace_groups, list):
+            continue
+        for group in namespace_groups:
+            if not isinstance(group, Mapping):
+                continue
+            rules = group.get("rules")
+            if not isinstance(rules, list):
+                continue
+            if any(
+                isinstance(rule, Mapping)
+                and isinstance(rule.get("grafana_alert"), Mapping)
+                and rule["grafana_alert"].get("uid") == uid
+                for rule in rules
+            ):
+                target_groups.append(group)
+    return target_groups
+
+
+def _readiness_alert_contract(stack_config_path: Path) -> dict[str, Any]:
+    alert_contract_path = stack_config_path.resolve(strict=True).parent / "alert-contract.json"
+    alert_contract = strict_json(alert_contract_path.resolve(strict=True))
+    validate_schema("grafana-alert-contract-v1.schema.json", alert_contract)
+    return alert_contract
 
 
 def wait_for_grafana_readiness(
     endpoints: BackendEndpoints,
     *,
+    stack_config_path: Path = Path("config/telemetry/local-stack.json"),
     timeout_seconds: float = _GRAFANA_READINESS_TIMEOUT_SECONDS,
     poll_seconds: float = _GRAFANA_READINESS_POLL_SECONDS,
+    required_consecutive_matches: int = _GRAFANA_READINESS_CONSECUTIVE_MATCHES,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
@@ -179,14 +236,39 @@ def wait_for_grafana_readiness(
         raise ValueError("Grafana readiness timeout must be positive and finite")
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("Grafana readiness poll interval must be positive and finite")
+    if (
+        isinstance(required_consecutive_matches, bool)
+        or not isinstance(required_consecutive_matches, int)
+        or required_consecutive_matches <= 0
+    ):
+        raise ValueError("Grafana readiness consecutive matches must be a positive integer")
+    alert_contract = _readiness_alert_contract(stack_config_path)
     deadline = monotonic() + timeout_seconds
+    target_count: int | None = None
+    observed_intervals: tuple[str, ...] = ()
+    consecutive_matches = 0
     while monotonic() < deadline:
-        if _grafana_readiness_probe(endpoints, deadline=deadline, monotonic=monotonic):
+        ready, observed_count, observed = _grafana_readiness_probe(
+            endpoints,
+            alert_contract=alert_contract,
+            deadline=deadline,
+            monotonic=monotonic,
+        )
+        if observed_count is not None:
+            target_count = observed_count
+            observed_intervals = observed
+        consecutive_matches = consecutive_matches + 1 if ready else 0
+        if consecutive_matches >= required_consecutive_matches:
             return
         remaining = deadline - monotonic()
         if remaining > 0:
             sleep(min(poll_seconds, remaining))
-    raise BackendUnavailable("Grafana readiness gate timed out")
+    count = "unavailable" if target_count is None else str(target_count)
+    intervals = "unavailable" if target_count is None else ",".join(observed_intervals) or "none"
+    raise BackendUnavailable(
+        "Grafana readiness gate timed out "
+        f"(target_rule_count={count}, observed_intervals={intervals})"
+    )
 
 
 def _http_reachable(base: str, path: str) -> bool:
@@ -522,28 +604,19 @@ def _alert_contract(endpoints: BackendEndpoints, contract: Mapping[str, Any]) ->
         "/api/ruler/grafana/api/v1/rules",
         timeout_seconds=15.0,
     )
-    target_groups: list[Mapping[str, Any]] = []
-    if isinstance(groups, Mapping):
-        for namespace_groups in groups.values():
-            if not isinstance(namespace_groups, list):
-                continue
-            for group in namespace_groups:
-                if not isinstance(group, Mapping):
-                    continue
-                rules = group.get("rules")
-                if not isinstance(rules, list):
-                    continue
-                for group_rule in rules:
-                    if not isinstance(group_rule, Mapping):
-                        continue
-                    grafana_alert = group_rule.get("grafana_alert")
-                    if isinstance(grafana_alert, Mapping) and grafana_alert.get("uid") == uid:
-                        target_groups.append(group)
+    target_groups = _target_alert_groups(groups, uid)
     scheduler_interval_seconds = int(contract["scheduler_interval_seconds"])
     if len(target_groups) != 1 or target_groups[0].get("interval") != (
         f"{scheduler_interval_seconds}s"
     ):
-        raise AssertionError("Grafana alert scheduler interval differs from its contract")
+        observed_intervals = tuple(
+            sorted({_safe_readiness_interval(group.get("interval")) for group in target_groups})
+        )
+        raise AssertionError(
+            "Grafana alert scheduler interval differs from its contract "
+            f"(target_rule_count={len(target_groups)}, "
+            f"observed_intervals={','.join(observed_intervals) or 'none'})"
+        )
     return {
         "uid": uid,
         "provisioned": True,
@@ -561,8 +634,7 @@ def _execution_boundary(
     resolved_stack_config = stack_config_path.resolve(strict=True)
     config = strict_json(resolved_stack_config)
     alert_contract_path = resolved_stack_config.parent / "alert-contract.json"
-    alert_contract = strict_json(alert_contract_path.resolve(strict=True))
-    validate_schema("grafana-alert-contract-v1.schema.json", alert_contract)
+    alert_contract = _readiness_alert_contract(resolved_stack_config)
     image = config.get("image", {})
     components = config.get("components", {})
     contracts = config.get("contracts", {})
