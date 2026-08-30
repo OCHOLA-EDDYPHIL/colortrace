@@ -19,7 +19,6 @@ import {
   PACKET_DIGEST,
   PLAN_DIGEST,
   RUN_ID,
-  SAFE_PROOF_DIGEST,
   sealDemoReceipt,
   TARGET_DIGEST,
   VISUAL_DIGESTS,
@@ -91,8 +90,8 @@ describe("shot-safe color recovery", () => {
     });
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={storage} />);
 
-    expect(screen.getByRole("heading", { name: /see the fault/i })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
+    expect(screen.getByRole("heading", { name: /successful render can still be/u })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
 
     expect(await screen.findByRole("heading", { name: "Expected versus observed" })).toBeVisible();
     expect(await screen.findByAltText("Declared expected output")).toBeVisible();
@@ -101,15 +100,12 @@ describe("shot-safe color recovery", () => {
     expect(
       screen.getByRole("heading", { name: "Same configuration, different resolved LUT" }),
     ).toBeVisible();
-    expect(screen.getByText("Nominal configuration hashes match")).toBeVisible();
-    expect(screen.getByText("Resolved LUT hashes differ")).toBeVisible();
-    expect(screen.getByText("causal-resource-confirmed", { exact: true })).toBeVisible();
-    expect(screen.getByText("nominal-config-authoritatively-rejected")).toBeVisible();
-    expect(
-      screen.getByRole("heading", { name: "Exact scope and five typed commands" }),
-    ).toBeVisible();
+    expect(screen.getByText("Root cause confirmed")).toBeVisible();
+    expect(screen.getByText("Declared configuration ruled out")).toBeVisible();
+    expect(screen.getByText("Worker-only explanation rejected")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Recover only the affected work" })).toBeVisible();
     expect(screen.getByText("artifact-b-02-derivative", { exact: true })).toBeVisible();
-    expect(screen.getAllByText("simulator-targeted-rerender-command/v1")).toHaveLength(4);
+    expect(screen.getByText("Rerender the affected derivative")).toBeVisible();
 
     const approveButton = screen.getByRole("button", { name: "Approve recovery action" });
     expect(approveButton).toBeDisabled();
@@ -119,7 +115,7 @@ describe("shot-safe color recovery", () => {
     });
     fireEvent.click(
       screen.getByLabelText(
-        /I approve only the returned run, incident, plan, and target bindings/u,
+        /I approve only the displayed targets and keep the exclusions protected/u,
       ),
     );
     expect(approveButton).toBeEnabled();
@@ -128,12 +124,9 @@ describe("shot-safe color recovery", () => {
     expect(await screen.findByRole("heading", { name: "Recovered output" })).toBeVisible();
     expect(await screen.findByAltText("Recovered output")).toBeVisible();
     await decodeRenderedImages();
-    expect(
-      screen.getAllByText(`${SAFE_PROOF_DIGEST.slice(0, 15)}…${SAFE_PROOF_DIGEST.slice(-8)}`)
-        .length,
-    ).toBeGreaterThan(0);
+    expect(screen.getAllByText("Protected outputs verified.").length).toBeGreaterThan(0);
     expect(storage.values.has("colortrace.demo.approval-nonce")).toBe(false);
-    fireEvent.click(screen.getByText("Technical details", { exact: true }));
+    fireEvent.click(screen.getByText("Technical proof and provenance", { exact: true }));
     expect(screen.getAllByText("query_loki_logs", { exact: true }).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/gemini-3\.5-flash/u).length).toBeGreaterThan(0);
     expect(screen.getByText("post-action-telemetry-correlation", { exact: true })).toBeVisible();
@@ -141,16 +134,15 @@ describe("shot-safe color recovery", () => {
     fireEvent.click(screen.getByRole("button", { name: "Verify and close recovery" }));
 
     expect(
-      await screen.findByRole("heading", { name: "Recovery closed with a durable receipt" }),
+      await screen.findByRole("heading", { name: "Recovery closed with a verified receipt" }),
     ).toBeVisible();
-    const receiptDigest = demoReceipt().receipt_sha256;
-    expect(
-      await screen.findByText(`${receiptDigest.slice(0, 15)}…${receiptDigest.slice(-8)}`),
-    ).toBeVisible();
+    expect(await screen.findByText("Recorded and verified")).toBeVisible();
     expect(storage.values.get("colortrace.demo.run-id")).toBe(RUN_ID);
     fireEvent.click(screen.getByRole("button", { name: "Reset for another run" }));
 
-    expect(await screen.findByRole("heading", { name: /see the fault/i })).toBeVisible();
+    expect(
+      await screen.findByRole("heading", { name: /successful render can still be/u }),
+    ).toBeVisible();
     expect(screen.getByText(/reset to authored generation 1/u)).toBeVisible();
     expect(adapter.approve).toHaveBeenCalledWith(
       RUN_ID,
@@ -195,7 +187,7 @@ describe("shot-safe color recovery", () => {
     );
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
     expect(await screen.findByRole("heading", { name: "Expected versus observed" })).toBeVisible();
     expect(await screen.findByAltText("Declared expected output")).toBeVisible();
     expect(await screen.findByAltText(/Observed output with a visible color shift/u)).toBeVisible();
@@ -207,7 +199,7 @@ describe("shot-safe color recovery", () => {
     });
     fireEvent.click(
       screen.getByLabelText(
-        /I approve only the returned run, incident, plan, and target bindings/u,
+        /I approve only the displayed targets and keep the exclusions protected/u,
       ),
     );
     await waitFor(() => expect(adapter.get).toHaveBeenCalledTimes(1));
@@ -247,7 +239,7 @@ describe("shot-safe color recovery", () => {
       <ShotSafeColorRecoveryApp adapter={firstAdapter} storage={storage} />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/service is unavailable/u);
     const persisted = {
       approval_nonce: storage.values.get("colortrace.demo.approval-nonce") as string,
@@ -275,7 +267,7 @@ describe("shot-safe color recovery", () => {
     );
 
     expect(
-      await screen.findByRole("heading", { name: "Recovery closed with a durable receipt" }),
+      await screen.findByRole("heading", { name: "Recovery closed with a verified receipt" }),
     ).toBeVisible();
     expect(storage.values.get("colortrace.demo.run-id")).toBe(RUN_ID);
     const resetButton = await screen.findByRole("button", { name: "Reset for another run" });
@@ -311,7 +303,7 @@ describe("shot-safe color recovery", () => {
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={storage} />);
 
     const terminal = await screen.findByRole("region", {
-      name: "Recovery closed with a durable receipt",
+      name: "Recovery closed with a verified receipt",
     });
     expect(await within(terminal).findByRole("alert")).toHaveTextContent(/result is uncertain/u);
     expect(adapter.reset).toHaveBeenCalledWith(RUN_ID, 6, resetIdempotencyKey);
@@ -353,7 +345,7 @@ describe("shot-safe color recovery", () => {
     });
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/could not be verified/u);
     expect(screen.getByRole("button", { name: "Approve recovery action" })).toBeDisabled();
@@ -368,7 +360,7 @@ describe("shot-safe color recovery", () => {
     vi.mocked(adapter.receipt).mockResolvedValue(demoRejectedReceipt("unsafe-scope"));
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/could not be verified/u);
     fireEvent.change(screen.getByLabelText("Retype review nonce"), { target: { value: NONCE } });
     fireEvent.change(screen.getByLabelText("Rejection reason"), {
@@ -381,7 +373,7 @@ describe("shot-safe color recovery", () => {
     fireEvent.click(reject);
 
     expect(
-      await screen.findByRole("heading", { name: "Plan rejected with a durable receipt" }),
+      await screen.findByRole("heading", { name: "Plan rejected with a verified receipt" }),
     ).toBeVisible();
     expect(await screen.findByText("plan-rejected-unsafe-scope")).toBeVisible();
     expect(adapter.reject).toHaveBeenCalledWith(
@@ -404,7 +396,9 @@ describe("shot-safe color recovery", () => {
     const reset = await screen.findByRole("button", { name: "Reset for another run" });
     await waitFor(() => expect(reset).toBeEnabled());
     fireEvent.click(reset);
-    expect(await screen.findByRole("heading", { name: /see the fault/i })).toBeVisible();
+    expect(
+      await screen.findByRole("heading", { name: /successful render can still be/u }),
+    ).toBeVisible();
   });
 
   it("reuses the exact rejection idempotency key after an ambiguous response", async () => {
@@ -415,7 +409,7 @@ describe("shot-safe color recovery", () => {
     vi.mocked(adapter.receipt).mockResolvedValue(demoRejectedReceipt("unresolved-risk"));
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
     await screen.findByRole("heading", { name: "Decide the exact plan" });
     const submit = async () => {
       fireEvent.change(screen.getByLabelText("Retype review nonce"), {
@@ -433,7 +427,7 @@ describe("shot-safe color recovery", () => {
     fireEvent.click(screen.getByRole("button", { name: "Recheck run state" }));
     await screen.findByRole("heading", { name: "Decide the exact plan" });
     await submit();
-    await screen.findByRole("heading", { name: "Plan rejected with a durable receipt" });
+    await screen.findByRole("heading", { name: "Plan rejected with a verified receipt" });
 
     expect(adapter.reject).toHaveBeenCalledTimes(2);
     expect(vi.mocked(adapter.reject).mock.calls[1]?.[1]).toEqual(firstRequest);
@@ -450,7 +444,7 @@ describe("shot-safe color recovery", () => {
     });
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
     await screen.findByAltText(
       "Illustrative pixel difference between expected and observed output",
     );
@@ -465,7 +459,7 @@ describe("shot-safe color recovery", () => {
     const adapter = adapterFixture();
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
     await screen.findByAltText(
       "Illustrative pixel difference between expected and observed output",
     );
@@ -476,7 +470,7 @@ describe("shot-safe color recovery", () => {
     });
     fireEvent.click(
       screen.getByLabelText(
-        /I approve only the returned run, incident, plan, and target bindings/u,
+        /I approve only the displayed targets and keep the exclusions protected/u,
       ),
     );
     fireEvent.click(screen.getByRole("button", { name: "Approve recovery action" }));
@@ -510,7 +504,7 @@ describe("shot-safe color recovery", () => {
     }));
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
     const originalExpected = await screen.findByAltText("Declared expected output");
     await screen.findByAltText(
       "Illustrative pixel difference between expected and observed output",
@@ -522,7 +516,7 @@ describe("shot-safe color recovery", () => {
     });
     fireEvent.click(
       screen.getByLabelText(
-        /I approve only the returned run, incident, plan, and target bindings/u,
+        /I approve only the displayed targets and keep the exclusions protected/u,
       ),
     );
     const approve = screen.getByRole("button", { name: "Approve recovery action" });
@@ -563,7 +557,7 @@ describe("shot-safe color recovery", () => {
     vi.mocked(adapter.get).mockResolvedValue(demoRun("expired"));
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
     expect(await screen.findByRole("heading", { name: "Decide the exact plan" })).toBeVisible();
 
     expect(
@@ -583,10 +577,8 @@ describe("shot-safe color recovery", () => {
     vi.mocked(adapter.get).mockResolvedValue(demoRun("expired"));
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
-    expect(
-      await screen.findByRole("heading", { name: "Recovered output is ready for closure" }),
-    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
+    expect(await screen.findByRole("heading", { name: "Recovered image verified" })).toBeVisible();
 
     expect(
       await screen.findByRole(
@@ -606,7 +598,7 @@ describe("shot-safe color recovery", () => {
       .mockResolvedValue(demoRun("awaiting-closure"));
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
     expect(await screen.findByRole("heading", { name: "Applying recovery" })).toBeVisible();
     expect(await screen.findByRole("alert", {}, { timeout: 2_000 })).toHaveTextContent(
       /service is unavailable/u,
@@ -614,11 +606,7 @@ describe("shot-safe color recovery", () => {
     expect(screen.getByRole("button", { name: "Recheck run state" })).toBeVisible();
 
     expect(
-      await screen.findByRole(
-        "heading",
-        { name: "Recovered output is ready for closure" },
-        { timeout: 2_000 },
-      ),
+      await screen.findByRole("heading", { name: "Recovered image verified" }, { timeout: 2_000 }),
     ).toBeVisible();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(adapter.get).toHaveBeenCalledTimes(2);
@@ -631,7 +619,7 @@ describe("shot-safe color recovery", () => {
     );
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
 
     expect(
       await screen.findByRole("heading", { name: "Review cannot continue in this browser" }),
@@ -651,10 +639,10 @@ describe("shot-safe color recovery", () => {
     const storage = memoryStorage();
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={storage} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Investigate with Gemini + Grafana" }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
 
     expect(
-      await screen.findByRole("heading", { name: "Recovery closed with a durable receipt" }),
+      await screen.findByRole("heading", { name: "Recovery closed with a verified receipt" }),
     ).toBeVisible();
     expect(storage.values.get("colortrace.demo.run-id")).toBe(RUN_ID);
     expect(storage.values.has("colortrace.demo.approval-nonce")).toBe(false);

@@ -50,9 +50,7 @@ _BUNDLE_ONLY = {
     },
     "public-readonly": {
         ("application", "colortrace"),
-        ("bundled-first-party-javascript", "@colortrace/api-client"),
         ("bundled-first-party-javascript", "@colortrace/web"),
-        ("bundled-first-party-javascript", "@colortrace/workspace-model"),
         ("bundled-javascript", "react"),
         ("bundled-javascript", "react-dom"),
         ("bundled-javascript", "scheduler"),
@@ -92,10 +90,8 @@ _IMAGE_INPUTS = {
         "LICENSE",
         "deploy/web-server.mjs",
         "package.json",
-        "packages/api-client/package.json",
         "packages/repo-tools/src/colortrace_repo/image_licenses.py",
         "packages/web/package.json",
-        "packages/workspace-model/package.json",
         "pnpm-lock.yaml",
     ),
 }

@@ -98,11 +98,7 @@ def _python_inputs(root: Path) -> dict[str, Path]:
 
 def _web_inputs(root: Path) -> dict[str, Path]:
     first_party = root / "first-party"
-    for directory, name in (
-        ("api-client", "@colortrace/api-client"),
-        ("web", "@colortrace/web"),
-        ("workspace-model", "@colortrace/workspace-model"),
-    ):
+    for directory, name in (("web", "@colortrace/web"),):
         _write(
             first_party / directory / "package.json",
             json.dumps({"name": name, "version": "0.0.0", "license": "Apache-2.0"}),
@@ -460,19 +456,10 @@ class ImageLicenseBundleTest(unittest.TestCase):
             components = json.loads((output / "manifest.json").read_text())["components"]
             names = {item["name"] for item in components}
             self.assertTrue(set(versions) <= names)
-            self.assertTrue(
-                {"@colortrace/api-client", "@colortrace/web", "@colortrace/workspace-model"}
-                <= names
-            )
+            self.assertIn("@colortrace/web", names)
             components_by_name = {item["name"]: item for item in components}
             package_inputs = {
-                "@colortrace/api-client": web_inputs["first_party_web_manifests"]
-                / "api-client"
-                / "package.json",
                 "@colortrace/web": web_inputs["first_party_web_manifests"] / "web" / "package.json",
-                "@colortrace/workspace-model": web_inputs["first_party_web_manifests"]
-                / "workspace-model"
-                / "package.json",
                 **{name: web_inputs["web_packages"] / name / "package.json" for name in versions},
             }
             for name, original in package_inputs.items():
@@ -497,7 +484,7 @@ class ImageLicenseBundleTest(unittest.TestCase):
 
     def test_web_bundle_rejects_symlinked_metadata_parents(self) -> None:
         for input_name, child in (
-            ("first_party_web_manifests", "api-client"),
+            ("first_party_web_manifests", "web"),
             ("web_packages", "react"),
         ):
             with self.subTest(input_name=input_name):
