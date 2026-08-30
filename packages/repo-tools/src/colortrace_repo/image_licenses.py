@@ -25,7 +25,6 @@ FIRST_PARTY_PYTHON_DISTRIBUTIONS = frozenset(
         "colortrace-fixture",
         "colortrace-grafana-mcp",
         "colortrace-investigation",
-        "colortrace-persistence",
         "colortrace-recovery",
         "colortrace-repo",
         "colortrace-response-plans",
@@ -489,14 +488,10 @@ def build_runtime_bundle(args: argparse.Namespace) -> None:
         getattr(args, name, None)
         for name in ("mcp_binary", "mcp_lock", "mcp_license", "go_license")
     )
-    if args.profile == "private-full":
-        if any(value is None for value in mcp_values):
-            raise BundleError("private-full requires every mcp-grafana input")
-    elif args.profile == "hosted-readonly":
-        if any(value is not None for value in mcp_values):
-            raise BundleError("hosted-readonly forbids mcp-grafana inputs")
-    else:
+    if args.profile != "private-full":
         raise BundleError(f"unsupported runtime profile: {args.profile}")
+    if any(value is None for value in mcp_values):
+        raise BundleError("private-full requires every mcp-grafana input")
     output = _new_output(args.output)
     components, root_license = _common_bundle(args, output)
     python_version = platform.python_version()

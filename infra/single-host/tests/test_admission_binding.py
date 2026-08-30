@@ -43,12 +43,12 @@ class AdmissionBindingTests(unittest.TestCase):
         registry = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images"
         components = ("runtime", "web", "caddy", "grafana", "loki", "tempo")
         build_paths = {
-            "runtime": ("Dockerfile.runtime", "runtime"),
-            "web": ("Dockerfile.web", None),
-            "caddy": ("Dockerfile.caddy", None),
-            "grafana": ("Dockerfile.observability", "grafana"),
-            "loki": ("Dockerfile.observability", "loki"),
-            "tempo": ("Dockerfile.observability", "tempo"),
+            "runtime": ("containers/Dockerfile.runtime", "runtime"),
+            "web": ("containers/Dockerfile.web", None),
+            "caddy": ("containers/Dockerfile.caddy", None),
+            "grafana": ("containers/Dockerfile.observability", "grafana"),
+            "loki": ("containers/Dockerfile.observability", "loki"),
+            "tempo": ("containers/Dockerfile.observability", "tempo"),
         }
         images = {}
         for index, component in enumerate(components, 1):

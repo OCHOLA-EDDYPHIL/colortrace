@@ -40,12 +40,12 @@ def _arguments() -> tuple[bool, bool, dict[str, str], dict[str, list[Any]], list
 def _build_manifest(document: dict[str, Any], values: dict[str, str]) -> dict[str, Any]:
     components = ("runtime", "web", "caddy", "grafana", "loki", "tempo")
     build_paths: dict[str, tuple[str, str | None]] = {
-        "runtime": ("Dockerfile.runtime", "runtime"),
-        "web": ("Dockerfile.web", None),
-        "caddy": ("Dockerfile.caddy", None),
-        "grafana": ("Dockerfile.observability", "grafana"),
-        "loki": ("Dockerfile.observability", "loki"),
-        "tempo": ("Dockerfile.observability", "tempo"),
+        "runtime": ("containers/Dockerfile.runtime", "runtime"),
+        "web": ("containers/Dockerfile.web", None),
+        "caddy": ("containers/Dockerfile.caddy", None),
+        "grafana": ("containers/Dockerfile.observability", "grafana"),
+        "loki": ("containers/Dockerfile.observability", "loki"),
+        "tempo": ("containers/Dockerfile.observability", "tempo"),
     }
     storage_source = document.get("source", {}).get("storageSource", {})
     source_object = storage_source.get("object")

@@ -30,7 +30,6 @@ class SecurityEvidenceTest(unittest.TestCase):
         images = output / "images"
         images.mkdir(exist_ok=True)
         profiles = {
-            "hosted-runtime": "hosted-readonly",
             "runtime": "private-full",
             "web": "public-readonly",
         }
@@ -68,7 +67,11 @@ class SecurityEvidenceTest(unittest.TestCase):
             }
             inputs = [
                 {
-                    "path": "Dockerfile.runtime" if image != "web" else "Dockerfile.web",
+                    "path": (
+                        "containers/Dockerfile.runtime"
+                        if image != "web"
+                        else "containers/Dockerfile.web"
+                    ),
                     "sha256": "sha256:" + "7" * 64,
                     "size_bytes": 1,
                 }
@@ -255,11 +258,6 @@ class SecurityEvidenceTest(unittest.TestCase):
                     "ai-runtime.json",
                     "dependency.json",
                     "deployment.json",
-                    "images/hosted-runtime/coverage.json",
-                    "images/hosted-runtime/enriched-sbom.cdx.json",
-                    "images/hosted-runtime/image-binding.json",
-                    "images/hosted-runtime/raw-sbom.cdx.json",
-                    "images/hosted-runtime/vulnerability.json",
                     "images/runtime/coverage.json",
                     "images/runtime/enriched-sbom.cdx.json",
                     "images/runtime/image-binding.json",

@@ -28,11 +28,10 @@ def test_private_root_uses_canonical_run_path() -> None:
 @pytest.mark.parametrize(
     "relative_path",
     (
-        "Dockerfile.runtime",
+        "containers/Dockerfile.runtime",
         "infra/single-host/scripts/demo-verification.py",
         "infra/single-host/templates/compose.yaml.tftpl",
         "infra/single-host/templates/startup.sh.tftpl",
-        "infra/staging/run.tf",
     ),
 )
 def test_runtime_surfaces_do_not_use_var_run_alias(relative_path: str) -> None:
@@ -107,48 +106,34 @@ def test_private_secret_rejects_links_and_nonprivate_targets(
         entrypoint._copy_private_secret(str(source), str(alias_root / "token"))
 
 
-def test_bootstrap_stages_admin_secret_and_removes_source_path_from_child_environment(
+def test_api_stages_grafana_token_and_removes_source_path_from_child_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     entrypoint = _entrypoint()
     private_root = tmp_path / "private"
     private_root.mkdir(mode=0o700)
-    source = tmp_path / "mounted-admin"
-    source.write_text("synthetic-password", encoding="utf-8")
+    source = tmp_path / "mounted-grafana-token"
+    source.write_text("synthetic-token", encoding="utf-8")
     source.chmod(0o444)
-    target = private_root / "postgres-admin"
+    target = private_root / "grafana-viewer"
     environment = {
-        "COLORTRACE_POSTGRES_ADMIN_PASSWORD_SOURCE": str(source),
-        "COLORTRACE_POSTGRES_ADMIN_PASSWORD_FILE": str(target),
+        "COLORTRACE_GRAFANA_TOKEN_SOURCE": str(source),
+        "COLORTRACE_GRAFANA_TOKEN_FILE": str(target),
     }
     monkeypatch.setattr(entrypoint, "_PRIVATE_ROOT", private_root)
 
-    entrypoint._prepare_private_runtime(environment, "bootstrap")
+    entrypoint._prepare_private_runtime(environment)
 
-    assert target.read_text(encoding="utf-8") == "synthetic-password"
+    assert target.read_text(encoding="utf-8") == "synthetic-token"
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
-    assert "COLORTRACE_POSTGRES_ADMIN_PASSWORD_SOURCE" not in environment
-    assert environment["COLORTRACE_POSTGRES_ADMIN_PASSWORD_FILE"] == str(target)
+    assert "COLORTRACE_GRAFANA_TOKEN_SOURCE" not in environment
+    assert environment["COLORTRACE_GRAFANA_TOKEN_FILE"] == str(target)
 
 
-def test_entrypoint_has_explicit_hosted_commands_without_repurposing_legacy_api() -> None:
+def test_entrypoint_exposes_only_the_single_host_api() -> None:
     entrypoint = _entrypoint()
 
-    assert entrypoint._SERVICE_COMMANDS["api"] == (
-        "/opt/colortrace/bin/python",
-        "-m",
-        "colortrace_api",
-    )
-    assert entrypoint._SERVICE_COMMANDS["api-readonly"][-2:] == (
-        "colortrace_api.hosted_read",
-        "serve",
-    )
-    assert entrypoint._SERVICE_COMMANDS["bootstrap"][-2:] == (
-        "colortrace_api.hosted_read",
-        "bootstrap",
-    )
-    assert entrypoint._SERVICE_COMMANDS["migrate-seed"][-2:] == (
-        "colortrace_api.hosted_read",
-        "migrate-seed",
-    )
+    assert entrypoint._SERVICE_COMMANDS == {
+        "api": ("/opt/colortrace/bin/python", "-m", "colortrace_api")
+    }

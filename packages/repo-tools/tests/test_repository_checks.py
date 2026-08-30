@@ -28,7 +28,6 @@ def _copy_generated_policy_fixture(root: Path) -> None:
         "packages/api-client/openapi-ts.config.ts",
         "packages/api-client/package.json",
         "packages/contracts/openapi.json",
-        "packages/api/src/colortrace_api/assets/hosted-read-projection-v1.json",
         "pnpm-lock.yaml",
     )
     for path in paths:
@@ -82,7 +81,7 @@ class RepositoryChecksTest(unittest.TestCase):
             codes = {finding.code for finding in compare_generated_trees(root, expected, actual)}
             self.assertEqual(codes, {"generated.content"})
 
-    def test_generated_policy_binds_inputs_outputs_fixture_and_does_not_run_commands(self) -> None:
+    def test_generated_policy_binds_inputs_outputs_and_does_not_run_commands(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             _copy_generated_policy_fixture(root)
@@ -94,8 +93,6 @@ class RepositoryChecksTest(unittest.TestCase):
                 (("trees", 0, "inputs", 0, "sha256"), "0" * 64, "generated.input.mismatch"),
                 (("trees", 0, "outputs", 0, "sha256"), "0" * 64, "generated.output.mismatch"),
                 (("trees", 0, "license"), "apache-2.0", "generated.license.invalid"),
-                (("files", 0, "provenance_pointer"), "#/missing", "generated.provenance.invalid"),
-                (("files", 0, "sha256"), "0" * 64, "generated.file.mismatch"),
             )
             for path, value, code in cases:
                 with self.subTest(binding=code):
@@ -118,9 +115,16 @@ class RepositoryChecksTest(unittest.TestCase):
                 with self.subTest(review=state):
                     document = json.loads(original)
                     document["trees"][0]["redistribution_review"] = state
-                    document["files"][0]["redistribution_review"] = state
                     policy.write_text(json.dumps(document), encoding="utf-8")
                     self.assertEqual(check_generated_manifest(root), [])
+
+            document = json.loads(original)
+            document["files"] = [{}]
+            policy.write_text(json.dumps(document), encoding="utf-8")
+            self.assertIn(
+                "generated.file.invalid",
+                {finding.code for finding in check_generated_manifest(root)},
+            )
 
             document = json.loads(original)
             sentinel = root / "policy-command-executed"
@@ -137,7 +141,6 @@ class RepositoryChecksTest(unittest.TestCase):
             ("trees", 0, "generator"),
             ("trees", 0, "inputs", 0),
             ("trees", 0, "outputs", 0),
-            ("files", 0),
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -151,17 +154,14 @@ class RepositoryChecksTest(unittest.TestCase):
                     policy.write_text(json.dumps(document), encoding="utf-8")
                     self.assertNotEqual(check_generated_manifest(root), [])
 
-            for location, key in (
-                (("trees", 0), "redistribution_review"),
-                (("files", 0), "license"),
-            ):
+            for location, key in ((("trees", 0), "redistribution_review"),):
                 with self.subTest(missing=(location, key)):
                     document = json.loads(original)
                     _at(document, location).pop(key)  # type: ignore[union-attr]
                     policy.write_text(json.dumps(document), encoding="utf-8")
                     self.assertNotEqual(check_generated_manifest(root), [])
 
-        for boundary in ("input", "fixture", "tree", "output"):
+        for boundary in ("input", "tree", "output"):
             with (
                 self.subTest(boundary=boundary),
                 tempfile.TemporaryDirectory() as temporary_directory,
@@ -174,9 +174,6 @@ class RepositoryChecksTest(unittest.TestCase):
                     root
                     / {
                         "input": "packages/contracts/openapi.json",
-                        "fixture": (
-                            "packages/api/src/colortrace_api/assets/hosted-read-projection-v1.json"
-                        ),
                         "tree": "packages/api-client/src/generated",
                         "output": "packages/api-client/src/generated/client.gen.ts",
                     }[boundary]

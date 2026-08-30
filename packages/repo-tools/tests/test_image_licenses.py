@@ -96,6 +96,46 @@ def _python_inputs(root: Path) -> dict[str, Path]:
     }
 
 
+def _mcp_inputs(root: Path) -> dict[str, Path]:
+    module_text = (
+        "path\tgithub.com/grafana/mcp-grafana/cmd/mcp-grafana\n"
+        "mod\tgithub.com/grafana/mcp-grafana\tv1.1.0\th1:exactsource=\n"
+        "dep\texample.invalid/module\tv1.2.3\th1:exact=\n"
+        "build\tvcs.revision=" + "5" * 40 + "\n"
+    ).encode()
+    framed = b"0w\xaf\x0c\x92t\x08\x02A\xe1\xc1\x07\xe6\xd6\x18\xe6" + module_text + bytes(16)
+    version = b"go1.26.6"
+    binary = _write(
+        root / "mcp-grafana",
+        b"binary-prefix"
+        + b"\xff Go buildinf:"
+        + bytes((8, 2))
+        + bytes(16)
+        + _uvarint(len(version))
+        + version
+        + _uvarint(len(framed))
+        + framed,
+    )
+    lock = {
+        "schema": "mcp-grafana-runtime-lock/v2",
+        "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "release_version": "1.1.0",
+        "source_commit": "5" * 40,
+        "source_module": "github.com/grafana/mcp-grafana",
+        "source_module_sum": "h1:exactsource=",
+        "source_module_version": "v1.1.0",
+        "source_repository": "https://github.com/grafana/mcp-grafana",
+        "source_tree": "6" * 40,
+        "toolchain_version": "go1.26.6",
+    }
+    return {
+        "mcp_binary": binary,
+        "mcp_lock": _write(root / "mcp-lock.json", json.dumps(lock)),
+        "mcp_license": _write(root / "mcp-license", "Apache\n"),
+        "go_license": _write(root / "go-license", "Go license\n"),
+    }
+
+
 def _web_inputs(root: Path) -> dict[str, Path]:
     first_party = root / "first-party"
     for directory, name in (("web", "@colortrace/web"),):
@@ -152,9 +192,9 @@ class ImageLicenseBundleTest(unittest.TestCase):
                     SimpleNamespace(
                         **common,
                         **python_inputs,
+                        **_mcp_inputs(root),
                         output=output,
-                        profile="hosted-readonly",
-                        mcp_binary=None,
+                        profile="private-full",
                     )
                 )
 
@@ -247,9 +287,9 @@ class ImageLicenseBundleTest(unittest.TestCase):
                 SimpleNamespace(
                     **common,
                     **python_inputs,
+                    **_mcp_inputs(root),
                     output=output,
-                    profile="hosted-readonly",
-                    mcp_binary=None,
+                    profile="private-full",
                 )
             )
 
@@ -288,9 +328,9 @@ class ImageLicenseBundleTest(unittest.TestCase):
                     SimpleNamespace(
                         **common,
                         **python_inputs,
+                        **_mcp_inputs(root),
                         output=root / "bundle",
-                        profile="hosted-readonly",
-                        mcp_binary=None,
+                        profile="private-full",
                     )
                 )
 
@@ -312,9 +352,9 @@ class ImageLicenseBundleTest(unittest.TestCase):
                     SimpleNamespace(
                         **common,
                         **python_inputs,
+                        **_mcp_inputs(root),
                         output=root / "bundle",
-                        profile="hosted-readonly",
-                        mcp_binary=None,
+                        profile="private-full",
                     )
                 )
 
@@ -328,9 +368,9 @@ class ImageLicenseBundleTest(unittest.TestCase):
                     SimpleNamespace(
                         **common,
                         **_python_inputs(root),
+                        **_mcp_inputs(root),
                         output=root / "bundle",
-                        profile="hosted-readonly",
-                        mcp_binary=None,
+                        profile="private-full",
                     )
                 )
 
@@ -349,13 +389,13 @@ class ImageLicenseBundleTest(unittest.TestCase):
                         mcp_binary=None,
                     )
                 )
-            with self.assertRaisesRegex(BundleError, "hosted-readonly forbids"):
+            with self.assertRaisesRegex(BundleError, "unsupported runtime profile"):
                 build_runtime_bundle(
                     SimpleNamespace(
                         **common,
                         **python_inputs,
-                        output=root / "hosted",
-                        profile="hosted-readonly",
+                        output=root / "unsupported",
+                        profile="unsupported",
                         mcp_binary=root / "unexpected-mcp",
                     )
                 )
@@ -508,7 +548,7 @@ class ImageLicenseBundleTest(unittest.TestCase):
                         )
 
     def test_final_web_image_uses_cleaned_rootfs_without_inherited_yarn(self) -> None:
-        dockerfile = (REPOSITORY_ROOT / "Dockerfile.web").read_text(encoding="utf-8")
+        dockerfile = (REPOSITORY_ROOT / "containers/Dockerfile.web").read_text(encoding="utf-8")
         self.assertIn("/opt/yarn-v1.22.22", dockerfile)
         self.assertIn("/usr/local/bin/docker-entrypoint.sh", dockerfile)
         final_stage = dockerfile.split("\nFROM scratch\n", maxsplit=1)

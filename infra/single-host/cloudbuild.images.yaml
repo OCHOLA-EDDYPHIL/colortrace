@@ -19,7 +19,7 @@ steps:
       - --build-arg=SOURCE_TREE=${_SOURCE_TREE}
       - --build-arg=SOURCE_DATE_EPOCH=${_SOURCE_DATE_EPOCH}
       - --tag=${_REGISTRY}/runtime:${_SOURCE_COMMIT}
-      - --file=Dockerfile.runtime
+      - --file=containers/Dockerfile.runtime
       - .
 
   - id: web
@@ -36,7 +36,7 @@ steps:
       - --build-arg=SOURCE_TREE=${_SOURCE_TREE}
       - --build-arg=SOURCE_DATE_EPOCH=${_SOURCE_DATE_EPOCH}
       - --tag=${_REGISTRY}/web:${_SOURCE_COMMIT}
-      - --file=Dockerfile.web
+      - --file=containers/Dockerfile.web
       - .
 
   - id: caddy
@@ -53,7 +53,7 @@ steps:
       - --build-arg=SOURCE_TREE=${_SOURCE_TREE}
       - --build-arg=SOURCE_DATE_EPOCH=${_SOURCE_DATE_EPOCH}
       - --tag=${_REGISTRY}/caddy:${_SOURCE_COMMIT}
-      - --file=Dockerfile.caddy
+      - --file=containers/Dockerfile.caddy
       - .
 
   - id: grafana
@@ -71,7 +71,7 @@ steps:
       - --build-arg=SOURCE_TREE=${_SOURCE_TREE}
       - --build-arg=SOURCE_DATE_EPOCH=${_SOURCE_DATE_EPOCH}
       - --tag=${_REGISTRY}/grafana:${_SOURCE_COMMIT}
-      - --file=Dockerfile.observability
+      - --file=containers/Dockerfile.observability
       - .
 
   - id: loki
@@ -89,7 +89,7 @@ steps:
       - --build-arg=SOURCE_TREE=${_SOURCE_TREE}
       - --build-arg=SOURCE_DATE_EPOCH=${_SOURCE_DATE_EPOCH}
       - --tag=${_REGISTRY}/loki:${_SOURCE_COMMIT}
-      - --file=Dockerfile.observability
+      - --file=containers/Dockerfile.observability
       - .
 
   - id: tempo
@@ -107,7 +107,7 @@ steps:
       - --build-arg=SOURCE_TREE=${_SOURCE_TREE}
       - --build-arg=SOURCE_DATE_EPOCH=${_SOURCE_DATE_EPOCH}
       - --tag=${_REGISTRY}/tempo:${_SOURCE_COMMIT}
-      - --file=Dockerfile.observability
+      - --file=containers/Dockerfile.observability
       - .
 
 images:
