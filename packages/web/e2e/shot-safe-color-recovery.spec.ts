@@ -10,7 +10,6 @@ import {
   PACKET_DIGEST,
   PLAN_DIGEST,
   RUN_ID,
-  SAFE_PROOF_DIGEST,
   TARGET_DIGEST,
 } from "../test/demo-fixtures.ts";
 const VISUAL_KINDS = ["diff", "expected", "observed", "recovered"] as const;
@@ -169,6 +168,22 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("redirects the legacy workspace to the canonical product without legacy API calls", async ({
+  page,
+}) => {
+  const requestedPaths: string[] = [];
+  page.on("request", (request) => requestedPaths.push(new URL(request.url()).pathname));
+
+  await page.goto("/workspace?source=legacy#proof");
+
+  await expect(page).toHaveURL("http://127.0.0.1:4173/");
+  await expect(
+    page.getByRole("heading", { name: /successful render can still be/u }),
+  ).toBeVisible();
+  expect(requestedPaths.some((path) => path.startsWith("/v1/session"))).toBe(false);
+  expect(requestedPaths.some((path) => path.startsWith("/v1/incidents"))).toBe(false);
+});
+
 test("completes the visual-first recovery flow with exact bound approval", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const { mutations } = await installDemoApi(page);
@@ -176,8 +191,10 @@ test("completes the visual-first recovery flow with exact bound approval", async
   page.on("request", (request) => requestUrls.push(request.url()));
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: /See the fault/u })).toBeVisible();
-  await page.getByRole("button", { name: "Investigate with Gemini + Grafana" }).click();
+  await expect(
+    page.getByRole("heading", { name: /successful render can still be/u }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Investigate the color fault" }).click();
 
   await expect(page.getByRole("heading", { name: "Expected versus observed" })).toBeFocused();
   const expectedVisual = page.getByAltText("Declared expected output");
@@ -193,9 +210,12 @@ test("completes the visual-first recovery flow with exact bound approval", async
   await expect(
     page.getByRole("heading", { name: "Same configuration, different resolved LUT" }),
   ).toBeVisible();
-  await expect(page.getByText("Nominal configuration hashes match")).toBeVisible();
-  await expect(page.getByText("Resolved LUT hashes differ")).toBeVisible();
-  await expect(page.locator(".shot-command")).toHaveCount(5);
+  await expect(page.getByText("Root cause confirmed")).toBeVisible();
+  await expect(page.getByText("Declared configuration ruled out")).toBeVisible();
+  await expect(page.getByText("Worker-only explanation rejected")).toBeVisible();
+  await expect(page.locator(".shot-plan-review .shot-command")).toHaveCount(5);
+  expect(await page.locator("main").innerText()).not.toContain("sha256:");
+  await expect(page.getByText(PLAN_DIGEST, { exact: true }).first()).toBeHidden();
 
   const accessibility = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
@@ -213,7 +233,7 @@ test("completes the visual-first recovery flow with exact bound approval", async
   await page.getByLabel("Retype review nonce").fill(NONCE);
   await page.getByLabel("Type approval phrase").fill("APPROVE_COLORTRACE_SIMULATOR_ACTION");
   await page
-    .getByLabel(/I approve only the returned run, incident, plan, and target bindings/u)
+    .getByLabel(/I approve only the displayed targets and keep the exclusions protected/u)
     .check();
   await expect(approve).toBeEnabled();
   await approve.click();
@@ -229,17 +249,14 @@ test("completes the visual-first recovery flow with exact bound approval", async
   await expect(
     page
       .getByRole("region", { name: "Recovered output", exact: true })
-      .getByText("Safe digest", { exact: true }),
+      .getByText("Protected outputs verified.", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByText(shortDigestForTest(SAFE_PROOF_DIGEST), { exact: true })).toHaveCount(
-    2,
-  );
   await page.getByLabel(/I verified the recovered image/u).check();
   await page.getByRole("button", { name: "Verify and close recovery" }).click();
 
-  await expect(page.getByRole("heading", { name: /durable receipt/u })).toBeVisible();
-  await expect(page.getByText(shortDigestForTest(receipt().receipt_sha256))).toBeVisible();
-  await page.getByText("Technical details", { exact: true }).click();
+  await expect(page.getByRole("heading", { name: /verified receipt/u })).toBeVisible();
+  await expect(page.getByText("Recorded and verified", { exact: true })).toBeVisible();
+  await page.getByText("Technical proof and provenance", { exact: true }).click();
   await expect(page.getByText("log.correlated-events", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("query_loki_logs", { exact: true }).first()).toBeVisible();
   await expect(
@@ -281,7 +298,7 @@ test("keeps the clean-session flow usable on a small reduced-motion viewport", a
 
   await page.keyboard.press("Tab");
   await expect(page.getByRole("link", { name: "Skip to recovery workspace" })).toBeFocused();
-  await page.getByRole("button", { name: "Investigate with Gemini + Grafana" }).click();
+  await page.getByRole("button", { name: "Investigate the color fault" }).click();
   await expect(page.getByRole("heading", { name: "Expected versus observed" })).toBeFocused();
   const expectedVisual = page.getByAltText("Declared expected output");
   const observedVisual = page.getByAltText(/Observed output with a visible color shift/u);
@@ -312,7 +329,7 @@ test("replays the persisted start request after response loss and reload", async
   });
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Investigate with Gemini + Grafana" }).click();
+  await page.getByRole("button", { name: "Investigate the color fault" }).click();
   await expect(page.getByRole("alert")).toContainText("service is unavailable");
   const pending = await page.evaluate(() => ({
     nonce: sessionStorage.getItem("colortrace.demo.approval-nonce"),
@@ -350,7 +367,7 @@ test("replays the persisted reset after response loss and reload", async ({ page
   await page.evaluate((runId) => sessionStorage.setItem("colortrace.demo.run-id", runId), RUN_ID);
   await page.reload();
 
-  await expect(page.getByRole("heading", { name: /durable receipt/u })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /verified receipt/u })).toBeVisible();
   await page.getByRole("button", { name: "Reset for another run" }).click();
   await expect(page.getByRole("alert")).toContainText("result is uncertain");
   const pending = await page.evaluate(() => ({
@@ -379,7 +396,7 @@ test("recovers an active conflict without inheriting an approval nonce", async (
   await installDemoApi(page, { startConflict: "demo-active-run-exists" });
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Investigate with Gemini + Grafana" }).click();
+  await page.getByRole("button", { name: "Investigate the color fault" }).click();
 
   await expect(
     page.getByRole("heading", { name: "Review cannot continue in this browser" }),
@@ -400,9 +417,9 @@ test("recovers a reset-required conflict to its terminal receipt", async ({ page
   });
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Investigate with Gemini + Grafana" }).click();
+  await page.getByRole("button", { name: "Investigate the color fault" }).click();
 
-  await expect(page.getByRole("heading", { name: /durable receipt/u })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /verified receipt/u })).toBeVisible();
   await expect(page.getByRole("button", { name: "Reset for another run" })).toBeEnabled();
   expect(await page.evaluate(() => sessionStorage.getItem("colortrace.demo.run-id"))).toBe(RUN_ID);
 });
@@ -410,7 +427,7 @@ test("recovers a reset-required conflict to its terminal receipt", async ({ page
 test("resumes with the session nonce without leaking or reusing it", async ({ page }) => {
   const { mutations } = await installDemoApi(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "Investigate with Gemini + Grafana" }).click();
+  await page.getByRole("button", { name: "Investigate the color fault" }).click();
 
   expect(await page.evaluate(() => sessionStorage.getItem("colortrace.demo.approval-nonce"))).toBe(
     NONCE,
@@ -421,7 +438,7 @@ test("resumes with the session nonce without leaking or reusing it", async ({ pa
   await page.getByLabel("Retype review nonce").fill(NONCE);
   await page.getByLabel("Type approval phrase").fill("APPROVE_COLORTRACE_SIMULATOR_ACTION");
   await page
-    .getByLabel(/I approve only the returned run, incident, plan, and target bindings/u)
+    .getByLabel(/I approve only the displayed targets and keep the exclusions protected/u)
     .check();
   await page.getByRole("button", { name: "Approve recovery action" }).click();
 
@@ -434,7 +451,3 @@ test("resumes with the session nonce without leaking or reusing it", async ({ pa
   await expect(page.getByRole("button", { name: "Approve recovery action" })).toHaveCount(0);
   expect(mutations.filter((request) => JSON.stringify(request).includes(NONCE))).toHaveLength(2);
 });
-
-function shortDigestForTest(value: string): string {
-  return `${value.slice(0, 15)}…${value.slice(-8)}`;
-}

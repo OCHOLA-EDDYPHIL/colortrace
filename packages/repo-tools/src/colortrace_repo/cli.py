@@ -8,7 +8,6 @@ from pathlib import Path
 
 from colortrace_repo.actions import check_actions
 from colortrace_repo.ai_policy import check_ai_policy
-from colortrace_repo.binary_assets import check_binary_assets
 from colortrace_repo.common import Finding, sorted_findings
 from colortrace_repo.contracts import check_contracts
 from colortrace_repo.dependencies import check_dependencies
@@ -92,12 +91,6 @@ def _parser() -> argparse.ArgumentParser:
 
     actions = subparsers.add_parser("actions", help="validate immutable action references")
     _add_common_arguments(actions)
-
-    binaries = subparsers.add_parser(
-        "binary-assets", help="validate registered binary asset provenance"
-    )
-    _add_common_arguments(binaries)
-    binaries.add_argument("--policy", metavar="PATH", help="binary asset policy JSON")
 
     deployment = subparsers.add_parser(
         "deployment", help="validate immutable Google Cloud deployment sources"
@@ -193,9 +186,6 @@ def _run(args: argparse.Namespace, root: Path) -> list[Finding]:
         return check_ai_policy(root, _path(root, args.policy))
     if args.command == "actions":
         return check_actions(root)
-    if args.command == "binary-assets":
-        policy = _unresolved_path(root, args.policy) if args.policy is not None else None
-        return check_binary_assets(root, policy)
     if args.command == "deployment":
         return check_deployment(root)
     if args.command == "distribution":
@@ -257,7 +247,6 @@ def _run(args: argparse.Namespace, root: Path) -> list[Finding]:
         findings.extend(check_dependencies(root))
         findings.extend(check_ai_policy(root))
         findings.extend(check_actions(root))
-        findings.extend(check_binary_assets(root))
         findings.extend(check_deployment(root))
         findings.extend(check_package_metadata(root))
         return sorted_findings(findings)

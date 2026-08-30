@@ -286,11 +286,7 @@ def _bundle_components(
         )
     if profile == "public-readonly":
         components.append(_component("language-runtime", "Node.js", "22.12.0", source=source))
-        for name in (
-            "@colortrace/api-client",
-            "@colortrace/web",
-            "@colortrace/workspace-model",
-        ):
+        for name in ("@colortrace/web",):
             components.append(
                 _component("bundled-first-party-javascript", name, "0.0.0", source=source)
             )
@@ -501,12 +497,10 @@ class FinalImageEvidenceTest(unittest.TestCase):
                 )
                 self.assertTrue(coverage["source_inputs"])
             web_coverage = json.loads((output / "images" / "web" / "coverage.json").read_text())
-            self.assertEqual(web_coverage["counts"]["bundle_only"], 8)
+            self.assertEqual(web_coverage["counts"]["bundle_only"], 6)
             self.assertTrue(
                 {
-                    "@colortrace/api-client",
                     "@colortrace/web",
-                    "@colortrace/workspace-model",
                     "react",
                     "react-dom",
                     "scheduler",

@@ -20,7 +20,7 @@
         {
           "role": "lockfile",
           "path": "pnpm-lock.yaml",
-          "sha256": "0c18abd881fee603a17641874d41b19422bcdc6b569220c4bc2c4fe9a55d8d7c"
+          "sha256": "a3f8e0cb0ffa4b3e980a162b0336a620ef4af8ece06130f48c3febbaf74178b4"
         },
         {
           "role": "openapi",
