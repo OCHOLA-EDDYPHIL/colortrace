@@ -148,12 +148,12 @@ class DistributionTest(unittest.TestCase):
                 findings,
             )
 
-    def test_wheel_check_requires_all_thirteen_exact_license_payloads(self) -> None:
+    def test_wheel_check_requires_all_twelve_exact_license_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
             projects = self._wheel_projects()
             names = list(projects)
-            self.assertEqual(len(projects), 13)
+            self.assertEqual(len(projects), 12)
             wheels = {
                 name: self._write_wheel(directory, name, license_path)
                 for name, license_path in projects.items()
