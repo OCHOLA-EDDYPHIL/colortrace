@@ -29,7 +29,6 @@ EXPECTED_UV_CACHE_SOURCES = {
     "colortrace_investigation-1.0.0.dist-info/uv_cache.json": (
         "file:///source/packages/investigation"
     ),
-    "colortrace_persistence-0.1.0.dist-info/uv_cache.json": ("file:///source/packages/persistence"),
     "colortrace_recovery-0.1.0.dist-info/uv_cache.json": ("file:///source/packages/recovery"),
     "colortrace_response_plans-1.0.0.dist-info/uv_cache.json": (
         "file:///source/packages/response-plans"

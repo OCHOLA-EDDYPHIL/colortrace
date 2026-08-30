@@ -232,7 +232,7 @@ def _bundle_components(
             "license_sources": [],
         },
     ]
-    if profile in {"private-full", "hosted-readonly"}:
+    if profile == "private-full":
         components.extend(
             [
                 _component("language-runtime", "Python", "3.12.7", source=source),
@@ -393,7 +393,7 @@ def _raw_sbom(profile: str) -> dict[str, Any]:
         ),
         _scanner_component("busybox", "1.36.1-r29", "alpine", license_expression="MIT"),
     ]
-    if profile in {"private-full", "hosted-readonly"}:
+    if profile == "private-full":
         components.extend(
             [
                 _scanner_component(".python-rundeps", "20240801.120000", "alpine"),
@@ -448,7 +448,6 @@ class FinalImageEvidenceTest(unittest.TestCase):
     def test_builds_deterministic_bound_evidence_without_changing_raw_output(self) -> None:
         profiles = {
             "runtime": "private-full",
-            "hosted-runtime": "hosted-readonly",
             "web": "public-readonly",
         }
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -518,10 +517,10 @@ class FinalImageEvidenceTest(unittest.TestCase):
             self.assertIn("colortrace:notice:sources/LICENSE:sha256", property_names)
 
     def test_reconciliation_is_order_independent_and_fails_closed_on_mutations(self) -> None:
-        profile = "hosted-readonly"
+        profile = "private-full"
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            bundle_path, bundle = _write_bundle(root, "hosted", profile)
+            bundle_path, bundle = _write_bundle(root, "runtime", profile)
             _, bundle_record, bundle_findings = _verify_bundle(
                 bundle_path,
                 candidate_sha=CANDIDATE,
@@ -530,6 +529,12 @@ class FinalImageEvidenceTest(unittest.TestCase):
             )
             self.assertEqual(bundle_findings, [])
             raw = _raw_sbom(profile)
+
+            def scanner_demo(document: dict[str, Any]) -> dict[str, Any]:
+                return next(
+                    value for value in document["components"] if value["name"] == "demo-package"
+                )
+
             enriched, coverage, findings = _reconcile(raw, bundle, bundle_record, profile)
             self.assertEqual(findings, [])
             self.assertEqual(coverage["status"], "pass")
@@ -574,7 +579,7 @@ class FinalImageEvidenceTest(unittest.TestCase):
                 if value["name"] == "Demo_Package"
             )["license_expression"] = "MIT AND Apache-2.0"
             split_scanner = copy.deepcopy(raw)
-            split_component = split_scanner["components"][-1]
+            split_component = scanner_demo(split_scanner)
             split_component["licenses"] = [
                 {"license": {"id": "MIT"}},
                 {"license": {"id": "Apache-2.0"}},
@@ -633,7 +638,7 @@ class FinalImageEvidenceTest(unittest.TestCase):
                         if value["name"] == "Demo_Package"
                     )["license_expression"] = bundle_identifier
                     alias_raw = copy.deepcopy(raw)
-                    alias_raw["components"][-1]["licenses"] = [{"license": {"id": scanner_alias}}]
+                    scanner_demo(alias_raw)["licenses"] = [{"license": {"id": scanner_alias}}]
                     _, alias_coverage, alias_findings = _reconcile(
                         alias_raw, alias_bundle, bundle_record, profile
                     )
@@ -650,7 +655,7 @@ class FinalImageEvidenceTest(unittest.TestCase):
                 if value["name"] == "Demo_Package"
             )["license_expression"] = "MIT AND Public-Domain"
             public_domain_raw = copy.deepcopy(raw)
-            public_domain_raw["components"][-1]["licenses"] = [
+            scanner_demo(public_domain_raw)["licenses"] = [
                 {"license": {"id": "MIT"}},
                 {"license": {"id": "Public-Domain"}},
             ]
@@ -670,7 +675,7 @@ class FinalImageEvidenceTest(unittest.TestCase):
                 if value["name"] == "Demo_Package"
             )["license_expression"] = "X11"
             collapsed_alias_raw = copy.deepcopy(raw)
-            collapsed_alias_raw["components"][-1]["licenses"] = [
+            scanner_demo(collapsed_alias_raw)["licenses"] = [
                 {"license": {"id": "X11"}},
                 {"license": {"id": "X-11"}},
             ]
@@ -702,7 +707,7 @@ class FinalImageEvidenceTest(unittest.TestCase):
             )
             self.assertEqual(legacy_bundle_findings, [])
             legacy_raw = copy.deepcopy(raw)
-            legacy_raw["components"][-1]["licenses"] = [
+            scanner_demo(legacy_raw)["licenses"] = [
                 {"license": {"id": "MIT"}},
                 {"license": {"id": "Apache-2.0"}},
             ]
@@ -718,7 +723,7 @@ class FinalImageEvidenceTest(unittest.TestCase):
                 value for value in legacy_enriched["components"] if value["name"] == "demo-package"
             )
             self.assertCountEqual(
-                legacy_component["licenses"], legacy_raw["components"][-1]["licenses"]
+                legacy_component["licenses"], scanner_demo(legacy_raw)["licenses"]
             )
 
             legacy_without_review = copy.deepcopy(legacy_bundle)
@@ -775,7 +780,7 @@ class FinalImageEvidenceTest(unittest.TestCase):
             self.assertEqual(raised.exception.code, "image.coverage.invalid")
 
             version = copy.deepcopy(raw)
-            version["components"][-1]["version"] = "2.0"
+            scanner_demo(version)["version"] = "2.0"
             _, _, findings = _reconcile(version, bundle, bundle_record, profile)
             self.assertIn("image.coverage.version", {value.code for value in findings})
 
@@ -784,7 +789,7 @@ class FinalImageEvidenceTest(unittest.TestCase):
                 value for value in conflict_bundle["components"] if value["name"] == "Demo_Package"
             )["license_expression"] = "MIT OR Apache-2.0"
             conflict = copy.deepcopy(raw)
-            conflict["components"][-1]["licenses"] = [{"expression": "MIT AND Apache-2.0"}]
+            scanner_demo(conflict)["licenses"] = [{"expression": "MIT AND Apache-2.0"}]
             conflict_enriched, conflict_coverage, findings = _reconcile(
                 conflict, conflict_bundle, bundle_record, profile
             )
@@ -798,13 +803,13 @@ class FinalImageEvidenceTest(unittest.TestCase):
             self.assertEqual(scanner_component["licenses"], [{"expression": "MIT AND Apache-2.0"}])
 
             unknown = copy.deepcopy(raw)
-            unknown["components"][-1]["properties"][0]["value"] = "ruby-pkg"
+            scanner_demo(unknown)["properties"][0]["value"] = "ruby-pkg"
             with self.assertRaisesRegex(EvidenceError, "unknown scanner class") as raised:
                 _reconcile(unknown, bundle, bundle_record, profile)
             self.assertEqual(raised.exception.code, "image.coverage.unknown-class")
 
     def test_bundle_verifier_rejects_stale_duplicate_and_checksum_mutations(self) -> None:
-        profile = "hosted-readonly"
+        profile = "private-full"
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             stale, _ = _write_bundle(
@@ -946,18 +951,18 @@ class FinalImageEvidenceTest(unittest.TestCase):
             "\nsecurity-evidence: prepare-cache\n", maxsplit=1
         )[0]
         self.assertIn('source_date_epoch="$$(git show -s --format=%ct', recipe)
-        self.assertEqual(recipe.count("docker buildx build --pull=false --provenance=false"), 4)
-        self.assertEqual(recipe.count("--build-arg SOURCE_DATE_EPOCH="), 4)
-        self.assertEqual(recipe.count("rewrite-timestamp=true"), 4)
-        self.assertEqual(recipe.count("docker load --input"), 4)
+        self.assertEqual(recipe.count("docker buildx build --pull=false --provenance=false"), 3)
+        self.assertEqual(recipe.count("--build-arg SOURCE_DATE_EPOCH="), 3)
+        self.assertEqual(recipe.count("rewrite-timestamp=true"), 3)
+        self.assertEqual(recipe.count("docker load --input"), 3)
         self.assertEqual(recipe.count("--no-cache-filter mcp-grafana"), 2)
         self.assertEqual(recipe.count('images/$$name/vulnerability.json"'), 1)
         self.assertIn("--scanners vuln --severity HIGH,CRITICAL --exit-code 1", recipe)
         self.assertNotIn("--ignorefile", recipe)
         self.assertNotIn("docker image save", recipe)
 
-        runtime = (REPOSITORY_ROOT / "Dockerfile.runtime").read_text(encoding="utf-8")
-        self.assertEqual(runtime.count("ARG SOURCE_DATE_EPOCH"), 6)
+        runtime = (REPOSITORY_ROOT / "containers/Dockerfile.runtime").read_text(encoding="utf-8")
+        self.assertEqual(runtime.count("ARG SOURCE_DATE_EPOCH"), 5)
         self.assertIn("UV_COMPILE_BYTECODE=0", runtime)
         self.assertIn("PYTHONDONTWRITEBYTECODE=1", runtime)
         self.assertIn("colortrace_repo/reproducible_venv.py", runtime)
@@ -1023,7 +1028,7 @@ class FinalImageEvidenceTest(unittest.TestCase):
         self.assertIn("/opt/colortrace-config/investigation/model-profile.json", runtime)
         self.assertNotIn("COPY --from=build /tmp/colortrace-oracle", runtime)
 
-        web = (REPOSITORY_ROOT / "Dockerfile.web").read_text(encoding="utf-8")
+        web = (REPOSITORY_ROOT / "containers/Dockerfile.web").read_text(encoding="utf-8")
         self.assertEqual(web.count("ARG SOURCE_DATE_EPOCH"), 5)
 
     def test_archive_verifier_rejects_yarn_and_blob_mutations(self) -> None:

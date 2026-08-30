@@ -1,5 +1,6 @@
 *
-!Dockerfile.web
+!containers/
+!containers/Dockerfile.web
 !LICENSE
 !package.json
 !pnpm-lock.yaml

@@ -54,7 +54,6 @@ COPY packages/evaluation/pyproject.toml packages/evaluation/pyproject.toml
 COPY packages/fixture-generator/pyproject.toml packages/fixture-generator/pyproject.toml
 COPY packages/grafana-mcp/pyproject.toml packages/grafana-mcp/pyproject.toml
 COPY packages/investigation/pyproject.toml packages/investigation/pyproject.toml
-COPY packages/persistence/pyproject.toml packages/persistence/pyproject.toml
 COPY packages/recovery/pyproject.toml packages/recovery/pyproject.toml
 COPY packages/repo-tools/pyproject.toml packages/repo-tools/pyproject.toml
 COPY packages/response-plans/pyproject.toml packages/response-plans/pyproject.toml
@@ -197,26 +196,4 @@ RUN test "$(/usr/local/bin/mcp-grafana --version)" = 1.1.0 \
         --mcp-license /usr/share/licenses/mcp-grafana/LICENSE \
         --go-license /usr/share/licenses/go/LICENSE
 LABEL org.colortrace.runtime-profile="private-full"
-USER colortrace
-
-FROM runtime-base AS hosted-runtime
-ARG SOURCE_COMMIT
-ARG SOURCE_TREE
-ARG SOURCE_DATE_EPOCH
-USER root
-RUN python /usr/local/libexec/colortrace-image-licenses.py runtime \
-        --output /usr/share/colortrace/licenses \
-        --profile hosted-readonly \
-        --source-commit "$SOURCE_COMMIT" \
-        --source-tree "$SOURCE_TREE" \
-        --base-image python@sha256:a190708a2dec1bd18b1decb539f8e8f5407abaa9bf39cacda583f7f8c11db322 \
-        --root-license /usr/share/licenses/colortrace/LICENSE \
-        --apk-database /lib/apk/db/installed \
-        --os-release /usr/lib/os-release \
-        --python-site-packages /opt/colortrace/lib/python3.12/site-packages \
-        --global-python-site-packages /usr/local/lib/python3.12/site-packages \
-        --ensurepip-wheel /usr/local/lib/python3.12/ensurepip/_bundled/pip-25.0.1-py3-none-any.whl \
-        --python-license /usr/local/lib/python3.12/LICENSE.txt \
-        --uv-lock /opt/colortrace-config/uv.lock
-LABEL org.colortrace.runtime-profile="hosted-readonly"
 USER colortrace

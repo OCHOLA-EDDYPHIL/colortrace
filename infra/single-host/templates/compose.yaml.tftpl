@@ -250,15 +250,10 @@ services:
       - ALL
     environment:
       PORT: "8080"
-      COLORTRACE_API_ORIGIN: "https://runtime.internal:8443"
-      COLORTRACE_API_AUDIENCE: "https://runtime.internal:8443"
-      NODE_EXTRA_CA_CERTS: "/etc/colortrace/caddy-root.crt"
     expose:
       - "8080"
     tmpfs:
       - /tmp:size=32m,mode=1777
-    volumes:
-      - /srv/colortrace/config/caddy-root.crt:/etc/colortrace/caddy-root.crt:ro
     healthcheck:
       test: ["CMD", "node", "-e", "require('node:http').get('http://127.0.0.1:8080/', (response) => process.exit(response.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 2s

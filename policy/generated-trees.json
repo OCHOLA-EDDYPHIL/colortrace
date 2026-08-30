@@ -102,13 +102,5 @@
       ]
     }
   ],
-  "files": [
-    {
-      "path": "packages/api/src/colortrace_api/assets/hosted-read-projection-v1.json",
-      "sha256": "2a98862b9fd923466b86fe23624c255df9243014b96232efaf279a344b398873",
-      "provenance_pointer": "#/provenance",
-      "license": "Apache-2.0",
-      "redistribution_review": "owner-review-required"
-    }
-  ]
+  "files": []
 }

@@ -1,5 +1,6 @@
 *
-!Dockerfile.caddy
+!containers/
+!containers/Dockerfile.caddy
 !config/caddy/caddy.lock.json
 !config/caddy/build/go.mod
 !config/caddy/build/go.sum

@@ -13,15 +13,12 @@ dependencies = [
     "colortrace-fixture",
     "colortrace-grafana-mcp",
     "colortrace-investigation",
-    "colortrace-persistence",
     "colortrace-recovery",
     "colortrace-response-plans",
     "colortrace-simulator",
     "colortrace-telemetry",
     "colortrace-vertical-slice",
     "fastapi==0.141.1",
-    "google-auth[requests]==2.56.3",
-    "jsonschema==4.25.1",
     "pyjwt[crypto]==2.13.0",
     "uvicorn==0.52.1",
 ]
@@ -33,7 +30,6 @@ colortrace-demo = "colortrace_api.demo:main"
 colortrace-fixture = {workspace = true}
 colortrace-grafana-mcp = {workspace = true}
 colortrace-investigation = {workspace = true}
-colortrace-persistence = {workspace = true}
 colortrace-recovery = {workspace = true}
 colortrace-response-plans = {workspace = true}
 colortrace-simulator = {workspace = true}

@@ -27,7 +27,7 @@ variables {
       region          = "us-central1"
       service_account = "projects/colortrace-test-project/serviceAccounts/ct-singlehost-builder@colortrace-test-project.iam.gserviceaccount.com"
       registry        = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images"
-      config_sha256   = "sha256:9d22ac39c270d2534c1c930aceac9e3b4fdcce1d8a9a3339aec8a27720809947"
+      config_sha256   = "sha256:a1479a6f614ce006edc83131562934e0c05307f88fbc90ddfeac8c13f6d94fe9"
       create_time     = "2026-08-23T01:00:00Z"
       finish_time     = "2026-08-23T01:10:00Z"
     }
@@ -65,7 +65,7 @@ variables {
       report_set_sha256 = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
     }
   }
-  deployment_artifact_binding_sha256 = "sha256:5371d678215ff64f062ac959b080975f1b0a06866186e0604b895447271b6dc6"
+  deployment_artifact_binding_sha256 = "sha256:1ac322eb434aa96769db30b44c5cd23debd2142598ae83e7bbdcd2a3b6294ae3"
 }
 
 run "foundation_has_no_billable_host" {
@@ -319,7 +319,7 @@ run "bounded_single_host_is_admitted" {
       && google_compute_instance.host[0].metadata["enable-oslogin"] == "TRUE"
       && google_compute_instance.host[0].metadata["block-project-ssh-keys"] == "TRUE"
       && google_compute_instance.host[0].metadata["serial-port-enable"] == "FALSE"
-      && google_compute_instance.host[0].metadata["colortrace-artifact-binding-sha256"] == "sha256:5371d678215ff64f062ac959b080975f1b0a06866186e0604b895447271b6dc6"
+      && google_compute_instance.host[0].metadata["colortrace-artifact-binding-sha256"] == "sha256:1ac322eb434aa96769db30b44c5cd23debd2142598ae83e7bbdcd2a3b6294ae3"
       && google_compute_instance.host[0].metadata["colortrace-build-manifest-sha256"] == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       && google_compute_instance.host[0].metadata["colortrace-scan-binding-sha256"] == "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       && google_compute_instance.host[0].metadata["colortrace-runtime-build-binding-sha256"] == "sha256:94dcf637a46182cd88090369a68dd2295a43df1fcb1e0d3ce885cd8d62debbba"
@@ -440,15 +440,17 @@ run "bounded_single_host_is_admitted" {
       && strcontains(local.compose_yaml, "COLORTRACE_GRAFANA_TOKEN_FILE: \"/run/colortrace-private/grafana-viewer-token\"")
       && !strcontains(local.compose_yaml, "/var/run/colortrace-private")
       && strcontains(local.compose_yaml, "http://127.0.0.1:8080/health/startup")
-      && strcontains(local.compose_yaml, "COLORTRACE_API_ORIGIN: \"https://runtime.internal:8443\"")
-      && strcontains(local.compose_yaml, "COLORTRACE_API_AUDIENCE: \"https://runtime.internal:8443\"")
+      && !strcontains(local.compose_yaml, "COLORTRACE_API_ORIGIN")
+      && !strcontains(local.compose_yaml, "COLORTRACE_API_AUDIENCE")
       && strcontains(local.compose_yaml, "COLORTRACE_GRAFANA_URL: \"https://grafana.internal:8443\"")
+      && strcontains(local.compose_yaml, "COLORTRACE_GRAFANA_CA_FILE: \"/etc/colortrace/caddy-root.crt\"")
+      && length(regexall("/srv/colortrace/config/caddy-root.crt:/etc/colortrace/caddy-root.crt:ro", local.compose_yaml)) == 1
       && strcontains(local.compose_yaml, "ipv4_address: 172.30.0.2")
       && strcontains(local.compose_yaml, "ipv4_address: 172.30.0.10")
       && strcontains(local.compose_yaml, "subnet: 172.30.0.0/24")
       && strcontains(local.compose_yaml, "ip_range: 172.30.0.128/25")
       && strcontains(local.compose_yaml, "    dns:\n      - 8.8.8.8")
-      && strcontains(local.compose_yaml, "NODE_EXTRA_CA_CERTS: \"/etc/colortrace/caddy-root.crt\"")
+      && !strcontains(local.compose_yaml, "NODE_EXTRA_CA_CERTS")
       && strcontains(local.compose_yaml, "OTEL_EXPORTER_OTLP_ENDPOINT: \"http://otel.internal:4318\"")
       && !strcontains(local.compose_yaml, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
       && !strcontains(local.compose_yaml, "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
@@ -501,10 +503,10 @@ run "bounded_single_host_is_admitted" {
       && output.deployment_contract.lifetime_hours == 168
       && output.deployment_contract.estimated_cost_usd == 24
       && output.deployment_contract.public_url == "https://203-0-113-42.sslip.io"
-      && output.deployment_contract.artifact_hashes.deployment_artifact_binding_sha256 == "sha256:5371d678215ff64f062ac959b080975f1b0a06866186e0604b895447271b6dc6"
+      && output.deployment_contract.artifact_hashes.deployment_artifact_binding_sha256 == "sha256:1ac322eb434aa96769db30b44c5cd23debd2142598ae83e7bbdcd2a3b6294ae3"
       && output.deployment_contract.artifact_hashes.runtime_build_binding_sha256 == "sha256:94dcf637a46182cd88090369a68dd2295a43df1fcb1e0d3ce885cd8d62debbba"
       && output.deployment_contract.scanner.image == local.trivy_image
-      && output.resume_identity.artifact_binding_sha256 == "sha256:5371d678215ff64f062ac959b080975f1b0a06866186e0604b895447271b6dc6"
+      && output.resume_identity.artifact_binding_sha256 == "sha256:1ac322eb434aa96769db30b44c5cd23debd2142598ae83e7bbdcd2a3b6294ae3"
       && output.resume_identity.member == "serviceAccount:resume@example.test"
     )
     error_message = "The deployment output must preserve its bounded lifecycle and complete artifact hash contract."

@@ -1,8 +1,9 @@
 *
-!Dockerfile.dev
-!Dockerfile.demo
-!Dockerfile.runtime
-!Dockerfile.web
+!containers/
+!containers/Dockerfile.dev
+!containers/Dockerfile.demo
+!containers/Dockerfile.runtime
+!containers/Dockerfile.web
 !LICENSE
 !package.json
 !pnpm-lock.yaml

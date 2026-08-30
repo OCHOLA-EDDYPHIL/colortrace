@@ -19,7 +19,6 @@ from colortrace_repo.common import (
 )
 
 _TREE = "packages/api-client/src/generated"
-_FIXTURE = "packages/api/src/colortrace_api/assets/hosted-read-projection-v1.json"
 _COMMAND = "pnpm --filter @colortrace/api-client run generate"
 _INPUTS = {
     "config": "packages/api-client/openapi-ts.config.ts",
@@ -123,18 +122,6 @@ def _records(value: object, keys: set[str]) -> list[dict[str, Any]] | None:
 
 def _bad(display: str, code: str) -> Finding:
     return Finding(display, code, "generated provenance policy is invalid")
-
-
-def _pointer(document: Any, pointer: str) -> Any:
-    if not pointer.startswith("#/"):
-        raise ValueError
-    current = document
-    for raw in pointer[2:].split("/"):
-        key = raw.replace("~1", "/").replace("~0", "~")
-        if not isinstance(current, dict) or key not in current:
-            raise ValueError
-        current = current[key]
-    return current
 
 
 def _generator_source(root: Path) -> dict[str, str] | None:
@@ -259,34 +246,7 @@ def check_generated_manifest(root: Path, manifest_path: Path | None = None) -> l
             if registered != actual:
                 findings.append(_bad(_TREE, "generated.output.mismatch"))
 
-    file_keys = {"path", "sha256", "provenance_pointer", "license", "redistribution_review"}
     files = document["files"]
-    if not isinstance(files, list) or len(files) != 1 or not _exact(files[0], file_keys):
+    if files != []:
         findings.append(_bad(display, "generated.file.invalid"))
-    else:
-        fixture = files[0]
-        fixture_path = contained_path(root, fixture["path"])
-        if fixture["path"] != _FIXTURE or fixture_path is None or not fixture_path.is_file():
-            findings.append(_bad(display, "generated.file.path"))
-        elif not _sha(fixture["sha256"]):
-            findings.append(_bad(display, "generated.file.digest"))
-        elif hashlib.sha256(fixture_path.read_bytes()).hexdigest() != fixture["sha256"]:
-            findings.append(_bad(_FIXTURE, "generated.file.mismatch"))
-        if not is_canonical_spdx(fixture["license"]):
-            findings.append(_bad(display, "generated.license.invalid"))
-        review = fixture["redistribution_review"]
-        if not isinstance(review, str) or review not in REDISTRIBUTION_REVIEW_STATES:
-            findings.append(_bad(display, "generated.redistribution.invalid"))
-        try:
-            if (
-                fixture_path is None
-                or not isinstance(fixture["provenance_pointer"], str)
-                or fixture["provenance_pointer"] != "#/provenance"
-                or not isinstance(
-                    _pointer(load_json(fixture_path), fixture["provenance_pointer"]), dict
-                )
-            ):
-                raise ValueError
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
-            findings.append(_bad(_FIXTURE, "generated.provenance.invalid"))
     return sorted_findings(findings)

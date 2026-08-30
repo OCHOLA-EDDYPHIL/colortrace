@@ -12,7 +12,7 @@ from pathlib import Path
 SOURCE_ROOT = Path(__file__).parents[3]
 SCRIPT = SOURCE_ROOT / "infra" / "single-host" / "scripts" / "build-images.sh"
 BUILD_CONFIG = SOURCE_ROOT / "infra" / "single-host" / "cloudbuild.images.yaml"
-OBSERVABILITY_DOCKERFILE = SOURCE_ROOT / "Dockerfile.observability"
+OBSERVABILITY_DOCKERFILE = SOURCE_ROOT / "containers/Dockerfile.observability"
 DOCKERFILE_FRONTEND = (
     "# syntax=docker/dockerfile:1.7.0@sha256:"
     "dbbd5e059e8a07ff7ea6233b213b36aa516b4c53c645f1817a4dd18b83cbea56"
@@ -27,7 +27,7 @@ class BuildImagesTests(unittest.TestCase):
     def test_checksum_dockerfiles_pin_compatible_frontend(self) -> None:
         checksum_dockerfiles = [
             dockerfile
-            for dockerfile in SOURCE_ROOT.glob("Dockerfile*")
+            for dockerfile in SOURCE_ROOT.glob("containers/Dockerfile*")
             if "ADD --checksum=sha256:" in dockerfile.read_text(encoding="utf-8")
         ]
         self.assertGreater(len(checksum_dockerfiles), 0)
@@ -262,7 +262,7 @@ raise SystemExit(2)
                     manifest["images"]["runtime"]["dockerfile"],
                     manifest["images"]["runtime"]["target"],
                 ),
-                ("Dockerfile.runtime", "runtime"),
+                ("containers/Dockerfile.runtime", "runtime"),
             )
             calls = [json.loads(line) for line in log.read_text().splitlines()]
             self.assertEqual(calls[0][:2], ["builds", "submit"])

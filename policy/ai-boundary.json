@@ -9,11 +9,9 @@
       "mcp"
     ],
     "allowed_non_ai_runtime_packages": [
-      "cloud-sql-python-connector",
       "colortrace-api",
       "colortrace-fixture",
       "colortrace-grafana-mcp",
-      "colortrace-persistence",
       "colortrace-recovery",
       "colortrace-response-plans",
       "colortrace-simulator",
@@ -21,15 +19,12 @@
       "colortrace-vertical-slice",
       "colortrace-validator",
       "fastapi",
-      "google-auth",
-      "google-cloud-storage",
       "jsonschema",
       "opencolorio",
       "opentelemetry-api",
       "opentelemetry-exporter-otlp-proto-http",
       "opentelemetry-sdk",
       "packaging",
-      "pg8000",
       "pyjwt",
       "pyyaml",
       "uvicorn"

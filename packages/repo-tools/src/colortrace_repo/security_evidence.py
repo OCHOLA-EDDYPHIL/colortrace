@@ -19,7 +19,6 @@ _DIGEST = re.compile(r"^[0-9a-f]{40}$")
 _IMAGE_DIGEST = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IMAGE_PROFILES = {
-    "hosted-runtime": "hosted-readonly",
     "runtime": "private-full",
     "web": "public-readonly",
 }
@@ -36,7 +35,7 @@ _SOURCE_REPORTS = (
 )
 _IMAGE_REPORTS = tuple(
     f"images/{image}/{report}"
-    for image in ("hosted-runtime", "runtime", "web")
+    for image in ("runtime", "web")
     for report in (
         "coverage.json",
         "enriched-sbom.cdx.json",
@@ -55,10 +54,10 @@ _BOUND_INPUTS = (
     ".github/workflows/ci.yml",
     ".gitleaks.toml",
     "Makefile",
-    "Dockerfile.runtime",
-    "Dockerfile.runtime.dockerignore",
-    "Dockerfile.web",
-    "Dockerfile.web.dockerignore",
+    "containers/Dockerfile.runtime",
+    "containers/Dockerfile.runtime.dockerignore",
+    "containers/Dockerfile.web",
+    "containers/Dockerfile.web.dockerignore",
     "config/grafana-mcp/build/go.mod",
     "config/grafana-mcp/build/go.sum",
     "config/grafana-mcp/build/modules.txt",

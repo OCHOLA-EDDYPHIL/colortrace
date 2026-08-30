@@ -134,7 +134,7 @@ def _parser() -> argparse.ArgumentParser:
     image_evidence.add_argument("--candidate-sha", required=True)
     image_evidence.add_argument("--candidate-tree", required=True)
     image_evidence.add_argument("--scanner-image", required=True)
-    for name in ("runtime", "hosted-runtime", "web"):
+    for name in ("runtime", "web"):
         image_evidence.add_argument(f"--{name}-archive", required=True, metavar="PATH")
         image_evidence.add_argument(f"--{name}-bundle", required=True, metavar="PATH")
         image_evidence.add_argument(f"--{name}-sbom", required=True, metavar="PATH")
@@ -217,7 +217,7 @@ def _run(args: argparse.Namespace, root: Path) -> list[Finding]:
                 raw_sbom=_unresolved_path(root, getattr(args, name.replace("-", "_") + "_sbom")),
                 expected_reference=getattr(args, name.replace("-", "_") + "_reference"),
             )
-            for name in ("runtime", "hosted-runtime", "web")
+            for name in ("runtime", "web")
         )
         return build_final_image_evidence(
             root,

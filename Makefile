@@ -4,7 +4,6 @@ TOOL_IMAGE := colortrace-dev:phase1
 GITLEAKS_IMAGE := zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
 TELEMETRY_IMAGE := grafana/otel-lgtm@sha256:bb182ac3174a20923fa58f00d1790fa71eb06cc0150078c0b0e8feb9e6611492
 TRIVY_IMAGE := aquasec/trivy@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c
-POSTGRES_IMAGE := postgres@sha256:3b0d656f5fff31c7d8a64f500a703dcf3f35e98ce78f602831a73059a5e6a012
 HOST_UID := $(shell id -u)
 HOST_GID := $(shell id -g)
 WORKSPACE := $(CURDIR)
@@ -24,10 +23,10 @@ DEMO_APPROVAL ?=
 DEMO_REMOVE_IMAGE ?= false
 export DEMO_APPROVAL
 export DEMO_REMOVE_IMAGE
-TOOL_INPUT_SHA256 := $(shell test ! -f Dockerfile.dev || sha256sum Dockerfile.dev | cut -d ' ' -f 1)
+TOOL_INPUT_SHA256 := $(shell test ! -f containers/Dockerfile.dev || sha256sum containers/Dockerfile.dev | cut -d ' ' -f 1)
 PYTEST_WORKERS ?= 2
 PYTHON_DISTRIBUTIONS := colortrace-api colortrace-evaluation colortrace-fixture \
-	colortrace-grafana-mcp colortrace-investigation colortrace-persistence \
+	colortrace-grafana-mcp colortrace-investigation \
 	colortrace-recovery colortrace-repo colortrace-response-plans \
 	colortrace-simulator colortrace-telemetry colortrace-validator \
 	colortrace-vertical-slice
@@ -74,9 +73,9 @@ TOOL_RUN_HOST := docker run --rm \
 
 .PHONY: bootstrap bootstrap-quality bootstrap-security build-tools build-quality-tools \
 	build-security-tools ensure-gitleaks-image ensure-telemetry-image ensure-tool-image \
-	ensure-trivy-image ensure-postgres-image prepare-cache format generate generate-fixture check check-fast \
+	ensure-trivy-image prepare-cache format generate generate-fixture check check-fast \
 	check-format check-lint check-typecheck check-unit check-contract \
-	check-generated check-license check-policy check-postgres check-secret check-secret-fixture check-telemetry \
+	check-generated check-license check-policy check-secret check-secret-fixture check-telemetry \
 	check-terraform check-wheel-license \
 	check-bootstrap demo demo-clean demo-image demo-smoke final-image-cleanup final-image-evidence \
 	security-evidence
@@ -90,7 +89,7 @@ ensure-tool-image:
 	if test "$$current" = "$(TOOL_INPUT_SHA256)"; then \
 		echo "Reusing integrity-bound $(TOOL_IMAGE)"; \
 	else \
-		docker build --pull --file Dockerfile.dev \
+		docker build --pull --file containers/Dockerfile.dev \
 			--label "org.colortrace.tool-input-sha256=$(TOOL_INPUT_SHA256)" \
 			--tag $(TOOL_IMAGE) .; \
 	fi
@@ -104,25 +103,20 @@ ensure-telemetry-image:
 ensure-trivy-image:
 	@docker image inspect $(TRIVY_IMAGE) >/dev/null 2>&1 || docker pull $(TRIVY_IMAGE)
 
-ensure-postgres-image:
-	@docker image inspect $(POSTGRES_IMAGE) >/dev/null 2>&1 || docker pull $(POSTGRES_IMAGE)
+build-tools: ensure-tool-image ensure-gitleaks-image ensure-telemetry-image ensure-trivy-image
 
-build-tools: ensure-tool-image ensure-gitleaks-image ensure-telemetry-image ensure-trivy-image ensure-postgres-image
-
-build-quality-tools: ensure-tool-image ensure-gitleaks-image ensure-telemetry-image ensure-postgres-image
+build-quality-tools: ensure-tool-image ensure-gitleaks-image ensure-telemetry-image
 
 build-security-tools: ensure-tool-image ensure-gitleaks-image ensure-trivy-image
 
 bootstrap: prepare-cache build-tools
 	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
 	$(TOOL_RUN) pnpm install --frozen-lockfile --store-dir $(PNPM_STORE)
-	$(TOOL_RUN) terraform -chdir=infra/staging init -backend=false -input=false
 	$(TOOL_RUN) terraform -chdir=infra/single-host init -backend=false -input=false
 
 bootstrap-quality: prepare-cache build-quality-tools
 	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
 	$(TOOL_RUN) pnpm install --frozen-lockfile --store-dir $(PNPM_STORE)
-	$(TOOL_RUN) terraform -chdir=infra/staging init -backend=false -input=false
 	$(TOOL_RUN) terraform -chdir=infra/single-host init -backend=false -input=false
 
 bootstrap-security: prepare-cache build-security-tools
@@ -164,7 +158,7 @@ demo-image:
 	source_date_epoch="$$(git show -s --format=%ct HEAD)"; \
 	image_ref="colortrace-demo:$$candidate"; \
 	docker buildx build --pull=false --provenance=false --load \
-		--file Dockerfile.demo --target demo-runtime \
+		--file containers/Dockerfile.demo --target demo-runtime \
 		--build-arg SOURCE_COMMIT="$$candidate" \
 		--build-arg SOURCE_TREE="$$candidate_tree" \
 		--build-arg SOURCE_DATE_EPOCH="$$source_date_epoch" \
@@ -284,51 +278,6 @@ check-unit: prepare-cache
 	$(TOOL_RUN_OFFLINE) pnpm run test
 	$(TOOL_RUN_OFFLINE) node --test deploy/web-server.test.mjs
 
-check-postgres: prepare-cache ensure-postgres-image
-	@set -eu; \
-		network="colortrace-postgres-$$$$"; \
-		container="colortrace-postgres-$$$$"; \
-		cleanup() { \
-			docker rm --force "$$container" >/dev/null 2>&1 || true; \
-			docker network rm "$$network" >/dev/null 2>&1 || true; \
-		}; \
-		trap cleanup EXIT HUP INT TERM; \
-		docker network create "$$network" >/dev/null; \
-		docker run --detach --rm --pull=never \
-			--name "$$container" --network "$$network" \
-			--env POSTGRES_DB=colortrace_test \
-			--env POSTGRES_USER=colortrace_test \
-			--env POSTGRES_PASSWORD="$$container" \
-			$(POSTGRES_IMAGE) >/dev/null; \
-		ready=false; \
-		attempt=0; \
-		while test "$$attempt" -lt 30; do \
-			if docker exec "$$container" pg_isready \
-				--username colortrace_test --dbname colortrace_test >/dev/null 2>&1; then \
-				ready=true; \
-				break; \
-			fi; \
-			attempt=$$((attempt + 1)); \
-			sleep 1; \
-		done; \
-		test "$$ready" = true; \
-		docker run --rm --pull=never --network "container:$$container" \
-			--user $(HOST_UID):$(HOST_GID) \
-			--volume $(WORKSPACE):/workspace \
-			--volume $(CACHE_ROOT):$(CACHE_ROOT) \
-			--workdir /workspace \
-			--env CI=true \
-			--env HOME=$(CACHE_HOME) \
-			--env UV_CACHE_DIR=$(UV_CACHE) \
-			--env UV_PROJECT_ENVIRONMENT=$(UV_PROJECT_ENVIRONMENT) \
-			--env COLORTRACE_POSTGRES_TEST_REQUIRED=1 \
-			--env COLORTRACE_POSTGRES_TEST_HOST=127.0.0.1 \
-			--env COLORTRACE_POSTGRES_TEST_PORT=5432 \
-			--env COLORTRACE_POSTGRES_TEST_DATABASE=colortrace_test \
-			--env COLORTRACE_POSTGRES_TEST_USER=colortrace_test \
-			--env COLORTRACE_POSTGRES_TEST_PASSWORD="$$container" \
-			$(TOOL_IMAGE) uv run --offline pytest packages/persistence/tests/test_postgres.py
-
 check-contract: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo contracts
 
@@ -361,9 +310,6 @@ check-policy: prepare-cache
 	$(TOOL_RUN_OFFLINE) uv run --offline colortrace-repo deployment
 
 check-terraform: prepare-cache
-	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/staging fmt -check -recursive
-	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/staging validate
-	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/staging test -no-color
 	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/single-host fmt -check -recursive
 	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/single-host validate
 	$(TOOL_RUN_OFFLINE) terraform -chdir=infra/single-host test -no-color
@@ -482,18 +428,15 @@ final-image-cleanup:
 	case "$$image_root" in ("$(WORKSPACE)/.cache/security-images/"*) ;; (*) exit 1;; esac; \
 	runtime_ref="colortrace-security-runtime:$$candidate"; \
 	runtime_repro_ref="colortrace-security-runtime-repro:$$candidate"; \
-	hosted_ref="colortrace-security-hosted-runtime:$$candidate"; \
 	web_ref="colortrace-security-web:$$candidate"; \
 	docker rm --force \
 		"colortrace-sbom-runtime-$$candidate" \
-		"colortrace-sbom-hosted-runtime-$$candidate" \
 		"colortrace-sbom-web-$$candidate" \
 		"colortrace-repro-runtime-a-$$candidate" \
 		"colortrace-repro-runtime-b-$$candidate" \
 		"colortrace-smoke-runtime-$$candidate" \
-		"colortrace-smoke-hosted-runtime-$$candidate" \
 		"colortrace-smoke-web-$$candidate" >/dev/null 2>&1 || true; \
-	docker image rm "$$runtime_ref" "$$runtime_repro_ref" "$$hosted_ref" "$$web_ref" >/dev/null 2>&1 || true; \
+	docker image rm "$$runtime_ref" "$$runtime_repro_ref" "$$web_ref" >/dev/null 2>&1 || true; \
 	rm -rf -- "$$image_root"; \
 	if ! docker info >/dev/null 2>&1; then \
 		echo "cleanup cannot verify the Docker daemon" >&2; exit 1; \
@@ -501,18 +444,16 @@ final-image-cleanup:
 	cleanup_failed=0; \
 	for resource in \
 		"colortrace-sbom-runtime-$$candidate" \
-		"colortrace-sbom-hosted-runtime-$$candidate" \
 		"colortrace-sbom-web-$$candidate" \
 		"colortrace-repro-runtime-a-$$candidate" \
 		"colortrace-repro-runtime-b-$$candidate" \
 		"colortrace-smoke-runtime-$$candidate" \
-		"colortrace-smoke-hosted-runtime-$$candidate" \
 		"colortrace-smoke-web-$$candidate"; do \
 		if docker container inspect "$$resource" >/dev/null 2>&1; then \
 			echo "cleanup retained container $$resource" >&2; cleanup_failed=1; \
 		fi; \
 	done; \
-	for resource in "$$runtime_ref" "$$runtime_repro_ref" "$$hosted_ref" "$$web_ref"; do \
+	for resource in "$$runtime_ref" "$$runtime_repro_ref" "$$web_ref"; do \
 		if docker image inspect "$$resource" >/dev/null 2>&1; then \
 			echo "cleanup retained image $$resource" >&2; cleanup_failed=1; \
 		fi; \
@@ -536,7 +477,6 @@ final-image-evidence: prepare-cache
 	case "$$image_root" in ("$(WORKSPACE)/.cache/security-images/"*) ;; (*) exit 1;; esac; \
 	runtime_ref="colortrace-security-runtime:$(SECURITY_CANDIDATE_SHA)"; \
 	runtime_repro_ref="colortrace-security-runtime-repro:$(SECURITY_CANDIDATE_SHA)"; \
-	hosted_ref="colortrace-security-hosted-runtime:$(SECURITY_CANDIDATE_SHA)"; \
 	web_ref="colortrace-security-web:$(SECURITY_CANDIDATE_SHA)"; \
 	cleanup() { \
 		$(MAKE) --no-print-directory final-image-cleanup \
@@ -560,7 +500,7 @@ final-image-evidence: prepare-cache
 	tar -xf "$$image_root/context.tar" -C "$$image_root/context"; \
 	rm "$$image_root/context.tar"; \
 	docker buildx build --pull=false --provenance=false --no-cache-filter mcp-grafana \
-		--file "$$image_root/context/Dockerfile.runtime" --target runtime \
+		--file "$$image_root/context/containers/Dockerfile.runtime" --target runtime \
 		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
 		--build-arg SOURCE_TREE="$$candidate_tree" \
 		--build-arg SOURCE_DATE_EPOCH="$$source_date_epoch" \
@@ -570,7 +510,7 @@ final-image-evidence: prepare-cache
 	chmod 0600 "$$image_root/runtime.tar"; \
 	docker load --input "$$image_root/runtime.tar" >/dev/null; \
 	docker buildx build --pull=false --provenance=false --no-cache-filter mcp-grafana \
-		--file "$$image_root/context/Dockerfile.runtime" --target runtime \
+		--file "$$image_root/context/containers/Dockerfile.runtime" --target runtime \
 		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
 		--build-arg SOURCE_TREE="$$candidate_tree" \
 		--build-arg SOURCE_DATE_EPOCH="$$source_date_epoch" \
@@ -601,17 +541,7 @@ final-image-evidence: prepare-cache
 		--first-reference "$$runtime_ref" \
 		--second-reference "$$runtime_repro_ref"; \
 	docker buildx build --pull=false --provenance=false \
-		--file "$$image_root/context/Dockerfile.runtime" --target hosted-runtime \
-		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
-		--build-arg SOURCE_TREE="$$candidate_tree" \
-		--build-arg SOURCE_DATE_EPOCH="$$source_date_epoch" \
-		--output "type=docker,dest=$$image_root/hosted-runtime.tar,rewrite-timestamp=true" \
-		--tag "$$hosted_ref" \
-		"$$image_root/context"; \
-	chmod 0600 "$$image_root/hosted-runtime.tar"; \
-	docker load --input "$$image_root/hosted-runtime.tar" >/dev/null; \
-	docker buildx build --pull=false --provenance=false \
-		--file "$$image_root/context/Dockerfile.web" \
+		--file "$$image_root/context/containers/Dockerfile.web" \
 		--build-arg SOURCE_COMMIT="$(SECURITY_CANDIDATE_SHA)" \
 		--build-arg SOURCE_TREE="$$candidate_tree" \
 		--build-arg SOURCE_DATE_EPOCH="$$source_date_epoch" \
@@ -661,11 +591,6 @@ final-image-evidence: prepare-cache
 		--network none --pull=never \
 		--entrypoint /opt/colortrace/bin/python "$$runtime_ref" \
 		-c 'import os; assert os.geteuid() != 0; import colortrace_api'; \
-	capture hosted-runtime "$$hosted_ref"; \
-	docker run --rm --name "colortrace-smoke-hosted-runtime-$(SECURITY_CANDIDATE_SHA)" \
-		--network none --pull=never \
-		--entrypoint /opt/colortrace/bin/python "$$hosted_ref" \
-		-c 'import os; assert os.geteuid() != 0; import colortrace_api'; \
 	capture web "$$web_ref"; \
 	docker run --rm --name "colortrace-smoke-web-$(SECURITY_CANDIDATE_SHA)" \
 		--network none --pull=never --entrypoint node "$$web_ref" \
@@ -679,10 +604,6 @@ final-image-evidence: prepare-cache
 		--runtime-bundle "$(SECURITY_EVIDENCE_CONTAINER)/images/runtime/bundle" \
 		--runtime-sbom "$(SECURITY_EVIDENCE_CONTAINER)/images/runtime/raw-sbom.cdx.json" \
 		--runtime-reference "$$runtime_ref" \
-		--hosted-runtime-archive "/workspace/.cache/security-images/$(SECURITY_CANDIDATE_SHA)/hosted-runtime.tar" \
-		--hosted-runtime-bundle "$(SECURITY_EVIDENCE_CONTAINER)/images/hosted-runtime/bundle" \
-		--hosted-runtime-sbom "$(SECURITY_EVIDENCE_CONTAINER)/images/hosted-runtime/raw-sbom.cdx.json" \
-		--hosted-runtime-reference "$$hosted_ref" \
 		--web-archive "/workspace/.cache/security-images/$(SECURITY_CANDIDATE_SHA)/web.tar" \
 		--web-bundle "$(SECURITY_EVIDENCE_CONTAINER)/images/web/bundle" \
 		--web-sbom "$(SECURITY_EVIDENCE_CONTAINER)/images/web/raw-sbom.cdx.json" \
@@ -775,7 +696,7 @@ check-secret-fixture:
 		exit 1; \
 	fi
 
-check-fast: check-format check-lint check-typecheck check-unit check-postgres check-contract check-generated check-license check-wheel-license check-policy check-secret-fixture check-terraform
+check-fast: check-format check-lint check-typecheck check-unit check-contract check-generated check-license check-wheel-license check-policy check-secret-fixture check-terraform
 
 check: check-fast check-telemetry check-secret
 
