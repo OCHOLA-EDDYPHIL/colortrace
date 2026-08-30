@@ -1,0 +1,72 @@
+digraph ColorTraceSystemBoundary {
+  graph [
+    bgcolor="white",
+    compound=true,
+    fontname="Arial",
+    fontsize=18,
+    label="ColorTrace system boundary",
+    labelloc="t",
+    newrank=true,
+    nodesep=0.50,
+    pad=0.34,
+    rankdir=LR,
+    ranksep=0.72,
+    splines=ortho
+  ];
+
+  node [
+    color="#17324D",
+    fillcolor="#F7FAFC",
+    fontcolor="#102A43",
+    fontname="Arial",
+    fontsize=12,
+    margin="0.17,0.11",
+    penwidth=1.6,
+    shape=box,
+    style="rounded,filled"
+  ];
+
+  edge [
+    arrowsize=0.75,
+    color="#334E68",
+    fontcolor="#243B53",
+    fontname="Arial",
+    fontsize=10,
+    penwidth=1.4
+  ];
+
+  human [label="Human operator\nInvestigates, approves,\nand confirms", fillcolor="#FFF8DB", color="#7A5C00"];
+  vertex [label="Vertex AI / Gemini\nAdvisory analysis", fillcolor="#F3E8FF", color="#6941A5"];
+
+  subgraph cluster_colortrace {
+    color="#52606D";
+    fontcolor="#243B53";
+    fontname="Arial";
+    fontsize=14;
+    label="ColorTrace demonstration";
+    margin=22;
+    penwidth=1.5;
+    style="dashed,rounded";
+
+    workflow [label="Workflow\nCoordinates investigation,\nauthority, and recovery", fillcolor="#E8F1FA", color="#24557A"];
+    grafana [label="Grafana MCP\nFixed read-only queries"];
+    telemetry [label="Telemetry\nLogs, metrics, and traces"];
+    validators [label="Validators + plan\nAuthoritative facts, scope,\nand proposed action", fillcolor="#EAF7EE", color="#246B3F"];
+    simulator [label="Color simulator\nBounded action target", fillcolor="#EAF7EE", color="#246B3F"];
+    receipt [label="Recovery receipt\nVerified terminal record", fillcolor="#E8F1FA", color="#24557A"];
+
+    { rank=same; validators; grafana; }
+    { rank=same; simulator; telemetry; }
+
+    workflow -> validators [dir=both];
+    workflow -> grafana [dir=both];
+    grafana -> telemetry [dir=both];
+    workflow -> simulator [dir=both];
+    workflow -> receipt;
+  }
+
+  { rank=same; human; vertex; }
+
+  human -> workflow [dir=both];
+  workflow -> vertex [dir=both];
+}

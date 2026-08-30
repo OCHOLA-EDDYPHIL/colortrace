@@ -1,160 +1,128 @@
 # ColorTrace
 
-ColorTrace is a human-authorized recovery workflow for a synthetic color-pipeline incident. It
-uses bounded Gemini analysis and read-only Grafana MCP queries to explain a visible color fault.
-It then prepares one exact simulator action, shows the affected and safe outputs, and requires a
-human to approve and verify the recovery.
+## A successful render can still be the wrong color
 
-ColorTrace does not connect to a production media system. The included scenario, images,
-telemetry, and action target are generated data. The model can propose an explanation, but it
-cannot authorize an action, execute an action, classify authoritative facts, or close a recovery.
+A render farm can finish every job and still publish inconsistent color. One worker can resolve a
+different lookup table (LUT), produce valid files, and leave artists to compare frames by eye while
+the cause remains hidden across logs, metrics, traces, configuration, and asset lineage.
 
-## Operating profiles
+ColorTrace turns that investigation into one controlled recovery flow:
 
-| Profile | Purpose | External services | Action target |
-| --- | --- | --- | --- |
-| Local demonstration | Exercise one deterministic plan and simulator action from a clean checkout | None | Ephemeral local simulator |
-| Gated single host | Exercise the complete visual investigation, approval, recovery, receipt, and reset flow | Vertex AI, Google Cloud control-plane services, ACME, and pinned image sources | Persistent simulator on the isolated host |
+**Detect → Explain → Approve → Verify**
 
-The local profile is the default developer path. It does not contain the Grafana MCP binary and
-does not make network calls. The gated profile runs only on the single-host topology in
-[`infra/single-host`](infra/single-host). It exposes the browser application and the demo facade
-through one TLS and access-code gate.
+It finds the mismatch, explains the affected scope, prepares a minimal recovery, waits for a human
+decision, and verifies the result before it records a receipt.
 
-## Shot-Safe Color Recovery
+![ColorTrace product flow](docs/architecture/product-flow.svg)
 
-The gated workflow has these stages:
+## How it works
 
-1. The browser starts the canonical synthetic scenario with a new nonce and idempotency key.
-2. Gemini selects and orders queries from a fixed read-only Grafana MCP catalog. Deterministic
-   validators establish the returned logs, metrics, traces, and scope facts; the response-plan
-   service creates the proposed action from those facts.
-3. The browser shows the expected, observed, and difference images. It keeps illustrative names
-   separate from authoritative numeric proof.
-4. A human retypes the one-time nonce and approval phrase. The request also binds the run version,
-   incident version, plan version, plan digest, and target digest.
-5. The service consumes that authority for one simulator action. It verifies the recovered output,
-   the safe complement, and post-action telemetry before it permits closure.
-6. A human confirms the recovered image. ColorTrace stores an immutable terminal receipt that
-   binds the investigation proof, execution proof, visual digests, closure, source, and image
-   provenance.
-7. Reset restores the authored synthetic scenario. A new run cannot start until the prior terminal
-   run has a completed reset.
+| Stage | What ColorTrace does | What the operator sees |
+| --- | --- | --- |
+| Detect | Correlates render telemetry, configuration, and asset lineage. | The expected image, observed fault, pixel difference, and affected scope. |
+| Explain | Uses Gemini 3.5 Flash through Vertex AI and Google ADK to order the three read-only Grafana MCP queries that follow a fixed alert baseline. Deterministic validators establish the facts. | A concise diagnosis with the supporting signals and the proposed repair. |
+| Approve | Builds an exact action plan and requires a human to approve or reject it. | Five typed commands, the four affected outputs, and the three assets that stay protected. |
+| Verify | Applies one simulator-only recovery, checks fresh output and telemetry, and requires human confirmation before closure. | The recovered image, protected-output checks, and an immutable receipt. |
 
-Requests that lose their response are safe to retry with the same idempotency key. A restart
-reconciles stored operations before the service accepts new mutations. Missing proof, changed
-bindings, stale versions, unavailable evidence, and unknown action outcomes stop the workflow.
+Gemini helps navigate the investigation. It cannot declare facts, expand the recovery scope,
+authorize an action, execute a command, or close a run. Those boundaries belong to deterministic
+code and the human operator.
 
-A configuration digest identifies configuration bytes; it does not prove that two runs have the
-same current LUT or simulator publication. ColorTrace binds the action and receipt to the observed
-state, versions, target, publication transition, and proof digests as separate facts.
+## The canonical recovery
 
-![Single-host ColorTrace architecture](docs/architecture/single-host.svg)
+The included scenario models a subtle fault: one worker resolves a shadowed `show_look.cube` LUT.
+Its renders complete normally, but their color differs from the approved look.
 
-See the [single-host architecture decision](docs/adr/0011-single-host-staging.md) for the topology
-and trust boundaries.
+ColorTrace identifies three affected frames and one affected derivative. It also identifies three
+safe assets that must remain unchanged. The proposed recovery contains five commands:
 
-## Development
+1. Quarantine the incorrect LUT and install the approved replacement.
+2. Rerender affected frame one.
+3. Rerender affected frame two.
+4. Rerender affected frame three.
+5. Rerender the affected derivative.
 
-Local development requires Docker and GNU Make. Bootstrap the pinned toolchain and workspace
-dependencies, then run the complete check suite:
+The operator sees that scope before approval. After execution, ColorTrace compares the recovered
+output with the expected image, checks the protected assets again, reads fresh telemetry, and then
+offers closure. The terminal receipt preserves the investigation, decision, action, and result as
+one reviewable record.
 
-```sh
-make bootstrap
-make check
-```
+All media, telemetry, and action targets in this repository are generated. ColorTrace changes only
+the included simulator. It does not connect to a production media system.
 
-The checks run through pinned tool images. The local commands require no cloud or service
-credentials. Use `make check-fast` while iterating and `make check` before a change is ready for
-review.
+## Designed for bounded authority
 
-## Local demonstration
+![ColorTrace system boundary](docs/architecture/system-boundary.svg)
 
-From a clean checkout, run:
+The product separates useful AI assistance from action authority:
+
+- Grafana MCP exposes a fixed read-only query catalog.
+- Gemini 3.5 Flash can order the three cataloged queries that follow the fixed alert baseline.
+- Deterministic validators decide whether the evidence, scope, and proposed plan agree.
+- A human approves the displayed targets and exclusions with a one-time challenge.
+- The recovery service consumes that authority once and can change only the local simulator.
+- Fresh post-action checks and a second human decision are required before closure.
+
+Missing, stale, inconsistent, or unavailable proof stops the workflow without an action. A lost
+response can be retried safely because mutation requests retain their original identity.
+
+## Try the local demonstration
+
+Install Docker and GNU Make, then run:
 
 ```sh
 make demo
 ```
 
-The command builds an immutable image for the current commit, starts it without network access,
-creates a deterministic synthetic color incident, and displays the proposed simulator plan. Type
-the requested approval phrase to authorize one local action. The resulting JSON shows the human
-approval, service-only dispatch, action outcome, unchanged safe-frame digest, side-effect-free
-replay, and exact commit, tree, image, and configuration bindings. Private run receipts are retained
-under `.cache/` at the path printed by the command.
+The local demonstration creates the generated color incident, presents the five-command plan, and
+waits for the approval phrase before it changes the ephemeral simulator. It runs without network
+access, cloud credentials, Grafana, or Vertex AI. The command prints the path to its private receipt
+under `.cache/`.
 
-The local demonstration does not require Grafana, Vertex AI, cloud credentials, or a hosted
-service. It exposes no network endpoint and does not include the private Grafana MCP binary. It
-uses only generated data and an ephemeral local simulator workspace. It is not a production
-deployment or a statistical reliability claim.
-
-Successful output is one JSON receipt with `action.action_count` set to `1`,
-`replay.generation_unchanged` set to `true`, and `safety.safe_frame_digest_equal` set to `true`,
-followed by the private receipt directory.
-
-If approval is withheld or invalid, no action is admitted and the simulator publication remains
-unchanged. To remove the exact demo container or image reference after an interrupted run, use:
+Use this command after an interrupted run:
 
 ```sh
 make demo-clean
 ```
 
-No external or shared product state is mutated. Rollback consists of stopping the demo and running
-that cleanup command. Retained JSON receipts may be removed separately when they are no longer
-needed.
+For development, bootstrap the pinned toolchain and run the focused checks:
 
-## Gated single-host operation
+```sh
+make bootstrap
+make check-fast
+```
 
-The hosted profile uses one Compute Engine VM with a persistent boot disk. Caddy is the only
-service on the public network path. Grafana, Prometheus, Loki, Tempo, the runtime, and their control
-interfaces remain on internal or host-loopback paths. SSH uses IAP and OS Login.
+Run `make check` before a change is ready for review.
 
-Use the [single-host runbook](docs/operations/single-host.md) to create the foundation, build and
-scan digest-addressed images, admit the VM, operate the workflow, stop or resume the host, and
-recover from interrupted requests. Do not put the access code, hosted address, cloud identifiers,
-or generated receipts in tracked files.
+## Run the complete browser experience
 
-The workflow receipt covers one investigation, authorized action, recovery, visual comparison,
-and closure. The separate host-verification report covers deployment admission, every live image,
-network routes, the metadata boundary, a fresh workflow, restart persistence, and reset. Neither
-artifact substitutes for the other.
+The gated single-host profile runs the web application, workflow runtime, Grafana MCP, and
+telemetry services on one Compute Engine VM. Caddy is the only public network entry point. The
+runtime and observability services remain on private container or host-loopback paths.
 
-The host powers off seven days after a lifecycle generation first starts. A stop and resume within
-that period retains the original activation time and persistent state. Startup does not serve an
-expired generation and powers the VM off again. A new generation requires an explicit Terraform
-apply.
+Use the [single-host runbook](docs/operations/single-host.md) to build the images, create the host,
+open the browser workflow, stop or resume the VM, and contain an unhealthy deployment.
 
-## Limits
+This profile is a controlled demonstration environment. It uses one shared access gate, one
+persistent host, and generated data. It does not provide per-user accounts, high availability, or
+production media integration.
 
-- The hosted topology is a controlled single-host environment. It has no high-availability or
-  multi-region guarantee.
-- The access code is one shared outer gate. It is not per-user application authorization.
-- The canonical workflow can change only the local simulator publication. It cannot mutate a
-  production color pipeline or media asset.
-- Grafana MCP tools are read-only and limited to the checked-in query catalog.
-- Model output is non-authoritative until deterministic validation binds the required structured
-  facts.
-- Receipts prove the inputs and transitions recorded by this implementation. They do not establish
-  broad operational reliability.
+## Repository map
 
-Read [SECURITY.md](SECURITY.md) before operating the hosted profile.
+- `packages/web` contains the browser experience.
+- `packages/api` assembles the hosted workflow and its demo facade.
+- `packages/investigation` and `packages/grafana-mcp` contain the bounded AI investigation path.
+- `packages/validators`, `packages/response-plans`, and `packages/recovery` enforce the
+  deterministic decision and authority boundaries.
+- `packages/simulator` and `packages/fixture-generator` provide the generated scenario and action
+  target.
+- `packages/telemetry` provides the logs, metrics, and traces used by the investigation.
+- `containers` contains the six focused container definitions.
+- `infra/single-host` contains the gated demonstration topology and operator scripts.
 
-## Implementation map
-
-- The hosted integration is assembled by the
-  [demo workflow](packages/api/src/colortrace_api/demo_workflow.py) and
-  [durable facade](packages/api/src/colortrace_api/demo_facade.py).
-- Human and service authority are enforced by the
-  [response-plan service](packages/response-plans/src/colortrace_response_plans/service.py) and
-  [recovery authority boundary](packages/recovery/src/colortrace_recovery/authority.py).
-- Recovery failure handling and post-action proof live in the
-  [recovery verifier](packages/recovery/src/colortrace_recovery/verifier.py).
-- The canonical generated scenario comes from the
-  [fixture generator](packages/fixture-generator/src/colortrace_fixture/fixture.py).
-- Third-party provenance is recorded for the
-  [fixture assets](packages/fixture-generator/THIRD_PARTY_NOTICES),
-  [Grafana MCP binary](packages/grafana-mcp/THIRD_PARTY_NOTICES), and
-  [telemetry stack](packages/telemetry/THIRD_PARTY_NOTICES).
+Read [SECURITY.md](SECURITY.md) before operating the hosted profile. Architecture decisions are in
+[`docs/adr`](docs/adr), and editable diagram sources are in
+[`docs/architecture`](docs/architecture).
 
 ## License
 
