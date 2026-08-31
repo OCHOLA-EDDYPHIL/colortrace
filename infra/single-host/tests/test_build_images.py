@@ -246,7 +246,7 @@ raise SystemExit(2)
             self.assertEqual(manifest["source"]["commit"], commit)
             self.assertEqual(
                 manifest["fixture_manifest_sha256"],
-                "sha256:a9c5234acee64294b149e8e6ee761c7e2799999476943766ae856ec54eac7061",
+                "sha256:21386db7c4ae2c3119d5532fc75589ddce1e64f7ccdecf61f41415e80f4564a6",
             )
             self.assertEqual(
                 set(manifest["images"]),

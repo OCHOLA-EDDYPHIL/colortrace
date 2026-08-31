@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/fixture-build-provenance-v1.schema.json",
+  "title": "Fixture build provenance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source_set_generator",
+    "sources",
+    "generated_luts",
+    "clean_clone_generation",
+    "dependency_lock",
+    "notices",
+    "tool"
+  ],
+  "properties": {
+    "schema": {"const": "fixture-build-provenance/v1"},
+    "source_set_generator": {"const": "mixed-source-set/v1"},
+    "sources": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "allOf": [
+            {"$ref": "#/$defs/generatedSource"},
+            {"properties": {"source_id": {"const": "chart-01"}}}
+          ]
+        },
+        {"$ref": "#/$defs/frozenSource"},
+        {
+          "allOf": [
+            {"$ref": "#/$defs/generatedSource"},
+            {"properties": {"source_id": {"const": "chart-03"}}}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/generatedSource"},
+            {"properties": {"source_id": {"const": "chart-04"}}}
+          ]
+        }
+      ],
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "generated_luts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generator", "origin", "license", "kinds"],
+      "properties": {
+        "generator": {"const": "generated-lut/v1"},
+        "origin": {"const": "first-party-deterministic-lut-definition"},
+        "license": {"const": "Apache-2.0"},
+        "kinds": {
+          "type": "array",
+          "prefixItems": [{"const": "approved"}, {"const": "shadowed"}],
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "clean_clone_generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "oracle_root_variable", "runtime_bundle_variable"],
+      "properties": {
+        "command": {"const": "make generate-fixture"},
+        "oracle_root_variable": {"const": "FIXTURE_ORACLE"},
+        "runtime_bundle_variable": {"const": "FIXTURE_BUNDLE"}
+      }
+    },
+    "dependency_lock": {"const": "uv.lock"},
+    "notices": {"const": "packages/fixture-generator/THIRD_PARTY_NOTICES"},
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "license", "source", "supported_wheel"],
+      "properties": {
+        "name": {"const": "OpenColorIO"},
+        "version": {"const": "2.5.2"},
+        "license": {"const": "BSD-3-Clause"},
+        "source": {"const": "https://pypi.org/project/OpenColorIO/2.5.2/"},
+        "supported_wheel": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["filename", "sha256"],
+          "properties": {
+            "filename": {
+              "const": "opencolorio-2.5.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+            },
+            "sha256": {"$ref": "#/$defs/digest"}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "generatedSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "generator", "origin", "license"],
+      "properties": {
+        "source_id": {"enum": ["chart-01", "chart-03", "chart-04"]},
+        "generator": {"const": "generated-chart/v1"},
+        "origin": {"const": "first-party-deterministic-integer-chart"},
+        "license": {"const": "Apache-2.0"}
+      }
+    },
+    "frozenSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "generator",
+        "origin",
+        "license",
+        "asset",
+        "asset_sha256",
+        "generation_record",
+        "generation_record_sha256"
+      ],
+      "properties": {
+        "source_id": {"const": "chart-02"},
+        "generator": {"const": "frozen-vertex-gemini-plate/v1"},
+        "origin": {"const": "frozen-build-time-generated-output"},
+        "license": {"const": "Apache-2.0"},
+        "asset": {
+          "const": "packages/fixture-generator/src/colortrace_fixture/assets/chart-02.rgb16be"
+        },
+        "asset_sha256": {"$ref": "#/$defs/digest"},
+        "generation_record": {
+          "const": "packages/fixture-generator/src/colortrace_fixture/assets/chart-02-generation.json"
+        },
+        "generation_record_sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

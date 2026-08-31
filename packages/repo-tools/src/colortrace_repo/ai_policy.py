@@ -311,13 +311,18 @@ def _source_import_findings(root: Path, policy: dict[str, Any]) -> list[Finding]
         suffix = path.suffix.lower()
         ecosystem: str
         imports: set[str]
+        if suffix == ".py":
+            ecosystem = "python"
+        elif suffix in {".cjs", ".js", ".jsx", ".mjs", ".ts", ".tsx"}:
+            ecosystem = "node"
+        else:
+            continue
         try:
             source = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as error:
             findings.append(Finding(relative_path(root, path), "ai.source.invalid", str(error)))
             continue
-        if suffix == ".py":
-            ecosystem = "python"
+        if ecosystem == "python":
             try:
                 tree = ast.parse(source, filename=path.as_posix())
             except SyntaxError as error:
@@ -337,11 +342,8 @@ def _source_import_findings(root: Path, policy: dict[str, Any]) -> list[Finding]
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     imports.add(node.module.split(".", 1)[0])
             imports = {_normalize_python_package(value) for value in imports}
-        elif suffix in {".cjs", ".js", ".jsx", ".mjs", ".ts", ".tsx"}:
-            ecosystem = "node"
-            imports = {_node_package_name(match) for match in _NODE_IMPORT.findall(source)}
         else:
-            continue
+            imports = {_node_package_name(match) for match in _NODE_IMPORT.findall(source)}
         rules = policy.get(ecosystem, {})
         if not isinstance(rules, dict):
             continue
