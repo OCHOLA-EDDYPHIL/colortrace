@@ -812,6 +812,7 @@ def test_local_stack_and_alert_contracts_are_pinned() -> None:
 def test_grafana_alert_contract_binds_interval_to_exact_rule_group(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    clock = _ReadinessClock()
     contract = json.loads(
         (REPOSITORY_ROOT / "config/telemetry/alert-contract.json").read_text(encoding="utf-8")
     )
@@ -834,10 +835,14 @@ def test_grafana_alert_contract_binds_interval_to_exact_rule_group(
 
     def grafana_get(base: str, path: str, **kwargs: object) -> object:
         del base
-        assert kwargs == {"timeout_seconds": 15.0}
         if path.startswith("/api/v1/provisioning/alert-rules/"):
+            assert kwargs == {"timeout_seconds": 15.0}
             return provisioned_rule
+        if path == "/api/health":
+            assert 0 < float(kwargs["timeout_seconds"]) <= 0.5
+            return {}
         assert path == "/api/ruler/grafana/api/v1/rules"
+        assert 0 < float(kwargs["timeout_seconds"]) <= 0.5
         return ruler_groups
 
     monkeypatch.setattr(observer, "_json_get", grafana_get)
@@ -849,7 +854,96 @@ def test_grafana_alert_contract_binds_interval_to_exact_rule_group(
             r"\(target_rule_count=1, observed_intervals=60s\)"
         ),
     ):
-        observer._alert_contract(endpoints, contract)
+        observer._alert_contract(
+            endpoints,
+            contract,
+            scheduler_timeout_seconds=0.5,
+            scheduler_poll_seconds=0.2,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+
+def test_grafana_alert_contract_waits_for_stable_final_scheduler_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _ReadinessClock()
+    contract = json.loads(
+        (REPOSITORY_ROOT / "config/telemetry/alert-contract.json").read_text(encoding="utf-8")
+    )
+    alert = yaml.safe_load(
+        (REPOSITORY_ROOT / "config/telemetry/grafana-alerting.yaml").read_text(encoding="utf-8")
+    )
+    provisioned_rule = alert["groups"][0]["rules"][0]
+    ruler_payloads = iter(
+        [{}, _ready_ruler_payload(), {}, *(_ready_ruler_payload() for _ in range(3))]
+    )
+    paths: list[str] = []
+
+    def grafana_get(base: str, path: str, **kwargs: object) -> object:
+        del base, kwargs
+        paths.append(path)
+        if path.startswith("/api/v1/provisioning/alert-rules/"):
+            return provisioned_rule
+        if path == "/api/health":
+            return {}
+        assert path == "/api/ruler/grafana/api/v1/rules"
+        return next(ruler_payloads)
+
+    monkeypatch.setattr(observer, "_json_get", grafana_get)
+    endpoints = BackendEndpoints(*(f"http://127.0.0.1:{port}" for port in range(1, 6)))
+
+    result = observer._alert_contract(
+        endpoints,
+        contract,
+        scheduler_timeout_seconds=1.0,
+        scheduler_poll_seconds=0.1,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert result["scheduler_interval_seconds"] == 10
+    assert paths.count("/api/ruler/grafana/api/v1/rules") == 6
+    assert paths[-1] == "/api/ruler/grafana/api/v1/rules"
+    assert clock.sleeps == [0.1] * 5
+
+
+def test_grafana_alert_contract_reports_persistently_missing_scheduler_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _ReadinessClock()
+    contract = json.loads(
+        (REPOSITORY_ROOT / "config/telemetry/alert-contract.json").read_text(encoding="utf-8")
+    )
+    alert = yaml.safe_load(
+        (REPOSITORY_ROOT / "config/telemetry/grafana-alerting.yaml").read_text(encoding="utf-8")
+    )
+    provisioned_rule = alert["groups"][0]["rules"][0]
+
+    def grafana_get(base: str, path: str, **kwargs: object) -> object:
+        del base, kwargs
+        if path.startswith("/api/v1/provisioning/alert-rules/"):
+            return provisioned_rule
+        return {}
+
+    monkeypatch.setattr(observer, "_json_get", grafana_get)
+    endpoints = BackendEndpoints(*(f"http://127.0.0.1:{port}" for port in range(1, 6)))
+
+    with pytest.raises(
+        AssertionError,
+        match=(
+            r"^Grafana alert scheduler interval differs from its contract "
+            r"\(target_rule_count=0, observed_intervals=none\)$"
+        ),
+    ):
+        observer._alert_contract(
+            endpoints,
+            contract,
+            scheduler_timeout_seconds=0.5,
+            scheduler_poll_seconds=0.2,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
 
 
 def test_grafana_alert_contract_rejects_pending_period_drift(
