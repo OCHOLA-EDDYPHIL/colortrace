@@ -253,7 +253,7 @@ def scenario(tmp_path: Path) -> Path:
         "run_id": "fixture-run-01",
         "seed_sha256": _digest("seed"),
         "schedule_origin": "2026-08-12T00:00:00Z",
-        "image_generator": "generated-chart/v1",
+        "source_set_generator": "mixed-source-set/v1",
         "float_buffer": "rgb-float32-buffer/v1",
         "comparison_policy": "declared-reference-comparison/v1",
         "ocio_version": "2.5.2",

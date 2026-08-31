@@ -6,7 +6,12 @@ import json
 import os
 import re
 import shutil
+import struct
+import subprocess
 import sys
+import tomllib
+import zipfile
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -18,19 +23,31 @@ from colortrace_fixture.fixture import (
     COMPARISON_VERSION,
     FIXTURE_ID,
     FIXTURE_VERSION,
+    FROZEN_CHART2_GENERATION_PATH,
+    FROZEN_CHART2_GENERATION_SHA256,
+    FROZEN_CHART2_PATH,
+    FROZEN_CHART2_SHA256,
+    FROZEN_PLATE_VERSION,
+    GENERATED_CHART_VERSION,
     OCIO_VERSION,
     PERMUTED_SEED,
+    SOURCE_PIXEL_BYTE_LENGTH,
+    SOURCE_PIXEL_MAGIC,
+    SOURCE_SET_VERSION,
     audit_bundle_paths,
     build_scenario,
     canonical_json_bytes,
     checked_relative_path,
     deterministic_tree_index,
     evaluate_scenario,
+    load_frozen_chart2_samples,
     read_json,
     run_canonical_build_validator,
     run_isolated_validator,
     scan_oracle_leaks,
     sha256_file,
+    source_pixel_bytes,
+    validate_contract_document,
     validate_contract_instances,
 )
 
@@ -93,6 +110,213 @@ def canonical_build_input(
     )
 
 
+def test_frozen_chart2_record_schema_candidates_selection_and_gates() -> None:
+    generation = read_json(FROZEN_CHART2_GENERATION_PATH)
+    validate_contract_document(generation)
+    candidates = generation["candidates"]
+    assert len(candidates) == 3
+    assert [candidate["index"] for candidate in candidates] == [1, 2, 3]
+    assert len({candidate["seed"] for candidate in candidates}) == 3
+    assert len({candidate["raw_png_sha256"] for candidate in candidates}) == 3
+    assert len({candidate["canonical_rgb16be_sha256"] for candidate in candidates}) == 3
+    selected = [candidate for candidate in candidates if candidate["selected"]]
+    assert len(selected) == 1
+    assert selected[0]["index"] == generation["selection"]["selected_candidate_index"] == 1
+    assert selected[0]["canonical_rgb16be_sha256"] == FROZEN_CHART2_SHA256
+    assert generation["selection"]["asset"]["sha256"] == FROZEN_CHART2_SHA256
+    assert generation["selection"]["visual_approval"] == {
+        "approved": True,
+        "authority": "project-owner",
+        "decided_on": "2026-08-31",
+    }
+    assert generation["selection"]["license_decision"] == {
+        "approved": True,
+        "authority": "project-owner",
+        "license": "Apache-2.0",
+        "decided_on": "2026-08-31",
+    }
+    assert generation["terms_review"]["unique_output_guaranteed"] is False
+    assert generation["terms_review"]["approved_for_apache_2_0_inclusion"] is True
+    assert generation["seed_semantics"] == "best-effort-preview-not-reproducibility-guarantee"
+    assert all(candidate["c2pa_chunk_present"] is True for candidate in candidates)
+    for text_key, digest_key in (
+        ("text", "sha256"),
+        ("effective_text", "effective_sha256"),
+        ("visual_exclusions", "visual_exclusions_sha256"),
+    ):
+        assert (
+            hashlib.sha256(generation["prompt"][text_key].encode()).hexdigest()
+            == generation["prompt"][digest_key]
+        )
+
+
+def test_frozen_chart2_asset_header_hash_and_rgb8_promotion() -> None:
+    data = FROZEN_CHART2_PATH.read_bytes()
+    samples = load_frozen_chart2_samples()
+    assert len(data) == SOURCE_PIXEL_BYTE_LENGTH == 884751
+    assert data[:8] == struct.pack(">II", 512, 288)
+    assert data[8:15] == SOURCE_PIXEL_MAGIC
+    assert hashlib.sha256(data).hexdigest() == FROZEN_CHART2_SHA256
+    assert len(samples) == 512 * 288 * 3
+    assert all(sample % 257 == 0 for sample in samples)
+    assert source_pixel_bytes(samples) == data
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        ("prompt-hash", "text hash mismatch"),
+        ("duplicate-seed", "unique seed"),
+        ("selected-index", "selected candidate index mismatch"),
+        ("second-selection", "schema validation failed"),
+        ("visual-approval", "schema validation failed"),
+        ("license-decision", "schema validation failed"),
+        ("shadow-metrics", "color metrics fail policy"),
+    ],
+)
+def test_frozen_chart2_record_loader_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str, message: str
+) -> None:
+    generation = read_json(FROZEN_CHART2_GENERATION_PATH)
+    if mutation == "prompt-hash":
+        generation["prompt"]["sha256"] = "0" * 64
+    elif mutation == "duplicate-seed":
+        generation["candidates"][1]["seed"] = generation["candidates"][0]["seed"]
+    elif mutation == "selected-index":
+        generation["selection"]["selected_candidate_index"] = 2
+    elif mutation == "second-selection":
+        generation["candidates"][1]["selected"] = True
+    elif mutation == "visual-approval":
+        generation["selection"]["visual_approval"]["approved"] = False
+    elif mutation == "license-decision":
+        generation["selection"]["license_decision"]["approved"] = False
+    else:
+        comparison = generation["candidates"][0]["shadowed_comparison"]
+        comparison["maximum_absolute_channel_error"] = "0"
+        comparison["fraction_pixels_at_or_above_0_02"] = "0"
+        comparison["nearest_rank_p95"] = "0"
+    generation_path = tmp_path / "chart-02-generation.json"
+    generation_path.write_bytes(canonical_json_bytes(generation))
+    monkeypatch.setattr(
+        fixture_module,
+        "FROZEN_CHART2_GENERATION_SHA256",
+        sha256_file(generation_path),
+    )
+    with pytest.raises(ValueError, match=message):
+        load_frozen_chart2_samples(FROZEN_CHART2_PATH, generation_path)
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        ("truncated", "length mismatch"),
+        ("header", "header mismatch"),
+        ("payload", "selected asset hash mismatch"),
+    ],
+)
+def test_frozen_chart2_asset_loader_rejects_tampering(
+    tmp_path: Path, mutation: str, message: str
+) -> None:
+    data = bytearray(FROZEN_CHART2_PATH.read_bytes())
+    if mutation == "truncated":
+        data.pop()
+    elif mutation == "header":
+        data[8] ^= 1
+    else:
+        data[-1] ^= 1
+    asset_path = tmp_path / "chart-02.rgb16be"
+    asset_path.write_bytes(data)
+    with pytest.raises(ValueError, match=message):
+        load_frozen_chart2_samples(asset_path, FROZEN_CHART2_GENERATION_PATH)
+
+
+def test_frozen_chart2_loader_rejects_non_promoted_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = bytearray(FROZEN_CHART2_PATH.read_bytes())
+    data[16] ^= 1
+    asset_path = tmp_path / "chart-02.rgb16be"
+    asset_path.write_bytes(data)
+    asset_sha256 = sha256_file(asset_path)
+    generation = read_json(FROZEN_CHART2_GENERATION_PATH)
+    generation["candidates"][0]["canonical_rgb16be_sha256"] = asset_sha256
+    generation["selection"]["asset"]["sha256"] = asset_sha256
+    generation_path = tmp_path / "chart-02-generation.json"
+    generation_path.write_bytes(canonical_json_bytes(generation))
+    monkeypatch.setattr(fixture_module, "FROZEN_CHART2_SHA256", asset_sha256)
+    monkeypatch.setattr(
+        fixture_module,
+        "FROZEN_CHART2_GENERATION_SHA256",
+        sha256_file(generation_path),
+    )
+    with pytest.raises(ValueError, match="RGB8-to-RGB16 promotions"):
+        load_frozen_chart2_samples(asset_path, generation_path)
+
+
+def test_build_provenance_schema_and_static_hash_bindings() -> None:
+    provenance = read_json(PACKAGE_ROOT / "fixtures/provenance.json")
+    validate_contract_document(provenance)
+    assert provenance["source_set_generator"] == SOURCE_SET_VERSION
+    assert [source["source_id"] for source in provenance["sources"]] == [
+        "chart-01",
+        "chart-02",
+        "chart-03",
+        "chart-04",
+    ]
+    frozen = provenance["sources"][1]
+    assert frozen["generator"] == FROZEN_PLATE_VERSION
+    assert frozen["asset_sha256"] == sha256_file(FROZEN_CHART2_PATH)
+    assert frozen["generation_record_sha256"] == sha256_file(FROZEN_CHART2_GENERATION_PATH)
+    assert provenance["generated_luts"]["generator"] == "generated-lut/v1"
+
+
+def test_distribution_contains_frozen_assets_without_provider_or_decoder_dependency() -> None:
+    package = resources.files("colortrace_fixture")
+    for name, expected_sha256 in (
+        ("chart-02.rgb16be", FROZEN_CHART2_SHA256),
+        ("chart-02-generation.json", FROZEN_CHART2_GENERATION_SHA256),
+    ):
+        payload = package.joinpath("assets", name).read_bytes()
+        assert hashlib.sha256(payload).hexdigest() == expected_sha256
+    configuration = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert configuration["project"]["dependencies"] == [
+        "jsonschema==4.25.1",
+        "OpenColorIO==2.5.2",
+    ]
+
+
+def test_built_wheel_contains_frozen_asset_record_and_schemas(tmp_path: Path) -> None:
+    wheel_root = tmp_path / "wheel"
+    completed = subprocess.run(
+        [
+            "uv",
+            "build",
+            "--offline",
+            "--wheel",
+            "--out-dir",
+            str(wheel_root),
+            str(PACKAGE_ROOT),
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    wheels = list(wheel_root.glob("*.whl"))
+    assert len(wheels) == 1
+    with zipfile.ZipFile(wheels[0]) as archive:
+        expected = {
+            "colortrace_fixture/assets/chart-02.rgb16be": FROZEN_CHART2_SHA256,
+            "colortrace_fixture/assets/chart-02-generation.json": (FROZEN_CHART2_GENERATION_SHA256),
+        }
+        for member, digest in expected.items():
+            assert hashlib.sha256(archive.read(member)).hexdigest() == digest
+        names = set(archive.namelist())
+        assert "colortrace_fixture/schemas/frozen-source-generation-v1.schema.json" in names
+        assert "colortrace_fixture/schemas/fixture-build-provenance-v1.schema.json" in names
+
+
 def test_pinned_real_ocio_and_structural_resource_resolution(generated: dict[str, Any]) -> None:
     root = generated["canonical"]["bundle"]
     config_a = root / "runtime/workers/A/config/config.ocio"
@@ -117,6 +341,7 @@ def test_canonical_topology_correlation_lineage_and_distractor(generated: dict[s
     telemetry = read_json(root / fixture["telemetry"]["manifest"])
     assert fixture["fixture_id"] == FIXTURE_ID
     assert fixture["fixture_version"] == FIXTURE_VERSION
+    assert fixture["source_set_generator"] == SOURCE_SET_VERSION
     assert fixture["comparison_policy"] == COMPARISON_VERSION
     assert len(jobs) == 6
     assert sum(job["worker_id"] == "A" for job in jobs) == 2
@@ -134,6 +359,43 @@ def test_canonical_topology_correlation_lineage_and_distractor(generated: dict[s
     assert all("job_id" in edge and "correlation_id" in edge for edge in render_edges)
     assert telemetry["events"][0]["event_id"] == "distractor-01"
     assert set(telemetry["events"][0]["overlapping_job_ids"]) == {"job-b-01", "job-b-04"}
+
+
+def test_runtime_source_generators_are_per_source_and_provenance_bound(
+    generated: dict[str, Any],
+) -> None:
+    root = generated["canonical"]["bundle"]
+    runtime = read_json(root / "runtime/manifests/fixture-runtime-manifest.json")
+    sources = {
+        pointer["source_id"]: read_json(root / pointer["manifest"])
+        for pointer in runtime["sources"]
+    }
+    assert runtime["source_set_generator"] == SOURCE_SET_VERSION
+    assert {source_id: source["generator"] for source_id, source in sources.items()} == {
+        "chart-01": GENERATED_CHART_VERSION,
+        "chart-02": FROZEN_PLATE_VERSION,
+        "chart-03": GENERATED_CHART_VERSION,
+        "chart-04": GENERATED_CHART_VERSION,
+    }
+    assert sources["chart-02"]["generation_record_sha256"] == FROZEN_CHART2_GENERATION_SHA256
+    assert all(
+        "generation_record_sha256" not in source
+        for source_id, source in sources.items()
+        if source_id != "chart-02"
+    )
+    provenance = read_json(root / runtime["provenance"]["manifest"])
+    source_generators = {
+        asset["asset_id"]: asset["generator"]
+        for asset in provenance["assets"]
+        if asset["asset_kind"] in {"canonical-source-pixels", "source-display-png"}
+    }
+    assert source_generators["source-pixels-chart-02"] == FROZEN_PLATE_VERSION
+    assert source_generators["source-png-chart-02"] == FROZEN_PLATE_VERSION
+    assert all(
+        generator == GENERATED_CHART_VERSION
+        for asset_id, generator in source_generators.items()
+        if "chart-02" not in asset_id
+    )
 
 
 def test_comparison_report_is_observation_only_and_oracle_evaluation_passes(
@@ -162,12 +424,54 @@ def test_comparison_report_is_observation_only_and_oracle_evaluation_passes(
     }
 
 
+def test_frozen_plate_reference_match_shadowed_mismatch_and_scope(
+    generated: dict[str, Any],
+) -> None:
+    root = generated["canonical"]["bundle"]
+    runtime = read_json(root / "runtime/manifests/fixture-runtime-manifest.json")
+    jobs = {job["job_id"]: job for job in manifests(root, runtime)}
+    report = {job["job_id"]: job for job in generated["canonical"]["report"]["jobs"]}
+    approved = jobs["job-a-02"]
+    approved_reference = read_json(root / approved["declared_reference_manifest"])
+    assert (root / approved["output_buffer"]).read_bytes() == (
+        root / approved_reference["buffer"]
+    ).read_bytes()
+    assert report["job-a-02"]["comparison"] == {
+        "state": "reference_match",
+        "maximum_absolute_channel_error": "0",
+        "rmse": "0",
+        "fraction_pixels_at_or_above_0_02": "0",
+        "nearest_rank_p95": "0",
+        "pixels": 147456,
+        "policy": COMPARISON_VERSION,
+    }
+    assert report["job-b-02"]["comparison"] == {
+        "state": "reference_mismatch",
+        "maximum_absolute_channel_error": "0.157725512981",
+        "rmse": "0.0388545007753",
+        "fraction_pixels_at_or_above_0_02": "0.901984320747",
+        "nearest_rank_p95": "0.0952941179276",
+        "pixels": 147456,
+        "policy": COMPARISON_VERSION,
+    }
+    validator_report = generated["canonical"]["report"]
+    affected = sum(job["state"] == "reference_mismatch" for job in validator_report["jobs"])
+    affected += sum(
+        derivative["state"] == "reference_mismatch"
+        for derivative in validator_report["derivatives"]
+    )
+    safe = sum(job["state"] == "reference_match" for job in validator_report["jobs"])
+    unknown = sum(job["state"] == "unresolved" for job in validator_report["jobs"])
+    assert (affected, safe, unknown) == (4, 3, 0)
+
+
 def test_full_same_seed_replay_and_complete_golden_map(generated: dict[str, Any]) -> None:
     canonical = generated["canonical"]
     replay = generated["replay"]
     subtrees = ("runtime", "references", "reports")
     canonical_index = deterministic_tree_index(canonical["bundle"], subtrees)
     replay_index = deterministic_tree_index(replay["bundle"], subtrees)
+    assert len(canonical_index) == len(replay_index) == 65
     assert canonical_index == replay_index
     assert "reports/landlock-receipt.json" not in canonical_index
     assert all("/tmp/" not in path and "pytest-" not in path for path in canonical_index)
@@ -530,10 +834,17 @@ def test_canonical_json_rejects_floats() -> None:
     )
 
 
-def test_fixture_definition_is_small_generated_only_contract() -> None:
+def test_fixture_definition_records_mixed_source_set() -> None:
     definition = json.loads(
         (PACKAGE_ROOT / "fixtures/fixture-definition.json").read_text(encoding="utf-8")
     )
     assert definition["fixture_id"] == FIXTURE_ID
     assert definition["seed"] == CANONICAL_SEED
+    assert definition["source_set_generator"] == SOURCE_SET_VERSION
+    assert {source["source_id"]: source["generator"] for source in definition["sources"]} == {
+        "chart-01": GENERATED_CHART_VERSION,
+        "chart-02": FROZEN_PLATE_VERSION,
+        "chart-03": GENERATED_CHART_VERSION,
+        "chart-04": GENERATED_CHART_VERSION,
+    }
     assert len(definition["jobs"]) == 6

@@ -41,22 +41,27 @@ COMPARISON_VERSION = "declared-reference-comparison/v1"
 VALIDATOR_REPORT_VERSION = "fixture-validator-report/v1"
 VALIDATOR_RECEIPT_VERSION = "validator-receipt/v1"
 ORACLE_VERSION = "fixture-oracle/v1"
-GENERATOR_VERSION = "generated-chart/v1"
+GENERATED_CHART_VERSION = "generated-chart/v1"
+FROZEN_PLATE_VERSION = "frozen-vertex-gemini-plate/v1"
+SOURCE_SET_VERSION = "mixed-source-set/v1"
+GENERATOR_VERSION = SOURCE_SET_VERSION
 FLOAT_BUFFER_VERSION = "rgb-float32-buffer/v1"
 DERIVATIVE_VERSION = "lossless-float-copy/v1"
 DISPLAY_VERSION = "supplementary-display-png/v1"
 OCIO_VERSION = "2.5.2"
 OCIO_WHEEL_SHA256 = "3d0ab1c398d560513c651c7b9c676e68f264a63b97e29fec21722d4270f865aa"
+FROZEN_CHART2_SHA256 = "7500776f9b97942cdea7ab429dcb95b4d7f916d5bd06b4ce2fb19912e2f4724a"
+FROZEN_CHART2_GENERATION_SHA256 = "a6054b66a458c77eff808364b785dc104e7592844fac88338c85dc7fe89a96d6"
 CANONICAL_SEED = "ct-shadowed-lut-v1:canonical"
 PERMUTED_SEED = "ct-shadowed-lut-v1:hidden-a"
-CANONICAL_DIGESTS_SHA256 = "89cb619af77270f4c3c07a6b1cca9e2761a78050a7c3db3588d29da705cb3a52"
+CANONICAL_DIGESTS_SHA256 = "34c91bd84d6d84a7c3ea27dcce0bb492f7efa5567af66e86d66027c289c151b4"
 CANONICAL_PREVALIDATION_TREE_SHA256 = (
-    "63125e9744cb82c9a5b58f6691ea918dcdaaa543b6ee8009045915db538de2a4"
+    "cb66a010391c5f0aa333d9224ce605fe98a8a07cd75c93d41fa4bdd5f58742b8"
 )
 CANONICAL_PREVALIDATION_DIRECTORIES_SHA256 = (
     "da498138ffdb297d06d06997e502b5adae80fd8a481ab1f2fe6f54ef6f3ff845"
 )
-CANONICAL_WORKER_TREE_SHA256 = "34e0bcce781d028e101df343c36b9ed6fff363036ab862199a41b1c7ebbedc59"
+CANONICAL_WORKER_TREE_SHA256 = "539e318c5f9a3091e250ee4dbc894b97b3a688af0afa5bf001d9326a3fa37180"
 CANONICAL_WORKER_DIRECTORIES_SHA256 = (
     "6a0cff9e08502992ea48ee8d69c47ab8f4a669c255bc4dae2d2b57ad2e74d793"
 )
@@ -66,15 +71,23 @@ FIXED_T0 = "2026-08-11T00:00:00Z"
 CONFIG_NAME = "config.ocio"
 LUT_LOGICAL_PATH = "luts/show_look.cube"
 SCHEMA_ROOT = Path(__file__).parent / "schemas"
+ASSET_ROOT = Path(__file__).parent / "assets"
+FROZEN_CHART2_PATH = ASSET_ROOT / "chart-02.rgb16be"
+FROZEN_CHART2_GENERATION_PATH = ASSET_ROOT / "chart-02-generation.json"
+SOURCE_PIXEL_MAGIC = b"RGB16BE"
+SOURCE_PIXEL_HEADER_SIZE = struct.calcsize(">II") + len(SOURCE_PIXEL_MAGIC)
+SOURCE_PIXEL_BYTE_LENGTH = SOURCE_PIXEL_HEADER_SIZE + PIXELS * CHANNELS * 2
 SCHEMA_FILES = {
     "artifact-lineage/v1": "artifact-lineage-v1.schema.json",
     "declared-approved-resources/v1": "declared-approved-resources-v1.schema.json",
     "declared-reference/v1": "declared-reference-v1.schema.json",
     "fixture-job/v1": "fixture-job-v1.schema.json",
     "fixture-oracle/v1": "fixture-oracle-v1.schema.json",
+    "fixture-build-provenance/v1": "fixture-build-provenance-v1.schema.json",
     "fixture-provenance/v1": "fixture-provenance-v1.schema.json",
     "fixture-runtime-manifest/v1": "fixture-runtime-manifest-v1.schema.json",
     "fixture-telemetry/v1": "fixture-telemetry-v1.schema.json",
+    "frozen-source-generation/v1": "frozen-source-generation-v1.schema.json",
     VALIDATOR_REPORT_VERSION: "fixture-validator-report-v1.schema.json",
     "generated-source/v1": "generated-source-v1.schema.json",
     "resolved-resource-manifest/v1": "resolved-resource-manifest-v1.schema.json",
@@ -466,13 +479,129 @@ def source_pixel_bytes(samples: array[int]) -> bytes:
     values = array("H", samples)
     if sys.byteorder == "little":
         values.byteswap()
-    return struct.pack(">II", WIDTH, HEIGHT) + b"RGB16BE" + values.tobytes()
+    return struct.pack(">II", WIDTH, HEIGHT) + SOURCE_PIXEL_MAGIC + values.tobytes()
+
+
+def _strict_json_object(data: bytes, *, label: str) -> dict[str, Any]:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate key in {label}: {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        document = json.loads(data.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid JSON in {label}") from error
+    if not isinstance(document, dict):
+        raise ValueError(f"{label} must contain one JSON object")
+    return document
+
+
+def _validate_frozen_chart2_record(document: dict[str, Any], asset_sha256: str) -> None:
+    validate_contract_document(document)
+    prompt = document["prompt"]
+    for text_key, digest_key in (
+        ("text", "sha256"),
+        ("effective_text", "effective_sha256"),
+        ("visual_exclusions", "visual_exclusions_sha256"),
+    ):
+        if sha256_bytes(prompt[text_key].encode("utf-8")) != prompt[digest_key]:
+            raise ValueError(f"frozen chart-02 {text_key} hash mismatch")
+
+    candidates = document["candidates"]
+    if [candidate["index"] for candidate in candidates] != [1, 2, 3]:
+        raise ValueError("frozen chart-02 candidates must have ordered indices 1, 2, 3")
+    for field in ("seed", "raw_png_sha256", "canonical_rgb16be_sha256"):
+        if len({candidate[field] for candidate in candidates}) != 3:
+            raise ValueError(f"frozen chart-02 candidates must have unique {field} values")
+    selected = [candidate for candidate in candidates if candidate["selected"]]
+    if len(selected) != 1:
+        raise ValueError("frozen chart-02 must have exactly one selected candidate")
+    selected_candidate = selected[0]
+    selection = document["selection"]
+    if selected_candidate["index"] != selection["selected_candidate_index"]:
+        raise ValueError("frozen chart-02 selected candidate index mismatch")
+    if (
+        selected_candidate["canonical_rgb16be_sha256"] != asset_sha256
+        or selection["asset"]["sha256"] != asset_sha256
+        or asset_sha256 != FROZEN_CHART2_SHA256
+    ):
+        raise ValueError("frozen chart-02 selected asset hash mismatch")
+    if any(
+        candidate["approved_self_comparison"]["state"] != "reference_match"
+        or candidate["shadowed_comparison"]["state"] != "reference_mismatch"
+        for candidate in candidates
+    ):
+        raise ValueError("frozen chart-02 deterministic color gate failed")
+    for candidate in candidates:
+        approved = candidate["approved_self_comparison"]
+        shadowed = candidate["shadowed_comparison"]
+        if (
+            Decimal(approved["maximum_absolute_channel_error"]) > Decimal("0.000001")
+            or Decimal(approved["rmse"]) > Decimal("0.0000005")
+            or Decimal(shadowed["maximum_absolute_channel_error"]) <= Decimal("0.0001")
+            or Decimal(shadowed["fraction_pixels_at_or_above_0_02"]) < Decimal("0.10")
+            or Decimal(shadowed["nearest_rank_p95"]) < Decimal("0.04")
+        ):
+            raise ValueError("frozen chart-02 deterministic color metrics fail policy")
+    if (
+        selection["visual_approval"]["approved"] is not True
+        or selection["license_decision"]["approved"] is not True
+        or selection["license_decision"]["license"] != "Apache-2.0"
+        or document["terms_review"]["approved_for_apache_2_0_inclusion"] is not True
+    ):
+        raise ValueError("frozen chart-02 approval or license gate is not satisfied")
+
+
+def load_frozen_chart2_samples(
+    asset_path: Path = FROZEN_CHART2_PATH,
+    generation_path: Path = FROZEN_CHART2_GENERATION_PATH,
+) -> array[int]:
+    for path, label in (
+        (asset_path, "frozen chart-02 asset"),
+        (generation_path, "frozen chart-02 generation record"),
+    ):
+        if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
+            raise ValueError(f"{label} must be one regular, non-linked file")
+
+    generation_bytes = generation_path.read_bytes()
+    if sha256_bytes(generation_bytes) != FROZEN_CHART2_GENERATION_SHA256:
+        raise ValueError("frozen chart-02 generation record hash mismatch")
+    generation = _strict_json_object(generation_bytes, label="frozen chart-02 generation record")
+
+    data = asset_path.read_bytes()
+    if len(data) != SOURCE_PIXEL_BYTE_LENGTH:
+        raise ValueError("frozen chart-02 asset length mismatch")
+    width, height = struct.unpack(">II", data[:8])
+    if (width, height) != (WIDTH, HEIGHT) or data[8:SOURCE_PIXEL_HEADER_SIZE] != SOURCE_PIXEL_MAGIC:
+        raise ValueError("frozen chart-02 asset header mismatch")
+    asset_sha256 = sha256_bytes(data)
+    _validate_frozen_chart2_record(generation, asset_sha256)
+    if generation["selection"]["asset"]["byte_length"] != len(data):
+        raise ValueError("frozen chart-02 recorded byte length mismatch")
+
+    samples = array("H")
+    samples.frombytes(data[SOURCE_PIXEL_HEADER_SIZE:])
+    if sys.byteorder == "little":
+        samples.byteswap()
+    if len(samples) != PIXELS * CHANNELS:
+        raise ValueError("frozen chart-02 sample count mismatch")
+    if any(sample % 257 for sample in samples):
+        raise ValueError("frozen chart-02 samples are not exact RGB8-to-RGB16 promotions")
+    if source_pixel_bytes(samples) != data:
+        raise ValueError("frozen chart-02 asset is not canonical RGB16BE")
+    return samples
 
 
 def chart_samples(chart_id: str) -> array[int]:
     chart = int(chart_id.split("-")[-1])
     if chart not in (1, 2, 3, 4):
         raise ValueError(chart_id)
+    if chart == 2:
+        return load_frozen_chart2_samples()
     values = array("H")
     append = values.append
     for y in range(HEIGHT):
@@ -483,8 +612,6 @@ def chart_samples(chart_id: str) -> array[int]:
             q = ((x // 64) + 2 * (y // 48)) % 8
             if chart == 1:
                 pixel = (u, v, n)
-            elif chart == 2:
-                pixel = (65535 - v, u, (2 * v + u) // 3)
             elif chart == 3:
                 pixel = PALETTE[q]
             else:
@@ -863,6 +990,12 @@ def build_scenario(
     }
     for chart in ("chart-01", "chart-02", "chart-03", "chart-04"):
         source_id = source_ids[chart]
+        source_generator = FROZEN_PLATE_VERSION if chart == "chart-02" else GENERATED_CHART_VERSION
+        source_provenance = (
+            "frozen-build-time-output-apache-2.0"
+            if chart == "chart-02"
+            else "generated-for-colortrace-apache-2.0"
+        )
         samples = chart_samples(chart)
         source_floats[chart] = source_to_float(samples)
         png_path = runtime / "sources" / f"{source_id}.png"
@@ -874,7 +1007,7 @@ def build_scenario(
                     "asset_id": f"source-pixels-{source_id}",
                     "asset_kind": "canonical-source-pixels",
                     "sha256": pixel_digest,
-                    "generator": GENERATOR_VERSION,
+                    "generator": source_generator,
                     "license": "Apache-2.0",
                 },
                 {
@@ -882,7 +1015,7 @@ def build_scenario(
                     "asset_kind": "source-display-png",
                     "path": rel(png_path, scenario_root),
                     "sha256": png_digest,
-                    "generator": GENERATOR_VERSION,
+                    "generator": source_generator,
                     "license": "Apache-2.0",
                 },
             ]
@@ -891,15 +1024,17 @@ def build_scenario(
             "schema": "generated-source/v1",
             "source_id": source_id,
             "artifact_id": f"source-{source_id}",
-            "generator": GENERATOR_VERSION,
+            "generator": source_generator,
             "width": WIDTH,
             "height": HEIGHT,
             "channels": "RGB16",
             "canonical_pixel_sha256": pixel_digest,
             "stored_png_sha256": png_digest,
             "stored_png": rel(png_path, scenario_root),
-            "provenance": "generated-for-colortrace-apache-2.0",
+            "provenance": source_provenance,
         }
+        if chart == "chart-02":
+            source_manifest["generation_record_sha256"] = FROZEN_CHART2_GENERATION_SHA256
         manifest_path = runtime / "manifests" / "sources" / f"{source_id}.json"
         manifest_digest = write_json(manifest_path, source_manifest)
         source_index.append(
@@ -1262,7 +1397,7 @@ def build_scenario(
         "run_id": run_id,
         "seed_sha256": sha256_bytes(seed.encode("utf-8")),
         "schedule_origin": FIXED_T0,
-        "image_generator": GENERATOR_VERSION,
+        "source_set_generator": SOURCE_SET_VERSION,
         "float_buffer": FLOAT_BUFFER_VERSION,
         "comparison_policy": COMPARISON_VERSION,
         "ocio_version": ocio.__version__,
@@ -1784,7 +1919,7 @@ def _assert_canonical_input_metadata(scenario_root: Path) -> None:
         "fixture_version": FIXTURE_VERSION,
         "variant_id": "canonical",
         "seed_sha256": sha256_bytes(CANONICAL_SEED.encode("utf-8")),
-        "image_generator": GENERATOR_VERSION,
+        "source_set_generator": SOURCE_SET_VERSION,
         "comparison_policy": COMPARISON_VERSION,
         "ocio_version": OCIO_VERSION,
     }

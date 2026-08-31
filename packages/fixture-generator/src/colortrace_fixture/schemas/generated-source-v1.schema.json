@@ -1,7 +1,59 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://colortrace.dev/schemas/generated-source-v1.schema.json",
-  "type": "object", "additionalProperties": false,
-  "required": ["schema", "source_id", "artifact_id", "generator", "width", "height", "channels", "canonical_pixel_sha256", "stored_png_sha256", "stored_png", "provenance"],
-  "properties": {"schema": {"const": "generated-source/v1"}, "source_id": {"type": "string"}, "artifact_id": {"type": "string"}, "generator": {"const": "generated-chart/v1"}, "width": {"const": 512}, "height": {"const": 288}, "channels": {"const": "RGB16"}, "canonical_pixel_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "stored_png_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "stored_png": {"type": "string"}, "provenance": {"const": "generated-for-colortrace-apache-2.0"}}
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source_id",
+    "artifact_id",
+    "generator",
+    "width",
+    "height",
+    "channels",
+    "canonical_pixel_sha256",
+    "stored_png_sha256",
+    "stored_png",
+    "provenance"
+  ],
+  "properties": {
+    "schema": {"const": "generated-source/v1"},
+    "source_id": {"type": "string"},
+    "artifact_id": {"type": "string"},
+    "generator": {
+      "enum": ["generated-chart/v1", "frozen-vertex-gemini-plate/v1"]
+    },
+    "width": {"const": 512},
+    "height": {"const": 288},
+    "channels": {"const": "RGB16"},
+    "canonical_pixel_sha256": {"$ref": "#/$defs/digest"},
+    "stored_png_sha256": {"$ref": "#/$defs/digest"},
+    "stored_png": {"type": "string"},
+    "provenance": {
+      "enum": [
+        "generated-for-colortrace-apache-2.0",
+        "frozen-build-time-output-apache-2.0"
+      ]
+    },
+    "generation_record_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "generator": {"const": "generated-chart/v1"},
+        "provenance": {"const": "generated-for-colortrace-apache-2.0"}
+      },
+      "not": {"required": ["generation_record_sha256"]}
+    },
+    {
+      "required": ["generation_record_sha256"],
+      "properties": {
+        "generator": {"const": "frozen-vertex-gemini-plate/v1"},
+        "provenance": {"const": "frozen-build-time-output-apache-2.0"}
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
 }
