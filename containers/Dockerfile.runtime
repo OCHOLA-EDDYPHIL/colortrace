@@ -23,8 +23,8 @@ RUN test "$(go version)" = "go version go1.26.6 linux/amd64" \
     && echo "a793edc44adea4185d8bdef99e522bce47b3341d45d0d4b88723390169bb8f45  go.sum" | sha256sum -c - \
     && echo "29f223acc1d2d9ac9e136d246d934e3c3130d1a57eed002f97a680b20b8050ed  modules.txt" | sha256sum -c - \
     && echo "91bdd1dece9d4aaaf9b5bda899d64f36ca65a37fd7511acbd6d69cd1c6ddbb59  /tmp/mcp-grafana-source.tar.gz" | sha256sum -c - \
-    && go mod download all \
-    && go list -mod=readonly -m all > /tmp/modules.txt \
+    && GODEBUG=http2client=0 go mod download all \
+    && GODEBUG=http2client=0 go list -mod=readonly -m all > /tmp/modules.txt \
     && cmp modules.txt /tmp/modules.txt \
     && tar --extract --gzip --file /tmp/mcp-grafana-source.tar.gz --directory /tmp
 RUN --network=none go mod verify \
