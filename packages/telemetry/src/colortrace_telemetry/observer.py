@@ -153,12 +153,12 @@ def _grafana_readiness_probe(
     alert_contract: Mapping[str, Any],
     deadline: float,
     monotonic: Callable[[], float],
-) -> tuple[bool, int | None, tuple[str, ...]]:
+) -> tuple[Mapping[str, Any] | None, int | None, tuple[str, ...]]:
     payloads: list[Any] = []
     for path in _GRAFANA_READINESS_PATHS:
         remaining = deadline - monotonic()
         if remaining <= 0:
-            return False, None, ()
+            return None, None, ()
         try:
             payloads.append(
                 _json_get(
@@ -168,17 +168,18 @@ def _grafana_readiness_probe(
                 )
             )
         except BackendUnavailable:
-            return False, None, ()
+            return None, None, ()
     target_groups = _target_alert_groups(payloads[-1], str(alert_contract["uid"]))
     observed_intervals = tuple(
         sorted({_safe_readiness_interval(group.get("interval")) for group in target_groups})
     )
     expected_interval = f"{int(alert_contract['scheduler_interval_seconds'])}s"
-    return (
-        len(target_groups) == 1 and observed_intervals == (expected_interval,),
-        len(target_groups),
-        observed_intervals,
+    matched_group = (
+        target_groups[0]
+        if len(target_groups) == 1 and observed_intervals == (expected_interval,)
+        else None
     )
+    return matched_group, len(target_groups), observed_intervals
 
 
 def _safe_readiness_interval(value: Any) -> str:
@@ -222,16 +223,17 @@ def _readiness_alert_contract(stack_config_path: Path) -> dict[str, Any]:
     return alert_contract
 
 
-def wait_for_grafana_readiness(
+def _wait_for_grafana_alert_scheduler(
     endpoints: BackendEndpoints,
     *,
-    stack_config_path: Path = Path("config/telemetry/local-stack.json"),
-    timeout_seconds: float = _GRAFANA_READINESS_TIMEOUT_SECONDS,
-    poll_seconds: float = _GRAFANA_READINESS_POLL_SECONDS,
-    required_consecutive_matches: int = _GRAFANA_READINESS_CONSECUTIVE_MATCHES,
-    monotonic: Callable[[], float] = time.monotonic,
-    sleep: Callable[[float], None] = time.sleep,
-) -> None:
+    alert_contract: Mapping[str, Any],
+    timeout_seconds: float,
+    poll_seconds: float,
+    required_consecutive_matches: int,
+    monotonic: Callable[[], float],
+    sleep: Callable[[float], None],
+    failure_message: str,
+) -> Mapping[str, Any]:
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("Grafana readiness timeout must be positive and finite")
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
@@ -242,13 +244,12 @@ def wait_for_grafana_readiness(
         or required_consecutive_matches <= 0
     ):
         raise ValueError("Grafana readiness consecutive matches must be a positive integer")
-    alert_contract = _readiness_alert_contract(stack_config_path)
     deadline = monotonic() + timeout_seconds
     target_count: int | None = None
     observed_intervals: tuple[str, ...] = ()
     consecutive_matches = 0
     while monotonic() < deadline:
-        ready, observed_count, observed = _grafana_readiness_probe(
+        matched_group, observed_count, observed = _grafana_readiness_probe(
             endpoints,
             alert_contract=alert_contract,
             deadline=deadline,
@@ -257,17 +258,41 @@ def wait_for_grafana_readiness(
         if observed_count is not None:
             target_count = observed_count
             observed_intervals = observed
-        consecutive_matches = consecutive_matches + 1 if ready else 0
+        consecutive_matches = consecutive_matches + 1 if matched_group is not None else 0
         if consecutive_matches >= required_consecutive_matches:
-            return
+            if matched_group is None:
+                raise AssertionError("unreachable alert scheduler readiness state")
+            return matched_group
         remaining = deadline - monotonic()
         if remaining > 0:
             sleep(min(poll_seconds, remaining))
     count = "unavailable" if target_count is None else str(target_count)
     intervals = "unavailable" if target_count is None else ",".join(observed_intervals) or "none"
     raise BackendUnavailable(
-        "Grafana readiness gate timed out "
-        f"(target_rule_count={count}, observed_intervals={intervals})"
+        f"{failure_message} (target_rule_count={count}, observed_intervals={intervals})"
+    )
+
+
+def wait_for_grafana_readiness(
+    endpoints: BackendEndpoints,
+    *,
+    stack_config_path: Path = Path("config/telemetry/local-stack.json"),
+    timeout_seconds: float = _GRAFANA_READINESS_TIMEOUT_SECONDS,
+    poll_seconds: float = _GRAFANA_READINESS_POLL_SECONDS,
+    required_consecutive_matches: int = _GRAFANA_READINESS_CONSECUTIVE_MATCHES,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    alert_contract = _readiness_alert_contract(stack_config_path)
+    _wait_for_grafana_alert_scheduler(
+        endpoints,
+        alert_contract=alert_contract,
+        timeout_seconds=timeout_seconds,
+        poll_seconds=poll_seconds,
+        required_consecutive_matches=required_consecutive_matches,
+        monotonic=monotonic,
+        sleep=sleep,
+        failure_message="Grafana readiness gate timed out",
     )
 
 
@@ -557,7 +582,16 @@ def _metric_series(endpoints: BackendEndpoints) -> int:
     return len(data) if isinstance(data, list) else 0
 
 
-def _alert_contract(endpoints: BackendEndpoints, contract: Mapping[str, Any]) -> dict[str, Any]:
+def _alert_contract(
+    endpoints: BackendEndpoints,
+    contract: Mapping[str, Any],
+    *,
+    scheduler_timeout_seconds: float = _GRAFANA_READINESS_TIMEOUT_SECONDS,
+    scheduler_poll_seconds: float = _GRAFANA_READINESS_POLL_SECONDS,
+    scheduler_required_consecutive_matches: int = _GRAFANA_READINESS_CONSECUTIVE_MATCHES,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
     uid = str(contract["uid"])
     rule = _json_get(
         endpoints.grafana,
@@ -599,24 +633,22 @@ def _alert_contract(endpoints: BackendEndpoints, contract: Mapping[str, Any]) ->
         or any(field in expression for field in contract["excluded_alert_keys"])
     ):
         raise AssertionError("Grafana alert expression violates the symptom contract")
-    groups = _json_get(
-        endpoints.grafana,
-        "/api/ruler/grafana/api/v1/rules",
-        timeout_seconds=15.0,
-    )
-    target_groups = _target_alert_groups(groups, uid)
     scheduler_interval_seconds = int(contract["scheduler_interval_seconds"])
-    if len(target_groups) != 1 or target_groups[0].get("interval") != (
-        f"{scheduler_interval_seconds}s"
-    ):
-        observed_intervals = tuple(
-            sorted({_safe_readiness_interval(group.get("interval")) for group in target_groups})
+    try:
+        matched_group = _wait_for_grafana_alert_scheduler(
+            endpoints,
+            alert_contract=contract,
+            timeout_seconds=scheduler_timeout_seconds,
+            poll_seconds=scheduler_poll_seconds,
+            required_consecutive_matches=scheduler_required_consecutive_matches,
+            monotonic=monotonic,
+            sleep=sleep,
+            failure_message="Grafana alert scheduler interval differs from its contract",
         )
-        raise AssertionError(
-            "Grafana alert scheduler interval differs from its contract "
-            f"(target_rule_count={len(target_groups)}, "
-            f"observed_intervals={','.join(observed_intervals) or 'none'})"
-        )
+    except BackendUnavailable as error:
+        raise AssertionError(str(error)) from None
+    if matched_group.get("interval") != f"{scheduler_interval_seconds}s":
+        raise AssertionError("unreachable alert scheduler contract state")
     return {
         "uid": uid,
         "provisioned": True,
