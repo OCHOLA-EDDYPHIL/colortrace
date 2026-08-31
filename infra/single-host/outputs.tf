@@ -67,6 +67,7 @@ output "deployment_contract" {
     lifetime_hours        = local.staging_lifetime_hours
     estimated_cost_usd    = var.estimated_seven_day_cost_usd
     cost_ceiling_usd      = var.cost_ceiling_usd
+    hard_stop_epoch       = var.staging_hard_stop_epoch
     public_tcp_ports      = [443]
     ssh_source_range      = local.iap_tcp_source_range
     public_hostname       = local.public_hostname
@@ -93,6 +94,11 @@ output "deployment_contract" {
     }
     scanner = var.deployment_artifact_binding.scanner
   } : null
+}
+
+output "staging_hard_stop_epoch" {
+  description = "Effective absolute staging cutoff; zero preserves the rolling generation-only lifecycle."
+  value       = local.staging_hard_stop_epoch
 }
 
 output "resume_identity" {

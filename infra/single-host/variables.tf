@@ -165,6 +165,23 @@ variable "staging_generation" {
   }
 }
 
+variable "staging_hard_stop_epoch" {
+  description = "Optional absolute Unix cutoff; null preserves the rolling 168-hour generation lifecycle."
+  type        = number
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = var.staging_hard_stop_epoch == null || try(
+      var.staging_hard_stop_epoch > 0
+      && floor(var.staging_hard_stop_epoch) == var.staging_hard_stop_epoch
+      && var.staging_hard_stop_epoch <= 253402300799,
+      false,
+    )
+    error_message = "When supplied, staging_hard_stop_epoch must be a positive whole Unix epoch second no later than 9999-12-31T23:59:59Z; null preserves the rolling 168-hour lifecycle."
+  }
+}
+
 variable "access_secret_version" {
   description = "Immutable numeric version of the Secret Manager value that contains one Caddy bcrypt hash."
   type        = string

@@ -16,7 +16,10 @@ readonly instance=$5
 readonly expected_generation=$6
 readonly admission_tfvars=$7
 readonly access_password=${COLORTRACE_ACCESS_PASSWORD:-}
+readonly expected_hard_stop_override=${COLORTRACE_STAGING_HARD_STOP_EPOCH:-}
+readonly max_unix_epoch=253402300799
 unset COLORTRACE_ACCESS_PASSWORD
+unset COLORTRACE_STAGING_HARD_STOP_EPOCH
 readonly script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 readonly repository_root=$(CDPATH= cd -- "$script_dir/../../.." && pwd -P)
 readonly admission_helper="$script_dir/admission-binding.py"
@@ -35,13 +38,38 @@ readonly output=${8:-"$repository_root/.cache/single-host/host-verification.json
 }
 
 command -v curl >/dev/null
+command -v date >/dev/null
 command -v gcloud >/dev/null
 command -v grep >/dev/null
 command -v python3 >/dev/null
+command -v terraform >/dev/null
 command -v timeout >/dev/null
 test -f "$admission_tfvars"
 test -x "$admission_helper"
 test -x "$contract_helper"
+
+expected_hard_stop_epoch=$(terraform \
+  -chdir="$repository_root/infra/single-host" \
+  output -raw staging_hard_stop_epoch)
+readonly expected_hard_stop_epoch
+case "$expected_hard_stop_epoch" in
+  ''|*[!0-9]*) exit 65 ;;
+esac
+test "$expected_hard_stop_epoch" -le "$max_unix_epoch" 2>/dev/null || exit 65
+if test -n "$expected_hard_stop_override"; then
+  case "$expected_hard_stop_override" in
+    *[!0-9]*) exit 64 ;;
+  esac
+  test "$expected_hard_stop_override" -le "$max_unix_epoch" 2>/dev/null || exit 64
+  test "$expected_hard_stop_override" = "$expected_hard_stop_epoch" || exit 65
+fi
+verification_now=$(date +%s)
+case "$verification_now" in
+  ''|*[!0-9]*) exit 70 ;;
+esac
+if test "$expected_hard_stop_epoch" -ne 0; then
+  test "$expected_hard_stop_epoch" -gt "$verification_now"
+fi
 
 readonly public_host=${public_url#https://}
 readonly verification_root=$(mktemp -d)
@@ -183,7 +211,8 @@ gcloud compute instances describe "$instance" \
   --zone "$zone" \
   --format=json >"$instance_description"
 python3 "$contract_helper" verify-instance-metadata \
-  "$instance_description" "$artifact_binding" "$expected_generation"
+  "$instance_description" "$artifact_binding" "$expected_generation" \
+  "$expected_hard_stop_epoch"
 
 host_ready=false
 for _ in $(seq 1 60); do
@@ -307,7 +336,7 @@ python3 "$contract_helper" verify-rejection-contract \
 
 readonly remote_check="$verification_root/remote-check.sh"
 python3 "$contract_helper" remote-script \
-  "$artifact_binding" "$expected_generation" "$remote_check"
+  "$artifact_binding" "$expected_generation" "$expected_hard_stop_epoch" "$remote_check"
 
 restart_runtime_and_verify() {
   gcloud compute ssh "$instance" \

@@ -8,6 +8,7 @@ readonly REGISTRY_HOST='${registry_host}'
 readonly ACCESS_SECRET_ID='${access_secret_id}'
 readonly ACCESS_SECRET_VERSION='${access_secret_version}'
 readonly STAGING_GENERATION='${staging_generation}'
+readonly STAGING_HARD_STOP_EPOCH='${staging_hard_stop_epoch}'
 readonly STAGING_LIFETIME_HOURS='${staging_lifetime_hours}'
 readonly COMPOSE_B64='${compose_yaml_base64}'
 readonly CADDYFILE_B64='${caddyfile_base64}'
@@ -29,6 +30,7 @@ readonly APT_AUTOMATIC_UNITS="$APT_AUTOMATIC_TIMERS $APT_AUTOMATIC_SERVICES"
 readonly APT_SERVICE_QUIESCE_ATTEMPTS=180
 readonly APT_SERVICE_QUIESCE_DELAY_SECONDS=5
 readonly LIFECYCLE_STATE_VERSION='1'
+readonly MAX_UNIX_EPOCH=253402300799
 
 startup_complete=false
 registry_login_active=false
@@ -72,6 +74,23 @@ lifecycle_error() {
   printf 'Invalid or interrupted ColorTrace lifecycle state.\n' >&2
   return 1
 }
+
+validate_epoch_value() {
+  local epoch=$1
+  case "$epoch" in
+    ''|*[!0-9]*) lifecycle_error ;;
+  esac
+  test "$epoch" -le "$MAX_UNIX_EPOCH" || lifecycle_error
+}
+
+validate_epoch_value "$STAGING_HARD_STOP_EPOCH"
+if test "$STAGING_HARD_STOP_EPOCH" -ne 0; then
+  hard_stop_now=$(date +%s)
+  validate_epoch_value "$hard_stop_now"
+  if test "$hard_stop_now" -ge "$STAGING_HARD_STOP_EPOCH"; then
+    fail_closed 1
+  fi
+fi
 
 freeze_automatic_apt() {
   local active_state
@@ -131,13 +150,6 @@ read_record_value() {
 validate_generation_value() {
   local generation=$1
   [[ "$generation" =~ ^[a-z0-9][a-z0-9-]{6,30}[a-z0-9]$ ]] || lifecycle_error
-}
-
-validate_activation_value() {
-  local activation=$1
-  case "$activation" in
-    ''|*[!0-9]*) lifecycle_error ;;
-  esac
 }
 
 installed_package_versions() {
@@ -211,7 +223,7 @@ validate_managed_state() {
   read_record_value "$state_dir/activated-at" existing_activated_at
   test "$state_version" = "$LIFECYCLE_STATE_VERSION" || lifecycle_error
   validate_generation_value "$existing_generation"
-  validate_activation_value "$existing_activated_at"
+  validate_epoch_value "$existing_activated_at"
   test "$state_name" = "$existing_generation-$existing_activated_at" \
     || lifecycle_error
   validate_package_record "$state_dir"
@@ -353,7 +365,7 @@ elif test -f "$CONTROL_DIR/generation" \
   read_record_value "$CONTROL_DIR/generation" existing_generation
   read_record_value "$CONTROL_DIR/activated-at" existing_activated_at
   validate_generation_value "$existing_generation"
-  validate_activation_value "$existing_activated_at"
+  validate_epoch_value "$existing_activated_at"
   test -z "$(find "$STATES_DIR" -mindepth 1 -print -quit)" || lifecycle_error
 elif test ! -e "$CONTROL_DIR/generation" \
   && ! test -L "$CONTROL_DIR/generation" \
@@ -366,7 +378,7 @@ else
 fi
 
 now=$(date +%s)
-validate_activation_value "$now"
+validate_epoch_value "$now"
 if test -n "$existing_activated_at" && test "$existing_activated_at" -gt "$now"; then
   lifecycle_error
 fi
@@ -385,10 +397,15 @@ else
   fi
 fi
 
-deadline=$((activated_at + STAGING_LIFETIME_HOURS * 3600))
-test "$deadline" -gt "$activated_at" || lifecycle_error
+generation_deadline=$((activated_at + STAGING_LIFETIME_HOURS * 3600))
+test "$generation_deadline" -gt "$activated_at" || lifecycle_error
+deadline=$generation_deadline
+if test "$STAGING_HARD_STOP_EPOCH" -ne 0 \
+  && test "$STAGING_HARD_STOP_EPOCH" -lt "$deadline"; then
+  deadline=$STAGING_HARD_STOP_EPOCH
+fi
 now=$(date +%s)
-validate_activation_value "$now"
+validate_epoch_value "$now"
 remaining=$((deadline - now))
 
 if test "$remaining" -le 0; then
@@ -412,7 +429,7 @@ timer_deadline=$(systemctl show --timestamp=unix colortrace-auto-stop.timer \
   --property=NextElapseUSecRealtime --value)
 test -n "$timer_deadline"
 timer_deadline_epoch=$(date --date="$timer_deadline" +%s)
-validate_activation_value "$timer_deadline_epoch"
+validate_epoch_value "$timer_deadline_epoch"
 test "$timer_deadline_epoch" -eq "$deadline"
 
 export DEBIAN_FRONTEND=noninteractive

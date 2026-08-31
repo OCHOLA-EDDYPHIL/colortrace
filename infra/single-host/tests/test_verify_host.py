@@ -937,7 +937,10 @@ import os
 import pathlib
 import sys
 
-if "COLORTRACE_ACCESS_PASSWORD" in os.environ:
+if (
+    "COLORTRACE_ACCESS_PASSWORD" in os.environ
+    or "COLORTRACE_STAGING_HARD_STOP_EPOCH" in os.environ
+):
     raise SystemExit(90)
 log = pathlib.Path(os.environ["FAKE_COMMAND_LOG"])
 with log.open("a", encoding="utf-8") as handle:
@@ -953,6 +956,7 @@ if sys.argv[1:4] == ["compute", "instances", "describe"]:
     runtime_build_binding_sha256 = "sha256:" + __import__("hashlib").sha256(encoded).hexdigest()
     metadata = {
         "colortrace-staging-generation": "stage-0001",
+        "colortrace-staging-hard-stop-epoch": os.environ["FAKE_HARD_STOP_EPOCH"],
         "colortrace-candidate-commit": artifact["source"]["commit"],
         "colortrace-candidate-tree": artifact["source"]["tree"],
         "colortrace-artifact-binding-sha256": os.environ["FAKE_ARTIFACT_DIGEST"],
@@ -983,6 +987,10 @@ if sys.argv[1:3] == ["compute", "ssh"]:
             'systemctl is-active "$unit"',
             'test "$enabled_state" = masked',
             'test "$active_state" = inactive',
+            "expected_hard_stop_epoch=2000000000",
+            "colortrace-staging-hard-stop-epoch",
+            "generation_deadline=$((activated_at + 604800))",
+            'deadline=$expected_hard_stop_epoch',
         )
         if not all(check in command for check in required_apt_checks):
             raise SystemExit(91)
@@ -998,6 +1006,30 @@ raise SystemExit(2)
                 encoding="utf-8",
             )
             gcloud.chmod(0o755)
+
+            terraform = binary_directory / "terraform"
+            terraform.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+import pathlib
+import sys
+
+if (
+    "COLORTRACE_ACCESS_PASSWORD" in os.environ
+    or "COLORTRACE_STAGING_HARD_STOP_EPOCH" in os.environ
+):
+    raise SystemExit(90)
+with pathlib.Path(os.environ["FAKE_COMMAND_LOG"]).open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(["terraform", *sys.argv[1:]]) + "\\n")
+if sys.argv[2:] == ["output", "-raw", "staging_hard_stop_epoch"]:
+    print(os.environ["FAKE_TERRAFORM_HARD_STOP"], end="")
+    raise SystemExit(0)
+raise SystemExit(2)
+""",
+                encoding="utf-8",
+            )
+            terraform.chmod(0o755)
 
             curl = binary_directory / "curl"
             curl.write_text(
@@ -1128,12 +1160,15 @@ raise SystemExit(124)
                 "FAKE_COMMAND_LOG": str(command_log),
                 "FAKE_ARTIFACT": str(artifact_path),
                 "FAKE_ARTIFACT_DIGEST": _digest(artifact),
+                "FAKE_HARD_STOP_EPOCH": "2000000000",
+                "FAKE_TERRAFORM_HARD_STOP": "2000000000",
                 "FAKE_RESPONSES": str(responses),
                 "FAKE_START_COUNTER": str(temporary / "start-counter"),
                 "FAKE_APT_ENABLED_STATE": "masked",
                 "FAKE_APT_ACTIVE_STATE": "inactive",
                 "PATH": f"{binary_directory}:{os.environ['PATH']}",
             }
+            environment.pop("COLORTRACE_STAGING_HARD_STOP_EPOCH", None)
             verify_command = [
                 SCRIPT,
                 "https://203-0-113-42.sslip.io",
@@ -1145,6 +1180,87 @@ raise SystemExit(124)
                 admission,
                 output,
             ]
+            for hard_stop_epoch in ("not-an-epoch", "1"):
+                with self.subTest(hard_stop_epoch=hard_stop_epoch):
+                    invalid_log = temporary / f"invalid-hard-stop-{hard_stop_epoch}.jsonl"
+                    invalid_log.touch()
+                    invalid_output = temporary / f"invalid-hard-stop-{hard_stop_epoch}.json"
+                    invalid_environment = {
+                        **environment,
+                        "FAKE_COMMAND_LOG": str(invalid_log),
+                        "FAKE_HARD_STOP_EPOCH": hard_stop_epoch,
+                    }
+                    rejected = subprocess.run(
+                        [*verify_command[:-1], invalid_output],
+                        check=False,
+                        capture_output=True,
+                        env=invalid_environment,
+                        text=True,
+                    )
+                    self.assertNotEqual(rejected.returncode, 0)
+                    invalid_calls = [
+                        json.loads(line) for line in invalid_log.read_text().splitlines()
+                    ]
+                    self.assertFalse(
+                        any(call[:3] == ["gcloud", "compute", "ssh"] for call in invalid_calls)
+                    )
+            expired_log = temporary / "expired-hard-stop.jsonl"
+            expired_log.touch()
+            expired_environment = {
+                **environment,
+                "FAKE_COMMAND_LOG": str(expired_log),
+                "FAKE_HARD_STOP_EPOCH": "1",
+                "FAKE_TERRAFORM_HARD_STOP": "1",
+            }
+            expired = subprocess.run(
+                [*verify_command[:-1], temporary / "expired-hard-stop.json"],
+                check=False,
+                capture_output=True,
+                env=expired_environment,
+                text=True,
+            )
+            self.assertNotEqual(expired.returncode, 0)
+            expired_calls = [json.loads(line) for line in expired_log.read_text().splitlines()]
+            self.assertEqual(expired_calls[0][0], "terraform")
+            self.assertFalse(any(call[0] == "gcloud" for call in expired_calls))
+
+            overflow_log = temporary / "overflowing-hard-stop.jsonl"
+            overflow_log.touch()
+            overflow_environment = {
+                **environment,
+                "FAKE_COMMAND_LOG": str(overflow_log),
+                "FAKE_TERRAFORM_HARD_STOP": "9" * 40,
+            }
+            overflow_rejected = subprocess.run(
+                [*verify_command[:-1], temporary / "overflowing-hard-stop.json"],
+                check=False,
+                capture_output=True,
+                env=overflow_environment,
+                text=True,
+            )
+            self.assertNotEqual(overflow_rejected.returncode, 0)
+            overflow_calls = [json.loads(line) for line in overflow_log.read_text().splitlines()]
+            self.assertEqual(overflow_calls[0][0], "terraform")
+            self.assertFalse(any(call[0] == "gcloud" for call in overflow_calls))
+
+            override_log = temporary / "mismatched-hard-stop-override.jsonl"
+            override_log.touch()
+            override_environment = {
+                **environment,
+                "COLORTRACE_STAGING_HARD_STOP_EPOCH": "1999999999",
+                "FAKE_COMMAND_LOG": str(override_log),
+            }
+            override_rejected = subprocess.run(
+                [*verify_command[:-1], temporary / "mismatched-hard-stop-override.json"],
+                check=False,
+                capture_output=True,
+                env=override_environment,
+                text=True,
+            )
+            self.assertNotEqual(override_rejected.returncode, 0)
+            override_calls = [json.loads(line) for line in override_log.read_text().splitlines()]
+            self.assertEqual(override_calls[0][0], "terraform")
+            self.assertFalse(any(call[0] == "gcloud" for call in override_calls))
             for state_name, invalid_state in (
                 ("FAKE_APT_ENABLED_STATE", "enabled"),
                 ("FAKE_APT_ACTIVE_STATE", "active"),
@@ -1243,6 +1359,10 @@ raise SystemExit(124)
                 self.assertIn('systemctl is-active "$unit"', command)
                 self.assertIn('test "$enabled_state" = masked', command)
                 self.assertIn('test "$active_state" = inactive', command)
+                self.assertIn("expected_hard_stop_epoch=2000000000", command)
+                self.assertIn("colortrace-staging-hard-stop-epoch", command)
+                self.assertIn("generation_deadline=$((activated_at + 604800))", command)
+                self.assertIn("deadline=$expected_hard_stop_epoch", command)
             reset_calls = [
                 call
                 for call in calls
@@ -1286,6 +1406,106 @@ raise SystemExit(124)
                 sorted(int(call[-1]) for call in private_port_calls),
                 [22, 80, 3000, 3100, 3200, 4318, 8080, 8443, 9090, 13000, 13100, 13200, 19090],
             )
+            terraform_calls = [call for call in calls if call[0] == "terraform"]
+            self.assertEqual(len(terraform_calls), 1)
+            self.assertEqual(
+                terraform_calls[0][-3:],
+                ["output", "-raw", "staging_hard_stop_epoch"],
+            )
+
+    def test_legacy_zero_hard_stop_and_overflow_are_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            artifact = _artifact()
+            artifact_path = temporary / "artifact.json"
+            artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+            runtime_binding = {
+                "schema": "colortrace-runtime-build-binding/v1",
+                "source_commit": artifact["source"]["commit"],
+                "source_tree": artifact["source"]["tree"],
+            }
+            metadata = {
+                "colortrace-staging-generation": "stage-0001",
+                "colortrace-staging-hard-stop-epoch": "0",
+                "colortrace-candidate-commit": artifact["source"]["commit"],
+                "colortrace-candidate-tree": artifact["source"]["tree"],
+                "colortrace-artifact-binding-sha256": _digest(artifact),
+                "colortrace-build-manifest-sha256": artifact["build_manifest_sha256"],
+                "colortrace-fixture-manifest-sha256": artifact["fixture_manifest_sha256"],
+                "colortrace-observability-lock-sha256": artifact["observability_lock_sha256"],
+                "colortrace-runtime-build-binding-sha256": _raw_digest(
+                    _canonical(runtime_binding) + b"\n"
+                ),
+                "colortrace-scan-binding-sha256": artifact["scan_binding_sha256"],
+                "colortrace-scan-report-set-sha256": artifact["scanner"]["report_set_sha256"],
+                "colortrace-scanner-version-sha256": artifact["scanner"]["version_sha256"],
+            }
+            instance = temporary / "instance.json"
+            instance.write_text(
+                json.dumps(
+                    {
+                        "status": "RUNNING",
+                        "metadata": {
+                            "items": [
+                                {"key": key, "value": value} for key, value in metadata.items()
+                            ]
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            metadata_check = subprocess.run(
+                [
+                    CONTRACT_HELPER,
+                    "verify-instance-metadata",
+                    instance,
+                    artifact_path,
+                    "stage-0001",
+                    "0",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(metadata_check.returncode, 0, metadata_check.stderr)
+
+            remote_script = temporary / "remote.sh"
+            generated = subprocess.run(
+                [
+                    CONTRACT_HELPER,
+                    "remote-script",
+                    artifact_path,
+                    "stage-0001",
+                    "0",
+                    remote_script,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            source = remote_script.read_text(encoding="utf-8")
+            self.assertIn("expected_hard_stop_epoch=0", source)
+            self.assertIn("deadline=$generation_deadline", source)
+            self.assertIn('if test "$expected_hard_stop_epoch" -ne 0', source)
+
+            overflow = str(253_402_300_799 + 1)
+            rejected = subprocess.run(
+                [
+                    CONTRACT_HELPER,
+                    "remote-script",
+                    artifact_path,
+                    "stage-0001",
+                    overflow,
+                    temporary / "overflow.sh",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(rejected.returncode, 65)
+            self.assertIn("staging-hard-stop-invalid", rejected.stderr)
 
     def test_prepare_rejection_binds_nonce_versions_plan_target_and_reason(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
