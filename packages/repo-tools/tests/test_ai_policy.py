@@ -104,6 +104,13 @@ packages:
 
         self.assertIn("ai.source-import.disallowed", codes)
 
+    def test_source_import_scan_ignores_binary_assets(self) -> None:
+        source = self.root / "src" / "example" / "assets"
+        source.mkdir(parents=True)
+        (source / "chart.rgb16be").write_bytes(b"RGB16BE\x80\xff")
+
+        self.assertEqual(check_ai_policy(self.root), [])
+
     def test_rejects_alternate_runtime_dependency_and_public_mcp(self) -> None:
         (self.root / "pyproject.toml").write_text(
             """

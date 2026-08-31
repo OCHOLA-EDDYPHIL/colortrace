@@ -1,0 +1,401 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/frozen-source-generation-v1.schema.json",
+  "title": "Frozen build-time source generation record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source_id",
+    "generator",
+    "provider",
+    "model",
+    "location",
+    "sdk",
+    "prompt",
+    "request",
+    "seed_semantics",
+    "raw_c2pa_policy",
+    "candidates",
+    "normalization",
+    "selection",
+    "terms_review",
+    "runtime_boundary"
+  ],
+  "properties": {
+    "schema": {"const": "frozen-source-generation/v1"},
+    "source_id": {"const": "chart-02"},
+    "generator": {"const": "frozen-vertex-gemini-plate/v1"},
+    "provider": {"const": "Google Cloud Vertex AI"},
+    "model": {"const": "gemini-2.5-flash-image"},
+    "location": {"const": "global"},
+    "sdk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"const": "google-genai"},
+        "version": {"const": "2.17.0"}
+      }
+    },
+    "prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text",
+        "sha256",
+        "effective_text",
+        "effective_sha256",
+        "visual_exclusions",
+        "visual_exclusions_sha256"
+      ],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "effective_text": {"type": "string", "minLength": 1},
+        "effective_sha256": {"$ref": "#/$defs/digest"},
+        "visual_exclusions": {"type": "string", "minLength": 1},
+        "visual_exclusions_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "calls",
+        "candidate_count_per_call",
+        "automatic_retry",
+        "aspect_ratio",
+        "image_size",
+        "output_mime_type",
+        "person_generation",
+        "response_modalities",
+        "safety_categories",
+        "safety_method",
+        "safety_threshold"
+      ],
+      "properties": {
+        "method": {"const": "generateContent"},
+        "calls": {"const": 3},
+        "candidate_count_per_call": {"const": 1},
+        "automatic_retry": {"const": false},
+        "aspect_ratio": {"const": "16:9"},
+        "image_size": {"const": "1K"},
+        "output_mime_type": {"const": "image/png"},
+        "person_generation": {"const": "ALLOW_ADULT"},
+        "response_modalities": {
+          "type": "array",
+          "prefixItems": [{"const": "IMAGE"}],
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "safety_categories": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "HARM_CATEGORY_HARASSMENT"},
+            {"const": "HARM_CATEGORY_HATE_SPEECH"},
+            {"const": "HARM_CATEGORY_SEXUALLY_EXPLICIT"},
+            {"const": "HARM_CATEGORY_DANGEROUS_CONTENT"}
+          ],
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "safety_method": {"const": "PROBABILITY"},
+        "safety_threshold": {"const": "BLOCK_LOW_AND_ABOVE"}
+      }
+    },
+    "seed_semantics": {"const": "best-effort-preview-not-reproducibility-guarantee"},
+    "raw_c2pa_policy": {"const": "preserve-byte-exact-and-inspect-chunk-inventory"},
+    "candidates": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"$ref": "#/$defs/candidate"},
+      "contains": {
+        "type": "object",
+        "required": ["selected"],
+        "properties": {"selected": {"const": true}}
+      },
+      "minContains": 1,
+      "maxContains": 1
+    },
+    "normalization": {"$ref": "#/$defs/normalization"},
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selected_candidate_index",
+        "asset",
+        "rationale",
+        "accepted_prompt_deviation",
+        "rejected_candidates",
+        "visual_approval",
+        "license_decision"
+      ],
+      "properties": {
+        "selected_candidate_index": {"type": "integer", "minimum": 1, "maximum": 3},
+        "asset": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "format", "width", "height", "channels", "byte_length", "sha256"],
+          "properties": {
+            "path": {"const": "chart-02.rgb16be"},
+            "format": {"const": "rgb16be-source-buffer/v1"},
+            "width": {"const": 512},
+            "height": {"const": 288},
+            "channels": {"const": "RGB16BE"},
+            "byte_length": {"const": 884751},
+            "sha256": {"$ref": "#/$defs/digest"}
+          }
+        },
+        "rationale": {
+          "const": "strongest-skin-tone-and-cyan-tungsten-magenta-range"
+        },
+        "accepted_prompt_deviation": {
+          "const": "one-anatomically-plausible-hand-reaches-lower-frame-edge"
+        },
+        "rejected_candidates": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["index", "reason"],
+              "properties": {
+                "index": {"const": 2},
+                "reason": {"const": "underexposed-face-and-weaker-shadowed-mismatch"}
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["index", "reason"],
+              "properties": {
+                "index": {"const": 3},
+                "reason": {
+                  "const": "weakest-shadowed-mismatch-and-less-useful-skin-tone-range"
+                }
+              }
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "visual_approval": {"$ref": "#/$defs/approval"},
+        "license_decision": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["approved", "authority", "license", "decided_on"],
+          "properties": {
+            "approved": {"const": true},
+            "authority": {"const": "project-owner"},
+            "license": {"const": "Apache-2.0"},
+            "decided_on": {"const": "2026-08-31"}
+          }
+        }
+      }
+    },
+    "terms_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "official_sources",
+        "accessed_on",
+        "review_authority",
+        "provider_ownership_position",
+        "unique_output_guaranteed",
+        "approved_for_apache_2_0_inclusion"
+      ],
+      "properties": {
+        "official_sources": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "https://cloud.google.com/terms/service-terms"},
+            {"const": "https://policies.google.com/terms/generative-ai/use-policy"},
+            {
+              "const": "https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/2-5-flash-image"
+            }
+          ],
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "accessed_on": {"const": "2026-08-31"},
+        "review_authority": {"const": "project-owner"},
+        "provider_ownership_position": {
+          "const": "does-not-assert-ownership-in-new-intellectual-property-created-in-generated-output"
+        },
+        "unique_output_guaranteed": {"const": false},
+        "approved_for_apache_2_0_inclusion": {"const": true}
+      }
+    },
+    "runtime_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation_phase",
+        "runtime_image_generation_network_required",
+        "runtime_image_generation_provider_dependency",
+        "runtime_image_decoder_dependency"
+      ],
+      "properties": {
+        "generation_phase": {"const": "build-time-only"},
+        "runtime_image_generation_network_required": {"const": false},
+        "runtime_image_generation_provider_dependency": {"const": false},
+        "runtime_image_decoder_dependency": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "decimal": {"type": "string", "pattern": "^(0|[1-9][0-9]*)([.][0-9]+)?$"},
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt_tokens", "candidate_tokens", "total_tokens", "traffic_type"],
+      "properties": {
+        "prompt_tokens": {"type": "integer", "minimum": 0},
+        "candidate_tokens": {"type": "integer", "minimum": 0},
+        "total_tokens": {"type": "integer", "minimum": 0},
+        "traffic_type": {"const": "ON_DEMAND"}
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt_feedback", "candidate_safety_ratings"],
+      "properties": {
+        "prompt_feedback": {"type": "null"},
+        "candidate_safety_ratings": {"type": "null"}
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "maximum_absolute_channel_error",
+        "rmse",
+        "fraction_pixels_at_or_above_0_02",
+        "nearest_rank_p95",
+        "pixels",
+        "policy"
+      ],
+      "properties": {
+        "state": {"enum": ["reference_match", "reference_mismatch"]},
+        "maximum_absolute_channel_error": {"$ref": "#/$defs/decimal"},
+        "rmse": {"$ref": "#/$defs/decimal"},
+        "fraction_pixels_at_or_above_0_02": {"$ref": "#/$defs/decimal"},
+        "nearest_rank_p95": {"$ref": "#/$defs/decimal"},
+        "pixels": {"const": 147456},
+        "policy": {"const": "declared-reference-comparison/v1"}
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "seed",
+        "raw_png_sha256",
+        "raw_png_byte_length",
+        "canonical_rgb16be_sha256",
+        "c2pa_chunk_present",
+        "returned_model",
+        "finish_reason",
+        "usage",
+        "safety",
+        "approved_self_comparison",
+        "shadowed_comparison",
+        "selected"
+      ],
+      "properties": {
+        "index": {"type": "integer", "minimum": 1, "maximum": 3},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "raw_png_sha256": {"$ref": "#/$defs/digest"},
+        "raw_png_byte_length": {"type": "integer", "minimum": 1},
+        "canonical_rgb16be_sha256": {"$ref": "#/$defs/digest"},
+        "c2pa_chunk_present": {"const": true},
+        "returned_model": {"const": "gemini-2.5-flash-image"},
+        "finish_reason": {"const": "STOP"},
+        "usage": {"$ref": "#/$defs/usage"},
+        "safety": {"$ref": "#/$defs/safety"},
+        "approved_self_comparison": {"$ref": "#/$defs/comparison"},
+        "shadowed_comparison": {"$ref": "#/$defs/comparison"},
+        "selected": {"type": "boolean"}
+      }
+    },
+    "normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "input",
+        "crop",
+        "cropped",
+        "area_scale",
+        "rounding",
+        "promotion",
+        "output"
+      ],
+      "properties": {
+        "version": {"const": "colortrace-rational-area-rgb8-to-rgb16/v1"},
+        "input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height", "mode"],
+          "properties": {
+            "width": {"const": 1344},
+            "height": {"const": 768},
+            "mode": {"const": "RGB8"}
+          }
+        },
+        "crop": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["top", "bottom", "left", "right"],
+          "properties": {
+            "top": {"const": 6},
+            "bottom": {"const": 6},
+            "left": {"const": 0},
+            "right": {"const": 0}
+          }
+        },
+        "cropped": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height"],
+          "properties": {"width": {"const": 1344}, "height": {"const": 756}}
+        },
+        "area_scale": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["numerator", "denominator"],
+          "properties": {"numerator": {"const": 8}, "denominator": {"const": 21}}
+        },
+        "rounding": {"const": "nearest-integer-odd-denominator"},
+        "promotion": {"const": "rgb8-channel-times-257"},
+        "output": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height", "mode"],
+          "properties": {
+            "width": {"const": 512},
+            "height": {"const": 288},
+            "mode": {"const": "RGB16BE"}
+          }
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approved", "authority", "decided_on"],
+      "properties": {
+        "approved": {"const": true},
+        "authority": {"const": "project-owner"},
+        "decided_on": {"const": "2026-08-31"}
+      }
+    }
+  }
+}

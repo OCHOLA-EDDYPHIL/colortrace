@@ -1,0 +1,242 @@
+{
+  "schema": "frozen-source-generation/v1",
+  "source_id": "chart-02",
+  "generator": "frozen-vertex-gemini-plate/v1",
+  "provider": "Google Cloud Vertex AI",
+  "model": "gemini-2.5-flash-image",
+  "location": "global",
+  "sdk": {
+    "name": "google-genai",
+    "version": "2.17.0"
+  },
+  "prompt": {
+    "text": "Original cinematic VFX plate for deterministic color-pipeline testing: a night exterior on a rain-wet studio backlot. One entirely fictional adult performer, chest-up three-quarter profile with hands out of frame, natural skin tones, unbranded charcoal wardrobe. Cyan ambient light, warm tungsten practicals, a subtle magenta edge light, light atmospheric haze, neutral-gray and brushed-metal surfaces, broad midtones and open shadows. Realistic live-action cinematography, 16:9 composition. No text, logos, real person, celebrity, named actor, copyrighted character, or franchise character.",
+    "sha256": "5f570b3c7feb16d122bace6efbb1c64a15024d81c4872aa6c585ec937f26a51d",
+    "effective_text": "Generate exactly one image. Original cinematic VFX plate for deterministic color-pipeline testing: a night exterior on a rain-wet studio backlot. One entirely fictional adult performer, chest-up three-quarter profile with hands out of frame, natural skin tones, unbranded charcoal wardrobe. Cyan ambient light, warm tungsten practicals, a subtle magenta edge light, light atmospheric haze, neutral-gray and brushed-metal surfaces, broad midtones and open shadows. Realistic live-action cinematography, 16:9 composition. No text, logos, real person, celebrity, named actor, copyrighted character, or franchise character.\n\nVisual exclusions (do not depict; this does not request removal of provider provenance): real person, celebrity, recognizable likeness, named actor, copyrighted character, franchise character, brand, logo, readable text, signature, visible watermark, nudity, weapon, gore, distorted anatomy, extra limbs, split screen, before-and-after layout, monochrome, crushed blacks, clipped highlights.",
+    "effective_sha256": "24641f80a92f6449db8af547ff22a1fdcbe631c31c4c1fe385d019449fba1a00",
+    "visual_exclusions": "real person, celebrity, recognizable likeness, named actor, copyrighted character, franchise character, brand, logo, readable text, signature, visible watermark, nudity, weapon, gore, distorted anatomy, extra limbs, split screen, before-and-after layout, monochrome, crushed blacks, clipped highlights",
+    "visual_exclusions_sha256": "1f68320c31117bdfc3f22784b4eaa4344499b8de8e5f4780d545717270d4a7e7"
+  },
+  "request": {
+    "method": "generateContent",
+    "calls": 3,
+    "candidate_count_per_call": 1,
+    "automatic_retry": false,
+    "aspect_ratio": "16:9",
+    "image_size": "1K",
+    "output_mime_type": "image/png",
+    "person_generation": "ALLOW_ADULT",
+    "response_modalities": ["IMAGE"],
+    "safety_categories": [
+      "HARM_CATEGORY_HARASSMENT",
+      "HARM_CATEGORY_HATE_SPEECH",
+      "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+      "HARM_CATEGORY_DANGEROUS_CONTENT"
+    ],
+    "safety_method": "PROBABILITY",
+    "safety_threshold": "BLOCK_LOW_AND_ABOVE"
+  },
+  "seed_semantics": "best-effort-preview-not-reproducibility-guarantee",
+  "raw_c2pa_policy": "preserve-byte-exact-and-inspect-chunk-inventory",
+  "candidates": [
+    {
+      "index": 1,
+      "seed": 2084920608,
+      "raw_png_sha256": "a5037e21adf398c0731d2c74833cb8820026129e923c3ba3c9c2209ef668ec04",
+      "raw_png_byte_length": 1247191,
+      "canonical_rgb16be_sha256": "7500776f9b97942cdea7ab429dcb95b4d7f916d5bd06b4ce2fb19912e2f4724a",
+      "c2pa_chunk_present": true,
+      "returned_model": "gemini-2.5-flash-image",
+      "finish_reason": "STOP",
+      "usage": {
+        "prompt_tokens": 200,
+        "candidate_tokens": 1290,
+        "total_tokens": 1490,
+        "traffic_type": "ON_DEMAND"
+      },
+      "safety": {
+        "prompt_feedback": null,
+        "candidate_safety_ratings": null
+      },
+      "approved_self_comparison": {
+        "state": "reference_match",
+        "maximum_absolute_channel_error": "0",
+        "rmse": "0",
+        "fraction_pixels_at_or_above_0_02": "0",
+        "nearest_rank_p95": "0",
+        "pixels": 147456,
+        "policy": "declared-reference-comparison/v1"
+      },
+      "shadowed_comparison": {
+        "state": "reference_mismatch",
+        "maximum_absolute_channel_error": "0.157725512981",
+        "rmse": "0.0388545007753",
+        "fraction_pixels_at_or_above_0_02": "0.901984320747",
+        "nearest_rank_p95": "0.0952941179276",
+        "pixels": 147456,
+        "policy": "declared-reference-comparison/v1"
+      },
+      "selected": true
+    },
+    {
+      "index": 2,
+      "seed": 2026453220,
+      "raw_png_sha256": "9327cbfab77d471dfb9d60868005a9b810eccb6a97225362c161d440083a5b8b",
+      "raw_png_byte_length": 1217683,
+      "canonical_rgb16be_sha256": "f62a08a345fd010fc10545da6cdd03fd58a88b5d7040a12039433ef33573ba7e",
+      "c2pa_chunk_present": true,
+      "returned_model": "gemini-2.5-flash-image",
+      "finish_reason": "STOP",
+      "usage": {
+        "prompt_tokens": 200,
+        "candidate_tokens": 1290,
+        "total_tokens": 1490,
+        "traffic_type": "ON_DEMAND"
+      },
+      "safety": {
+        "prompt_feedback": null,
+        "candidate_safety_ratings": null
+      },
+      "approved_self_comparison": {
+        "state": "reference_match",
+        "maximum_absolute_channel_error": "0",
+        "rmse": "0",
+        "fraction_pixels_at_or_above_0_02": "0",
+        "nearest_rank_p95": "0",
+        "pixels": 147456,
+        "policy": "declared-reference-comparison/v1"
+      },
+      "shadowed_comparison": {
+        "state": "reference_mismatch",
+        "maximum_absolute_channel_error": "0.151764750481",
+        "rmse": "0.0372428240418",
+        "fraction_pixels_at_or_above_0_02": "0.866224500868",
+        "nearest_rank_p95": "0.0756077766418",
+        "pixels": 147456,
+        "policy": "declared-reference-comparison/v1"
+      },
+      "selected": false
+    },
+    {
+      "index": 3,
+      "seed": 1844025294,
+      "raw_png_sha256": "f9ec6e2b168604bb41149adc9f4c59a03fc05eee5b9c925185daf890f5316a8f",
+      "raw_png_byte_length": 1149275,
+      "canonical_rgb16be_sha256": "c007b0bf7cb52eca7a8ae9d946e85c8b56b968d84c667b598e42f7f9a45ff36f",
+      "c2pa_chunk_present": true,
+      "returned_model": "gemini-2.5-flash-image",
+      "finish_reason": "STOP",
+      "usage": {
+        "prompt_tokens": 200,
+        "candidate_tokens": 1290,
+        "total_tokens": 1490,
+        "traffic_type": "ON_DEMAND"
+      },
+      "safety": {
+        "prompt_feedback": null,
+        "candidate_safety_ratings": null
+      },
+      "approved_self_comparison": {
+        "state": "reference_match",
+        "maximum_absolute_channel_error": "0",
+        "rmse": "0",
+        "fraction_pixels_at_or_above_0_02": "0",
+        "nearest_rank_p95": "0",
+        "pixels": 147456,
+        "policy": "declared-reference-comparison/v1"
+      },
+      "shadowed_comparison": {
+        "state": "reference_mismatch",
+        "maximum_absolute_channel_error": "0.148470520973",
+        "rmse": "0.0296723175799",
+        "fraction_pixels_at_or_above_0_02": "0.902140299479",
+        "nearest_rank_p95": "0.0572549104691",
+        "pixels": 147456,
+        "policy": "declared-reference-comparison/v1"
+      },
+      "selected": false
+    }
+  ],
+  "normalization": {
+    "version": "colortrace-rational-area-rgb8-to-rgb16/v1",
+    "input": {
+      "width": 1344,
+      "height": 768,
+      "mode": "RGB8"
+    },
+    "crop": {
+      "top": 6,
+      "bottom": 6,
+      "left": 0,
+      "right": 0
+    },
+    "cropped": {
+      "width": 1344,
+      "height": 756
+    },
+    "area_scale": {
+      "numerator": 8,
+      "denominator": 21
+    },
+    "rounding": "nearest-integer-odd-denominator",
+    "promotion": "rgb8-channel-times-257",
+    "output": {
+      "width": 512,
+      "height": 288,
+      "mode": "RGB16BE"
+    }
+  },
+  "selection": {
+    "selected_candidate_index": 1,
+    "asset": {
+      "path": "chart-02.rgb16be",
+      "format": "rgb16be-source-buffer/v1",
+      "width": 512,
+      "height": 288,
+      "channels": "RGB16BE",
+      "byte_length": 884751,
+      "sha256": "7500776f9b97942cdea7ab429dcb95b4d7f916d5bd06b4ce2fb19912e2f4724a"
+    },
+    "rationale": "strongest-skin-tone-and-cyan-tungsten-magenta-range",
+    "accepted_prompt_deviation": "one-anatomically-plausible-hand-reaches-lower-frame-edge",
+    "rejected_candidates": [
+      {
+        "index": 2,
+        "reason": "underexposed-face-and-weaker-shadowed-mismatch"
+      },
+      {
+        "index": 3,
+        "reason": "weakest-shadowed-mismatch-and-less-useful-skin-tone-range"
+      }
+    ],
+    "visual_approval": {
+      "approved": true,
+      "authority": "project-owner",
+      "decided_on": "2026-08-31"
+    },
+    "license_decision": {
+      "approved": true,
+      "authority": "project-owner",
+      "license": "Apache-2.0",
+      "decided_on": "2026-08-31"
+    }
+  },
+  "terms_review": {
+    "official_sources": [
+      "https://cloud.google.com/terms/service-terms",
+      "https://policies.google.com/terms/generative-ai/use-policy",
+      "https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/2-5-flash-image"
+    ],
+    "accessed_on": "2026-08-31",
+    "review_authority": "project-owner",
+    "provider_ownership_position": "does-not-assert-ownership-in-new-intellectual-property-created-in-generated-output",
+    "unique_output_guaranteed": false,
+    "approved_for_apache_2_0_inclusion": true
+  },
+  "runtime_boundary": {
+    "generation_phase": "build-time-only",
+    "runtime_image_generation_network_required": false,
+    "runtime_image_generation_provider_dependency": false,
+    "runtime_image_decoder_dependency": false
+  }
+}

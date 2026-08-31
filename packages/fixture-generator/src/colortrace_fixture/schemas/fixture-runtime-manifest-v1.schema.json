@@ -3,7 +3,7 @@
   "$id": "https://colortrace.dev/schemas/fixture-runtime-manifest-v1.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "fixture_id", "fixture_version", "variant_id", "run_id", "seed_sha256", "schedule_origin", "image_generator", "float_buffer", "comparison_policy", "ocio_version", "worker_configs", "sources", "jobs", "lineage", "telemetry", "provenance", "declared_resources"],
+  "required": ["schema", "fixture_id", "fixture_version", "variant_id", "run_id", "seed_sha256", "schedule_origin", "source_set_generator", "float_buffer", "comparison_policy", "ocio_version", "worker_configs", "sources", "jobs", "lineage", "telemetry", "provenance", "declared_resources"],
   "properties": {
     "schema": {"const": "fixture-runtime-manifest/v1"},
     "fixture_id": {"type": "string", "minLength": 1},
@@ -12,7 +12,7 @@
     "run_id": {"type": "string", "minLength": 1},
     "seed_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "schedule_origin": {"type": "string", "format": "date-time"},
-    "image_generator": {"const": "generated-chart/v1"},
+    "source_set_generator": {"const": "mixed-source-set/v1"},
     "float_buffer": {"const": "rgb-float32-buffer/v1"},
     "comparison_policy": {"const": "declared-reference-comparison/v1"},
     "ocio_version": {"const": "2.5.2"},

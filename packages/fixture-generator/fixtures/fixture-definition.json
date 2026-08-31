@@ -1,7 +1,7 @@
 {
   "fixture_id": "ct-shadowed-lut-v1",
   "fixture_version": "colortrace-fixture/v1",
-  "generator": "generated-chart/v1",
+  "source_set_generator": "mixed-source-set/v1",
   "height": 288,
   "jobs": [
     {"role": "a1", "source": "chart-01", "transform": "look/main/v1", "worker": "A"},
@@ -14,6 +14,11 @@
   "ocio_version": "2.5.2",
   "seed": "ct-shadowed-lut-v1:canonical",
   "source_encoding": "RGB16",
-  "sources": ["chart-01", "chart-02", "chart-03", "chart-04"],
+  "sources": [
+    {"source_id": "chart-01", "generator": "generated-chart/v1"},
+    {"source_id": "chart-02", "generator": "frozen-vertex-gemini-plate/v1"},
+    {"source_id": "chart-03", "generator": "generated-chart/v1"},
+    {"source_id": "chart-04", "generator": "generated-chart/v1"}
+  ],
   "width": 512
 }
