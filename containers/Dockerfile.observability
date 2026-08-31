@@ -19,7 +19,7 @@ RUN test "$(go version)" = "go version go1.26.6 linux/amd64" \
     && echo "a9d85e56871a3d00134e67344f70e2c23d3bf13f5b88fa4dc372cead0ec3d5a6  /tmp/loki-source.tar.gz" | sha256sum -c - \
     && tar --extract --gzip --file /tmp/loki-source.tar.gz --directory /build
 WORKDIR /build/loki-5003600d7c787b5f047c8d1b0198559471b0caa5
-RUN go mod download all
+RUN GODEBUG=http2client=0 go mod download all
 RUN --network=none go mod verify \
     && go build -p=2 -trimpath -buildvcs=false -mod=readonly -tags=netgo \
         -ldflags="-s -w -buildid= -extldflags=-static -X github.com/grafana/loki/v3/pkg/util/build.Branch=release-3.7.x -X github.com/grafana/loki/v3/pkg/util/build.Version=3.7.6 -X github.com/grafana/loki/v3/pkg/util/build.Revision=5003600d7c787b5f047c8d1b0198559471b0caa5 -X github.com/grafana/loki/v3/pkg/util/build.BuildUser=colortrace -X github.com/grafana/loki/v3/pkg/util/build.BuildDate=2026-08-05T15:35:30Z" \
@@ -156,17 +156,17 @@ RUN cd /build/grafana-prometheus-datasource-2e10053dd7d940f9eb91701df5122c8e348a
     && go mod edit -go=1.26.6 \
     && test "$(sha256sum go.mod | cut -d ' ' -f 1)" = "647e86f151c2b2018051d8dff32a6b9856043ae267506217477ef382b07e611e" \
     && test "$(sha256sum go.sum | cut -d ' ' -f 1)" = "2a6fc7761327d376a3da255359ff40a54992d10eddc61cae31982caf6e4920db" \
-    && go mod download all \
+    && GODEBUG=http2client=0 go mod download all \
     && go mod verify \
-    && go list -mod=readonly -m all > /tmp/prometheus-datasource.modules \
+    && GODEBUG=http2client=0 go list -mod=readonly -m all > /tmp/prometheus-datasource.modules \
     && test "$(sha256sum /tmp/prometheus-datasource.modules | cut -d ' ' -f 1)" = "1f8faa81bca09e5e00b996b93f71b244a40bb45e9267bf1e884519ca71e606f1"
 RUN cd /build/grafana-loki-datasource-6c17d1bd832fa399b9562b21a20b5de0b00a4fb9 \
     && go mod edit -go=1.26.6 -require=google.golang.org/grpc@v1.82.1 \
-    && go mod download all \
+    && GODEBUG=http2client=0 go mod download all \
     && test "$(sha256sum go.mod | cut -d ' ' -f 1)" = "be6066dde4e9362f4d1b8d05386b304e510601fb1b95b67df87b96a24d33344c" \
     && test "$(sha256sum go.sum | cut -d ' ' -f 1)" = "9873feeb0546ceef0df2222194378653aa7341e89092fcdad1e141a56e4bc2c7" \
     && go mod verify \
-    && go list -mod=readonly -m all > /tmp/loki-datasource.modules \
+    && GODEBUG=http2client=0 go list -mod=readonly -m all > /tmp/loki-datasource.modules \
     && test "$(sha256sum /tmp/loki-datasource.modules | cut -d ' ' -f 1)" = "c2cb650318bf576468ac0d2b78f494a223dc57c537e5af9cfbf1621e2dd71d0b"
 RUN cp -a /build/tempo-4aeafc237b8d9a8d62e45735131e8a89eb741a00/pkg/tempopb \
         /build/grafana-tempo-datasource-95f2697d64101818287fa873bb683228c1d1d8a5/pkg/tempopb \
@@ -178,12 +178,12 @@ RUN cp -a /build/tempo-4aeafc237b8d9a8d62e45735131e8a89eb741a00/pkg/tempopb \
         -require=google.golang.org/grpc@v1.82.1 \
         -require=golang.org/x/net@v0.56.0 \
         -require=golang.org/x/text@v0.39.0 \
-    && go mod tidy \
-    && go mod download all \
+    && GODEBUG=http2client=0 go mod tidy \
+    && GODEBUG=http2client=0 go mod download all \
     && test "$(sha256sum go.mod | cut -d ' ' -f 1)" = "8ee9e1a3973a97d72e05b2c3d7e60a8be4b8cf4de6115440eb935c85c2c2d9f1" \
     && test "$(sha256sum go.sum | cut -d ' ' -f 1)" = "10925c8ef07e5cb99cf2fdf23040112ea48c2f4f9077b2866bd9d0ace2dfdc16" \
     && go mod verify \
-    && go list -mod=readonly -m all > /tmp/tempo-datasource.modules \
+    && GODEBUG=http2client=0 go list -mod=readonly -m all > /tmp/tempo-datasource.modules \
     && test "$(sha256sum /tmp/tempo-datasource.modules | cut -d ' ' -f 1)" = "1c53069dcdba3cd7e05a920cf2e2c162bde508a9676eb939315e3c4158bb5415"
 RUN --network=none cd /build/grafana-prometheus-datasource-2e10053dd7d940f9eb91701df5122c8e348a0d18 \
     && go build -p=2 -trimpath -buildvcs=false -mod=readonly -ldflags="-s -w -buildid=" \
