@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
 from colortrace_api.demo_facade import INVESTIGATION_PROOF_SCHEMA, DemoFacadeError
 from colortrace_api.demo_workflow import CanonicalDemoWorkflow, GrafanaMcpAlertProbe
 from colortrace_recovery import CHECK_NAMES, RecoveryError, canonical_json_bytes
@@ -126,12 +127,33 @@ def _packet(incident_id: str) -> dict[str, Any]:
             {
                 "invocation_id": f"model-invocation:{digit * 64}",
                 "turn_kind": turn,
+                "attempt": 1,
                 "model": "gemini-3.5-flash",
+                "location": "global",
                 "framework": "google-adk",
+                "framework_version": "2.6.3",
+                "client_version": "2.17.0",
+                "prompt_version": f"{turn}/v1",
+                "policy_version": "bounded-investigation/v1",
                 "result_class": "accepted",
                 "tool_inventory_version": f"sha256:{'3' * 64}",
+                "normalized_input_sha256": f"sha256:{digit * 64}",
+                "input_evidence_ids": (
+                    []
+                    if turn == "evidence-selection"
+                    else [f"sha256:{evidence_digit * 64}" for evidence_digit in "abcd"]
+                ),
                 "output_sha256": f"sha256:{digit * 64}",
+                "latency_ms": 25,
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 15,
+                    "model_calls": 1,
+                    "unobserved_model_calls": 0,
+                },
+                "error_code": None,
                 "trace_id": digit * 32,
+                "derivation_sha256": f"sha256:{digit * 64}",
             }
             for digit, turn in (("4", "evidence-selection"), ("5", "response-drafting"))
         ],
@@ -182,6 +204,13 @@ def _packet(incident_id: str) -> dict[str, Any]:
             "validator_calls": 6,
         },
         "unresolved_items": [],
+        "model_advisory": {
+            "trust": "untrusted-model-output",
+            "summary": "Worker B resolved a different LUT than worker A.",
+            "evidence_ids": [f"sha256:{'a' * 64}", f"sha256:{'b' * 64}"],
+            "output_sha256": f"sha256:{'5' * 64}",
+        },
+        "finalized_at": "2026-08-23T12:00:01.000Z",
         "incident_id": incident_id,
     }
 
@@ -197,9 +226,28 @@ def _evidence(incident_id: str) -> list[dict[str, Any]]:
         {
             "evidence_id": f"sha256:{digit * 64}",
             "incident_id": incident_id,
-            "source": {"tool": tool, "inventory_version": f"sha256:{'3' * 64}"},
+            "source": {
+                "kind": "grafana-mcp",
+                "server": "mcp-grafana",
+                "server_version": "1.1.0",
+                "server_commit": "007e8d82154899a28e19e8dfe9c2bb4452c5211a",
+                "binary_sha256": (
+                    "5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93"
+                ),
+                "mcp_sdk_version": "1.29.0",
+                "mcp_protocol_version": "2025-06-18",
+                "tool": tool,
+                "tool_input_schema_sha256": "6" * 64,
+                "tool_annotations_sha256": "7" * 64,
+                "inventory_version": f"sha256:{'3' * 64}",
+            },
             "observation": {"query_key": query},
-            "timing": {"freshness": "unresolved"},
+            "timing": {
+                "source_time": None,
+                "event_time": None,
+                "retrieved_at": "2026-08-23T12:00:00.000Z",
+                "freshness": "unresolved",
+            },
             "content_sha256": f"sha256:{digit * 64}",
             "display_excerpt": f"Current {query} evidence.",
         }
@@ -466,7 +514,7 @@ class FakeRecoveryIdentity:
         return object()
 
 
-def _fixture(root: Path) -> None:
+def _fixture(root: Path) -> Path:
     files = {
         "references/display/reference-chart-02-look.png": _png("expected"),
         "runtime/display/output-job-b-02.png": _png("observed"),
@@ -522,6 +570,29 @@ def _fixture(root: Path) -> None:
             ),
             encoding="utf-8",
         )
+    indexed: dict[str, str] = {}
+    for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+        indexed[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    canonical = {
+        "schema": "fixture-canonical-digests/v1",
+        "files": indexed,
+        "fixture_id": "ct-shadowed-lut-v1",
+        "fixture_version": "colortrace-fixture/v1",
+        "generator_version": "mixed-source-set/v1",
+        "ocio_version": "2.5.2",
+        "oracle_sha256": "0" * 64,
+        "seed": "ct-shadowed-lut-v1:canonical",
+        "source_pixel_sha256": {
+            "chart-01": "1" * 64,
+            "chart-02": "2" * 64,
+            "chart-03": "3" * 64,
+            "chart-04": "4" * 64,
+        },
+        "tree_sha256": hashlib.sha256(canonical_json_bytes(indexed)).hexdigest(),
+    }
+    path = root.parent / "canonical-digests.json"
+    path.write_bytes(canonical_json_bytes(canonical))
+    return path
 
 
 def _workflow(
@@ -532,7 +603,7 @@ def _workflow(
     fixture = tmp_path / "fixture"
     visual_root = tmp_path / "visuals"
     publication_root = tmp_path / "publication"
-    _fixture(fixture)
+    canonical_digests = _fixture(fixture)
     visual_root.mkdir(mode=0o700)
     publication_root.mkdir()
     incident_id = "incident-demo-11111111111111111111111111111111"
@@ -553,6 +624,7 @@ def _workflow(
         visual_root=visual_root,
         issuer="https://identity.example.test",
         audience="colortrace-api",
+        canonical_digests_path=canonical_digests,
     )
     return workflow, incidents, investigation, alert_source
 
@@ -745,12 +817,75 @@ def test_prepare_emits_once_and_projects_bounded_live_proof(tmp_path: Path) -> N
         "unknown_count": 0,
     }
     assert {item["freshness"] for item in result["investigation"]["evidence"]} == {"current"}
+    assert result["investigation"]["evidence"][0]["source"]["server"] == "mcp-grafana"
+    assert result["investigation"]["evidence"][0]["timing"] == {
+        "source_time": None,
+        "event_time": None,
+        "retrieved_at": "2026-08-23T12:00:00.000Z",
+    }
+    assert result["investigation"]["model_invocations"][0]["usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 15,
+        "model_calls": 1,
+        "unobserved_model_calls": 0,
+    }
+    assert result["investigation"]["model_advisory"]["trust"] == ("untrusted-model-output")
     assert result["target_sha256"] == _digest(_plan_inputs()["targets"])
     assert {item["kind"] for item in result["visuals"]} == {
         "expected",
         "observed",
         "diff",
     }
+
+
+def test_preview_reads_only_canonical_hash_bound_assets(tmp_path: Path) -> None:
+    workflow, incidents, investigation, alerts = _workflow(tmp_path, state="missing")
+
+    preview = workflow.preview()
+    observed = workflow.preview_visual("observed")
+
+    assert set(preview) == {"comparison", "visual_comparison"}
+    assert set(preview["visual_comparison"]) == {"expected", "observed", "diff"}
+    assert preview["visual_comparison"]["observed"]["sha256"] == observed.sha256
+    assert observed.content == _png("observed")
+    assert incidents.state == "missing"
+    assert alerts.calls == []
+    assert investigation.calls == []
+
+
+@pytest.mark.parametrize("target", ["visual", "comparison", "symlink"])
+def test_preview_fails_closed_on_canonical_fixture_tampering(
+    tmp_path: Path,
+    target: str,
+) -> None:
+    workflow, _incidents, _investigation, _alerts = _workflow(tmp_path, state="missing")
+    fixture = cast(Any, workflow)._fixture_bundle
+    if target == "visual":
+        (fixture / "runtime/display/output-job-b-02.png").write_bytes(_png("tampered"))
+    elif target == "comparison":
+        path = fixture / "runtime/manifests/jobs/job-a-02.json"
+        path.write_bytes(path.read_bytes() + b"\n")
+    else:
+        path = fixture / "reports/diffs/job-b-02.png"
+        path.unlink()
+        path.symlink_to(fixture / "runtime/display/output-job-b-02.png")
+
+    with pytest.raises(DemoFacadeError):
+        workflow.preview()
+
+
+def test_preview_rejects_a_broken_canonical_digest_tree_seal(tmp_path: Path) -> None:
+    fixture = tmp_path / "fixture"
+    canonical_digests = _fixture(fixture)
+    value = json.loads(canonical_digests.read_text(encoding="utf-8"))
+    value["tree_sha256"] = "f" * 64
+    canonical_digests.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(
+        DemoFacadeError,
+        match="demo-workflow-canonical-digests-invalid",
+    ):
+        CanonicalDemoWorkflow._load_canonical_digests(canonical_digests)
 
 
 def test_prepare_reconciliation_resumes_durable_task_without_reemitting(tmp_path: Path) -> None:
@@ -867,7 +1002,7 @@ def _executing_workflow(
     fixture = tmp_path / "fixture"
     visual_root = tmp_path / "visuals"
     publication_root = tmp_path / "publication"
-    _fixture(fixture)
+    canonical_digests = _fixture(fixture)
     visual_root.mkdir(mode=0o700)
     publication_root.mkdir()
     publication = FakePublication(publication_root)
@@ -902,6 +1037,7 @@ def _executing_workflow(
         visual_root=visual_root,
         issuer="https://identity.example.test",
         audience="colortrace-api",
+        canonical_digests_path=canonical_digests,
         recovery_settle_seconds=recovery_settle_seconds,
         sleeper=sleeper,
     )

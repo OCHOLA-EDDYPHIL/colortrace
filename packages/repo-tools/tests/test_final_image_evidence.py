@@ -1015,6 +1015,15 @@ class FinalImageEvidenceTest(unittest.TestCase):
             runtime,
         )
         self.assertIn(
+            "COPY packages/fixture-generator/fixtures/canonical-digests.json \\\n"
+            "    /opt/colortrace-config/fixture-canonical-digests.json",
+            runtime,
+        )
+        self.assertIn(
+            "chmod 0444 \\\n        /opt/colortrace-config/fixture-canonical-digests.json \\\n",
+            runtime,
+        )
+        self.assertIn(
             "COPY config/demo/local-demo.json /opt/colortrace-config/demo/local-demo.json",
             runtime,
         )

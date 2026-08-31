@@ -105,6 +105,8 @@ QUERY_CATALOG_PATH_ENV = "COLORTRACE_QUERY_CATALOG_PATH"
 INVESTIGATION_POLICY_PATH_ENV = "COLORTRACE_INVESTIGATION_POLICY_PATH"
 MODEL_PROFILE_PATH_ENV = "COLORTRACE_MODEL_PROFILE_PATH"
 FIXTURE_BUNDLE_SHA256_ENV = "COLORTRACE_FIXTURE_BUNDLE_SHA256"
+CANONICAL_FIXTURE_DIGESTS_PATH_ENV = "COLORTRACE_CANONICAL_FIXTURE_DIGESTS_PATH"
+DEFAULT_CANONICAL_FIXTURE_DIGESTS_PATH = "/opt/colortrace-config/fixture-canonical-digests.json"
 OTLP_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 BUILD_BINDING_PATH_ENV = "COLORTRACE_BUILD_BINDING_PATH"
 DEFAULT_BUILD_BINDING_PATH = "/opt/colortrace-config/build-binding.json"
@@ -128,6 +130,7 @@ _DEMO_ENVIRONMENTS = (
     INVESTIGATION_POLICY_PATH_ENV,
     MODEL_PROFILE_PATH_ENV,
     FIXTURE_BUNDLE_SHA256_ENV,
+    CANONICAL_FIXTURE_DIGESTS_PATH_ENV,
     BUILD_BINDING_PATH_ENV,
 )
 
@@ -208,6 +211,7 @@ class CanonicalDemoRuntimeConfig:
     investigation_policy_path: Path
     model_profile_path: Path
     build_binding_path: Path
+    canonical_fixture_digests_path: Path
     fixture_bundle_sha256: str
     otlp_endpoint: str
 
@@ -607,6 +611,13 @@ def _demo_environment(
             _required(environment, MODEL_PROFILE_PATH_ENV), code="demo-model-profile-invalid"
         ),
         build_binding_path=build_binding_path,
+        canonical_fixture_digests_path=_regular_file(
+            environment.get(
+                CANONICAL_FIXTURE_DIGESTS_PATH_ENV,
+                DEFAULT_CANONICAL_FIXTURE_DIGESTS_PATH,
+            ),
+            code="demo-canonical-fixture-digests-invalid",
+        ),
         fixture_bundle_sha256=fixture_digest,
         otlp_endpoint=_origin(
             _required(environment, OTLP_ENDPOINT_ENV),
@@ -786,6 +797,10 @@ def _validate_demo_runtime_config(
         (config.investigation_policy_path, "demo-investigation-policy-invalid"),
         (config.model_profile_path, "demo-model-profile-invalid"),
         (config.build_binding_path, "demo-build-binding-invalid"),
+        (
+            config.canonical_fixture_digests_path,
+            "demo-canonical-fixture-digests-invalid",
+        ),
     ):
         _regular_file(path, code=code)
     _validate_demo_config(config.config_path)
@@ -886,6 +901,7 @@ def _compose_canonical_demo(
             visual_root=visual_root,
             issuer=issuer,
             audience=audience,
+            canonical_digests_path=config.canonical_fixture_digests_path,
             clock=clock,
             recovery_settle_seconds=_POST_ACTION_TELEMETRY_SETTLE_SECONDS,
         )

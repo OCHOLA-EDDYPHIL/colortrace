@@ -133,6 +133,8 @@ RUN apk add --no-cache libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 libstdc++=14.2.0-r6 
     && chmod 0444 /opt/colortrace-config/build-binding.json
 COPY --from=build /source/.venv /opt/colortrace
 COPY --from=build /opt/colortrace-fixture /opt/colortrace/fixture
+COPY packages/fixture-generator/fixtures/canonical-digests.json \
+    /opt/colortrace-config/fixture-canonical-digests.json
 COPY config/demo/local-demo.json /opt/colortrace-config/demo/local-demo.json
 COPY config/grafana-mcp/mcp-grafana.lock.json \
     config/grafana-mcp/query-catalog.json \
@@ -147,6 +149,7 @@ COPY LICENSE /usr/share/licenses/colortrace/LICENSE
 RUN chmod 0555 /usr/local/libexec/colortrace-entrypoint.py \
     /usr/local/libexec/colortrace-image-licenses.py \
     && chmod 0444 \
+        /opt/colortrace-config/fixture-canonical-digests.json \
         /opt/colortrace-config/demo/local-demo.json \
         /opt/colortrace-config/build-binding.json \
         /opt/colortrace-config/grafana-mcp/mcp-grafana.lock.json \

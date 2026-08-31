@@ -165,6 +165,13 @@ def canonical_demo_environment(tmp_path: Path) -> dict[str, str]:
             ),
             "COLORTRACE_BUILD_BINDING_PATH": str(build_binding),
             "COLORTRACE_FIXTURE_BUNDLE_SHA256": f"sha256:{digest}",
+            "COLORTRACE_CANONICAL_FIXTURE_DIGESTS_PATH": str(
+                REPOSITORY_ROOT
+                / "packages"
+                / "fixture-generator"
+                / "fixtures"
+                / "canonical-digests.json"
+            ),
             "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel-lgtm:4318",
         }
     )
@@ -339,6 +346,9 @@ def test_canonical_demo_environment_binds_deployment_inputs(tmp_path: Path) -> N
     assert config.demo.source_commit == "a" * 40
     assert config.demo.source_tree == "b" * 40
     assert config.demo.fixture_bundle_sha256 == values["COLORTRACE_FIXTURE_BUNDLE_SHA256"]
+    assert config.demo.canonical_fixture_digests_path == (
+        REPOSITORY_ROOT / "packages" / "fixture-generator" / "fixtures" / "canonical-digests.json"
+    )
     assert config.demo.grafana_ca_file == tmp_path / "grafana-ca.pem"
     assert config.demo.otlp_endpoint == "http://otel-lgtm:4318"
 

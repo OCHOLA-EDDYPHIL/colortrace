@@ -152,6 +152,31 @@ get_visual() {
     "$public_url$path"
 }
 
+verify_scenario_preview() {
+  local label=$1
+  local summary=$2
+  local baseline=${3:-}
+  local preview="$verification_root/preview-$label.json"
+  local visuals="$verification_root/preview-visuals-$label"
+  install -d -m 0700 "$visuals"
+  get_json "/v1/demo" "$preview"
+  for visual_kind in diff expected observed; do
+    test "$(get_visual "/v1/demo/visuals/$visual_kind" \
+      "$visuals/$visual_kind.png")" = image/png
+  done
+  local -a verify_arguments=(
+    verify-preview
+    "$preview"
+    "$visuals"
+    "$artifact_binding"
+    "$summary"
+  )
+  if test -n "$baseline"; then
+    verify_arguments+=(--baseline "$baseline")
+  fi
+  python3 "$contract_helper" "${verify_arguments[@]}"
+}
+
 readonly instance_description="$verification_root/instance.json"
 gcloud compute instances describe "$instance" \
   --project "$project_id" \
@@ -235,6 +260,9 @@ for private_port_probe_pid in "${private_port_probe_pids[@]}"; do
 done
 test "$private_port_boundary_status" -eq 0
 
+readonly preview_summary="$verification_root/preview-summary.json"
+verify_scenario_preview initial "$preview_summary"
+
 readonly rejection_start_request="$verification_root/rejection-start-request.json"
 readonly rejection_started_run="$verification_root/rejection-started-run.json"
 readonly rejection_request="$verification_root/rejection-request.json"
@@ -244,25 +272,17 @@ readonly rejected_receipt_before="$verification_root/rejected-receipt-before.jso
 readonly rejection_summary="$verification_root/rejection-summary.json"
 readonly rejection_reset_request="$verification_root/rejection-reset-request.json"
 readonly rejection_reset_result="$verification_root/rejection-reset-result.json"
+readonly first_start_summary="$verification_root/first-start-summary.json"
 
 python3 "$contract_helper" new-start "$rejection_start_request"
 rejection_start_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
 start_status=$(post_start "$rejection_start_request" "$rejection_started_run")
-if test "$start_status" = 409; then
-  previous_run_id=$(python3 "$contract_helper" conflict-run-id "$rejection_started_run")
-  previous_run="$verification_root/previous-run.json"
-  previous_reset_request="$verification_root/previous-reset-request.json"
-  previous_reset_result="$verification_root/previous-reset-result.json"
-  get_json "/v1/demo/runs/$previous_run_id" "$previous_run"
-  test "$(python3 "$contract_helper" prepare-reset \
-    "$previous_run" "$previous_reset_request")" = "$previous_run_id"
-  post_json 200 "/v1/demo/runs/$previous_run_id/reset" \
-    "$previous_reset_request" "$previous_reset_result"
-  python3 "$contract_helper" verify-reset "$previous_reset_result" "$previous_run"
-  python3 "$contract_helper" new-start "$rejection_start_request"
-  rejection_start_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
-  start_status=$(post_start "$rejection_start_request" "$rejection_started_run")
-fi
+python3 "$contract_helper" verify-first-start \
+  "$start_status" \
+  "$rejection_start_request" \
+  "$rejection_started_run" \
+  "$preview_summary" \
+  "$first_start_summary"
 test "$start_status" = 201
 rejected_run_id=$(python3 "$contract_helper" prepare-rejection \
   "$rejection_started_run" "$rejection_request")
@@ -282,7 +302,8 @@ python3 "$contract_helper" verify-rejection-contract \
   "$public_url" \
   "$expected_generation" \
   "$rejection_elapsed_ms" \
-  "$rejection_summary"
+  "$rejection_summary" \
+  --preview-summary "$preview_summary"
 
 readonly remote_check="$verification_root/remote-check.sh"
 python3 "$contract_helper" remote-script \
@@ -318,6 +339,8 @@ python3 "$contract_helper" verify-reset "$rejection_reset_result" "$rejected_run
 readonly rejected_receipt_after_reset="$verification_root/rejected-receipt-after-reset.json"
 get_json "/v1/demo/runs/$rejected_run_id/receipt" "$rejected_receipt_after_reset"
 cmp --silent "$rejected_receipt_before" "$rejected_receipt_after_reset"
+readonly rejection_reset_preview_summary="$verification_root/rejection-reset-preview-summary.json"
+verify_scenario_preview rejection-reset "$rejection_reset_preview_summary" "$preview_summary"
 
 readonly start_request="$verification_root/approval-start-request.json"
 readonly started_run="$verification_root/approval-started-run.json"
@@ -357,7 +380,8 @@ python3 "$contract_helper" verify-contract \
   "$expected_generation" \
   "$workflow_elapsed_ms" \
   "$visual_directory" \
-  "$workflow_summary"
+  "$workflow_summary" \
+  --preview-summary "$preview_summary"
 
 restart_runtime_and_verify
 
@@ -383,6 +407,8 @@ python3 "$contract_helper" verify-reset "$reset_result" "$closed_run"
 readonly receipt_after_reset="$verification_root/receipt-after-reset.json"
 get_json "/v1/demo/runs/$run_id/receipt" "$receipt_after_reset"
 cmp --silent "$receipt_before" "$receipt_after_reset"
+readonly approval_reset_preview_summary="$verification_root/approval-reset-preview-summary.json"
+verify_scenario_preview approval-reset "$approval_reset_preview_summary" "$preview_summary"
 
 python3 "$contract_helper" write-report \
   "$workflow_summary" \
@@ -394,5 +420,9 @@ python3 "$contract_helper" write-report \
   "$instance" \
   "$expected_generation" \
   "$output" \
-  --rejection-summary "$rejection_summary"
+  --rejection-summary "$rejection_summary" \
+  --preview-summary "$preview_summary" \
+  --rejection-reset-preview-summary "$rejection_reset_preview_summary" \
+  --approval-reset-preview-summary "$approval_reset_preview_summary" \
+  --first-start-summary "$first_start_summary"
 printf '%s\n' "$output"
