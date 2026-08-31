@@ -20,12 +20,34 @@ export type DemoPhase =
   | "expired";
 
 export type DemoVisualKind = "expected" | "observed" | "recovered" | "diff";
+export type DemoPreviewVisualKind = Exclude<DemoVisualKind, "recovered">;
 
 export type DemoVisualDescriptor = {
   readonly href: string;
   readonly sha256: string;
   readonly media_type: "image/png";
   readonly label: "illustrative-authored-fixture";
+};
+
+export type DemoComparison = {
+  readonly renders: readonly {
+    readonly job_id: string;
+    readonly worker_id: string;
+    readonly status: "succeeded";
+    readonly nominal_config_sha256: string;
+    readonly resolved_lut_sha256: string;
+  }[];
+  readonly nominal_config_match: true;
+  readonly resolved_lut_match: false;
+};
+
+export type DemoScenarioPreview = {
+  readonly schema: "colortrace-demo-scenario-preview/v1";
+  readonly scenario_id: string;
+  readonly source_commit: string;
+  readonly build_sha256: string;
+  readonly comparison: DemoComparison;
+  readonly visual_comparison: Readonly<Record<DemoPreviewVisualKind, DemoVisualDescriptor>>;
 };
 
 export type DemoInvestigationProofV1 = {
@@ -161,17 +183,7 @@ export type DemoInvestigationProofV2 = {
     readonly decision_mode: "deterministic-validation";
   };
   readonly model_invocations: DemoInvestigationProofV1["model_invocations"];
-  readonly comparison: {
-    readonly renders: readonly {
-      readonly job_id: string;
-      readonly worker_id: string;
-      readonly status: "succeeded";
-      readonly nominal_config_sha256: string;
-      readonly resolved_lut_sha256: string;
-    }[];
-    readonly nominal_config_match: true;
-    readonly resolved_lut_match: false;
-  };
+  readonly comparison: DemoComparison;
   readonly claims: readonly {
     readonly claim_id: string;
     readonly claim_type: string;
@@ -207,7 +219,79 @@ export type DemoInvestigationProofV2 = {
   };
 };
 
-export type DemoInvestigationProof = DemoInvestigationProofV1 | DemoInvestigationProofV2;
+export type DemoInvestigationProofV3 = Omit<
+  DemoInvestigationProofV2,
+  "schema" | "model_invocations" | "evidence"
+> & {
+  readonly schema: "colortrace-demo-investigation-proof/v3";
+  readonly model_invocations: readonly {
+    readonly invocation_id: string;
+    readonly turn_kind: "evidence-selection" | "response-drafting";
+    readonly attempt: number;
+    readonly model: string;
+    readonly location: string;
+    readonly framework: string;
+    readonly framework_version: string;
+    readonly client_version: string;
+    readonly prompt_version: string;
+    readonly policy_version: string;
+    readonly inventory_sha256: string | null;
+    readonly normalized_input_sha256: string;
+    readonly input_evidence_ids: readonly string[];
+    readonly output_sha256: string | null;
+    readonly latency_ms: number;
+    readonly usage: {
+      readonly input_tokens: number | null;
+      readonly output_tokens: number | null;
+      readonly model_calls: number;
+      readonly unobserved_model_calls: number;
+    };
+    readonly result_class: "accepted" | "budget-rejected" | "failed" | "invalid";
+    readonly error_code: string | null;
+    readonly trace_id: string;
+    readonly derivation_sha256: string;
+  }[];
+  readonly evidence: readonly {
+    readonly evidence_id: string;
+    readonly query_key: string;
+    readonly tool: string;
+    readonly inventory_sha256: string;
+    readonly content_sha256: string;
+    readonly freshness: "current";
+    readonly display_excerpt: string;
+    readonly display_excerpt_truncated: boolean;
+    readonly source: {
+      readonly kind: "grafana-mcp";
+      readonly server: string;
+      readonly server_version: string;
+      readonly server_commit: string;
+      readonly binary_sha256: string;
+      readonly mcp_sdk_version: string;
+      readonly mcp_protocol_version: string;
+      readonly tool: string;
+      readonly tool_input_schema_sha256: string;
+      readonly tool_annotations_sha256: string;
+      readonly inventory_version: string;
+    };
+    readonly timing: {
+      readonly source_time: string | null;
+      readonly event_time: string | null;
+      readonly retrieved_at: string;
+    };
+  }[];
+  readonly model_advisory: {
+    readonly trust: "untrusted-model-output";
+    readonly summary: string;
+    readonly evidence_ids: readonly string[];
+    readonly output_sha256: string;
+  };
+  readonly finalized_at: string;
+};
+
+export type DemoInvestigationProof =
+  | DemoInvestigationProofV1
+  | DemoInvestigationProofV2
+  | DemoInvestigationProofV3;
 
 export type DemoExecutionProof = {
   readonly schema: "colortrace-demo-execution-proof/v1";
@@ -265,8 +349,7 @@ export type DemoRecovery = {
   readonly closure_sha256: string | null;
 };
 
-export type DemoRun = {
-  readonly schema: "colortrace-demo-run/v1";
+type DemoRunBase = {
   readonly run_id: string;
   readonly incident_id: string;
   readonly scenario_id: string;
@@ -290,6 +373,35 @@ export type DemoRun = {
   readonly reset: boolean;
   readonly approval_nonce?: string;
 };
+
+export type DemoTimelineKind =
+  | "run-created"
+  | "investigation-completed"
+  | "approval-submitted"
+  | "plan-rejected"
+  | "run-unresolved"
+  | "run-expired"
+  | "recovery-verified"
+  | "closure-submitted"
+  | "recovery-closed";
+
+export type DemoTimelineItem = {
+  readonly run_version: number;
+  readonly kind: DemoTimelineKind;
+  readonly phase: DemoPhase;
+  readonly recorded_at: string;
+};
+
+export type DemoRunV1 = DemoRunBase & {
+  readonly schema: "colortrace-demo-run/v1";
+};
+
+export type DemoRunV2 = DemoRunBase & {
+  readonly schema: "colortrace-demo-run/v2";
+  readonly timeline: readonly DemoTimelineItem[];
+};
+
+export type DemoRun = DemoRunV1 | DemoRunV2;
 
 export type DemoReceipt = {
   readonly schema: "colortrace-demo-receipt/v1";
@@ -397,6 +509,12 @@ export type DemoClosureRequest = {
 };
 
 export type DemoAdapter = {
+  readonly preview: (signal?: AbortSignal) => Promise<DemoScenarioPreview>;
+  readonly previewVisual: (
+    kind: DemoPreviewVisualKind,
+    expectedSha256?: string,
+    signal?: AbortSignal,
+  ) => Promise<VerifiedDemoVisual>;
   readonly start: (request: DemoStartRequest, signal?: AbortSignal) => Promise<DemoRun>;
   readonly get: (runId: string, signal?: AbortSignal) => Promise<DemoRun>;
   readonly approve: (runId: string, request: DemoApprovalRequest) => Promise<DemoRun>;
@@ -429,6 +547,7 @@ const RUN_ID = /^demo-run-[0-9a-f]{32}$/u;
 const INCIDENT_ID = /^incident-demo-[0-9a-f]{32}$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
+const HEX_DIGEST = /^[0-9a-f]{64}$/u;
 const COMMIT = /^[0-9a-f]{40}$/u;
 const NONCE = /^[A-Za-z0-9_-]{32,256}$/u;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u;
@@ -447,12 +566,40 @@ const PHASES = new Set<DemoPhase>([
 ]);
 const TERMINAL_PHASES = new Set<DemoPhase>(["closed", "unresolved", "expired"]);
 const VISUAL_KINDS = new Set<DemoVisualKind>(["expected", "observed", "recovered", "diff"]);
+const PREVIEW_VISUAL_KINDS = new Set<DemoPreviewVisualKind>(["expected", "observed", "diff"]);
 const REJECTION_REASONS = new Set<DemoRejectionReason>(DEMO_REJECTION_REASONS);
 const INVESTIGATION_TOOLS = {
   "alert.rule": "alerting_manage_rules",
   "log.correlated-events": "query_loki_logs",
   "metric.correlated-observations": "query_prometheus",
   "trace.by-id": "tempo_get-trace",
+} as const;
+const MCP_SOURCE_IDENTITY = {
+  kind: "grafana-mcp",
+  server: "mcp-grafana",
+  server_version: "1.1.0",
+  server_commit: "007e8d82154899a28e19e8dfe9c2bb4452c5211a",
+  binary_sha256: "5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93",
+  mcp_sdk_version: "1.29.0",
+  mcp_protocol_version: "2025-06-18",
+} as const;
+const CANONICAL_V3_CLAIMS = {
+  "causal-resource": {
+    state: "confirmed",
+    reasonCode: "causal-resource-confirmed",
+  },
+  "nominal-config": {
+    state: "rejected",
+    reasonCode: "nominal-config-authoritatively-rejected",
+  },
+  "worker-alone": {
+    state: "rejected",
+    reasonCode: "worker-alone-authoritatively-rejected",
+  },
+  distractor: {
+    state: "rejected",
+    reasonCode: "distractor-authoritatively-rejected",
+  },
 } as const;
 const RECOVERY_CHECKS = [
   "active-publication",
@@ -575,6 +722,15 @@ function nullableIntegerField(value: Record<string, unknown>, key: string): numb
   return integerField(value, key);
 }
 
+function nullableBoundedIntegerField(
+  value: Record<string, unknown>,
+  key: string,
+  maximum: number,
+): number | null {
+  if (value[key] === null) return null;
+  return boundedIntegerField(value, key, maximum);
+}
+
 function booleanField(value: Record<string, unknown>, key: string): boolean {
   const selected = value[key];
   if (typeof selected !== "boolean") throw new DemoApiError(null, "demo-response-invalid");
@@ -614,6 +770,66 @@ function digestField(value: Record<string, unknown>, key: string): string {
 function nullableDigestField(value: Record<string, unknown>, key: string): string | null {
   const selected = nullableStringField(value, key);
   return selected === null ? null : requirePattern(selected, DIGEST);
+}
+
+function timestampValue(value: unknown): string {
+  if (typeof value !== "string" || !TIMESTAMP.test(value) || !Number.isFinite(Date.parse(value))) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  return value;
+}
+
+function nullableTimestampField(value: Record<string, unknown>, key: string): string | null {
+  const selected = value[key];
+  return selected === null ? null : timestampValue(selected);
+}
+
+function parseComparison(value: unknown): DemoComparison {
+  const comparison = recordWithKeys(value, [
+    "renders",
+    "nominal_config_match",
+    "resolved_lut_match",
+  ]);
+  if (
+    !Array.isArray(comparison.renders) ||
+    comparison.renders.length !== 2 ||
+    comparison.nominal_config_match !== true ||
+    comparison.resolved_lut_match !== false
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  const renders = comparison.renders.map((value) => {
+    const render = recordWithKeys(value, [
+      "job_id",
+      "worker_id",
+      "status",
+      "nominal_config_sha256",
+      "resolved_lut_sha256",
+    ]);
+    if (render.status !== "succeeded") {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    return {
+      job_id: requirePattern(stringField(render, "job_id"), IDENTIFIER),
+      worker_id: requirePattern(stringField(render, "worker_id"), IDENTIFIER),
+      status: "succeeded" as const,
+      nominal_config_sha256: digestField(render, "nominal_config_sha256"),
+      resolved_lut_sha256: digestField(render, "resolved_lut_sha256"),
+    };
+  });
+  if (
+    renders[0]?.job_id === renders[1]?.job_id ||
+    renders[0]?.worker_id === renders[1]?.worker_id ||
+    renders[0]?.nominal_config_sha256 !== renders[1]?.nominal_config_sha256 ||
+    renders[0]?.resolved_lut_sha256 === renders[1]?.resolved_lut_sha256
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  return {
+    renders,
+    nominal_config_match: true,
+    resolved_lut_match: false,
+  };
 }
 
 function parseApproval(value: unknown): DemoApproval | null {
@@ -909,46 +1125,8 @@ function parseInvestigationV2(value: unknown): DemoInvestigationProofV2 {
     } as DemoInvestigationProofV2["model_invocations"][number];
   });
 
-  const comparison = recordWithKeys(proof.comparison, [
-    "renders",
-    "nominal_config_match",
-    "resolved_lut_match",
-  ]);
-  if (
-    !Array.isArray(comparison.renders) ||
-    comparison.renders.length !== 2 ||
-    comparison.nominal_config_match !== true ||
-    comparison.resolved_lut_match !== false
-  ) {
-    throw new DemoApiError(null, "demo-response-invalid");
-  }
-  const renders = comparison.renders.map((value) => {
-    const render = recordWithKeys(value, [
-      "job_id",
-      "worker_id",
-      "status",
-      "nominal_config_sha256",
-      "resolved_lut_sha256",
-    ]);
-    if (render.status !== "succeeded") {
-      throw new DemoApiError(null, "demo-response-invalid");
-    }
-    return {
-      job_id: requirePattern(stringField(render, "job_id"), IDENTIFIER),
-      worker_id: requirePattern(stringField(render, "worker_id"), IDENTIFIER),
-      status: "succeeded" as const,
-      nominal_config_sha256: digestField(render, "nominal_config_sha256"),
-      resolved_lut_sha256: digestField(render, "resolved_lut_sha256"),
-    };
-  });
-  if (
-    renders[0]?.job_id === renders[1]?.job_id ||
-    renders[0]?.worker_id === renders[1]?.worker_id ||
-    renders[0]?.nominal_config_sha256 !== renders[1]?.nominal_config_sha256 ||
-    renders[0]?.resolved_lut_sha256 === renders[1]?.resolved_lut_sha256
-  ) {
-    throw new DemoApiError(null, "demo-response-invalid");
-  }
+  const comparison = parseComparison(proof.comparison);
+  const renders = comparison.renders;
 
   const claimIds = new Set<string>();
   const claims = proof.claims.map((value) => {
@@ -1392,7 +1570,347 @@ function parseInvestigationV2(value: unknown): DemoInvestigationProofV2 {
   };
 }
 
+function parseInvestigationV3(value: unknown): DemoInvestigationProofV3 {
+  const proof = recordWithKeys(value, [
+    "schema",
+    "packet_id",
+    "packet_sha256",
+    "status",
+    "adjudication",
+    "model_invocations",
+    "comparison",
+    "claims",
+    "evidence",
+    "validators",
+    "scope",
+    "budget_use",
+    "plan",
+    "model_advisory",
+    "finalized_at",
+  ]);
+  if (
+    proof.schema !== "colortrace-demo-investigation-proof/v3" ||
+    !Array.isArray(proof.model_invocations) ||
+    proof.model_invocations.length < 2 ||
+    proof.model_invocations.length > 6 ||
+    !Array.isArray(proof.evidence)
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+
+  const invocationIds = new Set<string>();
+  const invocationAttempts = new Set<string>();
+  const modelInvocations = proof.model_invocations.map((value) => {
+    const invocation = recordWithKeys(value, [
+      "invocation_id",
+      "turn_kind",
+      "attempt",
+      "model",
+      "location",
+      "framework",
+      "framework_version",
+      "client_version",
+      "prompt_version",
+      "policy_version",
+      "inventory_sha256",
+      "normalized_input_sha256",
+      "input_evidence_ids",
+      "output_sha256",
+      "latency_ms",
+      "usage",
+      "result_class",
+      "error_code",
+      "trace_id",
+      "derivation_sha256",
+    ]);
+    const turnKind = invocation.turn_kind;
+    const resultClass = invocation.result_class;
+    if (
+      (turnKind !== "evidence-selection" && turnKind !== "response-drafting") ||
+      (resultClass !== "accepted" &&
+        resultClass !== "budget-rejected" &&
+        resultClass !== "failed" &&
+        resultClass !== "invalid") ||
+      !Array.isArray(invocation.input_evidence_ids) ||
+      invocation.input_evidence_ids.length > 256
+    ) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    const inputEvidenceIds = invocation.input_evidence_ids.map((identifier) =>
+      requirePattern(typeof identifier === "string" ? identifier : "", IDENTIFIER),
+    );
+    if (new Set(inputEvidenceIds).size !== inputEvidenceIds.length) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    const usage = recordWithKeys(invocation.usage, [
+      "input_tokens",
+      "output_tokens",
+      "model_calls",
+      "unobserved_model_calls",
+    ]);
+    const errorCode = nullableStringField(invocation, "error_code");
+    const invocationId = requirePattern(stringField(invocation, "invocation_id"), IDENTIFIER);
+    const derivationSha256 = digestField(invocation, "derivation_sha256");
+    const attempt = integerField(invocation, "attempt");
+    const attemptKey = `${turnKind}:${attempt}`;
+    const promptVersion = stringField(invocation, "prompt_version");
+    const modelCalls = boundedIntegerField(usage, "model_calls", 6);
+    const unobservedModelCalls = boundedIntegerField(usage, "unobserved_model_calls", 6);
+    const inputTokens = nullableBoundedIntegerField(usage, "input_tokens", 10_000_000);
+    const outputTokens = nullableBoundedIntegerField(usage, "output_tokens", 10_000_000);
+    if (
+      invocationIds.has(invocationId) ||
+      invocationAttempts.has(attemptKey) ||
+      invocationId !== `model-invocation:${derivationSha256.slice("sha256:".length)}` ||
+      attempt > 6 ||
+      invocation.model !== "gemini-3.5-flash" ||
+      invocation.location !== "global" ||
+      invocation.framework !== "google-adk" ||
+      invocation.framework_version !== "2.6.3" ||
+      invocation.client_version !== "2.17.0" ||
+      promptVersion !==
+        (turnKind === "evidence-selection" ? "evidence-selection/v1" : "response-drafting/v1") ||
+      invocation.policy_version !== "bounded-investigation/v1" ||
+      (resultClass === "accepted" && errorCode !== null) ||
+      (errorCode !== null && !/^[a-z][a-z0-9_]{1,63}$/u.test(errorCode)) ||
+      modelCalls < 1 ||
+      unobservedModelCalls > modelCalls ||
+      (resultClass === "accepted" &&
+        (invocation.output_sha256 === null ||
+          inputTokens === null ||
+          outputTokens === null ||
+          unobservedModelCalls !== 0))
+    ) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    invocationIds.add(invocationId);
+    invocationAttempts.add(attemptKey);
+    return {
+      invocation_id: invocationId,
+      turn_kind: turnKind,
+      attempt,
+      model: "gemini-3.5-flash",
+      location: "global",
+      framework: "google-adk",
+      framework_version: "2.6.3",
+      client_version: "2.17.0",
+      prompt_version: promptVersion,
+      policy_version: "bounded-investigation/v1",
+      inventory_sha256: nullableDigestField(invocation, "inventory_sha256"),
+      normalized_input_sha256: digestField(invocation, "normalized_input_sha256"),
+      input_evidence_ids: inputEvidenceIds,
+      output_sha256: nullableDigestField(invocation, "output_sha256"),
+      latency_ms: boundedIntegerField(invocation, "latency_ms", 120_000),
+      usage: {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        model_calls: modelCalls,
+        unobserved_model_calls: unobservedModelCalls,
+      },
+      result_class: resultClass,
+      error_code: errorCode,
+      trace_id: requirePattern(stringField(invocation, "trace_id"), TRACE_ID),
+      derivation_sha256: derivationSha256,
+    } as DemoInvestigationProofV3["model_invocations"][number];
+  });
+
+  const evidence = proof.evidence.map((value) => {
+    const item = recordWithKeys(value, [
+      "evidence_id",
+      "query_key",
+      "tool",
+      "inventory_sha256",
+      "content_sha256",
+      "freshness",
+      "display_excerpt",
+      "display_excerpt_truncated",
+      "source",
+      "timing",
+    ]);
+    const source = recordWithKeys(item.source, [
+      "kind",
+      "server",
+      "server_version",
+      "server_commit",
+      "binary_sha256",
+      "mcp_sdk_version",
+      "mcp_protocol_version",
+      "tool",
+      "tool_input_schema_sha256",
+      "tool_annotations_sha256",
+      "inventory_version",
+    ]);
+    const timing = recordWithKeys(item.timing, ["source_time", "event_time", "retrieved_at"]);
+    const queryKey = requirePattern(stringField(item, "query_key"), IDENTIFIER);
+    const tool = requirePattern(stringField(item, "tool"), IDENTIFIER);
+    const inventorySha256 = digestField(item, "inventory_sha256");
+    if (
+      item.freshness !== "current" ||
+      Object.entries(MCP_SOURCE_IDENTITY).some(([key, expected]) => source[key] !== expected) ||
+      !Object.hasOwn(INVESTIGATION_TOOLS, queryKey) ||
+      INVESTIGATION_TOOLS[queryKey as keyof typeof INVESTIGATION_TOOLS] !== tool ||
+      source.tool !== tool ||
+      source.inventory_version !== inventorySha256
+    ) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    return {
+      evidence_id: digestField(item, "evidence_id"),
+      query_key: queryKey,
+      tool,
+      inventory_sha256: inventorySha256,
+      content_sha256: digestField(item, "content_sha256"),
+      freshness: "current" as const,
+      display_excerpt: boundedPlainText(item.display_excerpt),
+      display_excerpt_truncated: booleanField(item, "display_excerpt_truncated"),
+      source: {
+        ...MCP_SOURCE_IDENTITY,
+        tool,
+        tool_input_schema_sha256: requirePattern(
+          stringField(source, "tool_input_schema_sha256"),
+          HEX_DIGEST,
+        ),
+        tool_annotations_sha256: requirePattern(
+          stringField(source, "tool_annotations_sha256"),
+          HEX_DIGEST,
+        ),
+        inventory_version: requirePattern(stringField(source, "inventory_version"), DIGEST),
+      },
+      timing: {
+        source_time: nullableTimestampField(timing, "source_time"),
+        event_time: nullableTimestampField(timing, "event_time"),
+        retrieved_at: timestampValue(timing.retrieved_at),
+      },
+    };
+  });
+
+  const base = parseInvestigationV2({
+    schema: "colortrace-demo-investigation-proof/v2",
+    packet_id: proof.packet_id,
+    packet_sha256: proof.packet_sha256,
+    status: proof.status,
+    adjudication: proof.adjudication,
+    model_invocations: modelInvocations.map((invocation) => ({
+      invocation_id: invocation.invocation_id,
+      turn_kind: invocation.turn_kind,
+      model: invocation.model,
+      framework: invocation.framework,
+      result_class: invocation.result_class,
+      inventory_sha256: invocation.inventory_sha256,
+      output_sha256: invocation.output_sha256,
+      trace_id: invocation.trace_id,
+    })),
+    comparison: proof.comparison,
+    claims: proof.claims,
+    evidence: evidence.map((item) => ({
+      evidence_id: item.evidence_id,
+      query_key: item.query_key,
+      tool: item.tool,
+      inventory_sha256: item.inventory_sha256,
+      content_sha256: item.content_sha256,
+      freshness: item.freshness,
+      display_excerpt: item.display_excerpt,
+      display_excerpt_truncated: item.display_excerpt_truncated,
+    })),
+    validators: proof.validators,
+    scope: proof.scope,
+    budget_use: proof.budget_use,
+    plan: proof.plan,
+  });
+
+  const canonicalClaimEntries = Object.entries(CANONICAL_V3_CLAIMS);
+  const canonicalValidatorIds = new Set<string>();
+  if (base.claims.length !== canonicalClaimEntries.length) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  for (const [claimType, requirement] of canonicalClaimEntries) {
+    const matching = base.claims.filter((claim) => claim.claim_type === claimType);
+    const claim = matching[0];
+    if (
+      matching.length !== 1 ||
+      claim === undefined ||
+      claim.state !== requirement.state ||
+      claim.reason_codes.length !== 1 ||
+      claim.reason_codes[0] !== requirement.reasonCode
+    ) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    canonicalValidatorIds.add(claim.source_validator_result_id);
+  }
+  if (canonicalValidatorIds.size !== 1) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+
+  const evidenceIds = new Set(evidence.map((item) => item.evidence_id));
+  const acceptedInvocations = modelInvocations.filter(
+    (invocation) => invocation.result_class === "accepted",
+  );
+  const acceptedTurns = new Set(acceptedInvocations.map((invocation) => invocation.turn_kind));
+  if (
+    modelInvocations.some((invocation) =>
+      invocation.input_evidence_ids.some((evidenceId) => !evidenceIds.has(evidenceId)),
+    ) ||
+    acceptedInvocations.length !== 2 ||
+    acceptedTurns.size !== 2 ||
+    modelInvocations.reduce((sum, invocation) => sum + invocation.usage.model_calls, 0) !==
+      base.budget_use.model_turns ||
+    modelInvocations.reduce((sum, invocation) => sum + (invocation.usage.input_tokens ?? 0), 0) !==
+      base.budget_use.input_tokens ||
+    modelInvocations.reduce((sum, invocation) => sum + (invocation.usage.output_tokens ?? 0), 0) !==
+      base.budget_use.output_tokens
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  const advisory = recordWithKeys(proof.model_advisory, [
+    "trust",
+    "summary",
+    "evidence_ids",
+    "output_sha256",
+  ]);
+  if (advisory.trust !== "untrusted-model-output" || !Array.isArray(advisory.evidence_ids)) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  const advisoryEvidenceIds = advisory.evidence_ids.map((identifier) =>
+    requirePattern(typeof identifier === "string" ? identifier : "", DIGEST),
+  );
+  const advisoryOutputSha256 = digestField(advisory, "output_sha256");
+  const acceptedDrafts = modelInvocations.filter(
+    (invocation) =>
+      invocation.turn_kind === "response-drafting" && invocation.result_class === "accepted",
+  );
+  if (
+    advisoryEvidenceIds.length < 1 ||
+    advisoryEvidenceIds.length > 32 ||
+    new Set(advisoryEvidenceIds).size !== advisoryEvidenceIds.length ||
+    advisoryEvidenceIds.some((evidenceId) => !evidenceIds.has(evidenceId)) ||
+    !acceptedDrafts.some((invocation) => invocation.output_sha256 === advisoryOutputSha256)
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  const finalizedAt = timestampValue(proof.finalized_at);
+  if (evidence.some((item) => Date.parse(item.timing.retrieved_at) > Date.parse(finalizedAt))) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+
+  return {
+    ...base,
+    schema: "colortrace-demo-investigation-proof/v3",
+    model_invocations: modelInvocations,
+    evidence,
+    model_advisory: {
+      trust: "untrusted-model-output",
+      summary: boundedPlainText(advisory.summary),
+      evidence_ids: advisoryEvidenceIds,
+      output_sha256: advisoryOutputSha256,
+    },
+    finalized_at: finalizedAt,
+  };
+}
+
 function parseInvestigation(value: unknown): DemoInvestigationProof {
+  if (isRecord(value) && value.schema === "colortrace-demo-investigation-proof/v3") {
+    return parseInvestigationV3(value);
+  }
   if (isRecord(value) && value.schema === "colortrace-demo-investigation-proof/v2") {
     return parseInvestigationV2(value);
   }
@@ -1496,6 +2014,55 @@ function parseExecution(value: unknown): DemoExecutionProof {
   return selected;
 }
 
+function parsePreviewVisualComparison(
+  value: unknown,
+): Readonly<Record<DemoPreviewVisualKind, DemoVisualDescriptor>> {
+  const comparison = recordWithKeys(value, ["expected", "observed", "diff"]);
+  const selected = {} as Record<DemoPreviewVisualKind, DemoVisualDescriptor>;
+  for (const kind of PREVIEW_VISUAL_KINDS) {
+    const descriptor = recordWithKeys(comparison[kind], ["href", "sha256", "media_type", "label"]);
+    if (
+      descriptor.media_type !== "image/png" ||
+      descriptor.label !== "illustrative-authored-fixture" ||
+      stringField(descriptor, "href") !== `/v1/demo/visuals/${kind}`
+    ) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    selected[kind] = {
+      href: `/v1/demo/visuals/${kind}`,
+      sha256: digestField(descriptor, "sha256"),
+      media_type: "image/png",
+      label: "illustrative-authored-fixture",
+    };
+  }
+  return selected;
+}
+
+function parsePreview(value: unknown): DemoScenarioPreview {
+  const preview = recordWithKeys(value, [
+    "schema",
+    "scenario_id",
+    "source_commit",
+    "build_sha256",
+    "comparison",
+    "visual_comparison",
+  ]);
+  if (
+    preview.schema !== "colortrace-demo-scenario-preview/v1" ||
+    stringField(preview, "scenario_id") !== CANONICAL_DEMO_SCENARIO
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  return {
+    schema: "colortrace-demo-scenario-preview/v1",
+    scenario_id: CANONICAL_DEMO_SCENARIO,
+    source_commit: requirePattern(stringField(preview, "source_commit"), COMMIT),
+    build_sha256: digestField(preview, "build_sha256"),
+    comparison: parseComparison(preview.comparison),
+    visual_comparison: parsePreviewVisualComparison(preview.visual_comparison),
+  };
+}
+
 function parseVisualComparison(
   value: unknown,
   runId: string,
@@ -1524,6 +2091,63 @@ function parseVisualComparison(
   return selected;
 }
 
+const TIMELINE_KIND_PHASE: Readonly<Record<DemoTimelineKind, DemoPhase>> = {
+  "run-created": "preparing",
+  "investigation-completed": "awaiting-approval",
+  "approval-submitted": "executing",
+  "plan-rejected": "unresolved",
+  "run-unresolved": "unresolved",
+  "run-expired": "expired",
+  "recovery-verified": "awaiting-closure",
+  "closure-submitted": "closing",
+  "recovery-closed": "closed",
+};
+
+function parseTimeline(value: unknown, runVersion: number, phase: DemoPhase): DemoTimelineItem[] {
+  if (!Array.isArray(value) || value.length !== runVersion) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  const timeline = value.map((raw, index) => {
+    const item = recordWithKeys(raw, ["run_version", "kind", "phase", "recorded_at"]);
+    const kind = stringField(item, "kind") as DemoTimelineKind;
+    const itemPhase = stringField(item, "phase") as DemoPhase;
+    if (
+      !Object.hasOwn(TIMELINE_KIND_PHASE, kind) ||
+      !PHASES.has(itemPhase) ||
+      TIMELINE_KIND_PHASE[kind] !== itemPhase ||
+      integerField(item, "run_version") !== index + 1
+    ) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+    return {
+      run_version: index + 1,
+      kind,
+      phase: itemPhase,
+      recorded_at: timestampValue(item.recorded_at),
+    };
+  });
+  if (timeline[0]?.kind !== "run-created" || timeline.at(-1)?.phase !== phase) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  for (let index = 1; index < timeline.length; index += 1) {
+    const previous = timeline[index - 1] as DemoTimelineItem;
+    const current = timeline[index] as DemoTimelineItem;
+    const validTransition =
+      (current.kind === "investigation-completed" && previous.phase === "preparing") ||
+      (current.kind === "approval-submitted" && previous.phase === "awaiting-approval") ||
+      (current.kind === "plan-rejected" && previous.phase === "awaiting-approval") ||
+      (current.kind === "recovery-verified" && previous.phase === "executing") ||
+      (current.kind === "closure-submitted" && previous.phase === "awaiting-closure") ||
+      (current.kind === "recovery-closed" && previous.phase === "closing") ||
+      ((current.kind === "run-unresolved" || current.kind === "run-expired") &&
+        !TERMINAL_PHASES.has(previous.phase));
+    if (!validTransition || Date.parse(current.recorded_at) < Date.parse(previous.recorded_at)) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+  }
+  return timeline;
+}
+
 function parseRun(value: unknown, expectedStartNonce?: string): DemoRun {
   const requiredKeys = [
     "schema",
@@ -1544,10 +2168,12 @@ function parseRun(value: unknown, expectedStartNonce?: string): DemoRun {
     "receipt_href",
     "reset",
   ];
+  const schema = isRecord(value) ? value.schema : undefined;
   const optionalKeys = new Set(["approval_nonce", "investigation", "execution"]);
+  if (schema === "colortrace-demo-run/v2") requiredKeys.push("timeline");
   if (
     !isRecord(value) ||
-    value.schema !== "colortrace-demo-run/v1" ||
+    (schema !== "colortrace-demo-run/v1" && schema !== "colortrace-demo-run/v2") ||
     !requiredKeys.every((key) => Object.hasOwn(value, key)) ||
     Object.keys(value).some((key) => !requiredKeys.includes(key) && !optionalKeys.has(key))
   ) {
@@ -1558,6 +2184,7 @@ function parseRun(value: unknown, expectedStartNonce?: string): DemoRun {
     throw new DemoApiError(null, "demo-response-invalid");
   }
   const phase = phaseValue as DemoPhase;
+  const runVersion = integerField(value, "version");
   const terminal = booleanField(value, "terminal");
   if (terminal !== TERMINAL_PHASES.has(phase)) {
     throw new DemoApiError(null, "demo-response-invalid");
@@ -1631,8 +2258,9 @@ function parseRun(value: unknown, expectedStartNonce?: string): DemoRun {
   }
   if (
     expectedStartNonce !== undefined &&
-    phase === "awaiting-approval" &&
-    investigation?.schema !== "colortrace-demo-investigation-proof/v2"
+    (schema !== "colortrace-demo-run/v2" ||
+      phase !== "awaiting-approval" ||
+      investigation?.schema !== "colortrace-demo-investigation-proof/v3")
   ) {
     throw new DemoApiError(null, "demo-response-invalid");
   }
@@ -1645,7 +2273,11 @@ function parseRun(value: unknown, expectedStartNonce?: string): DemoRun {
   ) {
     throw new DemoApiError(null, "demo-response-invalid");
   }
-  if (approval !== null && investigation?.schema === "colortrace-demo-investigation-proof/v2") {
+  if (
+    approval !== null &&
+    investigation !== undefined &&
+    investigation.schema !== "colortrace-demo-investigation-proof/v1"
+  ) {
     const inventoryDigests = new Set(investigation.evidence.map((item) => item.inventory_sha256));
     const accepted = investigation.model_invocations.filter(
       (item) => item.result_class === "accepted",
@@ -1702,15 +2334,40 @@ function parseRun(value: unknown, expectedStartNonce?: string): DemoRun {
   ) {
     throw new DemoApiError(null, "demo-response-invalid");
   }
-  return {
-    schema: "colortrace-demo-run/v1",
+  if (
+    schema === "colortrace-demo-run/v2" &&
+    investigation !== undefined &&
+    investigation.schema !== "colortrace-demo-investigation-proof/v3"
+  ) {
+    throw new DemoApiError(null, "demo-response-invalid");
+  }
+  const timeline =
+    schema === "colortrace-demo-run/v2"
+      ? parseTimeline(value.timeline, runVersion, phase)
+      : undefined;
+  if (timeline !== undefined && terminal) {
+    const lastKind = timeline.at(-1)?.kind;
+    const expectedTerminalKind =
+      phase === "closed"
+        ? "recovery-closed"
+        : phase === "expired"
+          ? "run-expired"
+          : terminalReason?.startsWith("plan-rejected-")
+            ? "plan-rejected"
+            : "run-unresolved";
+    if (lastKind !== expectedTerminalKind) {
+      throw new DemoApiError(null, "demo-response-invalid");
+    }
+  }
+  const parsed = {
+    schema,
     run_id: runId,
     incident_id: requirePattern(stringField(value, "incident_id"), INCIDENT_ID),
     scenario_id: CANONICAL_DEMO_SCENARIO,
     source_commit: requirePattern(stringField(value, "source_commit"), COMMIT),
     build_sha256: digestField(value, "build_sha256"),
     phase,
-    version: integerField(value, "version"),
+    version: runVersion,
     lease_expires_at: lease,
     poll: { href: pollHref, after_milliseconds: pollAfter },
     approval,
@@ -1723,7 +2380,9 @@ function parseRun(value: unknown, expectedStartNonce?: string): DemoRun {
     ...(nonce === undefined ? {} : { approval_nonce: nonce }),
     ...(investigation === undefined ? {} : { investigation }),
     ...(execution === undefined ? {} : { execution }),
+    ...(timeline === undefined ? {} : { timeline }),
   };
+  return parsed as DemoRun;
 }
 
 const RECEIPT_BINDING_DIGESTS = [
@@ -1976,7 +2635,12 @@ async function canonicalDocumentSha256(
 
 async function verifyRunCommandDigest(run: DemoRun, sha256: Sha256Implementation): Promise<void> {
   const investigation = run.investigation;
-  if (investigation?.schema !== "colortrace-demo-investigation-proof/v2") return;
+  if (
+    investigation === undefined ||
+    investigation.schema === "colortrace-demo-investigation-proof/v1"
+  ) {
+    return;
+  }
   const commands = investigation.plan.command_summaries.map((summary) => ({
     ...summary,
     action_envelope: investigation.plan.shared_action_bindings,
@@ -2103,7 +2767,58 @@ export function createDemoAdapter({
     return parsed;
   }
 
+  async function verifiedVisual(
+    path: string,
+    kind: DemoVisualKind,
+    expectedSha256?: string,
+    signal?: AbortSignal,
+  ): Promise<VerifiedDemoVisual> {
+    let response: Response;
+    try {
+      response = await fetchImplementation(endpoint(path), {
+        credentials: "same-origin",
+        headers: { Accept: "image/png" },
+        method: "GET",
+        redirect: "error",
+        ...(signal === undefined ? {} : { signal }),
+      });
+    } catch (error) {
+      throw new DemoApiError(null, "demo-network-failure", { cause: error });
+    }
+    if (!response.ok) {
+      throw new DemoApiError(response.status, "demo-visual-unavailable");
+    }
+    const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
+    const declared = response.headers.get("x-content-sha256");
+    if (contentType !== "image/png" || declared === null || !DIGEST.test(declared)) {
+      await response.body?.cancel();
+      throw new DemoApiError(response.status, "demo-visual-response-invalid");
+    }
+    const content = await response.arrayBuffer();
+    const signature = new Uint8Array(content.slice(0, 8));
+    if (
+      content.byteLength < 8 ||
+      content.byteLength > MAX_VISUAL_BYTES ||
+      ![137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => signature[index] === byte)
+    ) {
+      throw new DemoApiError(response.status, "demo-visual-response-invalid");
+    }
+    const actual = await sha256(content);
+    if (actual !== declared || (expectedSha256 !== undefined && actual !== expectedSha256)) {
+      throw new DemoApiError(response.status, "demo-visual-digest-conflict");
+    }
+    const src = createObjectUrl(new Blob([content], { type: "image/png" }));
+    return { kind, sha256: actual, src };
+  }
+
   return {
+    preview: async (signal) => parsePreview(await jsonRequest("/v1/demo", { signal })),
+    previewVisual: async (kind, expectedSha256, signal) => {
+      if (!PREVIEW_VISUAL_KINDS.has(kind)) {
+        throw new DemoApiError(null, "demo-visual-kind-invalid");
+      }
+      return verifiedVisual(`/v1/demo/visuals/${kind}`, kind, expectedSha256, signal);
+    },
     start: async (request, signal) => {
       if (!NONCE.test(request.approval_nonce) || !IDEMPOTENCY_KEY.test(request.idempotency_key)) {
         throw new DemoApiError(null, "demo-request-invalid");
@@ -2172,42 +2887,7 @@ export function createDemoAdapter({
     },
     visual: async (runId, kind, expectedSha256, signal) => {
       if (!VISUAL_KINDS.has(kind)) throw new DemoApiError(null, "demo-visual-kind-invalid");
-      let response: Response;
-      try {
-        response = await fetchImplementation(endpoint(runPath(runId, `/visuals/${kind}`)), {
-          credentials: "same-origin",
-          headers: { Accept: "image/png" },
-          method: "GET",
-          redirect: "error",
-          ...(signal === undefined ? {} : { signal }),
-        });
-      } catch (error) {
-        throw new DemoApiError(null, "demo-network-failure", { cause: error });
-      }
-      if (!response.ok) {
-        throw new DemoApiError(response.status, "demo-visual-unavailable");
-      }
-      const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
-      const declared = response.headers.get("x-content-sha256");
-      if (contentType !== "image/png" || declared === null || !DIGEST.test(declared)) {
-        await response.body?.cancel();
-        throw new DemoApiError(response.status, "demo-visual-response-invalid");
-      }
-      const content = await response.arrayBuffer();
-      const signature = new Uint8Array(content.slice(0, 8));
-      if (
-        content.byteLength < 8 ||
-        content.byteLength > MAX_VISUAL_BYTES ||
-        ![137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => signature[index] === byte)
-      ) {
-        throw new DemoApiError(response.status, "demo-visual-response-invalid");
-      }
-      const actual = await sha256(content);
-      if (actual !== declared || (expectedSha256 !== undefined && actual !== expectedSha256)) {
-        throw new DemoApiError(response.status, "demo-visual-digest-conflict");
-      }
-      const src = createObjectUrl(new Blob([content], { type: "image/png" }));
-      return { kind, sha256: actual, src };
+      return verifiedVisual(runPath(runId, `/visuals/${kind}`), kind, expectedSha256, signal);
     },
     releaseVisual: (visual) => revokeObjectUrl(visual.src),
   };

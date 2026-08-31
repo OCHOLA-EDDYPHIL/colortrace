@@ -17,11 +17,17 @@ from colortrace_api import (
     EXECUTION_PROOF_SCHEMA,
     EXECUTION_SCHEMA,
     INVESTIGATION_PROOF_SCHEMA,
+    INVESTIGATION_PROOF_SCHEMA_V1,
+    INVESTIGATION_PROOF_SCHEMA_V2,
     PREPARATION_SCHEMA,
     RESET_REQUEST_SCHEMA,
     RUN_REQUEST_SCHEMA,
+    RUN_SCHEMA,
+    RUN_SCHEMA_V1,
+    SCENARIO_PREVIEW_SCHEMA,
     DemoFacade,
     DemoFacadeError,
+    DemoVisual,
     Principal,
     SQLiteDemoRunStore,
     create_app,
@@ -201,6 +207,51 @@ class FakeWorkflow:
         self.reject_calls: list[Mapping[str, Any]] = []
         self.rejection_request: Mapping[str, Any] | None = None
         self.reject_response_loss = False
+        self.preview_calls = 0
+        self.preview_visual_calls: list[str] = []
+
+    def preview(self) -> Mapping[str, Any]:
+        self.preview_calls += 1
+        return {
+            "comparison": {
+                "renders": [
+                    {
+                        "job_id": "job-a-02",
+                        "worker_id": "A",
+                        "status": "succeeded",
+                        "nominal_config_sha256": f"sha256:{'b' * 64}",
+                        "resolved_lut_sha256": f"sha256:{'c' * 64}",
+                    },
+                    {
+                        "job_id": "job-b-02",
+                        "worker_id": "B",
+                        "status": "succeeded",
+                        "nominal_config_sha256": f"sha256:{'b' * 64}",
+                        "resolved_lut_sha256": f"sha256:{'d' * 64}",
+                    },
+                ],
+                "nominal_config_match": True,
+                "resolved_lut_match": False,
+            },
+            "visual_comparison": {
+                kind: {
+                    "href": f"/v1/demo/visuals/{kind}",
+                    "sha256": self.visuals[kind]["sha256"],
+                    "media_type": "image/png",
+                    "label": "illustrative-authored-fixture",
+                }
+                for kind in ("expected", "observed", "diff")
+            },
+        }
+
+    def preview_visual(self, kind: str) -> DemoVisual:
+        self.preview_visual_calls.append(kind)
+        content = _png(kind)
+        return DemoVisual(
+            content=content,
+            media_type="image/png",
+            sha256=f"sha256:{hashlib.sha256(content).hexdigest()}",
+        )
 
     def preparation(self, request: Mapping[str, Any]) -> dict[str, Any]:
         return {
@@ -314,12 +365,33 @@ class ProofWorkflow(FakeWorkflow):
                 {
                     "invocation_id": f"model-invocation:{digit * 64}",
                     "turn_kind": turn,
+                    "attempt": 1,
                     "model": "gemini-3.5-flash",
+                    "location": "global",
                     "framework": "google-adk",
+                    "framework_version": "2.6.3",
+                    "client_version": "2.17.0",
+                    "prompt_version": f"{turn}/v1",
+                    "policy_version": "bounded-investigation/v1",
                     "result_class": "accepted",
                     "inventory_sha256": f"sha256:{'7' * 64}",
+                    "normalized_input_sha256": f"sha256:{digit * 64}",
+                    "input_evidence_ids": (
+                        []
+                        if turn == "evidence-selection"
+                        else [f"sha256:{index * 64}" for index in "abcd"]
+                    ),
                     "output_sha256": f"sha256:{digit * 64}",
+                    "latency_ms": 25,
+                    "usage": {
+                        "input_tokens": 50,
+                        "output_tokens": 10,
+                        "model_calls": 1,
+                        "unobserved_model_calls": 0,
+                    },
+                    "error_code": None,
                     "trace_id": digit * 32,
+                    "derivation_sha256": f"sha256:{digit * 64}",
                 }
                 for digit, turn in (
                     ("8", "evidence-selection"),
@@ -336,6 +408,26 @@ class ProofWorkflow(FakeWorkflow):
                     "freshness": "current",
                     "display_excerpt": f"Current {query} evidence.",
                     "display_excerpt_truncated": False,
+                    "source": {
+                        "kind": "grafana-mcp",
+                        "server": "mcp-grafana",
+                        "server_version": "1.1.0",
+                        "server_commit": "007e8d82154899a28e19e8dfe9c2bb4452c5211a",
+                        "binary_sha256": (
+                            "5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93"
+                        ),
+                        "mcp_sdk_version": "1.29.0",
+                        "mcp_protocol_version": "2025-06-18",
+                        "tool": tool,
+                        "tool_input_schema_sha256": "6" * 64,
+                        "tool_annotations_sha256": "7" * 64,
+                        "inventory_version": f"sha256:{'7' * 64}",
+                    },
+                    "timing": {
+                        "source_time": None,
+                        "event_time": None,
+                        "retrieved_at": "2026-08-23T12:00:00.000Z",
+                    },
                 }
                 for index, (query, tool) in zip("abcd", query_tools, strict=True)
             ],
@@ -363,7 +455,7 @@ class ProofWorkflow(FakeWorkflow):
                 {
                     "claim_id": f"claim:{'1' * 64}",
                     "claim_type": "causal-resource",
-                    "subject": {"kind": "resource-sha256", "value": "a" * 64},
+                    "subject": {"kind": "resource-sha256", "value": "d" * 64},
                     "state": "confirmed",
                     "reason_codes": ["causal-resource-confirmed"],
                     "evidence_ids": [f"sha256:{'a' * 64}"],
@@ -376,6 +468,24 @@ class ProofWorkflow(FakeWorkflow):
                     "state": "rejected",
                     "reason_codes": ["nominal-config-authoritatively-rejected"],
                     "evidence_ids": [f"sha256:{'b' * 64}"],
+                    "source_validator_result_id": f"validation-result:{'e' * 64}",
+                },
+                {
+                    "claim_id": f"claim:{'3' * 64}",
+                    "claim_type": "worker-alone",
+                    "subject": {"kind": "worker-id", "value": "B"},
+                    "state": "rejected",
+                    "reason_codes": ["worker-alone-authoritatively-rejected"],
+                    "evidence_ids": [f"sha256:{'c' * 64}"],
+                    "source_validator_result_id": f"validation-result:{'e' * 64}",
+                },
+                {
+                    "claim_id": f"claim:{'4' * 64}",
+                    "claim_type": "distractor",
+                    "subject": {"kind": "event-id", "value": "distractor-01"},
+                    "state": "rejected",
+                    "reason_codes": ["distractor-authoritatively-rejected"],
+                    "evidence_ids": [f"sha256:{'d' * 64}"],
                     "source_validator_result_id": f"validation-result:{'e' * 64}",
                 },
             ],
@@ -402,6 +512,13 @@ class ProofWorkflow(FakeWorkflow):
                 "mcp_attempts": 4,
                 "validator_calls": 6,
             },
+            "model_advisory": {
+                "trust": "untrusted-model-output",
+                "summary": "Worker B resolved a different LUT than worker A.",
+                "evidence_ids": [f"sha256:{'a' * 64}", f"sha256:{'b' * 64}"],
+                "output_sha256": f"sha256:{'9' * 64}",
+            },
+            "finalized_at": "2026-08-23T12:00:01.000Z",
             "plan": _review_plan(),
         }
         return result
@@ -484,6 +601,48 @@ class MalformedReviewWorkflow(ProofWorkflow):
         else:
             plan = cast(dict[str, Any], investigation["plan"])
             plan["commands_sha256"] = f"sha256:{'f' * 64}"
+        return result
+
+
+class MalformedV3Workflow(ProofWorkflow):
+    def __init__(self, visuals: Mapping[str, Mapping[str, str]], *, mutation: str) -> None:
+        super().__init__(visuals)
+        self.mutation = mutation
+
+    def preparation(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        result = super().preparation(request)
+        investigation = cast(dict[str, Any], result["investigation"])
+        evidence = cast(list[dict[str, Any]], investigation["evidence"])
+        invocations = cast(list[dict[str, Any]], investigation["model_invocations"])
+        advisory = cast(dict[str, Any], investigation["model_advisory"])
+        if self.mutation == "mcp-source":
+            cast(dict[str, Any], evidence[0]["source"])["server"] = "unofficial"
+        elif self.mutation == "timestamp":
+            cast(dict[str, Any], evidence[0]["timing"])["retrieved_at"] = "not-a-time"
+        elif self.mutation == "usage":
+            cast(dict[str, Any], invocations[0]["usage"])["input_tokens"] = 49
+        elif self.mutation == "advisory-trust":
+            advisory["trust"] = "trusted"
+        elif self.mutation == "advisory-citation":
+            advisory["evidence_ids"] = [f"sha256:{'f' * 64}"]
+        elif self.mutation == "advisory-digest":
+            advisory["output_sha256"] = f"sha256:{'f' * 64}"
+        elif self.mutation == "invocation-id":
+            invocations[1]["invocation_id"] = invocations[0]["invocation_id"]
+            invocations[1]["derivation_sha256"] = invocations[0]["derivation_sha256"]
+        elif self.mutation == "attempt-sequence":
+            invocations[1]["attempt"] = 2
+        elif self.mutation == "invocation-order":
+            invocations.reverse()
+        elif self.mutation == "narrated-claim":
+            claims = cast(list[dict[str, Any]], investigation["claims"])
+            claims[0]["claim_type"] = "operator-error"
+        elif self.mutation == "invocation-citation":
+            invocations[1]["input_evidence_ids"] = [f"sha256:{'f' * 64}"]
+        elif self.mutation == "future-source-time":
+            cast(dict[str, Any], evidence[0]["timing"])["source_time"] = "2026-08-23T12:00:01.000Z"
+        else:
+            invocations[0]["inventory_sha256"] = None
         return result
 
 
@@ -818,6 +977,21 @@ def test_durable_run_binds_approval_execution_closure_and_receipt(tmp_path: Path
 
     assert started["phase"] == "awaiting-approval"
     assert started["version"] == 2
+    assert started["schema"] == RUN_SCHEMA
+    assert started["timeline"] == [
+        {
+            "run_version": 1,
+            "kind": "run-created",
+            "phase": "preparing",
+            "recorded_at": "2026-08-23T12:00:00.000Z",
+        },
+        {
+            "run_version": 2,
+            "kind": "investigation-completed",
+            "phase": "awaiting-approval",
+            "recorded_at": "2026-08-23T12:00:00.000Z",
+        },
+    ]
     assert started["run_id"] == RUN_IDS[0]
     assert started["incident_id"] == "incident-demo-11111111111111111111111111111111"
     assert started["scenario_id"] == CANONICAL_SCENARIO
@@ -850,6 +1024,15 @@ def test_durable_run_binds_approval_execution_closure_and_receipt(tmp_path: Path
     assert replayed_recovery == recovered
     assert recovered["phase"] == "awaiting-closure"
     assert recovered["version"] == 4
+    recovered_timeline = [
+        (item["run_version"], item["kind"], item["phase"]) for item in recovered["timeline"]
+    ]
+    assert recovered_timeline == [
+        (1, "run-created", "preparing"),
+        (2, "investigation-completed", "awaiting-approval"),
+        (3, "approval-submitted", "executing"),
+        (4, "recovery-verified", "awaiting-closure"),
+    ]
     assert set(recovered["visual_comparison"]) == {
         "expected",
         "observed",
@@ -874,6 +1057,17 @@ def test_durable_run_binds_approval_execution_closure_and_receipt(tmp_path: Path
 
     assert replayed_close == closed
     assert closed["phase"] == "closed"
+    closed_timeline = [
+        (item["run_version"], item["kind"], item["phase"]) for item in closed["timeline"]
+    ]
+    assert closed_timeline == [
+        (1, "run-created", "preparing"),
+        (2, "investigation-completed", "awaiting-approval"),
+        (3, "approval-submitted", "executing"),
+        (4, "recovery-verified", "awaiting-closure"),
+        (5, "closure-submitted", "closing"),
+        (6, "recovery-closed", "closed"),
+    ]
     assert closed["version"] == 6
     assert closed["terminal"] is True
     assert len(recovery.calls) == 1
@@ -945,6 +1139,14 @@ def test_reject_is_bound_idempotent_terminal_and_resettable(tmp_path: Path) -> N
     assert rejected["phase"] == "unresolved"
     assert rejected["version"] == 3
     assert rejected["terminal_reason"] == "plan-rejected-insufficient-evidence"
+    rejected_timeline = [
+        (item["run_version"], item["kind"], item["phase"]) for item in rejected["timeline"]
+    ]
+    assert rejected_timeline == [
+        (1, "run-created", "preparing"),
+        (2, "investigation-completed", "awaiting-approval"),
+        (3, "plan-rejected", "unresolved"),
+    ]
     assert rejected["receipt_href"] == f"/v1/demo/runs/{RUN_IDS[0]}/receipt"
     assert workflow.execute_calls == []
     assert facade.receipt(RUN_IDS[0])["reason_code"] == ("plan-rejected-insufficient-evidence")
@@ -957,6 +1159,7 @@ def test_reject_is_bound_idempotent_terminal_and_resettable(tmp_path: Path) -> N
         },
     )
     assert reset["reset"] is True
+    assert facade.get(RUN_IDS[0])["timeline"] == rejected["timeline"]
 
 
 def test_reject_response_loss_reconciles_from_authoritative_decision(tmp_path: Path) -> None:
@@ -1010,7 +1213,14 @@ def test_new_reject_after_expired_lease_does_not_create_a_decision(tmp_path: Pat
     with pytest.raises(DemoFacadeError, match="demo-run-phase-conflict"):
         facade.reject(RUN_IDS[0], _rejection(started))
 
-    assert facade.get(RUN_IDS[0])["phase"] == "expired"
+    expired = facade.get(RUN_IDS[0])
+    assert expired["phase"] == "expired"
+    assert expired["timeline"][-1] == {
+        "run_version": 3,
+        "kind": "run-expired",
+        "phase": "expired",
+        "recorded_at": "2026-08-23T12:16:00.000Z",
+    }
     assert workflow.reject_calls == []
 
 
@@ -1081,7 +1291,14 @@ def test_approve_and_reject_race_has_one_decision_winner(tmp_path: Path) -> None
     assert len(workflow.execute_calls) == (1 if winners[0][0] == "approve" else 0)
 
 
-def test_persisted_v1_investigation_remains_readable_and_rejectable(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "proof_schema",
+    [INVESTIGATION_PROOF_SCHEMA_V1, INVESTIGATION_PROOF_SCHEMA_V2],
+)
+def test_persisted_legacy_investigation_remains_byte_readable_and_rejectable(
+    tmp_path: Path,
+    proof_schema: str,
+) -> None:
     visual_root = tmp_path / "visuals"
     visual_root.mkdir()
     workflow = ProofWorkflow(_write_visuals(visual_root))
@@ -1098,30 +1315,60 @@ def test_persisted_v1_investigation_remains_readable_and_rejectable(tmp_path: Pa
     }
     preparation = workflow.preparation(preparation_request)
     current = preparation["investigation"]
-    legacy = {
-        key: current[key]
-        for key in (
-            "packet_id",
-            "packet_sha256",
-            "status",
-            "model_invocations",
-            "validators",
-            "scope",
-            "budget_use",
-        )
-    }
-    legacy["schema"] = "colortrace-demo-investigation-proof/v1"
+    shared_fields = (
+        "packet_id",
+        "packet_sha256",
+        "status",
+        "validators",
+        "scope",
+        "budget_use",
+    )
+    if proof_schema == INVESTIGATION_PROOF_SCHEMA_V2:
+        shared_fields += ("adjudication", "comparison", "claims")
+    legacy = {key: current[key] for key in shared_fields}
+    legacy["model_invocations"] = [
+        {
+            key: item[key]
+            for key in (
+                "invocation_id",
+                "turn_kind",
+                "model",
+                "framework",
+                "result_class",
+                "inventory_sha256",
+                "output_sha256",
+                "trace_id",
+            )
+        }
+        for item in current["model_invocations"]
+    ]
+    legacy["schema"] = proof_schema
     legacy["evidence"] = [
         {
             key: value
             for key, value in item.items()
-            if key not in {"display_excerpt", "display_excerpt_truncated"}
+            if key
+            not in (
+                {"source", "timing"}
+                if proof_schema == INVESTIGATION_PROOF_SCHEMA_V2
+                else {
+                    "display_excerpt",
+                    "display_excerpt_truncated",
+                    "source",
+                    "timing",
+                }
+            )
         }
         for item in current["evidence"]
     ]
-    legacy["plan"] = {
-        key: current["plan"][key] for key in ("status", "version", "plan_sha256", "target_sha256")
-    }
+    legacy["plan"] = (
+        current["plan"]
+        if proof_schema == INVESTIGATION_PROOF_SCHEMA_V2
+        else {
+            key: current["plan"][key]
+            for key in ("status", "version", "plan_sha256", "target_sha256")
+        }
+    )
     preparation["investigation"] = legacy
     start_request = _start_body()
     store.create(
@@ -1139,6 +1386,13 @@ def test_persisted_v1_investigation_remains_readable_and_rejectable(tmp_path: Pa
         now=clock(),
     )
     store.complete_preparation(RUN_IDS[0], preparation, now=clock())
+    with sqlite3.connect(tmp_path / "demo.sqlite3") as connection:
+        before = connection.execute(
+            "SELECT proof_document, proof_sha256 FROM demo_proofs "
+            "WHERE run_id = ? AND stage = 'investigation'",
+            (RUN_IDS[0],),
+        ).fetchone()
+    assert before is not None
 
     facade = DemoFacade(
         store=store,
@@ -1152,13 +1406,60 @@ def test_persisted_v1_investigation_remains_readable_and_rejectable(tmp_path: Pa
     )
     stored = facade.get(RUN_IDS[0])
 
-    assert stored["investigation"]["schema"] == "colortrace-demo-investigation-proof/v1"
+    assert stored["schema"] == RUN_SCHEMA_V1
+    assert "timeline" not in stored
+    assert stored["investigation"]["schema"] == proof_schema
     rejected = facade.reject(
         RUN_IDS[0],
         _rejection({**stored, "approval_nonce": NONCE}),
     )
+    assert rejected["schema"] == RUN_SCHEMA_V1
+    assert "timeline" not in rejected
     assert rejected["phase"] == "unresolved"
     assert workflow.execute_calls == []
+    with sqlite3.connect(tmp_path / "demo.sqlite3") as connection:
+        after = connection.execute(
+            "SELECT proof_document, proof_sha256 FROM demo_proofs "
+            "WHERE run_id = ? AND stage = 'investigation'",
+            (RUN_IDS[0],),
+        ).fetchone()
+    assert after == before
+
+
+def test_completed_legacy_run_v1_operation_replays_byte_for_byte(tmp_path: Path) -> None:
+    facade, _workflow, _recovery, _clock, _root = _facade(tmp_path)
+    started = _start(facade)
+    approval = _approval(started)
+    recovered = facade.approve(RUN_IDS[0], approval)
+    legacy = {key: value for key, value in recovered.items() if key != "timeline"}
+    legacy["schema"] = RUN_SCHEMA_V1
+    encoded = canonical_json_bytes(legacy)
+    with sqlite3.connect(tmp_path / "demo.sqlite3") as connection:
+        trigger = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+            "AND name = 'demo_operations_valid_transition'"
+        ).fetchone()
+        assert trigger is not None and isinstance(trigger[0], str)
+        connection.execute("DROP TRIGGER demo_operations_valid_transition")
+        connection.execute(
+            "UPDATE demo_operations SET result_document = ? "
+            "WHERE run_id = ? AND operation = 'approve'",
+            (encoded, RUN_IDS[0]),
+        )
+        connection.execute(trigger[0])
+
+    replay = facade.approve(RUN_IDS[0], approval)
+
+    assert replay == legacy
+    assert replay["schema"] == RUN_SCHEMA_V1
+    assert "timeline" not in replay
+    with sqlite3.connect(tmp_path / "demo.sqlite3") as connection:
+        stored = connection.execute(
+            "SELECT result_document FROM demo_operations "
+            "WHERE run_id = ? AND operation = 'approve'",
+            (RUN_IDS[0],),
+        ).fetchone()
+    assert stored is not None and stored[0] == encoded
 
 
 @pytest.mark.parametrize(
@@ -1286,7 +1587,10 @@ def test_proofless_preparation_is_rejected_and_terminalized(tmp_path: Path) -> N
     with pytest.raises(DemoFacadeError, match="demo-preparation-invalid"):
         _start(facade)
 
-    assert facade.get(RUN_IDS[0])["phase"] == "unresolved"
+    unresolved = facade.get(RUN_IDS[0])
+    assert unresolved["phase"] == "unresolved"
+    assert unresolved["timeline"][-1]["kind"] == "run-unresolved"
+    assert unresolved["timeline"][-1]["run_version"] == 2
     assert facade.receipt(RUN_IDS[0])["proofs"] == []
     with pytest.raises(DemoFacadeError, match="demo-reset-required") as conflict:
         _start(
@@ -1326,6 +1630,39 @@ def test_preparation_rejects_unsafe_or_unbound_review_content(
     visual_root = tmp_path / "visuals"
     visual_root.mkdir()
     workflow = MalformedReviewWorkflow(_write_visuals(visual_root), mutation=mutation)
+    facade, _workflow, _recovery, _clock, _root = _facade(tmp_path, workflow=workflow)
+
+    with pytest.raises(DemoFacadeError, match="demo-investigation-proof-invalid"):
+        _start(facade)
+
+    assert workflow.execute_calls == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "mcp-source",
+        "timestamp",
+        "usage",
+        "advisory-trust",
+        "advisory-citation",
+        "advisory-digest",
+        "invocation-id",
+        "attempt-sequence",
+        "invocation-order",
+        "narrated-claim",
+        "invocation-citation",
+        "future-source-time",
+        "missing-inventory",
+    ],
+)
+def test_preparation_rejects_malformed_v3_provenance_and_usage(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    visual_root = tmp_path / "visuals"
+    visual_root.mkdir()
+    workflow = MalformedV3Workflow(_write_visuals(visual_root), mutation=mutation)
     facade, _workflow, _recovery, _clock, _root = _facade(tmp_path, workflow=workflow)
 
     with pytest.raises(DemoFacadeError, match="demo-investigation-proof-invalid"):
@@ -2008,6 +2345,34 @@ class IncidentService:
         raise AssertionError(incident_id)
 
 
+def test_preview_is_run_free_and_does_not_touch_stateful_dependencies(tmp_path: Path) -> None:
+    facade, workflow, _recovery, _clock, _root = _facade(tmp_path)
+    cast(Any, facade)._store = object()
+    cast(Any, facade)._clock = lambda: (_ for _ in ()).throw(AssertionError("clock touched"))
+
+    preview = facade.preview()
+    visual = facade.preview_visual("expected")
+
+    assert set(preview) == {
+        "schema",
+        "scenario_id",
+        "source_commit",
+        "build_sha256",
+        "comparison",
+        "visual_comparison",
+    }
+    assert preview["schema"] == SCENARIO_PREVIEW_SCHEMA
+    assert preview["scenario_id"] == CANONICAL_SCENARIO
+    assert preview["source_commit"] == SOURCE_COMMIT
+    assert workflow.preview_calls == 1
+    assert visual.content == _png("expected")
+    assert workflow.prepare_calls == []
+    assert workflow.execute_calls == []
+    assert workflow.reconcile_calls == []
+    with pytest.raises(DemoFacadeError, match="demo-visual-not-found"):
+        facade.preview_visual("recovered")
+
+
 def test_runtime_starts_worker_before_reconciling_persisted_execution(
     tmp_path: Path,
 ) -> None:
@@ -2092,6 +2457,22 @@ def test_demo_routes_enforce_json_origin_and_bounded_visual_kinds(tmp_path: Path
     client = TestClient(app)
     fresh_client = TestClient(app)
     body = _start_body()
+
+    preview = client.get("/v1/demo")
+    preview_visual = client.get("/v1/demo/visuals/expected")
+    missing_preview_visual = client.get("/v1/demo/visuals/recovered")
+
+    assert preview.status_code == 200
+    assert preview.json()["schema"] == SCENARIO_PREVIEW_SCHEMA
+    assert preview.headers["cache-control"] == "no-store"
+    assert preview_visual.status_code == 200
+    assert preview_visual.content == _png("expected")
+    assert (
+        preview_visual.headers["x-content-sha256"]
+        == (preview.json()["visual_comparison"]["expected"]["sha256"])
+    )
+    assert preview_visual.headers["cache-control"] == "no-store"
+    assert missing_preview_visual.status_code == 404
 
     denied = client.post(
         "/v1/demo/runs",

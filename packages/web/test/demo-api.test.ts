@@ -17,11 +17,14 @@ import {
   demoRejectedRun,
   demoReset,
   demoRun,
+  demoRunV1,
   executionProof,
   investigationProof,
   investigationProofV1,
+  investigationProofV2,
   NONCE,
   RUN_ID,
+  scenarioPreview,
   sealDemoReceipt,
   VISUAL_DIGESTS,
 } from "./demo-fixtures.ts";
@@ -67,7 +70,7 @@ describe("demo API adapter", () => {
       "sha256:a5ff48f8c5356c7c6dc51fb9b3578fcc63e786cde2a3db789b2d11daf9e660bd",
     );
     expect(demoReceipt().receipt_sha256).toBe(
-      "sha256:c1799cc1e183630e715c02f494fa8db6e73422a97802073cc5ff7b4eaf6e7ee0",
+      "sha256:62f764fbcd42cde727edce70a4dec92d304e167a38b9e651b2ab8999a6486187",
     );
   });
 
@@ -98,6 +101,73 @@ describe("demo API adapter", () => {
     });
   });
 
+  it("loads and verifies the authored comparison without starting a run", async () => {
+    const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1]);
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      expect(init?.method).toBe("GET");
+      if (url === "https://colortrace.example/v1/demo") {
+        return new Response(JSON.stringify(scenarioPreview()), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(bytes, {
+        headers: {
+          "Content-Type": "image/png",
+          "X-Content-SHA256": VISUAL_DIGESTS.expected,
+        },
+      });
+    });
+    const adapter = createDemoAdapter({
+      baseUrl: "https://colortrace.example/workspace",
+      fetch: fetchMock,
+      createObjectUrl: () => "blob:preview",
+      sha256: async () => VISUAL_DIGESTS.expected,
+    });
+
+    const preview = await adapter.preview();
+    const visual = await adapter.previewVisual(
+      "expected",
+      preview.visual_comparison.expected.sha256,
+    );
+
+    expect(preview.comparison.renders).toHaveLength(2);
+    expect(visual).toEqual({
+      kind: "expected",
+      sha256: VISUAL_DIGESTS.expected,
+      src: "blob:preview",
+    });
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+      "https://colortrace.example/v1/demo",
+      "https://colortrace.example/v1/demo/visuals/expected",
+    ]);
+    expect(fetchMock.mock.calls.every(([, init]) => init?.method === "GET")).toBe(true);
+  });
+
+  it("rejects a preview with extra fields or noncanonical visual links", async () => {
+    const preview = scenarioPreview();
+    const responses = [
+      { ...preview, run_id: RUN_ID },
+      {
+        ...preview,
+        visual_comparison: {
+          ...preview.visual_comparison,
+          diff: { ...preview.visual_comparison.diff, href: "/v1/demo/visuals/expected" },
+        },
+      },
+    ];
+    const adapter = createDemoAdapter({
+      baseUrl: "https://colortrace.example",
+      fetch: async () =>
+        new Response(JSON.stringify(responses.shift()), {
+          headers: { "Content-Type": "application/json" },
+        }),
+    });
+
+    await expect(adapter.preview()).rejects.toMatchObject({ code: "demo-response-invalid" });
+    await expect(adapter.preview()).rejects.toMatchObject({ code: "demo-response-invalid" });
+  });
+
   it("rejects a start response that does not return the client nonce", async () => {
     const adapter = createDemoAdapter({
       baseUrl: "https://colortrace.example",
@@ -113,8 +183,8 @@ describe("demo API adapter", () => {
     ).rejects.toMatchObject({ code: "demo-response-invalid" });
   });
 
-  it("reads stored v1 proofs but requires the v2 review projection from a new run", async () => {
-    const legacy = runResponse({
+  it("reads stored v1 proofs but requires the v3 review projection from a new run", async () => {
+    const legacy = demoRunV1("awaiting-approval", {
       approval_nonce: undefined,
       investigation: investigationProofV1(),
     });
@@ -138,7 +208,7 @@ describe("demo API adapter", () => {
 
   it("reads a stored terminal v1 run without applying v2 review invariants", async () => {
     const investigation = investigationProofV1();
-    const legacy = demoRun("closed", {
+    const legacy = demoRunV1("closed", {
       investigation: {
         ...investigation,
         plan: { ...investigation.plan, status: "approved" },
@@ -162,9 +232,35 @@ describe("demo API adapter", () => {
     });
   });
 
+  it("continues to read a stored v2 investigation inside a legacy run", async () => {
+    const storedInvestigation = investigationProofV2();
+    const legacy = demoRunV1("awaiting-approval", {
+      approval_nonce: undefined,
+      investigation: {
+        ...storedInvestigation,
+        claims: storedInvestigation.claims.slice(0, 2),
+      },
+    });
+    const adapter = createDemoAdapter({
+      baseUrl: "https://colortrace.example",
+      fetch: async () =>
+        new Response(JSON.stringify(legacy), {
+          headers: { "Content-Type": "application/json" },
+        }),
+    });
+
+    await expect(adapter.get(RUN_ID)).resolves.toMatchObject({
+      schema: "colortrace-demo-run/v1",
+      investigation: {
+        schema: "colortrace-demo-investigation-proof/v2",
+        claims: [{ claim_type: "causal-resource" }, { claim_type: "nominal-config" }],
+      },
+    });
+  });
+
   it("rejects a stored v1 run whose approval and investigation bindings diverge", async () => {
     const investigation = investigationProofV1();
-    const legacy = runResponse({
+    const legacy = demoRunV1("awaiting-approval", {
       approval_nonce: undefined,
       investigation: {
         ...investigation,
@@ -182,7 +278,7 @@ describe("demo API adapter", () => {
     await expect(adapter.get(RUN_ID)).rejects.toMatchObject({ code: "demo-response-invalid" });
   });
 
-  it("rejects malformed or unsafe v2 review projections", async () => {
+  it("rejects malformed or unsafe v3 review projections", async () => {
     const response = runResponse();
     const investigation = investigationProof();
     const malformed = [
@@ -254,6 +350,123 @@ describe("demo API adapter", () => {
       "bad-validator-relation",
       "bad-command-digest",
     ]) {
+      await expect(
+        adapter.start({ approval_nonce: NONCE, idempotency_key: idempotencyKey }),
+      ).rejects.toMatchObject({ code: "demo-response-invalid" });
+    }
+  });
+
+  it("rejects altered MCP provenance, advisory trust, model usage, and evidence timing", async () => {
+    const response = runResponse();
+    const investigation = investigationProof();
+    const malformed = [
+      {
+        ...investigation,
+        evidence: investigation.evidence.map((item, index) =>
+          index === 0 ? { ...item, source: { ...item.source, server: "lookalike-grafana" } } : item,
+        ),
+      },
+      {
+        ...investigation,
+        evidence: investigation.evidence.map((item, index) =>
+          index === 0
+            ? {
+                ...item,
+                timing: { ...item.timing, retrieved_at: "2026-08-23T12:00:01Z" },
+              }
+            : item,
+        ),
+      },
+      {
+        ...investigation,
+        model_advisory: { ...investigation.model_advisory, trust: "authoritative" },
+      },
+      {
+        ...investigation,
+        model_invocations: investigation.model_invocations.map((item, index) =>
+          index === 0 ? { ...item, usage: { ...item.usage, unobserved_model_calls: 1 } } : item,
+        ),
+      },
+    ];
+    const adapter = createDemoAdapter({
+      baseUrl: "https://colortrace.example",
+      fetch: async () =>
+        new Response(JSON.stringify({ ...response, investigation: malformed.shift() }), {
+          headers: { "Content-Type": "application/json" },
+          status: 201,
+        }),
+    });
+
+    for (const idempotencyKey of ["bad-source", "bad-time", "bad-trust", "bad-usage"]) {
+      await expect(
+        adapter.start({ approval_nonce: NONCE, idempotency_key: idempotencyKey }),
+      ).rejects.toMatchObject({ code: "demo-response-invalid" });
+    }
+  });
+
+  it("rejects a fresh v3 proof with flipped, missing, or misreasoned canonical claims", async () => {
+    const response = runResponse();
+    const investigation = investigationProof();
+    const malformed = [
+      {
+        ...investigation,
+        claims: investigation.claims.map((claim) =>
+          claim.claim_type === "nominal-config" ? { ...claim, state: "confirmed" } : claim,
+        ),
+      },
+      {
+        ...investigation,
+        claims: investigation.claims.filter((claim) => claim.claim_type !== "distractor"),
+      },
+      {
+        ...investigation,
+        claims: investigation.claims.map((claim) =>
+          claim.claim_type === "worker-alone"
+            ? { ...claim, reason_codes: ["insufficient-evidence"] }
+            : claim,
+        ),
+      },
+    ];
+    const adapter = createDemoAdapter({
+      baseUrl: "https://colortrace.example",
+      fetch: async () =>
+        new Response(JSON.stringify({ ...response, investigation: malformed.shift() }), {
+          headers: { "Content-Type": "application/json" },
+          status: 201,
+        }),
+    });
+
+    for (const idempotencyKey of ["flipped-claim", "missing-claim", "wrong-claim-reason"]) {
+      await expect(
+        adapter.start({ approval_nonce: NONCE, idempotency_key: idempotencyKey }),
+      ).rejects.toMatchObject({ code: "demo-response-invalid" });
+    }
+  });
+
+  it("requires a contiguous, causal server timeline on run v2", async () => {
+    const response = runResponse();
+    if (response.schema !== "colortrace-demo-run/v2") throw new Error("missing timeline fixture");
+    const malformed = [
+      response.timeline.slice(1),
+      response.timeline.map((item, index) => (index === 1 ? { ...item, run_version: 3 } : item)),
+      response.timeline.map((item, index) =>
+        index === 1 ? { ...item, kind: "approval-submitted" } : item,
+      ),
+      response.timeline.map((item, index) =>
+        index === 1 ? { ...item, recorded_at: "2026-08-23T11:59:59.000Z" } : item,
+      ),
+      response.timeline.map((item, index) => (index === 0 ? { ...item, synthetic: true } : item)),
+    ];
+    const adapter = createDemoAdapter({
+      baseUrl: "https://colortrace.example",
+      fetch: async () =>
+        new Response(JSON.stringify({ ...response, timeline: malformed.shift() }), {
+          headers: { "Content-Type": "application/json" },
+          status: 201,
+        }),
+    });
+
+    for (const idempotencyKey of ["gap", "version", "causal", "clock", "extra"]) {
       await expect(
         adapter.start({ approval_nonce: NONCE, idempotency_key: idempotencyKey }),
       ).rejects.toMatchObject({ code: "demo-response-invalid" });

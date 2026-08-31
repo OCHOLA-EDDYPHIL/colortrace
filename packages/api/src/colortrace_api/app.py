@@ -519,6 +519,19 @@ def create_app(
             "principal_kind": principal.principal_kind,
         }
 
+    @app.get("/v1/demo")
+    def get_demo_preview() -> dict[str, Any]:
+        return demo_api().preview()
+
+    @app.get("/v1/demo/visuals/{kind}")
+    def get_demo_preview_visual(kind: str) -> Response:
+        visual = demo_api().preview_visual(kind)
+        return Response(
+            content=visual.content,
+            media_type=visual.media_type,
+            headers={"X-Content-SHA256": visual.sha256},
+        )
+
     @app.post("/v1/demo/runs", status_code=201)
     def start_demo_run(body: dict[str, Any] = demo_body_dependency) -> dict[str, Any]:
         return demo_api().start(body)
