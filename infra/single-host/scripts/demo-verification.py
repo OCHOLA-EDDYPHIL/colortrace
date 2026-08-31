@@ -15,7 +15,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
-RUN_SCHEMA = "colortrace-demo-run/v1"
+RUN_SCHEMA_V1 = "colortrace-demo-run/v1"
+RUN_SCHEMA_V2 = "colortrace-demo-run/v2"
+RUN_SCHEMA = RUN_SCHEMA_V2
 RUN_REQUEST_SCHEMA = "colortrace-demo-run-request/v2"
 APPROVAL_REQUEST_SCHEMA = "colortrace-demo-approval-request/v1"
 REJECTION_REQUEST_SCHEMA = "colortrace-demo-rejection-request/v1"
@@ -25,6 +27,10 @@ SCENARIO_ID = "ct-shadowed-lut-v1:canonical"
 APPROVAL_PHRASE = "APPROVE_COLORTRACE_SIMULATOR_ACTION"
 INVESTIGATION_PROOF_SCHEMA_V1 = "colortrace-demo-investigation-proof/v1"
 INVESTIGATION_PROOF_SCHEMA_V2 = "colortrace-demo-investigation-proof/v2"
+INVESTIGATION_PROOF_SCHEMA_V3 = "colortrace-demo-investigation-proof/v3"
+SCENARIO_PREVIEW_SCHEMA = "colortrace-demo-scenario-preview/v1"
+PREVIEW_VERIFICATION_SCHEMA = "colortrace-demo-preview-verification/v1"
+FIRST_START_VERIFICATION_SCHEMA = "colortrace-demo-first-start-verification/v1"
 REJECTION_REASON = "insufficient-evidence"
 REJECTION_CODES = {
     "unsafe-scope",
@@ -44,7 +50,7 @@ CHECK_NAMES = [
 SOURCE_COMPONENTS = ("runtime", "web", "caddy", "grafana", "loki", "tempo")
 ALL_COMPONENTS = (*SOURCE_COMPONENTS[:5], "prometheus", SOURCE_COMPONENTS[5])
 VISUAL_KINDS = ("diff", "expected", "observed", "recovered")
-RUN_BASE_FIELDS = {
+RUN_BASE_FIELDS_V1 = {
     "schema",
     "run_id",
     "incident_id",
@@ -63,9 +69,11 @@ RUN_BASE_FIELDS = {
     "receipt_href",
     "reset",
 }
+RUN_BASE_FIELDS = RUN_BASE_FIELDS_V1 | {"timeline"}
 RUN_ID = re.compile(r"^demo-run-[0-9a-f]{32}$")
 INCIDENT_ID = re.compile(r"^incident-demo-[0-9a-f]{32}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+RAW_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
 RESET_OPERATION_ID = re.compile(r"^demo-reset:[0-9a-f]{64}$")
@@ -251,6 +259,94 @@ def _validate_projection_identity(value: dict[str, Any]) -> None:
     ):
         raise VerificationError("run-identity-invalid")
     _require_digest(value.get("build_sha256"), "run-build-digest-invalid")
+    _validate_timeline(value.get("timeline"), run=value)
+
+
+def _validate_stored_projection_identity(value: dict[str, Any]) -> None:
+    schema = value.get("schema")
+    if schema == RUN_SCHEMA_V2:
+        _validate_projection_identity(value)
+        return
+    if schema != RUN_SCHEMA_V1:
+        raise VerificationError("run-identity-invalid")
+    if (
+        not isinstance(value.get("run_id"), str)
+        or RUN_ID.fullmatch(value["run_id"]) is None
+        or not isinstance(value.get("incident_id"), str)
+        or INCIDENT_ID.fullmatch(value["incident_id"]) is None
+        or value.get("scenario_id") != SCENARIO_ID
+        or not isinstance(value.get("source_commit"), str)
+        or COMMIT.fullmatch(value["source_commit"]) is None
+        or not isinstance(value.get("version"), int)
+        or isinstance(value.get("version"), bool)
+        or value["version"] < 1
+        or value.get("poll")
+        != {
+            "href": f"/v1/demo/runs/{value['run_id']}",
+            "after_milliseconds": 1000,
+        }
+    ):
+        raise VerificationError("run-identity-invalid")
+    _require_digest(value.get("build_sha256"), "run-build-digest-invalid")
+
+
+def _validate_timeline(value: Any, *, run: dict[str, Any]) -> list[dict[str, Any]]:
+    transitions = {
+        "run-created": ("preparing", None),
+        "investigation-completed": ("awaiting-approval", "preparing"),
+        "approval-submitted": ("executing", "awaiting-approval"),
+        "plan-rejected": ("unresolved", "awaiting-approval"),
+        "recovery-verified": ("awaiting-closure", "executing"),
+        "closure-submitted": ("closing", "awaiting-closure"),
+        "recovery-closed": ("closed", "closing"),
+        "run-unresolved": ("unresolved", None),
+        "run-expired": ("expired", None),
+    }
+    if (
+        not isinstance(value, list)
+        or not value
+        or len(value) != run.get("version")
+        or len(value) > 16
+    ):
+        raise VerificationError("run-timeline-invalid")
+    previous_phase: str | None = None
+    previous_time: str | None = None
+    for index, raw in enumerate(value, start=1):
+        event = _require_fields(
+            raw,
+            {"run_version", "kind", "phase", "recorded_at"},
+            "run-timeline-invalid",
+        )
+        kind = event.get("kind")
+        if kind not in transitions:
+            raise VerificationError("run-timeline-invalid")
+        phase, required_previous = transitions[cast(str, kind)]
+        recorded_at = _require_timestamp(event.get("recorded_at"), "run-timeline-invalid")
+        if (
+            event.get("run_version") != index
+            or event.get("phase") != phase
+            or (index == 1 and kind != "run-created")
+            or (index > 1 and kind == "run-created")
+            or (required_previous is not None and previous_phase != required_previous)
+            or (
+                kind in {"run-unresolved", "run-expired"}
+                and previous_phase
+                not in {
+                    "preparing",
+                    "awaiting-approval",
+                    "executing",
+                    "awaiting-closure",
+                    "closing",
+                }
+            )
+            or (previous_time is not None and recorded_at < previous_time)
+        ):
+            raise VerificationError("run-timeline-invalid")
+        previous_phase = phase
+        previous_time = recorded_at
+    if value[-1]["phase"] != run.get("phase"):
+        raise VerificationError("run-timeline-invalid")
+    return cast(list[dict[str, Any]], value)
 
 
 def _validate_visual_comparison(
@@ -294,6 +390,196 @@ def _validate_visual_comparison(
                 raise VerificationError("visual-assets-invalid")
         expected_receipt.append({"kind": kind, "sha256": digest})
     return expected_receipt
+
+
+def _validate_render_comparison(value: Any, *, code: str) -> dict[str, Any]:
+    comparison = _require_fields(
+        value,
+        {"renders", "nominal_config_match", "resolved_lut_match"},
+        code,
+    )
+    renders = comparison.get("renders")
+    render_fields = {
+        "job_id",
+        "worker_id",
+        "status",
+        "nominal_config_sha256",
+        "resolved_lut_sha256",
+    }
+    expected_workers = {"job-a-02": "A", "job-b-02": "B"}
+    if (
+        comparison.get("nominal_config_match") is not True
+        or comparison.get("resolved_lut_match") is not False
+        or not isinstance(renders, list)
+        or len(renders) != 2
+        or any(
+            not isinstance(item, dict)
+            or set(item) != render_fields
+            or item.get("status") != "succeeded"
+            or item.get("job_id") not in expected_workers
+            or item.get("worker_id") != expected_workers.get(item.get("job_id"))
+            or DIGEST.fullmatch(str(item.get("nominal_config_sha256"))) is None
+            or DIGEST.fullmatch(str(item.get("resolved_lut_sha256"))) is None
+            for item in renders
+        )
+        or {item["job_id"] for item in renders} != set(expected_workers)
+        or len({item["nominal_config_sha256"] for item in renders}) != 1
+        or len({item["resolved_lut_sha256"] for item in renders}) != 2
+    ):
+        raise VerificationError(code)
+    return comparison
+
+
+def verify_preview(arguments: argparse.Namespace) -> None:
+    preview = _load(arguments.preview.resolve(strict=True))
+    binding = _load(arguments.artifact.resolve(strict=True))
+    visual_root = arguments.visuals.resolve(strict=True)
+    _validate_artifact(binding)
+    _require_fields(
+        preview,
+        {
+            "schema",
+            "scenario_id",
+            "source_commit",
+            "build_sha256",
+            "comparison",
+            "visual_comparison",
+        },
+        "scenario-preview-invalid",
+    )
+    if (
+        preview.get("schema") != SCENARIO_PREVIEW_SCHEMA
+        or preview.get("scenario_id") != SCENARIO_ID
+        or preview.get("source_commit") != binding["source"]["commit"]
+    ):
+        raise VerificationError("scenario-preview-invalid")
+    build_sha256 = _require_digest(preview.get("build_sha256"), "scenario-preview-invalid")
+    comparison = _validate_render_comparison(
+        preview.get("comparison"), code="scenario-preview-invalid"
+    )
+    visuals = _validate_preview_visuals(preview.get("visual_comparison"), visual_root=visual_root)
+    summary = {
+        "schema": PREVIEW_VERIFICATION_SCHEMA,
+        "scenario_id": SCENARIO_ID,
+        "source_commit": binding["source"]["commit"],
+        "build_sha256": build_sha256,
+        "preview_sha256": _document_sha256(preview),
+        "comparison_sha256": _document_sha256(comparison),
+        "visuals": visuals,
+    }
+    if arguments.baseline is not None:
+        baseline = _load(arguments.baseline.resolve(strict=True))
+        if baseline != summary:
+            raise VerificationError("scenario-preview-changed")
+    _atomic_json(arguments.output.resolve(), summary)
+
+
+def _validate_preview_visuals(
+    value: Any,
+    *,
+    visual_root: Path,
+) -> list[dict[str, str]]:
+    required_kinds = {"diff", "expected", "observed"}
+    if not isinstance(value, dict) or set(value) != required_kinds:
+        raise VerificationError("scenario-preview-invalid")
+    if (
+        not visual_root.is_dir()
+        or visual_root.is_symlink()
+        or {path.name for path in visual_root.iterdir()}
+        != {f"{kind}.png" for kind in required_kinds}
+    ):
+        raise VerificationError("scenario-preview-visuals-invalid")
+    visuals: list[dict[str, str]] = []
+    for kind in sorted(required_kinds):
+        descriptor = _require_fields(
+            value[kind],
+            {"href", "sha256", "media_type", "label"},
+            "scenario-preview-invalid",
+        )
+        digest = _require_digest(descriptor.get("sha256"), "scenario-preview-invalid")
+        if descriptor != {
+            "href": f"/v1/demo/visuals/{kind}",
+            "sha256": digest,
+            "media_type": "image/png",
+            "label": "illustrative-authored-fixture",
+        }:
+            raise VerificationError("scenario-preview-invalid")
+        visual_path = visual_root / f"{kind}.png"
+        if (
+            not visual_path.is_file()
+            or visual_path.is_symlink()
+            or _file_sha256(visual_path) != digest
+        ):
+            raise VerificationError("scenario-preview-visuals-invalid")
+        visuals.append({"kind": kind, "sha256": digest})
+    return visuals
+
+
+def verify_first_start(arguments: argparse.Namespace) -> None:
+    request = _load(arguments.request.resolve(strict=True))
+    run = _load(arguments.run.resolve(strict=True))
+    preview_summary_path = arguments.preview_summary.resolve(strict=True)
+    if arguments.http_status != "201":
+        raise VerificationError("first-start-status-invalid")
+    _require_fields(
+        request,
+        {"schema", "scenario_id", "approval_nonce", "idempotency_key"},
+        "first-start-request-invalid",
+    )
+    nonce = request.get("approval_nonce")
+    if (
+        request.get("schema") != RUN_REQUEST_SCHEMA
+        or request.get("scenario_id") != SCENARIO_ID
+        or not isinstance(nonce, str)
+        or re.fullmatch(r"[A-Za-z0-9_-]{32,256}", nonce) is None
+        or not isinstance(request.get("idempotency_key"), str)
+        or re.fullmatch(r"verify:[0-9a-f]{48}", request["idempotency_key"]) is None
+    ):
+        raise VerificationError("first-start-request-invalid")
+    _require_fields(
+        run,
+        RUN_BASE_FIELDS | {"investigation", "approval_nonce"},
+        "first-start-projection-invalid",
+    )
+    _validate_projection_identity(run)
+    if (
+        run.get("phase") != "awaiting-approval"
+        or run.get("version") != 2
+        or run.get("approval_nonce") != nonce
+        or run.get("terminal") is not False
+        or run.get("terminal_reason") is not None
+        or run.get("receipt_href") is not None
+        or run.get("reset") is not False
+        or run.get("recovery") is not None
+    ):
+        raise VerificationError("first-start-projection-invalid")
+    _require_timestamp(run.get("lease_expires_at"), "first-start-projection-invalid")
+    _validate_visual_comparison(
+        run.get("visual_comparison"),
+        run_id=run["run_id"],
+        required_kinds={"diff", "expected", "observed"},
+    )
+    investigation = _validate_investigation(run.get("investigation"))
+    if investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V3:
+        raise VerificationError("first-start-projection-invalid")
+    preview = _validate_preview_summary_binding(
+        preview_summary_path,
+        run=run,
+        investigation=investigation,
+    )
+    if preview is None:  # pragma: no cover - the path is required by argparse
+        raise VerificationError("first-start-preview-invalid")
+    evidence = {
+        "schema": FIRST_START_VERIFICATION_SCHEMA,
+        "http_status": 201,
+        "request_sha256": _document_sha256(request),
+        "response_sha256": _document_sha256(run),
+        "run_id": run["run_id"],
+        "run_schema": RUN_SCHEMA_V2,
+        "run_version": 2,
+        "preview_sha256": preview["preview_sha256"],
+    }
+    _atomic_json(arguments.output.resolve(), evidence)
 
 
 def new_start(arguments: argparse.Namespace) -> None:
@@ -347,7 +633,7 @@ def prepare_approval(arguments: argparse.Namespace) -> None:
     investigation = _validate_investigation(run.get("investigation"))
     plan = investigation["plan"]
     if (
-        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V2
+        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V3
         or plan.get("version") != approval["plan_version"]
         or plan.get("plan_sha256") != approval["plan_sha256"]
         or plan.get("target_sha256") != approval["target_sha256"]
@@ -413,7 +699,7 @@ def prepare_rejection(arguments: argparse.Namespace) -> None:
     investigation = _validate_investigation(run.get("investigation"))
     plan = investigation["plan"]
     if (
-        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V2
+        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V3
         or plan.get("version") != approval["plan_version"]
         or plan.get("plan_sha256") != approval["plan_sha256"]
         or plan.get("target_sha256") != approval["target_sha256"]
@@ -483,7 +769,7 @@ def prepare_closure(arguments: argparse.Namespace) -> None:
     )
     if (
         _validate_investigation(run.get("investigation")).get("schema")
-        != INVESTIGATION_PROOF_SCHEMA_V2
+        != INVESTIGATION_PROOF_SCHEMA_V3
     ):
         raise VerificationError("closure-projection-invalid")
     _validate_execution(run.get("execution"))
@@ -520,12 +806,13 @@ def conflict_run_id(arguments: argparse.Namespace) -> None:
 
 def prepare_reset(arguments: argparse.Namespace) -> None:
     run = _load(arguments.run.resolve(strict=True))
-    if not RUN_BASE_FIELDS <= set(run) or not set(run) - RUN_BASE_FIELDS <= {
+    base_fields = RUN_BASE_FIELDS if run.get("schema") == RUN_SCHEMA_V2 else RUN_BASE_FIELDS_V1
+    if not base_fields <= set(run) or not set(run) - base_fields <= {
         "investigation",
         "execution",
     }:
         raise VerificationError("reset-projection-invalid")
-    _validate_projection_identity(run)
+    _validate_stored_projection_identity(run)
     if run.get("terminal") is not True or run.get("phase") not in {
         "closed",
         "unresolved",
@@ -1296,12 +1583,345 @@ def _validate_investigation_v2(value: Any) -> dict[str, Any]:
     return investigation
 
 
+def _nullable_timestamp(value: Any, *, code: str) -> str | None:
+    if value is None:
+        return None
+    return _require_timestamp(value, code)
+
+
+def _validate_investigation_v3(value: Any) -> dict[str, Any]:
+    fields = {
+        "schema",
+        "packet_id",
+        "packet_sha256",
+        "status",
+        "adjudication",
+        "model_invocations",
+        "comparison",
+        "claims",
+        "evidence",
+        "validators",
+        "scope",
+        "budget_use",
+        "model_advisory",
+        "finalized_at",
+        "plan",
+    }
+    investigation = _require_fields(value, fields, "investigation-proof-invalid")
+    raw_invocations = investigation.get("model_invocations")
+    raw_evidence = investigation.get("evidence")
+    if (
+        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V3
+        or not isinstance(raw_invocations, list)
+        or not 2 <= len(raw_invocations) <= 6
+        or not isinstance(raw_evidence, list)
+        or len(raw_evidence) != 4
+    ):
+        raise VerificationError("investigation-proof-invalid")
+
+    invocation_fields = {
+        "invocation_id",
+        "turn_kind",
+        "attempt",
+        "model",
+        "location",
+        "framework",
+        "framework_version",
+        "client_version",
+        "prompt_version",
+        "policy_version",
+        "result_class",
+        "inventory_sha256",
+        "normalized_input_sha256",
+        "input_evidence_ids",
+        "output_sha256",
+        "latency_ms",
+        "usage",
+        "error_code",
+        "trace_id",
+        "derivation_sha256",
+    }
+    if any(
+        not isinstance(item, dict) or not _is_identifier(item.get("evidence_id"))
+        for item in raw_evidence
+    ):
+        raise VerificationError("investigation-proof-invalid")
+    evidence_ids = {cast(str, item["evidence_id"]) for item in raw_evidence}
+    accepted: dict[str, dict[str, Any]] = {}
+    previous_turn: str | None = None
+    attempts: dict[str, int] = {}
+    invocation_ids: set[str] = set()
+    observed_input_tokens = 0
+    observed_output_tokens = 0
+    model_calls = 0
+    for raw in raw_invocations:
+        invocation = _require_fields(raw, invocation_fields, "investigation-proof-invalid")
+        turn = invocation.get("turn_kind")
+        attempt = invocation.get("attempt")
+        result_class = invocation.get("result_class")
+        usage = _require_fields(
+            invocation.get("usage"),
+            {"input_tokens", "output_tokens", "model_calls", "unobserved_model_calls"},
+            "investigation-proof-invalid",
+        )
+        input_ids = invocation.get("input_evidence_ids")
+        invocation_id = invocation.get("invocation_id")
+        derivation_sha256 = invocation.get("derivation_sha256")
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+        error_code = invocation.get("error_code")
+        output_sha256 = invocation.get("output_sha256")
+        if turn not in {"evidence-selection", "response-drafting"}:
+            raise VerificationError("investigation-proof-invalid")
+        expected_attempt = attempts.get(cast(str, turn), 0) + 1
+        attempts[cast(str, turn)] = expected_attempt
+        if (
+            not isinstance(attempt, int)
+            or isinstance(attempt, bool)
+            or attempt != expected_attempt
+            or (previous_turn == "response-drafting" and turn == "evidence-selection")
+            or invocation.get("model") != MODEL["model"]
+            or invocation.get("location") != MODEL["location"]
+            or invocation.get("framework") != MODEL["framework"]
+            or invocation.get("framework_version") != MODEL["versions"]["google-adk"]
+            or invocation.get("client_version") != MODEL["versions"]["google-genai"]
+            or invocation.get("prompt_version") != f"{turn}/v1"
+            or invocation.get("policy_version") != "bounded-investigation/v1"
+            or result_class not in {"accepted", "budget-rejected", "failed", "invalid"}
+            or not isinstance(invocation_id, str)
+            or re.fullmatch(r"model-invocation:[0-9a-f]{64}", invocation_id) is None
+            or invocation_id in invocation_ids
+            or not isinstance(derivation_sha256, str)
+            or DIGEST.fullmatch(derivation_sha256) is None
+            or invocation_id != f"model-invocation:{derivation_sha256.removeprefix('sha256:')}"
+            or DIGEST.fullmatch(str(invocation.get("inventory_sha256"))) is None
+            or DIGEST.fullmatch(str(invocation.get("normalized_input_sha256"))) is None
+            or not isinstance(input_ids, list)
+            or len(input_ids) > 256
+            or any(not _is_identifier(item) or item not in evidence_ids for item in input_ids)
+            or len(set(cast(list[str], input_ids))) != len(input_ids)
+            or not _bounded_integer(invocation.get("latency_ms"), maximum=120_000)
+            or not _bounded_integer(usage.get("model_calls"), maximum=6)
+            or usage["model_calls"] == 0
+            or not _bounded_integer(usage.get("unobserved_model_calls"), maximum=6)
+            or usage["unobserved_model_calls"] > usage["model_calls"]
+            or (input_tokens is None) != (output_tokens is None)
+            or (
+                input_tokens is not None
+                and (
+                    not _bounded_integer(input_tokens, maximum=32_000)
+                    or not _bounded_integer(output_tokens, maximum=4_096)
+                )
+            )
+            or (
+                error_code is not None
+                and re.fullmatch(r"[a-z][a-z0-9_]{1,63}", str(error_code)) is None
+            )
+            or (output_sha256 is not None and DIGEST.fullmatch(str(output_sha256)) is None)
+            or re.fullmatch(r"[0-9a-f]{32}", str(invocation.get("trace_id"))) is None
+        ):
+            raise VerificationError("investigation-proof-invalid")
+        if result_class == "accepted":
+            if (
+                cast(str, turn) in accepted
+                or error_code is not None
+                or output_sha256 is None
+                or input_tokens is None
+                or usage["unobserved_model_calls"] != 0
+            ):
+                raise VerificationError("investigation-proof-invalid")
+            accepted[cast(str, turn)] = invocation
+        elif error_code is None:
+            raise VerificationError("investigation-proof-invalid")
+        invocation_ids.add(cast(str, invocation_id))
+        observed_input_tokens += 0 if input_tokens is None else cast(int, input_tokens)
+        observed_output_tokens += 0 if output_tokens is None else cast(int, output_tokens)
+        model_calls += usage["model_calls"]
+        previous_turn = cast(str, turn)
+    if set(accepted) != {"evidence-selection", "response-drafting"}:
+        raise VerificationError("investigation-proof-invalid")
+
+    evidence_fields = {
+        "evidence_id",
+        "query_key",
+        "tool",
+        "inventory_sha256",
+        "content_sha256",
+        "freshness",
+        "display_excerpt",
+        "display_excerpt_truncated",
+        "source",
+        "timing",
+    }
+    source_fields = {
+        "kind",
+        "server",
+        "server_version",
+        "server_commit",
+        "binary_sha256",
+        "mcp_sdk_version",
+        "mcp_protocol_version",
+        "tool",
+        "tool_input_schema_sha256",
+        "tool_annotations_sha256",
+        "inventory_version",
+    }
+    latest_retrieval: str | None = None
+    tool_bindings: dict[str, tuple[str, str]] = {}
+    for raw in raw_evidence:
+        evidence = _require_fields(raw, evidence_fields, "investigation-proof-invalid")
+        source = _require_fields(
+            evidence.get("source"), source_fields, "investigation-proof-invalid"
+        )
+        timing = _require_fields(
+            evidence.get("timing"),
+            {"source_time", "event_time", "retrieved_at"},
+            "investigation-proof-invalid",
+        )
+        retrieved_at = _require_timestamp(timing.get("retrieved_at"), "investigation-proof-invalid")
+        source_time = _nullable_timestamp(
+            timing.get("source_time"), code="investigation-proof-invalid"
+        )
+        event_time = _nullable_timestamp(
+            timing.get("event_time"), code="investigation-proof-invalid"
+        )
+        input_schema_sha256 = source.get("tool_input_schema_sha256")
+        annotations_sha256 = source.get("tool_annotations_sha256")
+        tool = evidence.get("tool")
+        if (
+            source.get("kind") != "grafana-mcp"
+            or source.get("server") != "mcp-grafana"
+            or source.get("server_version") != MCP_CATALOG_IDENTITY["server_version"]
+            or source.get("server_commit") != MCP_CATALOG_IDENTITY["server_commit"]
+            or source.get("binary_sha256") != MCP_CATALOG_IDENTITY["binary_sha256"]
+            or source.get("mcp_sdk_version") != MCP_CATALOG_IDENTITY["mcp_sdk_version"]
+            or source.get("mcp_protocol_version") != MCP_CATALOG_IDENTITY["mcp_protocol_version"]
+            or source.get("tool") != tool
+            or not isinstance(tool, str)
+            or tool not in MCP_SELECTED_TOOLS
+            or RAW_DIGEST.fullmatch(str(input_schema_sha256)) is None
+            or RAW_DIGEST.fullmatch(str(annotations_sha256)) is None
+            or source.get("inventory_version") != evidence.get("inventory_sha256")
+            or (source_time is not None and source_time > retrieved_at)
+            or (event_time is not None and event_time > retrieved_at)
+        ):
+            raise VerificationError("investigation-proof-invalid")
+        binding = (cast(str, input_schema_sha256), cast(str, annotations_sha256))
+        if tool in tool_bindings and tool_bindings[cast(str, tool)] != binding:
+            raise VerificationError("investigation-proof-invalid")
+        tool_bindings[cast(str, tool)] = binding
+        if latest_retrieval is None or retrieved_at > latest_retrieval:
+            latest_retrieval = retrieved_at
+
+    finalized_at = _require_timestamp(
+        investigation.get("finalized_at"), "investigation-proof-invalid"
+    )
+    budget = investigation.get("budget_use")
+    if not isinstance(budget, dict):
+        raise VerificationError("investigation-proof-invalid")
+    claims = investigation.get("claims")
+    if (
+        latest_retrieval is not None
+        and finalized_at < latest_retrieval
+        or budget.get("model_turns") != model_calls
+        or budget.get("input_tokens") != observed_input_tokens
+        or budget.get("output_tokens") != observed_output_tokens
+        or not isinstance(budget.get("elapsed_ms"), int)
+        or isinstance(budget.get("elapsed_ms"), bool)
+        or not isinstance(claims, list)
+    ):
+        raise VerificationError("investigation-proof-invalid")
+
+    expected_claims = {
+        "causal-resource": {
+            "state": "confirmed",
+            "reason_codes": ["causal-resource-confirmed"],
+        },
+        "nominal-config": {
+            "state": "rejected",
+            "reason_codes": ["nominal-config-authoritatively-rejected"],
+        },
+        "worker-alone": {
+            "state": "rejected",
+            "reason_codes": ["worker-alone-authoritatively-rejected"],
+        },
+        "distractor": {
+            "state": "rejected",
+            "reason_codes": ["distractor-authoritatively-rejected"],
+        },
+    }
+    claims_by_type: dict[str, dict[str, Any]] = {}
+    for claim in claims:
+        claim_type = claim.get("claim_type") if isinstance(claim, dict) else None
+        if not isinstance(claim_type, str) or claim_type in claims_by_type:
+            raise VerificationError("investigation-proof-invalid")
+        claims_by_type[claim_type] = claim
+    if set(claims_by_type) != set(expected_claims) or any(
+        {
+            "state": claims_by_type[claim_type].get("state"),
+            "reason_codes": claims_by_type[claim_type].get("reason_codes"),
+        }
+        != expected
+        for claim_type, expected in expected_claims.items()
+    ):
+        raise VerificationError("investigation-proof-invalid")
+
+    advisory = _require_fields(
+        investigation.get("model_advisory"),
+        {"trust", "summary", "evidence_ids", "output_sha256"},
+        "investigation-proof-invalid",
+    )
+    advisory_ids = advisory.get("evidence_ids")
+    response_invocation = accepted["response-drafting"]
+    if (
+        advisory.get("trust") != "untrusted-model-output"
+        or not _plain_text_excerpt(advisory.get("summary"))
+        or not isinstance(advisory_ids, list)
+        or not advisory_ids
+        or len(advisory_ids) > 32
+        or any(not isinstance(item, str) or item not in evidence_ids for item in advisory_ids)
+        or len(set(cast(list[str], advisory_ids))) != len(advisory_ids)
+        or advisory.get("output_sha256") != response_invocation.get("output_sha256")
+    ):
+        raise VerificationError("investigation-proof-invalid")
+
+    legacy_invocation_fields = {
+        "invocation_id",
+        "turn_kind",
+        "model",
+        "framework",
+        "result_class",
+        "inventory_sha256",
+        "output_sha256",
+        "trace_id",
+    }
+    legacy = {
+        key: child
+        for key, child in investigation.items()
+        if key not in {"model_advisory", "finalized_at"}
+    }
+    legacy["schema"] = INVESTIGATION_PROOF_SCHEMA_V2
+    legacy["model_invocations"] = [
+        {key: item[key] for key in legacy_invocation_fields}
+        for item in raw_invocations
+        if item["result_class"] == "accepted"
+    ]
+    legacy["evidence"] = [
+        {key: child for key, child in item.items() if key not in {"source", "timing"}}
+        for item in raw_evidence
+    ]
+    _validate_investigation_v2(legacy)
+    return investigation
+
+
 def _validate_investigation(value: Any) -> dict[str, Any]:
     schema = value.get("schema") if isinstance(value, dict) else None
     if schema == INVESTIGATION_PROOF_SCHEMA_V1:
         return _validate_investigation_v1(value)
     if schema == INVESTIGATION_PROOF_SCHEMA_V2:
         return _validate_investigation_v2(value)
+    if schema == INVESTIGATION_PROOF_SCHEMA_V3:
+        return _validate_investigation_v3(value)
     raise VerificationError("investigation-proof-invalid")
 
 
@@ -1390,6 +2010,61 @@ def _validate_execution(value: Any) -> dict[str, Any]:
     return execution
 
 
+def _validate_preview_summary_binding(
+    path: Path | None,
+    *,
+    run: dict[str, Any],
+    investigation: dict[str, Any],
+) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    summary = _load(path.resolve(strict=True))
+    _require_fields(
+        summary,
+        {
+            "schema",
+            "scenario_id",
+            "source_commit",
+            "build_sha256",
+            "preview_sha256",
+            "comparison_sha256",
+            "visuals",
+        },
+        "scenario-preview-summary-invalid",
+    )
+    visuals = summary.get("visuals")
+    expected_visuals = [
+        {"kind": kind, "sha256": run["visual_comparison"][kind]["sha256"]}
+        for kind in ("diff", "expected", "observed")
+    ]
+    if (
+        summary.get("schema") != PREVIEW_VERIFICATION_SCHEMA
+        or summary.get("scenario_id") != SCENARIO_ID
+        or summary.get("source_commit") != run.get("source_commit")
+        or summary.get("build_sha256") != run.get("build_sha256")
+        or DIGEST.fullmatch(str(summary.get("preview_sha256"))) is None
+        or summary.get("comparison_sha256") != _document_sha256(investigation.get("comparison"))
+        or visuals != expected_visuals
+    ):
+        raise VerificationError("scenario-preview-summary-invalid")
+    return summary
+
+
+def _validate_timeline_receipt_binding(
+    run: dict[str, Any],
+    receipt: dict[str, Any],
+) -> None:
+    timeline = run.get("timeline")
+    if (
+        run.get("schema") != RUN_SCHEMA_V2
+        or not isinstance(timeline, list)
+        or not timeline
+        or timeline[0].get("recorded_at") != receipt.get("created_at")
+        or timeline[-1].get("recorded_at") != receipt.get("terminal_at")
+    ):
+        raise VerificationError("run-timeline-receipt-binding-invalid")
+
+
 def verify_contract(arguments: argparse.Namespace) -> None:
     run = _load(arguments.run.resolve(strict=True))
     receipt = _load(arguments.receipt.resolve(strict=True))
@@ -1425,6 +2100,13 @@ def verify_contract(arguments: argparse.Namespace) -> None:
         visual_root=visual_root,
     )
     investigation = _validate_investigation(run.get("investigation"))
+    if investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V3:
+        raise VerificationError("closed-run-invalid")
+    _validate_preview_summary_binding(
+        arguments.preview_summary,
+        run=run,
+        investigation=investigation,
+    )
     execution = _validate_execution(run.get("execution"))
     action = execution["action"]
     recovery_proof = execution["recovery"]
@@ -1476,6 +2158,7 @@ def verify_contract(arguments: argparse.Namespace) -> None:
         > _require_timestamp(receipt.get("terminal_at"), "receipt-binding-invalid")
     ):
         raise VerificationError("receipt-binding-invalid")
+    _validate_timeline_receipt_binding(run, receipt)
     expected_proofs = [
         {"stage": "execution", "sha256": _document_sha256(execution)},
         {"stage": "investigation", "sha256": _document_sha256(investigation)},
@@ -1557,6 +2240,13 @@ def verify_contract(arguments: argparse.Namespace) -> None:
         "proofs": expected_proofs,
         "vertex_model": MODEL,
         "mcp_inventory_sha256": mcp_inventory_sha256,
+        "mcp_tool_bindings": {
+            item["tool"]: {
+                "input_schema_sha256": item["source"]["tool_input_schema_sha256"],
+                "annotations_sha256": item["source"]["tool_annotations_sha256"],
+            }
+            for item in investigation["evidence"]
+        },
     }
     _atomic_json(arguments.output.resolve(), summary)
 
@@ -1629,8 +2319,13 @@ def verify_rejection_contract(arguments: argparse.Namespace) -> None:
         required_kinds={"diff", "expected", "observed"},
     )
     investigation = _validate_investigation(run.get("investigation"))
-    if investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V2:
+    if investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V3:
         raise VerificationError("rejected-run-invalid")
+    _validate_preview_summary_binding(
+        arguments.preview_summary,
+        run=run,
+        investigation=investigation,
+    )
     provenance = _validate_provenance(
         receipt.get("provenance"),
         binding=binding,
@@ -1681,6 +2376,7 @@ def verify_rejection_contract(arguments: argparse.Namespace) -> None:
         > _require_timestamp(receipt.get("terminal_at"), "receipt-binding-invalid")
     ):
         raise VerificationError("receipt-binding-invalid")
+    _validate_timeline_receipt_binding(run, receipt)
     expected_proofs = [{"stage": "investigation", "sha256": _document_sha256(investigation)}]
     if receipt["proofs"] != expected_proofs:
         raise VerificationError("receipt-proof-hash-invalid")
@@ -1922,15 +2618,31 @@ def mcp_script(arguments: argparse.Namespace) -> None:
     summary = _load(arguments.summary.resolve(strict=True))
     expected_inventory = _require_digest(summary.get("mcp_inventory_sha256"), "mcp-summary-invalid")
     expected_identity = json.dumps(MCP_CATALOG_IDENTITY, sort_keys=True)
-    expected_tools = json.dumps(sorted(MCP_SELECTED_TOOLS))
+    tool_bindings = summary.get("mcp_tool_bindings")
+    if (
+        not isinstance(tool_bindings, dict)
+        or set(tool_bindings) != MCP_SELECTED_TOOLS
+        or any(
+            not isinstance(binding, dict)
+            or set(binding) != {"input_schema_sha256", "annotations_sha256"}
+            or any(RAW_DIGEST.fullmatch(str(digest)) is None for digest in binding.values())
+            for binding in tool_bindings.values()
+        )
+    ):
+        raise VerificationError("mcp-summary-invalid")
+    expected_tools = json.dumps(tool_bindings, sort_keys=True)
     validation = """import json, sys
 value = json.load(open(sys.argv[1], encoding=\"utf-8\"))
 expected_identity = json.loads(sys.argv[2])
-expected_tools = set(json.loads(sys.argv[3]))
+expected_tools = json.loads(sys.argv[3])
 assert set(value) == set(expected_identity) | {\"selected_tools\", \"inventory_version\"}
 assert all(value[key] == expected for key, expected in expected_identity.items())
 assert isinstance(value[\"selected_tools\"], dict)
-assert set(value[\"selected_tools\"]) == expected_tools
+assert set(value[\"selected_tools\"]) == set(expected_tools)
+for name, expected in expected_tools.items():
+    actual = value[\"selected_tools\"][name]
+    assert actual[\"input_schema_sha256\"] == expected[\"input_schema_sha256\"]
+    assert actual[\"annotations_sha256\"] == expected[\"annotations_sha256\"]
 assert value[\"inventory_version\"] == sys.argv[4]
 """
     script = f"""set -Eeuo pipefail
@@ -1963,6 +2675,47 @@ sudo --non-interactive docker exec --user 65532:65532 colortrace-runtime \\
     output.chmod(0o700)
 
 
+def _validate_preview_report_summary(
+    value: Any,
+    *,
+    source_commit: str,
+    build_sha256: Any,
+) -> dict[str, Any]:
+    summary = _require_fields(
+        value,
+        {
+            "schema",
+            "scenario_id",
+            "source_commit",
+            "build_sha256",
+            "preview_sha256",
+            "comparison_sha256",
+            "visuals",
+        },
+        "scenario-preview-summary-invalid",
+    )
+    visuals = summary.get("visuals")
+    if (
+        summary.get("schema") != PREVIEW_VERIFICATION_SCHEMA
+        or summary.get("scenario_id") != SCENARIO_ID
+        or summary.get("source_commit") != source_commit
+        or summary.get("build_sha256") != build_sha256
+        or DIGEST.fullmatch(str(summary.get("preview_sha256"))) is None
+        or DIGEST.fullmatch(str(summary.get("comparison_sha256"))) is None
+        or not isinstance(visuals, list)
+        or [item.get("kind") for item in visuals if isinstance(item, dict)]
+        != ["diff", "expected", "observed"]
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {"kind", "sha256"}
+            or DIGEST.fullmatch(str(item.get("sha256"))) is None
+            for item in visuals
+        )
+    ):
+        raise VerificationError("scenario-preview-summary-invalid")
+    return summary
+
+
 def write_report(arguments: argparse.Namespace) -> None:
     summary = _load(arguments.summary.resolve(strict=True))
     rejection_summary = (
@@ -1971,6 +2724,26 @@ def write_report(arguments: argparse.Namespace) -> None:
         else _load(arguments.rejection_summary.resolve(strict=True))
     )
     binding = _load(arguments.artifact.resolve(strict=True))
+    preview_summary = (
+        None
+        if arguments.preview_summary is None
+        else _load(arguments.preview_summary.resolve(strict=True))
+    )
+    rejection_reset_preview_summary = (
+        None
+        if arguments.rejection_reset_preview_summary is None
+        else _load(arguments.rejection_reset_preview_summary.resolve(strict=True))
+    )
+    approval_reset_preview_summary = (
+        None
+        if arguments.approval_reset_preview_summary is None
+        else _load(arguments.approval_reset_preview_summary.resolve(strict=True))
+    )
+    first_start_summary = (
+        None
+        if arguments.first_start_summary is None
+        else _load(arguments.first_start_summary.resolve(strict=True))
+    )
     _validate_artifact(binding)
     checks = {
         "tls": "pass",
@@ -2001,9 +2774,81 @@ def write_report(arguments: argparse.Namespace) -> None:
                 "rejected_scenario_reset_for_repeatability": "pass",
             }
         )
+    preview_inputs = (
+        preview_summary,
+        rejection_reset_preview_summary,
+        approval_reset_preview_summary,
+        first_start_summary,
+    )
+    if any(item is not None for item in preview_inputs) and any(
+        item is None for item in preview_inputs
+    ):
+        raise VerificationError("scenario-preview-evidence-incomplete")
+    preview_evidence: dict[str, Any] | None = None
+    if preview_summary is not None:
+        if rejection_summary is None:
+            raise VerificationError("scenario-preview-evidence-incomplete")
+        for candidate in (
+            preview_summary,
+            rejection_reset_preview_summary,
+            approval_reset_preview_summary,
+        ):
+            _validate_preview_report_summary(
+                candidate,
+                source_commit=binding["source"]["commit"],
+                build_sha256=summary.get("build_sha256"),
+            )
+        if (
+            rejection_reset_preview_summary != preview_summary
+            or approval_reset_preview_summary != preview_summary
+        ):
+            raise VerificationError("scenario-preview-changed")
+        first_start = _require_fields(
+            first_start_summary,
+            {
+                "schema",
+                "http_status",
+                "request_sha256",
+                "response_sha256",
+                "run_id",
+                "run_schema",
+                "run_version",
+                "preview_sha256",
+            },
+            "first-start-evidence-invalid",
+        )
+        if (
+            first_start.get("schema") != FIRST_START_VERIFICATION_SCHEMA
+            or first_start.get("http_status") != 201
+            or DIGEST.fullmatch(str(first_start.get("request_sha256"))) is None
+            or DIGEST.fullmatch(str(first_start.get("response_sha256"))) is None
+            or not isinstance(first_start.get("run_id"), str)
+            or RUN_ID.fullmatch(first_start["run_id"]) is None
+            or first_start.get("run_id") != rejection_summary.get("run_id")
+            or first_start.get("run_schema") != RUN_SCHEMA_V2
+            or first_start.get("run_version") != 2
+            or first_start.get("preview_sha256") != preview_summary.get("preview_sha256")
+        ):
+            raise VerificationError("first-start-evidence-invalid")
+        preview_evidence = {
+            "initial": preview_summary,
+            "after_rejection_reset": rejection_reset_preview_summary,
+            "after_approval_reset": approval_reset_preview_summary,
+            "first_run_start": first_start,
+        }
+        checks.update(
+            {
+                "run_free_canonical_preview": "pass",
+                "preview_hash_stability_after_reject_reset": "pass",
+                "preview_hash_stability_after_approve_reset": "pass",
+                "preview_does_not_consume_run": "pass",
+            }
+        )
     report = {
         "schema": (
-            "colortrace-single-host-verification/v2"
+            "colortrace-single-host-verification/v4"
+            if preview_evidence is not None
+            else "colortrace-single-host-verification/v2"
             if rejection_summary is None
             else "colortrace-single-host-verification/v3"
         ),
@@ -2029,6 +2874,8 @@ def write_report(arguments: argparse.Namespace) -> None:
             "approved": summary,
             "rejected": rejection_summary,
         }
+    if preview_evidence is not None:
+        report["preview"] = preview_evidence
     _atomic_json(arguments.output.resolve(), report)
 
 
@@ -2066,6 +2913,20 @@ def _parser() -> argparse.ArgumentParser:
     metadata.add_argument("artifact", type=Path)
     metadata.add_argument("generation")
     metadata.set_defaults(handler=verify_instance_metadata)
+    preview = commands.add_parser("verify-preview")
+    preview.add_argument("preview", type=Path)
+    preview.add_argument("visuals", type=Path)
+    preview.add_argument("artifact", type=Path)
+    preview.add_argument("output", type=Path)
+    preview.add_argument("--baseline", type=Path)
+    preview.set_defaults(handler=verify_preview)
+    first_start = commands.add_parser("verify-first-start")
+    first_start.add_argument("http_status")
+    first_start.add_argument("request", type=Path)
+    first_start.add_argument("run", type=Path)
+    first_start.add_argument("preview_summary", type=Path)
+    first_start.add_argument("output", type=Path)
+    first_start.set_defaults(handler=verify_first_start)
     verify = commands.add_parser("verify-contract")
     verify.add_argument("run", type=Path)
     verify.add_argument("receipt", type=Path)
@@ -2075,6 +2936,7 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("elapsed_ms")
     verify.add_argument("visuals", type=Path)
     verify.add_argument("output", type=Path)
+    verify.add_argument("--preview-summary", type=Path)
     verify.set_defaults(handler=verify_contract)
     verify_rejection = commands.add_parser("verify-rejection-contract")
     verify_rejection.add_argument("run", type=Path)
@@ -2085,6 +2947,7 @@ def _parser() -> argparse.ArgumentParser:
     verify_rejection.add_argument("generation")
     verify_rejection.add_argument("elapsed_ms")
     verify_rejection.add_argument("output", type=Path)
+    verify_rejection.add_argument("--preview-summary", type=Path)
     verify_rejection.set_defaults(handler=verify_rejection_contract)
     remote = commands.add_parser("remote-script")
     remote.add_argument("artifact", type=Path)
@@ -2106,6 +2969,10 @@ def _parser() -> argparse.ArgumentParser:
     report.add_argument("generation")
     report.add_argument("output", type=Path)
     report.add_argument("--rejection-summary", type=Path)
+    report.add_argument("--preview-summary", type=Path)
+    report.add_argument("--rejection-reset-preview-summary", type=Path)
+    report.add_argument("--approval-reset-preview-summary", type=Path)
+    report.add_argument("--first-start-summary", type=Path)
     report.set_defaults(handler=write_report)
     return parser
 

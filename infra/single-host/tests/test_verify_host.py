@@ -227,6 +227,149 @@ def _v2_investigation(investigation: dict[str, Any], approval: dict[str, Any]) -
     }
 
 
+def _v3_investigation(investigation: dict[str, Any], approval: dict[str, Any]) -> None:
+    _v2_investigation(investigation, approval)
+    evidence_ids = [item["evidence_id"] for item in investigation["evidence"]]
+    internal_evidence_id = "sha256:" + "f" * 64
+    validator_result_id = investigation["validators"][0]["result_id"]
+    investigation["schema"] = "colortrace-demo-investigation-proof/v3"
+    investigation["claims"] = [
+        {
+            "claim_id": "claim:" + digit * 64,
+            "claim_type": claim_type,
+            "subject": subject,
+            "state": state,
+            "reason_codes": [reason_code],
+            "evidence_ids": cited_evidence_ids,
+            "source_validator_result_id": validator_result_id,
+        }
+        for digit, claim_type, subject, state, reason_code, cited_evidence_ids in (
+            (
+                "1",
+                "causal-resource",
+                {"kind": "resource-sha256", "value": "7" * 64},
+                "confirmed",
+                "causal-resource-confirmed",
+                [internal_evidence_id],
+            ),
+            (
+                "2",
+                "nominal-config",
+                {"kind": "config-sha256", "value": "5" * 64},
+                "rejected",
+                "nominal-config-authoritatively-rejected",
+                evidence_ids[:2],
+            ),
+            (
+                "3",
+                "worker-alone",
+                {"kind": "worker-id", "value": "B"},
+                "rejected",
+                "worker-alone-authoritatively-rejected",
+                evidence_ids[1:3],
+            ),
+            (
+                "4",
+                "distractor",
+                {"kind": "event-id", "value": "distractor-01"},
+                "rejected",
+                "distractor-authoritatively-rejected",
+                evidence_ids[2:],
+            ),
+        )
+    ]
+    investigation["model_invocations"] = [
+        {
+            **item,
+            "attempt": 1,
+            "location": "global",
+            "framework_version": "2.6.3",
+            "client_version": "2.17.0",
+            "prompt_version": f"{item['turn_kind']}/v1",
+            "policy_version": "bounded-investigation/v1",
+            "normalized_input_sha256": "sha256:" + digit * 64,
+            "input_evidence_ids": (
+                evidence_ids[:1] if item["turn_kind"] == "evidence-selection" else evidence_ids
+            ),
+            "latency_ms": 0,
+            "usage": {
+                "input_tokens": 50,
+                "output_tokens": 10,
+                "model_calls": 1,
+                "unobserved_model_calls": 0,
+            },
+            "error_code": None,
+            "derivation_sha256": "sha256:" + digit * 64,
+        }
+        for item, digit in zip(investigation["model_invocations"], ("8", "9"), strict=True)
+    ]
+    investigation["evidence"] = [
+        {
+            **item,
+            "source": {
+                "kind": "grafana-mcp",
+                "server": "mcp-grafana",
+                "server_version": "1.1.0",
+                "server_commit": "007e8d82154899a28e19e8dfe9c2bb4452c5211a",
+                "binary_sha256": (
+                    "5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93"
+                ),
+                "mcp_sdk_version": "1.29.0",
+                "mcp_protocol_version": "2025-06-18",
+                "tool": item["tool"],
+                "tool_input_schema_sha256": f"{index:064x}",
+                "tool_annotations_sha256": f"{index + 4:064x}",
+                "inventory_version": item["inventory_sha256"],
+            },
+            "timing": {
+                "source_time": None,
+                "event_time": None,
+                "retrieved_at": f"2026-08-23T12:00:0{index}.000Z",
+            },
+        }
+        for index, item in enumerate(investigation["evidence"], start=1)
+    ]
+    drafting = next(
+        item
+        for item in investigation["model_invocations"]
+        if item["turn_kind"] == "response-drafting"
+    )
+    investigation["model_advisory"] = {
+        "trust": "untrusted-model-output",
+        "summary": "The deterministic evidence identifies a shadowed LUT resource.",
+        "evidence_ids": evidence_ids,
+        "output_sha256": drafting["output_sha256"],
+    }
+    investigation["finalized_at"] = "2026-08-23T12:00:05.000Z"
+
+
+def _timeline(phase: str) -> list[dict[str, Any]]:
+    events = [
+        ("run-created", "preparing"),
+        ("investigation-completed", "awaiting-approval"),
+        ("approval-submitted", "executing"),
+        ("recovery-verified", "awaiting-closure"),
+        ("closure-submitted", "closing"),
+        ("recovery-closed", "closed"),
+    ]
+    selected = events[
+        : next(index for index, item in enumerate(events, start=1) if item[1] == phase)
+    ]
+    return [
+        {
+            "run_version": index,
+            "kind": kind,
+            "phase": event_phase,
+            "recorded_at": (
+                "2026-08-23T12:00:30.000Z"
+                if phase == "closed" and event_phase == "closed"
+                else f"2026-08-23T12:00:0{index - 1}.000Z"
+            ),
+        }
+        for index, (kind, event_phase) in enumerate(selected, start=1)
+    ]
+
+
 def _artifact() -> dict[str, Any]:
     registry = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images"
     components = ("runtime", "web", "caddy", "grafana", "loki", "tempo")
@@ -303,7 +446,7 @@ def _workflow(
     artifact: dict[str, Any],
     *,
     run_digit: str = "a",
-    proof_version: int = 1,
+    proof_version: int = 3,
 ) -> tuple[
     dict[str, Any],
     dict[str, Any],
@@ -406,7 +549,9 @@ def _workflow(
         "plan_sha256": approval["plan_sha256"],
         "target_sha256": approval["target_sha256"],
     }
-    if proof_version == 2:
+    if proof_version == 3:
+        _v3_investigation(investigation, approval)
+    elif proof_version == 2:
         _v2_investigation(investigation, approval)
     elif proof_version != 1:
         raise ValueError("unsupported proof version")
@@ -445,7 +590,7 @@ def _workflow(
         },
     }
     base = {
-        "schema": "colortrace-demo-run/v1",
+        "schema": "colortrace-demo-run/v2",
         "run_id": run_id,
         "incident_id": "incident-demo-" + run_digit * 32,
         "scenario_id": "ct-shadowed-lut-v1:canonical",
@@ -471,6 +616,7 @@ def _workflow(
         "recovery": None,
         "investigation": investigation,
         "approval_nonce": "n" * 32,
+        "timeline": _timeline("awaiting-approval"),
     }
     approved = {
         **base,
@@ -481,6 +627,7 @@ def _workflow(
         "recovery": {**recovery, "closure_id": None, "closure_sha256": None},
         "investigation": investigation,
         "execution": execution,
+        "timeline": _timeline("awaiting-closure"),
     }
     build_binding = {
         "schema": "colortrace-runtime-build-binding/v1",
@@ -540,6 +687,7 @@ def _workflow(
         "recovery": recovery,
         "investigation": investigation,
         "execution": execution,
+        "timeline": _timeline("closed"),
     }
     body = {
         "schema": "colortrace-demo-receipt/v1",
@@ -611,7 +759,7 @@ def _rejected_workflow(
     started, _approved, closed, approved_receipt, reset = _workflow(
         artifact,
         run_digit=run_digit,
-        proof_version=2,
+        proof_version=3,
     )
     build_sha256 = closed["build_sha256"]
     started["build_sha256"] = build_sha256
@@ -624,6 +772,15 @@ def _rejected_workflow(
             "terminal": True,
             "terminal_reason": "plan-rejected-insufficient-evidence",
             "receipt_href": f"/v1/demo/runs/{started['run_id']}/receipt",
+            "timeline": [
+                *started["timeline"],
+                {
+                    "run_version": 3,
+                    "kind": "plan-rejected",
+                    "phase": "unresolved",
+                    "recorded_at": "2026-08-23T12:00:15.000Z",
+                },
+            ],
         }
     )
     approval = rejected["approval"]
@@ -685,6 +842,41 @@ def _rejected_workflow(
     return started, rejected, receipt, reset
 
 
+def _scenario_preview(started: dict[str, Any], *, build_sha256: str) -> dict[str, Any]:
+    return {
+        "schema": "colortrace-demo-scenario-preview/v1",
+        "scenario_id": started["scenario_id"],
+        "source_commit": started["source_commit"],
+        "build_sha256": build_sha256,
+        "comparison": started["investigation"]["comparison"],
+        "visual_comparison": {
+            kind: {
+                **started["visual_comparison"][kind],
+                "href": f"/v1/demo/visuals/{kind}",
+            }
+            for kind in ("diff", "expected", "observed")
+        },
+    }
+
+
+def _preview_verification(preview: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": "colortrace-demo-preview-verification/v1",
+        "scenario_id": preview["scenario_id"],
+        "source_commit": preview["source_commit"],
+        "build_sha256": preview["build_sha256"],
+        "preview_sha256": _digest(preview),
+        "comparison_sha256": _digest(preview["comparison"]),
+        "visuals": [
+            {
+                "kind": kind,
+                "sha256": preview["visual_comparison"][kind]["sha256"],
+            }
+            for kind in ("diff", "expected", "observed")
+        ],
+    }
+
+
 class VerifyHostTests(unittest.TestCase):
     def test_fresh_workflow_live_bindings_and_restart_are_verified_without_secret_leak(
         self,
@@ -711,22 +903,18 @@ class VerifyHostTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            _stale_started, _stale_approved, stale_closed, _stale_receipt, stale_reset = _workflow(
-                artifact, run_digit="c"
-            )
             rejection_started, rejected, rejected_receipt, rejected_reset = _rejected_workflow(
                 artifact, run_digit="a"
             )
             started, approved, closed, receipt, reset = _workflow(
                 artifact,
                 run_digit="b",
-                proof_version=2,
             )
+            preview = _scenario_preview(started, build_sha256=closed["build_sha256"])
             responses = temporary / "responses"
             responses.mkdir()
             for name, value in (
-                ("stale-closed", stale_closed),
-                ("stale-reset", stale_reset),
+                ("preview", preview),
                 ("rejection-started", rejection_started),
                 ("rejected", rejected),
                 ("rejected-receipt", rejected_receipt),
@@ -736,13 +924,6 @@ class VerifyHostTests(unittest.TestCase):
                 ("closed", closed),
                 ("receipt", receipt),
                 ("reset", reset),
-                (
-                    "conflict",
-                    {
-                        "code": "demo-reset-required",
-                        "run_id": stale_closed["run_id"],
-                    },
-                ),
             ):
                 (responses / f"{name}.json").write_text(json.dumps(value), encoding="utf-8")
             for kind, contents in VISUAL_BYTES.items():
@@ -844,6 +1025,9 @@ if "--write-out" in arguments and "%{content_type}" in arguments:
     shutil.copyfile(responses / f"{kind}.png", output)
     print("image/png", end="")
     raise SystemExit(0)
+if url.endswith("/v1/demo"):
+    shutil.copyfile(responses / "preview.json", output)
+    raise SystemExit(0)
 if "--write-out" in arguments and "--data-binary" not in arguments:
     if not authenticated or "--user" in arguments:
         status = "401"
@@ -871,12 +1055,18 @@ if "--data-binary" in arguments:
         counter = pathlib.Path(os.environ["FAKE_START_COUNTER"])
         count = int(counter.read_text()) if counter.exists() else 0
         counter.write_text(str(count + 1))
-        if os.environ.get("FAKE_INITIAL_CONFLICT") == "true" and count == 0:
-            source, status = responses / "conflict.json", "409"
-        elif count <= 1:
+        if count == 0:
             source, status = responses / "rejection-started.json", "201"
         else:
             source, status = responses / "approval-started.json", "201"
+        request_argument = arguments[arguments.index("--data-binary") + 1]
+        request_path = pathlib.Path(request_argument.removeprefix("@"))
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        response = json.loads(source.read_text(encoding="utf-8"))
+        response["approval_nonce"] = request["approval_nonce"]
+        output.write_text(json.dumps(response), encoding="utf-8")
+        print(status, end="")
+        raise SystemExit(0)
     elif url.endswith("/reject"):
         source, status = responses / "rejected.json", "200"
     elif url.endswith("/approve"):
@@ -884,9 +1074,7 @@ if "--data-binary" in arguments:
     elif url.endswith("/close"):
         source, status = responses / "closed.json", "200"
     elif url.endswith("/reset"):
-        if "cccccccccccccccccccccccccccccccc" in url:
-            source = responses / "stale-reset.json"
-        elif "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in url:
+        if "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in url:
             source = responses / "rejected-reset.json"
         else:
             source = responses / "reset.json"
@@ -903,9 +1091,6 @@ if url.endswith("/receipt"):
         else responses / "receipt.json"
     )
     shutil.copyfile(source, output)
-    raise SystemExit(0)
-if "/v1/demo/runs/" in url:
-    shutil.copyfile(responses / "stale-closed.json", output)
     raise SystemExit(0)
 raise SystemExit(2)
 """,
@@ -944,7 +1129,6 @@ raise SystemExit(124)
                 "FAKE_ARTIFACT": str(artifact_path),
                 "FAKE_ARTIFACT_DIGEST": _digest(artifact),
                 "FAKE_RESPONSES": str(responses),
-                "FAKE_INITIAL_CONFLICT": "true",
                 "FAKE_START_COUNTER": str(temporary / "start-counter"),
                 "FAKE_APT_ENABLED_STATE": "masked",
                 "FAKE_APT_ACTIVE_STATE": "inactive",
@@ -1005,10 +1189,27 @@ raise SystemExit(124)
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             report = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(report["schema"], "colortrace-single-host-verification/v3")
+            self.assertEqual(report["schema"], "colortrace-single-host-verification/v4")
+            self.assertEqual(report["preview"]["initial"]["preview_sha256"], _digest(preview))
+            self.assertEqual(
+                report["preview"]["after_rejection_reset"], report["preview"]["initial"]
+            )
+            self.assertEqual(
+                report["preview"]["after_approval_reset"], report["preview"]["initial"]
+            )
+            self.assertEqual(report["preview"]["first_run_start"]["http_status"], 201)
             self.assertEqual(report["workflows"]["approved"]["run_id"], started["run_id"])
             self.assertEqual(report["workflows"]["approved"]["recovery_check_count"], 7)
             self.assertEqual(report["workflows"]["approved"]["recovery_evidence_count"], 21)
+            self.assertEqual(
+                set(report["workflows"]["approved"]["mcp_tool_bindings"]),
+                {
+                    "alerting_manage_rules",
+                    "query_loki_logs",
+                    "query_prometheus",
+                    "tempo_get-trace",
+                },
+            )
             self.assertEqual(report["workflows"]["rejected"]["run_id"], rejection_started["run_id"])
             self.assertEqual(
                 report["workflows"]["rejected"]["reason_code"],
@@ -1047,7 +1248,7 @@ raise SystemExit(124)
                 for call in calls
                 if call[0] == "curl" and "--data-binary" in call and call[-1].endswith("/reset")
             ]
-            self.assertEqual(len(reset_calls), 3)
+            self.assertEqual(len(reset_calls), 2)
             reject_calls = [
                 call
                 for call in calls
@@ -1055,6 +1256,14 @@ raise SystemExit(124)
             ]
             self.assertEqual(len(reject_calls), 2)
             self.assertEqual(reject_calls[0][-1], reject_calls[1][-1])
+            start_calls = [
+                call
+                for call in calls
+                if call[0] == "curl"
+                and "--data-binary" in call
+                and call[-1].endswith("/v1/demo/runs")
+            ]
+            self.assertEqual(len(start_calls), 2)
             boundary_urls = {
                 call[-1] for call in calls if call[0] == "curl" and "--write-out" in call
             }
@@ -1067,6 +1276,11 @@ raise SystemExit(124)
                 "https://203-0-113-42.sslip.io/v1/incidents",
                 boundary_urls,
             )
+            preview_calls = [
+                call for call in calls if call[0] == "curl" and call[-1].endswith("/v1/demo")
+            ]
+            self.assertEqual(len(preview_calls), 3)
+            self.assertLess(calls.index(preview_calls[0]), calls.index(start_calls[0]))
             private_port_calls = [call for call in calls if call[0] == "timeout"]
             self.assertEqual(
                 sorted(int(call[-1]) for call in private_port_calls),
@@ -1089,6 +1303,15 @@ raise SystemExit(124)
             )
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
+            exposed_evidence_ids = {
+                item["evidence_id"] for item in started["investigation"]["evidence"]
+            }
+            claim_evidence_ids = {
+                evidence_id
+                for claim in started["investigation"]["claims"]
+                for evidence_id in claim["evidence_ids"]
+            }
+            self.assertTrue(claim_evidence_ids - exposed_evidence_ids)
             self.assertEqual(completed.stdout.strip(), started["run_id"])
             request = json.loads(request_path.read_text(encoding="utf-8"))
             self.assertEqual(
@@ -1299,11 +1522,11 @@ raise SystemExit(124)
 
                 self.assertEqual(completed.returncode, 65)
 
-    def test_contract_accepts_stored_v1_investigation_proof(self) -> None:
+    def test_fresh_contract_rejects_legacy_v1_investigation_proof(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             artifact = _artifact()
-            _started, _approved, closed, receipt, _reset = _workflow(artifact)
+            _started, _approved, closed, receipt, _reset = _workflow(artifact, proof_version=1)
             visuals = root / "visuals"
             _write_visuals(visuals)
             paths = {}
@@ -1333,10 +1556,8 @@ raise SystemExit(124)
                 text=True,
             )
 
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
-            self.assertEqual(summary["run_id"], closed["run_id"])
-            self.assertEqual(summary["proofs"][1]["sha256"], _digest(closed["investigation"]))
+            self.assertEqual(completed.returncode, 65)
+            self.assertIn("closed-run-invalid", completed.stderr)
 
     def test_contract_rejects_rehashed_receipt_with_wrong_proof_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1501,6 +1722,362 @@ raise SystemExit(124)
             )
             self.assertEqual(completed.returncode, 65)
             self.assertIn("visual-assets-invalid", completed.stderr)
+
+    def test_run_free_preview_is_strict_hash_bound_and_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            artifact = _artifact()
+            started, _approved, closed, _receipt, _reset = _workflow(artifact)
+            preview = _scenario_preview(started, build_sha256=closed["build_sha256"])
+            preview_path = root / "preview.json"
+            artifact_path = root / "artifact.json"
+            visual_root = root / "visuals"
+            visual_root.mkdir()
+            for kind in ("diff", "expected", "observed"):
+                (visual_root / f"{kind}.png").write_bytes(VISUAL_BYTES[kind])
+            preview_path.write_text(json.dumps(preview), encoding="utf-8")
+            artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+            baseline = root / "baseline.json"
+            completed = subprocess.run(
+                [
+                    CONTRACT_HELPER,
+                    "verify-preview",
+                    preview_path,
+                    visual_root,
+                    artifact_path,
+                    baseline,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads(baseline.read_text(encoding="utf-8"))
+            self.assertEqual(summary["preview_sha256"], _digest(preview))
+            self.assertEqual(
+                [item["kind"] for item in summary["visuals"]],
+                ["diff", "expected", "observed"],
+            )
+
+            stable = root / "stable.json"
+            completed = subprocess.run(
+                [
+                    CONTRACT_HELPER,
+                    "verify-preview",
+                    preview_path,
+                    visual_root,
+                    artifact_path,
+                    stable,
+                    "--baseline",
+                    baseline,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(stable.read_bytes(), baseline.read_bytes())
+
+            preview["comparison"]["renders"][1]["resolved_lut_sha256"] = "sha256:" + "f" * 64
+            preview_path.write_text(json.dumps(preview), encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    CONTRACT_HELPER,
+                    "verify-preview",
+                    preview_path,
+                    visual_root,
+                    artifact_path,
+                    root / "changed.json",
+                    "--baseline",
+                    baseline,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 65)
+            self.assertIn("scenario-preview-changed", completed.stderr)
+
+            preview["unexpected"] = "field"
+            preview_path.write_text(json.dumps(preview), encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    CONTRACT_HELPER,
+                    "verify-preview",
+                    preview_path,
+                    visual_root,
+                    artifact_path,
+                    root / "invalid.json",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 65)
+            self.assertIn("scenario-preview-invalid", completed.stderr)
+
+    def test_v3_investigation_rejects_provenance_timing_usage_and_advisory_drift(self) -> None:
+        for case in (
+            "source",
+            "timing",
+            "attempt",
+            "usage",
+            "model-citation",
+            "advisory-citation",
+            "advisory-output",
+            "claim-type",
+            "claim-state",
+            "claim-reason",
+            "finalized-at",
+        ):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                started, _rejected, _receipt, _reset = _rejected_workflow(_artifact())
+                proof = started["investigation"]
+                if case == "source":
+                    proof["evidence"][0]["source"]["server"] = "lookalike-mcp"
+                elif case == "timing":
+                    proof["evidence"][0]["timing"]["retrieved_at"] = None
+                elif case == "attempt":
+                    proof["model_invocations"][0]["attempt"] = 2
+                elif case == "usage":
+                    proof["budget_use"]["model_turns"] += 1
+                elif case == "model-citation":
+                    proof["model_invocations"][0]["input_evidence_ids"] = ["sha256:" + "f" * 64]
+                elif case == "advisory-citation":
+                    proof["model_advisory"]["evidence_ids"] = ["sha256:" + "f" * 64]
+                elif case == "advisory-output":
+                    proof["model_advisory"]["output_sha256"] = "sha256:" + "f" * 64
+                elif case == "claim-type":
+                    proof["claims"][0]["claim_type"] = "operator-error"
+                elif case == "claim-state":
+                    proof["claims"][0]["state"] = "rejected"
+                elif case == "claim-reason":
+                    proof["claims"][0]["reason_codes"] = ["causal-resource-rejected"]
+                else:
+                    proof["finalized_at"] = "2026-08-23T12:00:00.000Z"
+                run_path = root / "run.json"
+                run_path.write_text(json.dumps(started), encoding="utf-8")
+                completed = subprocess.run(
+                    [
+                        CONTRACT_HELPER,
+                        "prepare-rejection",
+                        run_path,
+                        root / "request.json",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(completed.returncode, 65)
+                self.assertIn("investigation-proof-invalid", completed.stderr)
+
+    def test_v2_timeline_rejects_noncausal_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            started, _rejected, _receipt, _reset = _rejected_workflow(_artifact())
+            started["timeline"][1]["kind"] = "approval-submitted"
+            started["timeline"][1]["phase"] = "executing"
+            run_path = root / "run.json"
+            run_path.write_text(json.dumps(started), encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    CONTRACT_HELPER,
+                    "prepare-rejection",
+                    run_path,
+                    root / "request.json",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 65)
+            self.assertIn("run-timeline-invalid", completed.stderr)
+
+    def test_closed_timeline_must_bind_receipt_boundary_timestamps(self) -> None:
+        for boundary, replacement in (
+            ("first", "2026-08-23T11:59:59.000Z"),
+            ("final", "2026-08-23T12:00:31.000Z"),
+        ):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                artifact = _artifact()
+                _started, _approved, closed, receipt, _reset = _workflow(artifact)
+                closed["timeline"][0 if boundary == "first" else -1]["recorded_at"] = replacement
+                visuals = root / "visuals"
+                _write_visuals(visuals)
+                paths: dict[str, Path] = {}
+                for name, value in (
+                    ("artifact", artifact),
+                    ("run", closed),
+                    ("receipt", receipt),
+                ):
+                    paths[name] = root / f"{name}.json"
+                    paths[name].write_text(json.dumps(value), encoding="utf-8")
+                completed = subprocess.run(
+                    [
+                        CONTRACT_HELPER,
+                        "verify-contract",
+                        paths["run"],
+                        paths["receipt"],
+                        paths["artifact"],
+                        "https://203-0-113-42.sslip.io",
+                        "stage-0001",
+                        "1000",
+                        visuals,
+                        root / "summary.json",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(completed.returncode, 65)
+                self.assertIn("run-timeline-receipt-binding-invalid", completed.stderr)
+
+    def test_rejected_timeline_must_bind_receipt_terminal_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = _artifact()
+            started, rejected, receipt, _reset = _rejected_workflow(artifact)
+            rejected["timeline"][-1]["recorded_at"] = "2026-08-23T12:00:16.000Z"
+            request = {
+                "schema": "colortrace-demo-rejection-request/v1",
+                "approval_nonce": started["approval_nonce"],
+                "expected_run_version": started["version"],
+                "expected_incident_version": started["approval"]["incident_version"],
+                "expected_plan_version": started["approval"]["plan_version"],
+                "expected_plan_sha256": started["approval"]["plan_sha256"],
+                "expected_target_sha256": started["approval"]["target_sha256"],
+                "reason_code": "insufficient-evidence",
+                "idempotency_key": f"reject:{started['run_id']}",
+            }
+            paths: dict[str, Path] = {}
+            for name, value in (
+                ("artifact", artifact),
+                ("request", request),
+                ("run", rejected),
+                ("receipt", receipt),
+            ):
+                paths[name] = root / f"{name}.json"
+                paths[name].write_text(json.dumps(value), encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    CONTRACT_HELPER,
+                    "verify-rejection-contract",
+                    paths["run"],
+                    paths["request"],
+                    paths["receipt"],
+                    paths["artifact"],
+                    "https://203-0-113-42.sslip.io",
+                    "stage-0001",
+                    "1000",
+                    root / "summary.json",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 65)
+            self.assertIn("run-timeline-receipt-binding-invalid", completed.stderr)
+
+    def test_report_requires_bound_preview_reset_and_first_start_evidence(self) -> None:
+        artifact = _artifact()
+        started, _approved, closed, _receipt, _reset = _workflow(artifact)
+        preview = _scenario_preview(started, build_sha256=closed["build_sha256"])
+        preview_summary = _preview_verification(preview)
+        first_start = {
+            "schema": "colortrace-demo-first-start-verification/v1",
+            "http_status": 201,
+            "request_sha256": "sha256:" + "1" * 64,
+            "response_sha256": "sha256:" + "2" * 64,
+            "run_id": started["run_id"],
+            "run_schema": "colortrace-demo-run/v2",
+            "run_version": 2,
+            "preview_sha256": preview_summary["preview_sha256"],
+        }
+        cases = (
+            "rejection-preview",
+            "approval-preview",
+            "start-status",
+            "start-preview",
+            "missing-first-start",
+        )
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                rejection_preview = json.loads(json.dumps(preview_summary))
+                approval_preview = json.loads(json.dumps(preview_summary))
+                selected_start = json.loads(json.dumps(first_start))
+                if case == "rejection-preview":
+                    rejection_preview["preview_sha256"] = "sha256:" + "f" * 64
+                elif case == "approval-preview":
+                    approval_preview["visuals"][0]["sha256"] = "sha256:" + "f" * 64
+                elif case == "start-status":
+                    selected_start["http_status"] = 409
+                elif case == "start-preview":
+                    selected_start["preview_sha256"] = "sha256:" + "f" * 64
+                values = {
+                    "summary": {"build_sha256": closed["build_sha256"]},
+                    "rejection": {"run_id": started["run_id"]},
+                    "artifact": artifact,
+                    "initial": preview_summary,
+                    "rejection-preview": rejection_preview,
+                    "approval-preview": approval_preview,
+                    "first-start": selected_start,
+                }
+                paths: dict[str, Path] = {}
+                for name, value in values.items():
+                    paths[name] = root / f"{name}.json"
+                    paths[name].write_text(json.dumps(value), encoding="utf-8")
+                command = [
+                    CONTRACT_HELPER,
+                    "write-report",
+                    paths["summary"],
+                    paths["artifact"],
+                    "2026-08-23T12:01:00Z",
+                    "https://203-0-113-42.sslip.io",
+                    "colortrace-test-project",
+                    "us-central1-a",
+                    "ct-singlehost-vm",
+                    "stage-0001",
+                    root / "report.json",
+                    "--rejection-summary",
+                    paths["rejection"],
+                    "--preview-summary",
+                    paths["initial"],
+                    "--rejection-reset-preview-summary",
+                    paths["rejection-preview"],
+                    "--approval-reset-preview-summary",
+                    paths["approval-preview"],
+                ]
+                if case != "missing-first-start":
+                    command.extend(("--first-start-summary", paths["first-start"]))
+                completed = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(completed.returncode, 65)
+                self.assertFalse((root / "report.json").exists())
+
+    def test_legacy_v1_terminal_projection_remains_resettable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            _started, _approved, closed, _receipt, _reset = _workflow(_artifact(), proof_version=1)
+            closed["schema"] = "colortrace-demo-run/v1"
+            del closed["timeline"]
+            run_path = root / "run.json"
+            request_path = root / "request.json"
+            run_path.write_text(json.dumps(closed), encoding="utf-8")
+            completed = subprocess.run(
+                [CONTRACT_HELPER, "prepare-reset", run_path, request_path],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(completed.stdout.strip(), closed["run_id"])
 
     def test_reset_rejects_wrong_fixture_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

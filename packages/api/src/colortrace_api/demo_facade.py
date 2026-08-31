@@ -38,7 +38,9 @@ from .auth import Principal
 from .recovery import RecoveryApi
 
 RUN_REQUEST_SCHEMA = "colortrace-demo-run-request/v2"
-RUN_SCHEMA = "colortrace-demo-run/v1"
+RUN_SCHEMA_V1 = "colortrace-demo-run/v1"
+RUN_SCHEMA_V2 = "colortrace-demo-run/v2"
+RUN_SCHEMA = RUN_SCHEMA_V2
 APPROVAL_REQUEST_SCHEMA = "colortrace-demo-approval-request/v1"
 REJECTION_REQUEST_SCHEMA = "colortrace-demo-rejection-request/v1"
 CLOSURE_REQUEST_SCHEMA = "colortrace-demo-closure-request/v1"
@@ -48,6 +50,7 @@ RECEIPT_SCHEMA = "colortrace-demo-receipt/v1"
 PREPARATION_SCHEMA = "colortrace-demo-preparation/v1"
 EXECUTION_SCHEMA = "colortrace-demo-execution/v1"
 RECONCILIATION_REQUEST_SCHEMA = "colortrace-demo-reconciliation-request/v1"
+SCENARIO_PREVIEW_SCHEMA = "colortrace-demo-scenario-preview/v1"
 
 CANONICAL_SCENARIO = CANONICAL_SEED
 APPROVAL_PHRASE = "APPROVE_COLORTRACE_SIMULATOR_ACTION"
@@ -64,7 +67,9 @@ _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
 _RUN_ID = re.compile(r"^demo-run-[0-9a-f]{32}$")
 _INCIDENT_ID = re.compile(r"^incident-demo-[0-9a-f]{32}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_HEX_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_MODEL_INVOCATION_ID = re.compile(r"^model-invocation:[0-9a-f]{64}$")
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _REASON_CODE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 _NONCE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
@@ -75,9 +80,20 @@ _INVESTIGATION_TOOLS = {
     "metric.correlated-observations": "query_prometheus",
     "trace.by-id": "tempo_get-trace",
 }
+_MCP_SOURCE_IDENTITY = {
+    "kind": "grafana-mcp",
+    "server": "mcp-grafana",
+    "server_version": "1.1.0",
+    "server_commit": "007e8d82154899a28e19e8dfe9c2bb4452c5211a",
+    "binary_sha256": "5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93",
+    "mcp_sdk_version": "1.29.0",
+    "mcp_protocol_version": "2025-06-18",
+}
 BUILD_PROVENANCE_SCHEMA = "colortrace-demo-build-provenance/v1"
 INVESTIGATION_PROOF_SCHEMA_V1 = "colortrace-demo-investigation-proof/v1"
-INVESTIGATION_PROOF_SCHEMA = "colortrace-demo-investigation-proof/v2"
+INVESTIGATION_PROOF_SCHEMA_V2 = "colortrace-demo-investigation-proof/v2"
+INVESTIGATION_PROOF_SCHEMA_V3 = "colortrace-demo-investigation-proof/v3"
+INVESTIGATION_PROOF_SCHEMA = INVESTIGATION_PROOF_SCHEMA_V3
 EXECUTION_PROOF_SCHEMA = "colortrace-demo-execution-proof/v1"
 _REJECTION_RESULT_SCHEMA = "colortrace-demo-rejection-result/v1"
 _SCENARIO_RESET_RESULT_SCHEMA = "simulator-authored-scenario-reset/v1"
@@ -110,6 +126,10 @@ _KNOWN_OPERATION_ERRORS = (
 
 
 class DemoWorkflowPort(Protocol):
+    def preview(self) -> Mapping[str, Any]: ...
+
+    def preview_visual(self, kind: str) -> DemoVisual: ...
+
     def prepare(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
     def execute(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
@@ -126,6 +146,10 @@ class DemoScenarioResetPort(Protocol):
 
 
 class DemoApi(Protocol):
+    def preview(self) -> dict[str, Any]: ...
+
+    def preview_visual(self, kind: str) -> DemoVisual: ...
+
     def start(self, body: Mapping[str, Any]) -> dict[str, Any]: ...
 
     def get(self, run_id: str) -> dict[str, Any]: ...
@@ -760,7 +784,7 @@ def _validate_investigation_proof_v2(value: Any) -> dict[str, Any]:
     if (
         not isinstance(value, Mapping)
         or set(value) != fields
-        or value.get("schema") != INVESTIGATION_PROOF_SCHEMA
+        or value.get("schema") != INVESTIGATION_PROOF_SCHEMA_V2
     ):
         raise DemoFacadeError("demo-investigation-proof-invalid")
     plan = value.get("plan")
@@ -1107,7 +1131,7 @@ def _validate_investigation_proof_v2(value: Any) -> dict[str, Any]:
     if _canonical_digest(commands) != plan.get("commands_sha256"):
         raise DemoFacadeError("demo-investigation-proof-invalid")
     return {
-        "schema": INVESTIGATION_PROOF_SCHEMA,
+        "schema": INVESTIGATION_PROOF_SCHEMA_V2,
         "packet_id": legacy["packet_id"],
         "packet_sha256": legacy["packet_sha256"],
         "status": legacy["status"],
@@ -1142,13 +1166,507 @@ def _validate_investigation_proof_v2(value: Any) -> dict[str, Any]:
     }
 
 
+def _validate_investigation_proof_v3(value: Any) -> dict[str, Any]:
+    fields = {
+        "schema",
+        "packet_id",
+        "packet_sha256",
+        "status",
+        "adjudication",
+        "model_invocations",
+        "comparison",
+        "claims",
+        "evidence",
+        "validators",
+        "scope",
+        "budget_use",
+        "model_advisory",
+        "finalized_at",
+        "plan",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or value.get("schema") != INVESTIGATION_PROOF_SCHEMA_V3
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+
+    invocation_fields = {
+        "invocation_id",
+        "turn_kind",
+        "attempt",
+        "model",
+        "location",
+        "framework",
+        "framework_version",
+        "client_version",
+        "prompt_version",
+        "policy_version",
+        "inventory_sha256",
+        "normalized_input_sha256",
+        "input_evidence_ids",
+        "output_sha256",
+        "latency_ms",
+        "usage",
+        "result_class",
+        "error_code",
+        "trace_id",
+        "derivation_sha256",
+    }
+    usage_fields = {
+        "input_tokens",
+        "output_tokens",
+        "model_calls",
+        "unobserved_model_calls",
+    }
+    raw_invocations = value.get("model_invocations")
+    if not isinstance(raw_invocations, list) or not 2 <= len(raw_invocations) <= 6:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    invocations: list[dict[str, Any]] = []
+    legacy_invocations: list[dict[str, Any]] = []
+    invocation_ids: set[str] = set()
+    attempts: set[tuple[str, int]] = set()
+    attempt_counts: dict[str, int] = {}
+    previous_turn: str | None = None
+    for raw in raw_invocations:
+        if not isinstance(raw, Mapping) or set(raw) != invocation_fields:
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        invocation_id = raw.get("invocation_id")
+        derivation_sha256 = _require_digest(
+            raw.get("derivation_sha256"), code="demo-investigation-proof-invalid"
+        )
+        turn_kind = raw.get("turn_kind")
+        attempt = raw.get("attempt")
+        prompt_version = raw.get("prompt_version")
+        result_class = raw.get("result_class")
+        error_code = raw.get("error_code")
+        trace_id = raw.get("trace_id")
+        usage = raw.get("usage")
+        input_evidence_ids = raw.get("input_evidence_ids")
+        expected_attempt = attempt_counts.get(cast(str, turn_kind), 0) + 1
+        if (
+            not isinstance(invocation_id, str)
+            or _MODEL_INVOCATION_ID.fullmatch(invocation_id) is None
+            or invocation_id != f"model-invocation:{derivation_sha256.removeprefix('sha256:')}"
+            or invocation_id in invocation_ids
+            or turn_kind not in {"evidence-selection", "response-drafting"}
+            or not isinstance(attempt, int)
+            or isinstance(attempt, bool)
+            or not 1 <= attempt <= 6
+            or attempt != expected_attempt
+            or (cast(str, turn_kind), attempt) in attempts
+            or (previous_turn == "response-drafting" and turn_kind == "evidence-selection")
+            or prompt_version
+            != {
+                "evidence-selection": "evidence-selection/v1",
+                "response-drafting": "response-drafting/v1",
+            }[cast(str, turn_kind)]
+            or raw.get("model") != "gemini-3.5-flash"
+            or raw.get("location") != "global"
+            or raw.get("framework") != "google-adk"
+            or raw.get("framework_version") != "2.6.3"
+            or raw.get("client_version") != "2.17.0"
+            or raw.get("policy_version") != "bounded-investigation/v1"
+            or result_class not in {"accepted", "budget-rejected", "failed", "invalid"}
+            or (
+                error_code is not None
+                and (
+                    not isinstance(error_code, str)
+                    or re.fullmatch(r"[a-z][a-z0-9_]{1,63}", error_code) is None
+                )
+            )
+            or not isinstance(trace_id, str)
+            or re.fullmatch(r"[0-9a-f]{32}", trace_id) is None
+            or not isinstance(usage, Mapping)
+            or set(usage) != usage_fields
+            or not isinstance(input_evidence_ids, list)
+            or len(input_evidence_ids) > 256
+            or any(not isinstance(item, str) for item in input_evidence_ids)
+            or len(set(input_evidence_ids)) != len(input_evidence_ids)
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        selected_evidence_ids = [
+            _require_identifier(item, code="demo-investigation-proof-invalid")
+            for item in input_evidence_ids
+        ]
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+        model_calls = usage.get("model_calls")
+        unobserved_model_calls = usage.get("unobserved_model_calls")
+        if (
+            (
+                input_tokens is not None
+                and (
+                    not isinstance(input_tokens, int)
+                    or isinstance(input_tokens, bool)
+                    or not 0 <= input_tokens <= 32_000
+                )
+            )
+            or (
+                output_tokens is not None
+                and (
+                    not isinstance(output_tokens, int)
+                    or isinstance(output_tokens, bool)
+                    or not 0 <= output_tokens <= 4_096
+                )
+            )
+            or (input_tokens is None) != (output_tokens is None)
+            or not isinstance(model_calls, int)
+            or isinstance(model_calls, bool)
+            or not 1 <= model_calls <= 6
+            or not isinstance(unobserved_model_calls, int)
+            or isinstance(unobserved_model_calls, bool)
+            or not 0 <= unobserved_model_calls <= model_calls
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        latency_ms = _bounded_count(
+            raw.get("latency_ms"), maximum=120_000, code="demo-investigation-proof-invalid"
+        )
+        inventory_sha256 = _require_digest(
+            raw.get("inventory_sha256"), code="demo-investigation-proof-invalid"
+        )
+        output_sha256 = _optional_digest(
+            raw.get("output_sha256"), code="demo-investigation-proof-invalid"
+        )
+        if result_class == "accepted" and (
+            error_code is not None
+            or output_sha256 is None
+            or input_tokens is None
+            or output_tokens is None
+            or unobserved_model_calls != 0
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        if result_class != "accepted" and error_code is None:
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        selected = {
+            "invocation_id": invocation_id,
+            "turn_kind": turn_kind,
+            "attempt": attempt,
+            "model": "gemini-3.5-flash",
+            "location": "global",
+            "framework": "google-adk",
+            "framework_version": "2.6.3",
+            "client_version": "2.17.0",
+            "prompt_version": prompt_version,
+            "policy_version": "bounded-investigation/v1",
+            "inventory_sha256": inventory_sha256,
+            "normalized_input_sha256": _require_digest(
+                raw.get("normalized_input_sha256"), code="demo-investigation-proof-invalid"
+            ),
+            "input_evidence_ids": selected_evidence_ids,
+            "output_sha256": output_sha256,
+            "latency_ms": latency_ms,
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "model_calls": model_calls,
+                "unobserved_model_calls": unobserved_model_calls,
+            },
+            "result_class": result_class,
+            "error_code": error_code,
+            "trace_id": trace_id,
+            "derivation_sha256": derivation_sha256,
+        }
+        invocations.append(selected)
+        legacy_invocations.append(
+            {
+                key: selected[key]
+                for key in (
+                    "invocation_id",
+                    "turn_kind",
+                    "model",
+                    "framework",
+                    "result_class",
+                    "inventory_sha256",
+                    "output_sha256",
+                    "trace_id",
+                )
+            }
+        )
+        invocation_ids.add(invocation_id)
+        attempts.add((cast(str, turn_kind), attempt))
+        attempt_counts[cast(str, turn_kind)] = attempt
+        previous_turn = cast(str, turn_kind)
+
+    evidence_fields = {
+        "evidence_id",
+        "query_key",
+        "tool",
+        "inventory_sha256",
+        "content_sha256",
+        "freshness",
+        "display_excerpt",
+        "display_excerpt_truncated",
+        "source",
+        "timing",
+    }
+    source_fields = set(_MCP_SOURCE_IDENTITY) | {
+        "tool",
+        "tool_input_schema_sha256",
+        "tool_annotations_sha256",
+        "inventory_version",
+    }
+    timing_fields = {"source_time", "event_time", "retrieved_at"}
+    raw_evidence = value.get("evidence")
+    if not isinstance(raw_evidence, list) or not 1 <= len(raw_evidence) <= 8:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    evidence: list[dict[str, Any]] = []
+    legacy_evidence: list[dict[str, Any]] = []
+    evidence_ids: set[str] = set()
+    retrieved_times: list[datetime] = []
+    tool_bindings: dict[str, tuple[str, str]] = {}
+    for raw in raw_evidence:
+        if not isinstance(raw, Mapping) or set(raw) != evidence_fields:
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        source = raw.get("source")
+        timing = raw.get("timing")
+        query_key = raw.get("query_key")
+        if (
+            not isinstance(source, Mapping)
+            or set(source) != source_fields
+            or any(source.get(key) != expected for key, expected in _MCP_SOURCE_IDENTITY.items())
+            or query_key not in _INVESTIGATION_TOOLS
+            or source.get("tool") != raw.get("tool")
+            or source.get("tool") != _INVESTIGATION_TOOLS[cast(str, query_key)]
+            or source.get("inventory_version") != raw.get("inventory_sha256")
+            or not isinstance(source.get("tool_input_schema_sha256"), str)
+            or _HEX_DIGEST.fullmatch(cast(str, source["tool_input_schema_sha256"])) is None
+            or not isinstance(source.get("tool_annotations_sha256"), str)
+            or _HEX_DIGEST.fullmatch(cast(str, source["tool_annotations_sha256"])) is None
+            or not isinstance(timing, Mapping)
+            or set(timing) != timing_fields
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        source_time = timing.get("source_time")
+        event_time = timing.get("event_time")
+        retrieved_at = timing.get("retrieved_at")
+        parsed_source = (
+            None
+            if source_time is None
+            else _parse_timestamp(source_time, code="demo-investigation-proof-invalid")
+        )
+        parsed_event = (
+            None
+            if event_time is None
+            else _parse_timestamp(event_time, code="demo-investigation-proof-invalid")
+        )
+        parsed_retrieved = _parse_timestamp(retrieved_at, code="demo-investigation-proof-invalid")
+        if (parsed_source is not None and parsed_source > parsed_retrieved) or (
+            parsed_event is not None and parsed_event > parsed_retrieved
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        retrieved_times.append(parsed_retrieved)
+        evidence_id = _require_digest(
+            raw.get("evidence_id"), code="demo-investigation-proof-invalid"
+        )
+        if evidence_id in evidence_ids:
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        evidence_ids.add(evidence_id)
+        tool = cast(str, source["tool"])
+        binding = (
+            cast(str, source["tool_input_schema_sha256"]),
+            cast(str, source["tool_annotations_sha256"]),
+        )
+        if tool in tool_bindings and tool_bindings[tool] != binding:
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        tool_bindings[tool] = binding
+        selected = {
+            "evidence_id": evidence_id,
+            "query_key": query_key,
+            "tool": raw["tool"],
+            "inventory_sha256": _require_digest(
+                raw.get("inventory_sha256"), code="demo-investigation-proof-invalid"
+            ),
+            "content_sha256": _require_digest(
+                raw.get("content_sha256"), code="demo-investigation-proof-invalid"
+            ),
+            "freshness": raw.get("freshness"),
+            "display_excerpt": _plain_text_excerpt(raw.get("display_excerpt")),
+            "display_excerpt_truncated": raw.get("display_excerpt_truncated"),
+            "source": {
+                **_MCP_SOURCE_IDENTITY,
+                "tool": source["tool"],
+                "tool_input_schema_sha256": source["tool_input_schema_sha256"],
+                "tool_annotations_sha256": source["tool_annotations_sha256"],
+                "inventory_version": _require_digest(
+                    source.get("inventory_version"), code="demo-investigation-proof-invalid"
+                ),
+            },
+            "timing": {
+                "source_time": source_time,
+                "event_time": event_time,
+                "retrieved_at": retrieved_at,
+            },
+        }
+        if not isinstance(selected["display_excerpt_truncated"], bool):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        evidence.append(selected)
+        legacy_evidence.append(
+            {
+                key: selected[key]
+                for key in (
+                    "evidence_id",
+                    "query_key",
+                    "tool",
+                    "inventory_sha256",
+                    "content_sha256",
+                    "freshness",
+                    "display_excerpt",
+                    "display_excerpt_truncated",
+                )
+            }
+        )
+
+    legacy = _validate_investigation_proof_v2(
+        {
+            key: child
+            for key, child in value.items()
+            if key
+            not in {
+                "schema",
+                "model_invocations",
+                "evidence",
+                "model_advisory",
+                "finalized_at",
+            }
+        }
+        | {
+            "schema": INVESTIGATION_PROOF_SCHEMA_V2,
+            "model_invocations": legacy_invocations,
+            "evidence": legacy_evidence,
+        }
+    )
+    accepted = [item for item in invocations if item["result_class"] == "accepted"]
+    if any(
+        sum(item["turn_kind"] == turn for item in accepted) != 1
+        for turn in ("evidence-selection", "response-drafting")
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    if {item["query_key"] for item in evidence} != set(_INVESTIGATION_TOOLS):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    if any(not set(item["input_evidence_ids"]).issubset(evidence_ids) for item in invocations):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+
+    renders = cast(list[dict[str, str]], legacy["comparison"]["renders"])
+    renders_by_job = {item["job_id"]: item for item in renders}
+    if (
+        set(renders_by_job) != {"job-a-02", "job-b-02"}
+        or renders_by_job["job-a-02"]["worker_id"] != "A"
+        or renders_by_job["job-b-02"]["worker_id"] != "B"
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    expected_claims = {
+        "causal-resource": {
+            "state": "confirmed",
+            "subject": {
+                "kind": "resource-sha256",
+                "value": renders_by_job["job-b-02"]["resolved_lut_sha256"].removeprefix("sha256:"),
+            },
+            "reason_codes": ["causal-resource-confirmed"],
+        },
+        "nominal-config": {
+            "state": "rejected",
+            "subject": {
+                "kind": "config-sha256",
+                "value": renders_by_job["job-a-02"]["nominal_config_sha256"].removeprefix(
+                    "sha256:"
+                ),
+            },
+            "reason_codes": ["nominal-config-authoritatively-rejected"],
+        },
+        "worker-alone": {
+            "state": "rejected",
+            "subject": {"kind": "worker-id", "value": "B"},
+            "reason_codes": ["worker-alone-authoritatively-rejected"],
+        },
+        "distractor": {
+            "state": "rejected",
+            "subject": {"kind": "event-id", "value": "distractor-01"},
+            "reason_codes": ["distractor-authoritatively-rejected"],
+        },
+    }
+    claims = cast(list[dict[str, Any]], legacy["claims"])
+    claims_by_type = {item["claim_type"]: item for item in claims}
+    if len(claims_by_type) != len(claims) or set(claims_by_type) != set(expected_claims):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    if any(
+        {
+            "state": claims_by_type[claim_type]["state"],
+            "subject": claims_by_type[claim_type]["subject"],
+            "reason_codes": claims_by_type[claim_type]["reason_codes"],
+        }
+        != expected
+        for claim_type, expected in expected_claims.items()
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    budget = cast(Mapping[str, int], legacy["budget_use"])
+    if (
+        sum(cast(int, item["usage"]["model_calls"]) for item in invocations)
+        != budget["model_turns"]
+        or sum(cast(int, item["usage"]["input_tokens"] or 0) for item in invocations)
+        != budget["input_tokens"]
+        or sum(cast(int, item["usage"]["output_tokens"] or 0) for item in invocations)
+        != budget["output_tokens"]
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    advisory = value.get("model_advisory")
+    if not isinstance(advisory, Mapping) or set(advisory) != {
+        "trust",
+        "summary",
+        "evidence_ids",
+        "output_sha256",
+    }:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    advisory_evidence_ids = advisory.get("evidence_ids")
+    if (
+        advisory.get("trust") != "untrusted-model-output"
+        or not isinstance(advisory_evidence_ids, list)
+        or not 1 <= len(advisory_evidence_ids) <= 32
+        or any(not isinstance(item, str) for item in advisory_evidence_ids)
+        or len(set(advisory_evidence_ids)) != len(advisory_evidence_ids)
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    selected_advisory_ids = [
+        _require_digest(item, code="demo-investigation-proof-invalid")
+        for item in advisory_evidence_ids
+    ]
+    drafting = next(item for item in accepted if item["turn_kind"] == "response-drafting")
+    advisory_output = _require_digest(
+        advisory.get("output_sha256"), code="demo-investigation-proof-invalid"
+    )
+    if (
+        not set(selected_advisory_ids).issubset(evidence_ids)
+        or advisory_output != drafting["output_sha256"]
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    finalized_at = value.get("finalized_at")
+    finalized = _parse_timestamp(finalized_at, code="demo-investigation-proof-invalid")
+    if any(retrieved > finalized for retrieved in retrieved_times):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    return {
+        **legacy,
+        "schema": INVESTIGATION_PROOF_SCHEMA_V3,
+        "model_invocations": invocations,
+        "evidence": evidence,
+        "model_advisory": {
+            "trust": "untrusted-model-output",
+            "summary": _plain_text_excerpt(advisory.get("summary")),
+            "evidence_ids": selected_advisory_ids,
+            "output_sha256": advisory_output,
+        },
+        "finalized_at": finalized_at,
+    }
+
+
 def _validate_investigation_proof(
     value: Any,
     *,
     stored: bool = False,
 ) -> dict[str, Any]:
     schema = value.get("schema") if isinstance(value, Mapping) else None
-    if schema == INVESTIGATION_PROOF_SCHEMA:
+    if schema == INVESTIGATION_PROOF_SCHEMA_V3:
+        return _validate_investigation_proof_v3(value)
+    if stored and schema == INVESTIGATION_PROOF_SCHEMA_V2:
         return _validate_investigation_proof_v2(value)
     if stored and schema == INVESTIGATION_PROOF_SCHEMA_V1:
         return _validate_investigation_proof_v1(value)
@@ -1304,6 +1822,90 @@ _PREPARATION_FIELDS = frozenset(
     }
 )
 _PREPARATION_PROOF_FIELDS = _PREPARATION_FIELDS | {"investigation"}
+
+
+def _validate_scenario_preview(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != {"comparison", "visual_comparison"}:
+        raise DemoFacadeError("demo-preview-invalid")
+    comparison = value.get("comparison")
+    if (
+        not isinstance(comparison, Mapping)
+        or set(comparison) != {"renders", "nominal_config_match", "resolved_lut_match"}
+        or comparison.get("nominal_config_match") is not True
+        or comparison.get("resolved_lut_match") is not False
+    ):
+        raise DemoFacadeError("demo-preview-invalid")
+    raw_renders = comparison.get("renders")
+    expected_workers = {"job-a-02": "A", "job-b-02": "B"}
+    if not isinstance(raw_renders, list) or len(raw_renders) != 2:
+        raise DemoFacadeError("demo-preview-invalid")
+    renders: list[dict[str, str]] = []
+    for raw in raw_renders:
+        if (
+            not isinstance(raw, Mapping)
+            or set(raw)
+            != {
+                "job_id",
+                "worker_id",
+                "status",
+                "nominal_config_sha256",
+                "resolved_lut_sha256",
+            }
+            or raw.get("job_id") not in expected_workers
+            or raw.get("worker_id") != expected_workers[cast(str, raw.get("job_id"))]
+            or raw.get("status") != "succeeded"
+        ):
+            raise DemoFacadeError("demo-preview-invalid")
+        renders.append(
+            {
+                "job_id": cast(str, raw["job_id"]),
+                "worker_id": cast(str, raw["worker_id"]),
+                "status": "succeeded",
+                "nominal_config_sha256": _require_digest(
+                    raw.get("nominal_config_sha256"), code="demo-preview-invalid"
+                ),
+                "resolved_lut_sha256": _require_digest(
+                    raw.get("resolved_lut_sha256"), code="demo-preview-invalid"
+                ),
+            }
+        )
+    if (
+        {item["job_id"] for item in renders} != set(expected_workers)
+        or len({item["nominal_config_sha256"] for item in renders}) != 1
+        or len({item["resolved_lut_sha256"] for item in renders}) != 2
+    ):
+        raise DemoFacadeError("demo-preview-invalid")
+    raw_visuals = value.get("visual_comparison")
+    kinds = {"expected", "observed", "diff"}
+    if not isinstance(raw_visuals, Mapping) or set(raw_visuals) != kinds:
+        raise DemoFacadeError("demo-preview-invalid")
+    visuals: dict[str, dict[str, str]] = {}
+    for kind in sorted(kinds):
+        raw = raw_visuals[kind]
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "href",
+            "sha256",
+            "media_type",
+            "label",
+        }:
+            raise DemoFacadeError("demo-preview-invalid")
+        selected = {
+            "href": f"/v1/demo/visuals/{kind}",
+            "sha256": _require_digest(raw.get("sha256"), code="demo-preview-invalid"),
+            "media_type": "image/png",
+            "label": "illustrative-authored-fixture",
+        }
+        if dict(raw) != selected:
+            raise DemoFacadeError("demo-preview-invalid")
+        visuals[kind] = selected
+    return {
+        "comparison": {
+            "renders": renders,
+            "nominal_config_match": True,
+            "resolved_lut_match": False,
+        },
+        "visual_comparison": visuals,
+    }
 
 
 def _validate_preparation(
@@ -1971,9 +2573,97 @@ class SQLiteDemoRunStore:
             for row in rows
         }
 
+    @staticmethod
+    def _timeline(
+        connection: sqlite3.Connection,
+        run: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        run_id = cast(str, run["run_id"])
+        version = cast(int, run["version"])
+        proof_times = {
+            cast(str, row["stage"]): cast(str, row["created_at"])
+            for row in connection.execute(
+                "SELECT stage, created_at FROM demo_proofs WHERE run_id = ?",
+                (run_id,),
+            ).fetchall()
+        }
+        operation_times = {
+            cast(str, row["operation"]): cast(str, row["created_at"])
+            for row in connection.execute(
+                "SELECT operation, created_at FROM demo_operations WHERE run_id = ?",
+                (run_id,),
+            ).fetchall()
+        }
+        terminal_at = cast(str | None, run.get("terminal_at"))
+        terminal_version = version if run["phase"] in _TERMINAL_PHASES else None
+
+        def terminal_kind() -> str:
+            reason = cast(str | None, run.get("terminal_reason"))
+            if isinstance(reason, str) and reason.startswith("plan-rejected-"):
+                return "plan-rejected"
+            if run["phase"] == "expired":
+                return "run-expired"
+            if run["phase"] == "closed":
+                return "recovery-closed"
+            return "run-unresolved"
+
+        events: list[dict[str, Any]] = [
+            {
+                "run_version": 1,
+                "kind": "run-created",
+                "phase": "preparing",
+                "recorded_at": run["created_at"],
+            }
+        ]
+        successful = {
+            2: ("investigation-completed", "awaiting-approval", proof_times.get("investigation")),
+            3: ("approval-submitted", "executing", operation_times.get("approve")),
+            4: ("recovery-verified", "awaiting-closure", proof_times.get("execution")),
+            5: ("closure-submitted", "closing", operation_times.get("close")),
+            6: ("recovery-closed", "closed", terminal_at),
+        }
+        for run_version in range(2, version + 1):
+            if terminal_version == run_version:
+                kind = terminal_kind()
+                phase = cast(str, run["phase"])
+                recorded_at = terminal_at
+            else:
+                candidate = successful.get(run_version)
+                if candidate is None:
+                    raise DemoFacadeError("stored-demo-run-invalid")
+                kind, phase, recorded_at = candidate
+            if recorded_at is None:
+                raise DemoFacadeError("stored-demo-run-invalid")
+            events.append(
+                {
+                    "run_version": run_version,
+                    "kind": kind,
+                    "phase": phase,
+                    "recorded_at": recorded_at,
+                }
+            )
+        parsed = [
+            _parse_timestamp(item["recorded_at"], code="stored-demo-run-invalid") for item in events
+        ]
+        if (
+            any(later < earlier for earlier, later in zip(parsed, parsed[1:], strict=False))
+            or events[-1]["phase"] != run["phase"]
+            or [item["run_version"] for item in events] != list(range(1, version + 1))
+        ):
+            raise DemoFacadeError("stored-demo-run-invalid")
+        return events
+
     @classmethod
     def _projection(cls, connection: sqlite3.Connection, run: Mapping[str, Any]) -> dict[str, Any]:
         phase = cast(str, run["phase"])
+        proofs = cls._proofs(connection, cast(str, run["run_id"]))
+        investigation = proofs.get("investigation")
+        run_schema = (
+            RUN_SCHEMA_V1
+            if investigation is not None
+            and investigation["schema"] != INVESTIGATION_PROOF_SCHEMA_V3
+            else RUN_SCHEMA_V2
+        )
         approval = None
         if run.get("plan_sha256") is not None:
             approval = {
@@ -1997,7 +2687,7 @@ class SQLiteDemoRunStore:
             }
         terminal = phase in _TERMINAL_PHASES
         result = {
-            "schema": RUN_SCHEMA,
+            "schema": run_schema,
             "run_id": run["run_id"],
             "incident_id": run["incident_id"],
             "scenario_id": run["scenario_id"],
@@ -2021,7 +2711,9 @@ class SQLiteDemoRunStore:
             "receipt_href": (f"/v1/demo/runs/{run['run_id']}/receipt" if terminal else None),
             "reset": cls._is_reset(connection, cast(str, run["run_id"])),
         }
-        result.update(cls._proofs(connection, cast(str, run["run_id"])))
+        if run_schema == RUN_SCHEMA_V2:
+            result["timeline"] = cls._timeline(connection, run)
+        result.update(proofs)
         return result
 
     @classmethod
@@ -3059,6 +3751,32 @@ class DemoFacade:
         for descriptor in visuals:
             self._verify_visual(descriptor)
 
+    def preview(self) -> dict[str, Any]:
+        selected = _validate_scenario_preview(self._workflow.preview())
+        return {
+            "schema": SCENARIO_PREVIEW_SCHEMA,
+            "scenario_id": CANONICAL_SCENARIO,
+            "source_commit": self._source_commit,
+            "build_sha256": self._build_sha256,
+            **selected,
+        }
+
+    def preview_visual(self, kind: str) -> DemoVisual:
+        if kind not in {"expected", "observed", "diff"}:
+            raise DemoFacadeError("demo-visual-not-found")
+        visual = self._workflow.preview_visual(kind)
+        if (
+            not isinstance(visual, DemoVisual)
+            or visual.media_type != "image/png"
+            or not isinstance(visual.content, bytes)
+            or not visual.content.startswith(b"\x89PNG\r\n\x1a\n")
+            or not 1 <= len(visual.content) <= _MAX_VISUAL_BYTES
+            or _require_digest(visual.sha256, code="demo-preview-invalid")
+            != f"sha256:{hashlib.sha256(visual.content).hexdigest()}"
+        ):
+            raise DemoFacadeError("demo-preview-invalid")
+        return visual
+
     def start(self, body: Mapping[str, Any]) -> dict[str, Any]:
         with self._operation_lock:
             return self._start(body)
@@ -3845,6 +4563,10 @@ __all__ = [
     "DemoVisual",
     "DemoWorkflowPort",
     "EXECUTION_SCHEMA",
+    "INVESTIGATION_PROOF_SCHEMA",
+    "INVESTIGATION_PROOF_SCHEMA_V1",
+    "INVESTIGATION_PROOF_SCHEMA_V2",
+    "INVESTIGATION_PROOF_SCHEMA_V3",
     "LEASE_SECONDS",
     "PREPARATION_SCHEMA",
     "RECEIPT_SCHEMA",
@@ -3854,5 +4576,8 @@ __all__ = [
     "RESET_SCHEMA",
     "RUN_REQUEST_SCHEMA",
     "RUN_SCHEMA",
+    "RUN_SCHEMA_V1",
+    "RUN_SCHEMA_V2",
+    "SCENARIO_PREVIEW_SCHEMA",
     "SQLiteDemoRunStore",
 ]

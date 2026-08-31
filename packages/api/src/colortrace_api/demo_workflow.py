@@ -37,6 +37,7 @@ from .demo_facade import (
     INVESTIGATION_PROOF_SCHEMA,
     PREPARATION_SCHEMA,
     DemoFacadeError,
+    DemoVisual,
     DemoWorkflowPort,
 )
 from .recovery import RecoveryApi
@@ -58,6 +59,28 @@ _VISUAL_SOURCES = {
     "observed": "runtime/display/output-job-b-02.png",
     "diff": "reports/diffs/job-b-02.png",
 }
+_COMPARISON_SOURCES = frozenset(
+    {
+        "runtime/manifests/jobs/job-a-02.json",
+        "runtime/manifests/jobs/job-b-02.json",
+        "runtime/manifests/resources/resource-job-a-02.json",
+        "runtime/manifests/resources/resource-job-b-02.json",
+    }
+)
+_CANONICAL_DIGEST_FIELDS = frozenset(
+    {
+        "schema",
+        "files",
+        "fixture_id",
+        "fixture_version",
+        "generator_version",
+        "ocio_version",
+        "oracle_sha256",
+        "seed",
+        "source_pixel_sha256",
+        "tree_sha256",
+    }
+)
 _REJECTION_RESULT_SCHEMA = "colortrace-demo-rejection-result/v1"
 
 
@@ -277,6 +300,7 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
         visual_root: Path,
         issuer: str,
         audience: str,
+        canonical_digests_path: Path | None = None,
         clock: Callable[[], datetime] = _utc_now,
         recovery_settle_seconds: float = 0.0,
         sleeper: Callable[[float], None] = time.sleep,
@@ -300,6 +324,11 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
         self._visual_root = visual_root
         self._issuer = issuer
         self._audience = audience
+        self._canonical_files = (
+            None
+            if canonical_digests_path is None
+            else self._load_canonical_digests(canonical_digests_path)
+        )
         self._clock = clock
         self._recovery_settle_seconds = float(recovery_settle_seconds)
         self._sleeper = sleeper
@@ -345,7 +374,15 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
         )
 
     @staticmethod
-    def _read_json(path: Path) -> dict[str, Any]:
+    def _read_json_document(path: Path) -> tuple[dict[str, Any], bytes]:
+        def reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            selected: dict[str, Any] = {}
+            for key, child in pairs:
+                if key in selected:
+                    raise ValueError("duplicate key")
+                selected[key] = child
+            return selected
+
         try:
             metadata = path.lstat()
             if (
@@ -355,12 +392,97 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
                 or metadata.st_size > _MAX_JSON_BYTES
             ):
                 raise OSError
-            value = json.loads(path.read_bytes())
+            descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            try:
+                opened = os.fstat(descriptor)
+                if (
+                    (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
+                    or not stat.S_ISREG(opened.st_mode)
+                    or opened.st_nlink != 1
+                    or opened.st_size > _MAX_JSON_BYTES
+                ):
+                    raise OSError
+                chunks: list[bytes] = []
+                remaining = _MAX_JSON_BYTES + 1
+                while remaining:
+                    chunk = os.read(descriptor, min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                raw = b"".join(chunks)
+            finally:
+                os.close(descriptor)
+            if len(raw) != opened.st_size or len(raw) > _MAX_JSON_BYTES:
+                raise OSError
+            value = json.loads(
+                raw.decode("utf-8"),
+                object_pairs_hook=reject_duplicate_pairs,
+                parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("constant")),
+            )
         except (OSError, UnicodeError, ValueError):
             raise DemoFacadeError("demo-workflow-artifact-invalid") from None
         if not isinstance(value, dict):
             raise DemoFacadeError("demo-workflow-artifact-invalid")
-        return cast(dict[str, Any], value)
+        return cast(dict[str, Any], value), raw
+
+    @classmethod
+    def _read_json(cls, path: Path) -> dict[str, Any]:
+        value, _raw = cls._read_json_document(path)
+        return value
+
+    @classmethod
+    def _load_canonical_digests(cls, path: Path) -> dict[str, str]:
+        value = cls._read_json(path)
+        files = value.get("files")
+        tree_sha256 = value.get("tree_sha256")
+        required = frozenset(_VISUAL_SOURCES.values()) | _COMPARISON_SOURCES
+        if (
+            set(value) != _CANONICAL_DIGEST_FIELDS
+            or value.get("schema") != "fixture-canonical-digests/v1"
+            or value.get("fixture_id") != "ct-shadowed-lut-v1"
+            or value.get("seed") != "ct-shadowed-lut-v1:canonical"
+            or not isinstance(files, dict)
+            or not isinstance(tree_sha256, str)
+            or _FIXTURE_DIGEST.fullmatch(tree_sha256) is None
+            or not required.issubset(files)
+            or any(
+                not isinstance(relative, str)
+                or not relative
+                or Path(relative).is_absolute()
+                or ".." in Path(relative).parts
+                or not isinstance(digest, str)
+                or _FIXTURE_DIGEST.fullmatch(digest) is None
+                for relative, digest in files.items()
+            )
+            or hashlib.sha256(canonical_json_bytes(files)).hexdigest() != tree_sha256
+        ):
+            raise DemoFacadeError("demo-workflow-canonical-digests-invalid")
+        return cast(dict[str, str], dict(files))
+
+    def _canonical_digest(self, relative: str) -> str:
+        files = self._canonical_files
+        if files is None or relative not in files:
+            raise DemoFacadeError("demo-workflow-canonical-digests-invalid")
+        return f"sha256:{files[relative]}"
+
+    def _canonical_json(self, relative: str) -> dict[str, Any]:
+        if relative not in _COMPARISON_SOURCES:
+            raise DemoFacadeError("demo-workflow-artifact-invalid")
+        path = self._fixture_bundle / relative
+        value, raw = self._read_json_document(path)
+        if _file_digest(raw) != self._canonical_digest(relative):
+            raise DemoFacadeError("demo-workflow-artifact-invalid")
+        return value
+
+    def _canonical_png(self, kind: str) -> bytes:
+        relative = _VISUAL_SOURCES.get(kind)
+        if relative is None:
+            raise DemoFacadeError("demo-visual-not-found")
+        data = self._read_png(self._fixture_bundle / relative, root=self._fixture_bundle)
+        if _file_digest(data) != self._canonical_digest(relative):
+            raise DemoFacadeError("demo-workflow-visual-digest-conflict")
+        return data
 
     @staticmethod
     def _read_png(source: Path, *, root: Path) -> bytes:
@@ -457,6 +579,9 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
         }
 
     def _preparation_visuals(self, run_id: str) -> list[dict[str, str]]:
+        if self._canonical_files is not None:
+            for kind in _VISUAL_SOURCES:
+                self._canonical_png(kind)
         return [
             self._write_visual(
                 run_id,
@@ -466,6 +591,25 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
             )
             for kind, relative in sorted(_VISUAL_SOURCES.items())
         ]
+
+    def preview(self) -> Mapping[str, Any]:
+        visuals: dict[str, dict[str, str]] = {}
+        for kind in sorted(_VISUAL_SOURCES):
+            data = self._canonical_png(kind)
+            visuals[kind] = {
+                "href": f"/v1/demo/visuals/{kind}",
+                "sha256": _file_digest(data),
+                "media_type": "image/png",
+                "label": "illustrative-authored-fixture",
+            }
+        return {
+            "comparison": self._render_comparison(),
+            "visual_comparison": visuals,
+        }
+
+    def preview_visual(self, kind: str) -> DemoVisual:
+        data = self._canonical_png(kind)
+        return DemoVisual(content=data, media_type="image/png", sha256=_file_digest(data))
 
     def _recovered_visual(self, run_id: str) -> dict[str, str]:
         publication = self._simulator_runtime.recovery_publication
@@ -519,8 +663,11 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
     def _render_comparison(self) -> dict[str, Any]:
         renders: list[dict[str, str]] = []
         for job_id, worker_id in (("job-a-02", "A"), ("job-b-02", "B")):
-            job = self._read_json(
-                self._fixture_bundle / "runtime" / "manifests" / "jobs" / f"{job_id}.json"
+            job_relative = f"runtime/manifests/jobs/{job_id}.json"
+            job = (
+                self._read_json(self._fixture_bundle / job_relative)
+                if self._canonical_files is None
+                else self._canonical_json(job_relative)
             )
             resource_path = job.get("resource_manifest")
             if (
@@ -535,7 +682,11 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
                 or resource_path != f"runtime/manifests/resources/resource-{job_id}.json"
             ):
                 raise DemoFacadeError("demo-investigation-comparison-invalid")
-            resource = self._read_json(self._fixture_bundle / resource_path)
+            resource = (
+                self._read_json(self._fixture_bundle / resource_path)
+                if self._canonical_files is None
+                else self._canonical_json(resource_path)
+            )
             ordered = resource.get("ordered_resources")
             if (
                 resource.get("schema") != "resolved-resource-manifest/v1"
@@ -686,12 +837,24 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
             {
                 "invocation_id": item["invocation_id"],
                 "turn_kind": item["turn_kind"],
+                "attempt": item["attempt"],
                 "model": item["model"],
+                "location": item["location"],
                 "framework": item["framework"],
+                "framework_version": item["framework_version"],
+                "client_version": item["client_version"],
+                "prompt_version": item["prompt_version"],
+                "policy_version": item["policy_version"],
                 "result_class": item["result_class"],
                 "inventory_sha256": item["tool_inventory_version"],
+                "normalized_input_sha256": item["normalized_input_sha256"],
+                "input_evidence_ids": list(cast(Sequence[str], item["input_evidence_ids"])),
                 "output_sha256": item["output_sha256"],
+                "latency_ms": item["latency_ms"],
+                "usage": dict(cast(Mapping[str, Any], item["usage"])),
+                "error_code": item["error_code"],
                 "trace_id": item["trace_id"],
+                "derivation_sha256": item["derivation_sha256"],
             }
             for item in invocation_records
         ]
@@ -721,6 +884,25 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
                     "freshness": certified_freshness,
                     "display_excerpt": display_excerpt,
                     "display_excerpt_truncated": display_excerpt_truncated,
+                    "source": {
+                        key: source[key]
+                        for key in (
+                            "kind",
+                            "server",
+                            "server_version",
+                            "server_commit",
+                            "binary_sha256",
+                            "mcp_sdk_version",
+                            "mcp_protocol_version",
+                            "tool",
+                            "tool_input_schema_sha256",
+                            "tool_annotations_sha256",
+                            "inventory_version",
+                        )
+                    },
+                    "timing": {
+                        key: timing[key] for key in ("source_time", "event_time", "retrieved_at")
+                    },
                 }
             )
         validators = [
@@ -752,6 +934,7 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
             plan_status=plan_status,
             target_sha256=target_sha256,
         )
+        advisory = cast(Mapping[str, Any] | None, packet.get("model_advisory"))
         return {
             "schema": INVESTIGATION_PROOF_SCHEMA,
             "packet_id": packet["packet_id"],
@@ -785,6 +968,17 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
                     "validator_calls",
                 )
             },
+            "model_advisory": (
+                None
+                if advisory is None
+                else {
+                    "trust": advisory["trust"],
+                    "summary": advisory["summary"],
+                    "evidence_ids": list(cast(Sequence[str], advisory["evidence_ids"])),
+                    "output_sha256": advisory["output_sha256"],
+                }
+            ),
+            "finalized_at": packet["finalized_at"],
             "plan": plan_review,
         }
 

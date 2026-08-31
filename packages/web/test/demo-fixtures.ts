@@ -7,11 +7,16 @@ import {
   type DemoExecutionProof,
   type DemoInvestigationProofV1,
   type DemoInvestigationProofV2,
+  type DemoInvestigationProofV3,
   type DemoPlanCommand,
+  type DemoPreviewVisualKind,
   type DemoReceipt,
   type DemoRejectionReason,
   type DemoReset,
   type DemoRun,
+  type DemoRunV1,
+  type DemoScenarioPreview,
+  type DemoTimelineItem,
   type DemoVisualKind,
 } from "../src/demo-api.ts";
 
@@ -147,7 +152,7 @@ function target(kind: "color-resource" | "frame" | "derivative", id: string) {
   };
 }
 
-export function investigationProof(): DemoInvestigationProofV2 {
+export function investigationProofV2(): DemoInvestigationProofV2 {
   const legacy = investigationProofV1();
   const validators = legacy.validators.map((validator) => ({
     ...validator,
@@ -336,6 +341,117 @@ export function investigationProof(): DemoInvestigationProofV2 {
   };
 }
 
+export function investigationProof(): DemoInvestigationProofV3 {
+  const v2 = investigationProofV2();
+  const retrievedAt = "2026-08-23T12:00:01.000Z";
+  const modelInvocations = v2.model_invocations.map((invocation, index) => {
+    const derivationSha256 = `sha256:${String(index + 3).repeat(64)}`;
+    return {
+      invocation_id: `model-invocation:${derivationSha256.slice("sha256:".length)}`,
+      turn_kind: invocation.turn_kind,
+      attempt: 1,
+      model: invocation.model,
+      location: "global",
+      framework: invocation.framework,
+      framework_version: "2.6.3",
+      client_version: "2.17.0",
+      prompt_version:
+        invocation.turn_kind === "evidence-selection"
+          ? "evidence-selection/v1"
+          : "response-drafting/v1",
+      policy_version: "bounded-investigation/v1",
+      inventory_sha256: invocation.inventory_sha256,
+      normalized_input_sha256: `sha256:${String(index + 1).repeat(64)}`,
+      input_evidence_ids:
+        invocation.turn_kind === "response-drafting"
+          ? v2.evidence.map((item) => item.evidence_id)
+          : [],
+      output_sha256: invocation.output_sha256,
+      latency_ms: 120 + index,
+      usage: {
+        input_tokens: index === 0 ? 60 : 40,
+        output_tokens: index === 0 ? 0 : 20,
+        model_calls: 1,
+        unobserved_model_calls: 0,
+      },
+      result_class: invocation.result_class,
+      error_code: null,
+      trace_id: invocation.trace_id,
+      derivation_sha256: derivationSha256,
+    };
+  });
+  return {
+    ...v2,
+    schema: "colortrace-demo-investigation-proof/v3",
+    claims: [
+      ...v2.claims,
+      {
+        claim_id: `claim:${"4".repeat(64)}`,
+        claim_type: "distractor",
+        subject: { kind: "event-id", value: "distractor-01" },
+        state: "rejected",
+        reason_codes: ["distractor-authoritatively-rejected"],
+        evidence_ids: v2.evidence.slice(0, 2).map((item) => item.evidence_id),
+        source_validator_result_id: v2.validators[0]?.result_id as string,
+      },
+    ],
+    model_invocations: modelInvocations,
+    evidence: v2.evidence.map((item, index) => ({
+      ...item,
+      source: {
+        kind: "grafana-mcp",
+        server: "mcp-grafana",
+        server_version: "1.1.0",
+        server_commit: "007e8d82154899a28e19e8dfe9c2bb4452c5211a",
+        binary_sha256: "5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93",
+        mcp_sdk_version: "1.29.0",
+        mcp_protocol_version: "2025-06-18",
+        tool: item.tool,
+        tool_input_schema_sha256: String(index + 4).repeat(64),
+        tool_annotations_sha256: (index + 8).toString(16).repeat(64),
+        inventory_version: item.inventory_sha256,
+      },
+      timing: {
+        source_time: index === 0 ? null : "2026-08-23T12:00:00.000Z",
+        event_time: "2026-08-23T12:00:00.000Z",
+        retrieved_at: retrievedAt,
+      },
+    })),
+    model_advisory: {
+      trust: "untrusted-model-output",
+      summary:
+        "The compared renders share one declared configuration, while their resolved LUT content differs.",
+      evidence_ids: v2.evidence.map((item) => item.evidence_id),
+      output_sha256: modelInvocations[1]?.output_sha256 as string,
+    },
+    finalized_at: "2026-08-23T12:00:02.000Z",
+  };
+}
+
+export function scenarioPreview(): DemoScenarioPreview {
+  const comparison = investigationProofV2().comparison;
+  return {
+    schema: "colortrace-demo-scenario-preview/v1",
+    scenario_id: "ct-shadowed-lut-v1:canonical",
+    source_commit: "a".repeat(40),
+    build_sha256: BUILD_DIGEST,
+    comparison,
+    visual_comparison: Object.fromEntries(
+      (["expected", "observed", "diff"] as const).map((kind) => [
+        kind,
+        {
+          href: `/v1/demo/visuals/${kind}`,
+          sha256: VISUAL_DIGESTS[kind],
+          media_type: "image/png",
+          label: "illustrative-authored-fixture",
+        },
+      ]),
+    ) as Readonly<
+      Record<DemoPreviewVisualKind, DemoScenarioPreview["visual_comparison"][DemoPreviewVisualKind]>
+    >,
+  };
+}
+
 export function executionProof(): DemoExecutionProof {
   return {
     schema: "colortrace-demo-execution-proof/v1",
@@ -370,6 +486,71 @@ export function executionProof(): DemoExecutionProof {
   };
 }
 
+function timelineForPhase(phase: DemoRun["phase"]): readonly DemoTimelineItem[] {
+  const timeline: DemoTimelineItem[] = [
+    {
+      run_version: 1,
+      kind: "run-created",
+      phase: "preparing",
+      recorded_at: "2026-08-23T12:00:00.000Z",
+    },
+  ];
+  if (phase === "preparing") return timeline;
+  timeline.push({
+    run_version: 2,
+    kind: "investigation-completed",
+    phase: "awaiting-approval",
+    recorded_at: "2026-08-23T12:00:02.000Z",
+  });
+  if (phase === "awaiting-approval") return timeline;
+  if (phase === "unresolved") {
+    timeline.push({
+      run_version: 3,
+      kind: "plan-rejected",
+      phase: "unresolved",
+      recorded_at: "2026-08-23T12:01:00.000Z",
+    });
+    return timeline;
+  }
+  timeline.push({
+    run_version: 3,
+    kind: "approval-submitted",
+    phase: "executing",
+    recorded_at: "2026-08-23T12:01:00.000Z",
+  });
+  if (phase === "executing") return timeline;
+  timeline.push({
+    run_version: 4,
+    kind: "recovery-verified",
+    phase: "awaiting-closure",
+    recorded_at: "2026-08-23T12:02:00.000Z",
+  });
+  if (phase === "awaiting-closure") return timeline;
+  if (phase === "expired") {
+    timeline.push({
+      run_version: 5,
+      kind: "run-expired",
+      phase: "expired",
+      recorded_at: "2026-08-23T12:15:00.000Z",
+    });
+    return timeline;
+  }
+  timeline.push({
+    run_version: 5,
+    kind: "closure-submitted",
+    phase: "closing",
+    recorded_at: "2026-08-23T12:02:30.000Z",
+  });
+  if (phase === "closing") return timeline;
+  timeline.push({
+    run_version: 6,
+    kind: "recovery-closed",
+    phase: "closed",
+    recorded_at: "2026-08-23T12:03:00.000Z",
+  });
+  return timeline;
+}
+
 export function demoRun(
   phase: DemoRun["phase"] = "awaiting-approval",
   overrides: Partial<DemoRun> = {},
@@ -379,26 +560,29 @@ export function demoRun(
   const recovered = phase === "awaiting-closure" || phase === "closing" || phase === "closed";
   const visualKinds: DemoVisualKind[] = ["expected", "observed", "diff"];
   if (recovered) visualKinds.push("recovered");
-  return {
-    schema: "colortrace-demo-run/v1",
+  const timeline = timelineForPhase(phase);
+  const schema = overrides.schema ?? "colortrace-demo-run/v2";
+  const selectedVersion =
+    phase === "preparing"
+      ? 1
+      : phase === "awaiting-approval"
+        ? 2
+        : phase === "executing"
+          ? 3
+          : phase === "awaiting-closure"
+            ? 4
+            : phase === "closing"
+              ? 5
+              : timeline.length;
+  const result = {
+    schema,
     run_id: RUN_ID,
     incident_id: "incident-demo-11111111111111111111111111111111",
     scenario_id: "ct-shadowed-lut-v1:canonical",
     source_commit: "a".repeat(40),
     build_sha256: BUILD_DIGEST,
     phase,
-    version:
-      phase === "preparing"
-        ? 1
-        : phase === "awaiting-approval"
-          ? 2
-          : phase === "executing"
-            ? 3
-            : phase === "awaiting-closure"
-              ? 4
-              : phase === "closing"
-                ? 5
-                : 6,
+    version: selectedVersion,
     lease_expires_at: terminal ? null : "2099-08-23T12:15:00.000Z",
     poll: { href: `/v1/demo/runs/${RUN_ID}`, after_milliseconds: 1_000 },
     approval: {
@@ -433,6 +617,7 @@ export function demoRun(
     ),
     investigation: investigationProof(),
     ...(recovered ? { execution: executionProof() } : {}),
+    ...(schema === "colortrace-demo-run/v2" ? { timeline } : {}),
     terminal,
     terminal_reason: terminal ? (phase === "closed" ? "recovery-closed" : "lease-expired") : null,
     receipt_href: terminal ? `/v1/demo/runs/${RUN_ID}/receipt` : null,
@@ -440,6 +625,18 @@ export function demoRun(
     ...(phase === "awaiting-approval" ? { approval_nonce: NONCE } : {}),
     ...overrides,
   };
+  return result as DemoRun;
+}
+
+export function demoRunV1(
+  phase: DemoRunV1["phase"] = "awaiting-approval",
+  overrides: Partial<DemoRunV1> = {},
+): DemoRunV1 {
+  const run = demoRun(phase, { ...overrides, schema: "colortrace-demo-run/v1" });
+  const { timeline: _timeline, ...legacy } = run as DemoRun & {
+    readonly timeline?: readonly DemoTimelineItem[];
+  };
+  return legacy as DemoRunV1;
 }
 
 export function demoReceipt(
