@@ -100,6 +100,10 @@ locals {
   candidate_commit   = try(var.deployment_artifact_binding.source.commit, join("", [for _ in range(40) : "0"]))
   candidate_tree     = try(var.deployment_artifact_binding.source.tree, join("", [for _ in range(40) : "0"]))
   staging_generation = coalesce(var.staging_generation, "unbound")
+  staging_hard_stop_epoch = coalesce(
+    var.staging_hard_stop_epoch,
+    0,
+  )
   fixture_bundle_sha256 = try(
     var.deployment_artifact_binding.fixture_manifest_sha256,
     local.placeholder_digest,

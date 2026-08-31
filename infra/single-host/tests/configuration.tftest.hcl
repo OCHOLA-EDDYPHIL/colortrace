@@ -15,7 +15,8 @@ mock_provider "google" {
 }
 
 variables {
-  project_id = "colortrace-test-project"
+  project_id              = "colortrace-test-project"
+  staging_hard_stop_epoch = 1900000000
   deployment_artifact_binding = {
     schema                    = "colortrace-single-host-admission/v1"
     build_manifest_sha256     = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -189,7 +190,8 @@ run "instance_requires_complete_admission_inputs" {
   command = plan
 
   variables {
-    enable_instance = true
+    enable_instance         = true
+    staging_hard_stop_epoch = null
   }
 
   expect_failures = [
@@ -206,6 +208,26 @@ run "boot_image_family_is_rejected" {
   }
 
   expect_failures = [var.boot_image]
+}
+
+run "non_positive_hard_stop_is_rejected" {
+  command = plan
+
+  variables {
+    staging_hard_stop_epoch = 0
+  }
+
+  expect_failures = [var.staging_hard_stop_epoch]
+}
+
+run "overflowing_hard_stop_is_rejected" {
+  command = plan
+
+  variables {
+    staging_hard_stop_epoch = 253402300800
+  }
+
+  expect_failures = [var.staging_hard_stop_epoch]
 }
 
 run "artifact_hash_mismatch_is_rejected" {
@@ -309,6 +331,7 @@ run "bounded_single_host_is_admitted" {
       && google_compute_disk.boot[0].size == 30
       && google_compute_disk.boot[0].image == "projects/debian-cloud/global/images/debian-12-bookworm-v20260817"
       && google_compute_instance.host[0].boot_disk[0].auto_delete == false
+      && !strcontains(file("${path.module}/compute.tf"), "termination_time")
     )
     error_message = "The host must use the checked binding, bounded machine, and retained 30 GiB balanced disk."
   }
@@ -319,6 +342,7 @@ run "bounded_single_host_is_admitted" {
       && google_compute_instance.host[0].metadata["enable-oslogin"] == "TRUE"
       && google_compute_instance.host[0].metadata["block-project-ssh-keys"] == "TRUE"
       && google_compute_instance.host[0].metadata["serial-port-enable"] == "FALSE"
+      && google_compute_instance.host[0].metadata["colortrace-staging-hard-stop-epoch"] == "1900000000"
       && google_compute_instance.host[0].metadata["colortrace-artifact-binding-sha256"] == "sha256:0b5d8b9edab8380ebc2f6e5ec1588d468d0a5f3d0f62d2dc0cc90148dd7bb03f"
       && google_compute_instance.host[0].metadata["colortrace-build-manifest-sha256"] == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       && google_compute_instance.host[0].metadata["colortrace-scan-binding-sha256"] == "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -394,6 +418,10 @@ run "bounded_single_host_is_admitted" {
     condition = (
       google_compute_instance.host[0].metadata["startup-script"] == local.startup_script
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "STAGING_LIFETIME_HOURS='168'")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "STAGING_HARD_STOP_EPOCH='1900000000'")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "if test \"$hard_stop_now\" -ge \"$STAGING_HARD_STOP_EPOCH\"")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "test \"$STAGING_HARD_STOP_EPOCH\" -ne 0")
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "test \"$STAGING_HARD_STOP_EPOCH\" -lt \"$deadline\"")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "APT_AUTOMATIC_TIMERS='apt-daily.timer apt-daily-upgrade.timer'")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "APT_AUTOMATIC_SERVICES='apt-daily.service apt-daily-upgrade.service'")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "APT_SERVICE_QUIESCE_ATTEMPTS=180")
@@ -501,6 +529,8 @@ run "bounded_single_host_is_admitted" {
     condition = (
       output.deployment_contract.public_tcp_ports == [443]
       && output.deployment_contract.lifetime_hours == 168
+      && output.deployment_contract.hard_stop_epoch == 1900000000
+      && output.staging_hard_stop_epoch == 1900000000
       && output.deployment_contract.estimated_cost_usd == 24
       && output.deployment_contract.public_url == "https://203-0-113-42.sslip.io"
       && output.deployment_contract.artifact_hashes.deployment_artifact_binding_sha256 == "sha256:0b5d8b9edab8380ebc2f6e5ec1588d468d0a5f3d0f62d2dc0cc90148dd7bb03f"
@@ -510,5 +540,31 @@ run "bounded_single_host_is_admitted" {
       && output.resume_identity.member == "serviceAccount:resume@example.test"
     )
     error_message = "The deployment output must preserve its bounded lifecycle and complete artifact hash contract."
+  }
+}
+
+run "omitted_hard_stop_preserves_rolling_lifecycle" {
+  command = plan
+
+  variables {
+    enable_instance              = true
+    operator_member              = "user:operator@example.test"
+    resume_member                = "serviceAccount:resume@example.test"
+    staging_generation           = "stage-0001"
+    staging_hard_stop_epoch      = null
+    access_secret_version        = "7"
+    boot_image                   = "projects/debian-cloud/global/images/debian-12-bookworm-v20260817"
+    estimated_seven_day_cost_usd = 24
+  }
+
+  assert {
+    condition = (
+      length(google_compute_instance.host) == 1
+      && google_compute_instance.host[0].metadata["colortrace-staging-hard-stop-epoch"] == "0"
+      && strcontains(google_compute_instance.host[0].metadata["startup-script"], "STAGING_HARD_STOP_EPOCH='0'")
+      && output.deployment_contract.hard_stop_epoch == null
+      && output.staging_hard_stop_epoch == 0
+    )
+    error_message = "Omitting the absolute cutoff must preserve the existing rolling 168-hour lifecycle."
   }
 }
