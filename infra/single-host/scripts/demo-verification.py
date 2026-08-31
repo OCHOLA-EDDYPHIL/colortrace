@@ -78,6 +78,7 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
 RESET_OPERATION_ID = re.compile(r"^demo-reset:[0-9a-f]{64}$")
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+MAX_UNIX_EPOCH = 253_402_300_799
 MODEL: dict[str, Any] = {
     "provider": "vertex-ai",
     "framework": "google-adk",
@@ -926,8 +927,14 @@ def verify_instance_metadata(arguments: argparse.Namespace) -> None:
         "source_commit": binding["source"]["commit"],
         "source_tree": binding["source"]["tree"],
     }
+    if (
+        re.fullmatch(r"(?:0|[1-9][0-9]*)", arguments.hard_stop_epoch) is None
+        or int(arguments.hard_stop_epoch) > MAX_UNIX_EPOCH
+    ):
+        raise VerificationError("instance-metadata-invalid")
     expected = {
         "colortrace-staging-generation": arguments.generation,
+        "colortrace-staging-hard-stop-epoch": arguments.hard_stop_epoch,
         "colortrace-candidate-commit": binding["source"]["commit"],
         "colortrace-candidate-tree": binding["source"]["tree"],
         "colortrace-artifact-binding-sha256": _document_sha256(binding),
@@ -2447,11 +2454,17 @@ def remote_script(arguments: argparse.Namespace) -> None:
     _validate_artifact(binding)
     if re.fullmatch(r"[a-z0-9][a-z0-9-]{6,30}[a-z0-9]", arguments.generation) is None:
         raise VerificationError("staging-generation-invalid")
+    if (
+        re.fullmatch(r"(?:0|[1-9][0-9]*)", arguments.hard_stop_epoch) is None
+        or int(arguments.hard_stop_epoch) > MAX_UNIX_EPOCH
+    ):
+        raise VerificationError("staging-hard-stop-invalid")
     assignments = [
         f"expected_commit={shlex.quote(binding['source']['commit'])}",
         f"expected_tree={shlex.quote(binding['source']['tree'])}",
         f"expected_fixture={shlex.quote(binding['fixture_manifest_sha256'])}",
         f"expected_generation={shlex.quote(arguments.generation)}",
+        f"expected_hard_stop_epoch={shlex.quote(arguments.hard_stop_epoch)}",
     ]
     assignments.extend(
         f"image_{component}={shlex.quote(binding['images'][component])}"
@@ -2496,7 +2509,17 @@ test "$(sudo --non-interactive cat /var/lib/colortrace-lifecycle/current/generat
 activated_at=$(sudo --non-interactive \
   cat /var/lib/colortrace-lifecycle/current/activated-at)
 case "$activated_at" in ''|*[!0-9]*) exit 1 ;; esac
-deadline=$((activated_at + 604800))
+hard_stop_epoch=$(curl --fail --silent --show-error \
+  --header 'Metadata-Flavor: Google' \
+  'http://metadata.google.internal/computeMetadata/v1/instance/attributes/colortrace-staging-hard-stop-epoch')
+case "$hard_stop_epoch" in ''|*[!0-9]*) exit 1 ;; esac
+test "$hard_stop_epoch" = "$expected_hard_stop_epoch"
+generation_deadline=$((activated_at + 604800))
+deadline=$generation_deadline
+if test "$expected_hard_stop_epoch" -ne 0 \
+  && test "$expected_hard_stop_epoch" -lt "$deadline"; then
+  deadline=$expected_hard_stop_epoch
+fi
 test "$deadline" -gt "$(date +%s)"
 sudo --non-interactive systemctl is-active --quiet colortrace-auto-stop.timer
 timer_deadline=$(sudo --non-interactive \
@@ -2912,6 +2935,7 @@ def _parser() -> argparse.ArgumentParser:
     metadata.add_argument("instance", type=Path)
     metadata.add_argument("artifact", type=Path)
     metadata.add_argument("generation")
+    metadata.add_argument("hard_stop_epoch")
     metadata.set_defaults(handler=verify_instance_metadata)
     preview = commands.add_parser("verify-preview")
     preview.add_argument("preview", type=Path)
@@ -2952,6 +2976,7 @@ def _parser() -> argparse.ArgumentParser:
     remote = commands.add_parser("remote-script")
     remote.add_argument("artifact", type=Path)
     remote.add_argument("generation")
+    remote.add_argument("hard_stop_epoch")
     remote.add_argument("output", type=Path)
     remote.set_defaults(handler=remote_script)
     mcp = commands.add_parser("mcp-script")

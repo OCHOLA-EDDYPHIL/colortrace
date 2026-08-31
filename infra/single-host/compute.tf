@@ -33,6 +33,7 @@ locals {
     region                     = var.region
     registry_host              = local.registry_host
     staging_generation         = coalesce(var.staging_generation, "unbound")
+    staging_hard_stop_epoch    = local.staging_hard_stop_epoch
     staging_lifetime_hours     = local.staging_lifetime_hours
   })
 }
@@ -103,6 +104,7 @@ resource "google_compute_instance" "host" {
     colortrace-scan-binding-sha256          = local.scan_binding_sha256
     colortrace-scan-report-set-sha256       = local.scan_report_set_sha256
     colortrace-scanner-version-sha256       = local.scanner_version_sha256
+    colortrace-staging-hard-stop-epoch      = tostring(local.staging_hard_stop_epoch)
     colortrace-staging-generation           = local.staging_generation
     enable-oslogin                          = "TRUE"
     serial-port-enable                      = "FALSE"

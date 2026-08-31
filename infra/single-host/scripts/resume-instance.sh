@@ -12,6 +12,7 @@ readonly instance=$3
 readonly expected_generation=$4
 readonly attempts=${COLORTRACE_RESUME_ATTEMPTS:-60}
 readonly delay_seconds=${COLORTRACE_RESUME_DELAY_SECONDS:-5}
+readonly max_unix_epoch=253402300799
 
 [[ "$project_id" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || exit 64
 [[ "$zone" =~ ^us-central1-[abcf]$ ]] || exit 64
@@ -22,6 +23,7 @@ readonly delay_seconds=${COLORTRACE_RESUME_DELAY_SECONDS:-5}
 
 command -v gcloud >/dev/null
 command -v jq >/dev/null
+command -v date >/dev/null
 
 describe_instance() {
   gcloud compute instances describe "$instance" \
@@ -38,11 +40,45 @@ if test "$actual_generation" != "$expected_generation"; then
   exit 65
 fi
 
+actual_hard_stop_epoch=$(printf '%s' "$description" \
+  | jq -er '.metadata.items[] | select(.key == "colortrace-staging-hard-stop-epoch") | .value') || {
+  printf 'The deployed absolute hard-stop boundary is missing or invalid.\n' >&2
+  exit 65
+}
+case "$actual_hard_stop_epoch" in
+  ''|*[!0-9]*)
+    printf 'The deployed absolute hard-stop boundary is missing or invalid.\n' >&2
+    exit 65
+    ;;
+esac
+if ! test "$actual_hard_stop_epoch" -le "$max_unix_epoch" 2>/dev/null; then
+  printf 'The deployed absolute hard-stop boundary is missing or invalid.\n' >&2
+  exit 65
+fi
+
+require_open_hard_stop() {
+  local now
+  if test "$actual_hard_stop_epoch" -eq 0; then
+    return 0
+  fi
+  now=$(date +%s)
+  case "$now" in
+    ''|*[!0-9]*) exit 70 ;;
+  esac
+  if test "$now" -ge "$actual_hard_stop_epoch"; then
+    printf 'The deployed absolute hard-stop boundary has been reached.\n' >&2
+    exit 65
+  fi
+}
+
+require_open_hard_stop
+
 status=$(printf '%s' "$description" | jq -er '.status')
 case "$status" in
   RUNNING)
     ;;
   TERMINATED)
+    require_open_hard_stop
     gcloud compute instances start "$instance" \
       --project "$project_id" \
       --zone "$zone" \
@@ -56,6 +92,7 @@ case "$status" in
 esac
 
 for ((attempt = 1; attempt <= attempts; attempt++)); do
+  require_open_hard_stop
   status=$(printf '%s' "$description" | jq -er '.status')
   case "$status" in
     RUNNING)

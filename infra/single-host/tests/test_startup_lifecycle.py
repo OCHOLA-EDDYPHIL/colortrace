@@ -28,6 +28,7 @@ class StartupLifecycleTests(unittest.TestCase):
         *,
         now: int = 1_800_000_000,
         generation: str = GENERATION,
+        hard_stop_epoch: int | str | None = None,
         timer_deadline: int | None = None,
         systemd_run_fails: bool = False,
         apt_mask_fails: bool = False,
@@ -49,6 +50,19 @@ class StartupLifecycleTests(unittest.TestCase):
             if setup is not None:
                 control.mkdir(mode=0o700)
                 setup(control)
+            effective_hard_stop_epoch = 0 if hard_stop_epoch is None else hard_stop_epoch
+            if timer_deadline is None:
+                try:
+                    parsed_hard_stop_epoch = int(effective_hard_stop_epoch)
+                    effective_timer_deadline = (
+                        min(now + LIFETIME_SECONDS, parsed_hard_stop_epoch)
+                        if parsed_hard_stop_epoch > 0
+                        else now + LIFETIME_SECONDS
+                    )
+                except ValueError:
+                    effective_timer_deadline = now + LIFETIME_SECONDS
+            else:
+                effective_timer_deadline = timer_deadline
 
             self._write_executable(
                 binaries / "date",
@@ -172,6 +186,11 @@ else:
                     f"readonly STAGING_GENERATION={shlex.quote(generation)}",
                 )
                 .replace(
+                    "readonly STAGING_HARD_STOP_EPOCH='${staging_hard_stop_epoch}'",
+                    "readonly STAGING_HARD_STOP_EPOCH="
+                    + shlex.quote(str(effective_hard_stop_epoch)),
+                )
+                .replace(
                     "readonly STAGING_LIFETIME_HOURS='${staging_lifetime_hours}'",
                     "readonly STAGING_LIFETIME_HOURS=168",
                 )
@@ -211,7 +230,7 @@ else:
                     "FAKE_APT_ACTIVE_STATE": apt_active_state,
                     "FAKE_APT_SERVICES_BUSY": ("true" if apt_services_busy else "false"),
                     "FAKE_APT_TRANSITION_POLLS": str(apt_transition_polls),
-                    "FAKE_TIMER_DEADLINE": str(timer_deadline or now + LIFETIME_SECONDS),
+                    "FAKE_TIMER_DEADLINE": str(effective_timer_deadline),
                     "FAKE_PACKAGE_VERSION": package_version,
                     "PATH": f"{binaries}:{os.environ['PATH']}",
                 },
@@ -371,6 +390,63 @@ else:
         self.assertNotIn(
             ["poweroff"],
             [call["args"] for call in result["calls"] if call["command"] == "systemctl"],
+        )
+
+    def test_absolute_hard_stop_caps_generation_timer(self) -> None:
+        now = 1_800_000_000
+        hard_stop_epoch = now + 3600
+
+        result = self._run_lifecycle(
+            now=now,
+            hard_stop_epoch=hard_stop_epoch,
+        )
+
+        completed = result["completed"]
+        self.assertIsInstance(completed, subprocess.CompletedProcess)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        timer_calls = [call for call in result["calls"] if call["command"] == "systemd-run"]
+        self.assertEqual(len(timer_calls), 1)
+        self.assertIn(f"--on-calendar=@{hard_stop_epoch}", timer_calls[0]["args"])
+
+    def test_reached_absolute_hard_stop_powers_off_before_host_changes(self) -> None:
+        now = 1_800_000_000
+
+        result = self._run_lifecycle(now=now, hard_stop_epoch=now)
+
+        completed = result["completed"]
+        self.assertIsInstance(completed, subprocess.CompletedProcess)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIsNone(result["current_target"])
+        self.assertNotIn("systemd-run", [call["command"] for call in result["calls"]])
+        self.assertEqual(
+            [call["args"] for call in result["calls"] if call["command"] == "systemctl"],
+            [["poweroff"]],
+        )
+
+    def test_malformed_absolute_hard_stop_fails_closed(self) -> None:
+        result = self._run_lifecycle(hard_stop_epoch="not-an-epoch")
+
+        completed = result["completed"]
+        self.assertIsInstance(completed, subprocess.CompletedProcess)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIsNone(result["current_target"])
+        self.assertNotIn("systemd-run", [call["command"] for call in result["calls"]])
+        self.assertEqual(
+            [call["args"] for call in result["calls"] if call["command"] == "systemctl"],
+            [["poweroff"]],
+        )
+
+    def test_overflowing_absolute_hard_stop_fails_closed(self) -> None:
+        result = self._run_lifecycle(hard_stop_epoch="9" * 40)
+
+        completed = result["completed"]
+        self.assertIsInstance(completed, subprocess.CompletedProcess)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIsNone(result["current_target"])
+        self.assertNotIn("systemd-run", [call["command"] for call in result["calls"]])
+        self.assertEqual(
+            [call["args"] for call in result["calls"] if call["command"] == "systemctl"],
+            [["poweroff"]],
         )
 
     def test_existing_generation_keeps_original_activation_time(self) -> None:
