@@ -12,6 +12,8 @@ from pathlib import Path
 SOURCE_ROOT = Path(__file__).parents[3]
 SCRIPT = SOURCE_ROOT / "infra" / "single-host" / "scripts" / "build-images.sh"
 BUILD_CONFIG = SOURCE_ROOT / "infra" / "single-host" / "cloudbuild.images.yaml"
+RUNTIME_DOCKERFILE = SOURCE_ROOT / "containers/Dockerfile.runtime"
+CADDY_DOCKERFILE = SOURCE_ROOT / "containers/Dockerfile.caddy"
 OBSERVABILITY_DOCKERFILE = SOURCE_ROOT / "containers/Dockerfile.observability"
 DOCKERFILE_FRONTEND = (
     "# syntax=docker/dockerfile:1.7.0@sha256:"
@@ -24,6 +26,33 @@ FAKE_JQ = Path(__file__).with_name("fake_jq.py")
 
 
 class BuildImagesTests(unittest.TestCase):
+    def test_networked_go_module_resolution_disables_http2_per_command(self) -> None:
+        for dockerfile in (
+            RUNTIME_DOCKERFILE,
+            CADDY_DOCKERFILE,
+            OBSERVABILITY_DOCKERFILE,
+        ):
+            with self.subTest(dockerfile=dockerfile.name):
+                contents = dockerfile.read_text(encoding="utf-8")
+                self.assertGreater(contents.count("go mod download all"), 0)
+                self.assertEqual(
+                    contents.count("go mod download all"),
+                    contents.count("GODEBUG=http2client=0 go mod download all"),
+                )
+                self.assertEqual(
+                    contents.count("go list -mod=readonly -m all"),
+                    contents.count("GODEBUG=http2client=0 go list -mod=readonly -m all"),
+                )
+                self.assertNotIn("ENV GODEBUG", contents)
+                self.assertNotIn("ARG GODEBUG", contents)
+
+        observability = OBSERVABILITY_DOCKERFILE.read_text(encoding="utf-8")
+        self.assertEqual(observability.count("go mod tidy"), 1)
+        self.assertEqual(
+            observability.count("go mod tidy"),
+            observability.count("GODEBUG=http2client=0 go mod tidy"),
+        )
+
     def test_checksum_dockerfiles_pin_compatible_frontend(self) -> None:
         checksum_dockerfiles = [
             dockerfile

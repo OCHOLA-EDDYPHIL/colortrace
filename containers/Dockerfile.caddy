@@ -24,8 +24,8 @@ RUN test "$(go version)" = "go version go1.26.6 linux/amd64" \
     && echo "c1614b4d01d82b6d9fe7da448fbc9c91201223b5e23cb67cf7f17ecb65306e51  main.go" | sha256sum -c - \
     && echo "66fe492187a1f400b7e932369bd59af454ce98d52c20d40218f5a6342432b08f  modules.txt" | sha256sum -c - \
     && echo "a593bd7077c76102ca76d19287a5e247d4e359dd67eddbc933f865afd3c131eb  /tmp/caddy-source.tar.gz" | sha256sum -c - \
-    && go mod download all \
-    && go list -mod=readonly -m all >/tmp/modules.txt \
+    && GODEBUG=http2client=0 go mod download all \
+    && GODEBUG=http2client=0 go list -mod=readonly -m all >/tmp/modules.txt \
     && cmp modules.txt /tmp/modules.txt \
     && tar --extract --gzip --file /tmp/caddy-source.tar.gz --directory /tmp
 RUN --network=none go mod verify \
