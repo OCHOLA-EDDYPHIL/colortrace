@@ -14,7 +14,10 @@ import {
   demoRejectedRun,
   demoReset,
   demoRun,
+  executionProof,
   investigationProof,
+  investigationProofV1,
+  investigationProofV2,
   NONCE,
   OUTCOME_DIGEST,
   PACKET_DIGEST,
@@ -122,6 +125,56 @@ describe("shot-safe color recovery", () => {
     expect(adapter.reset).not.toHaveBeenCalled();
   });
 
+  it("describes the real external work while a live investigation is pending", async () => {
+    const adapter = adapterFixture();
+    let resolveStart: ((run: ReturnType<typeof demoRun>) => void) | undefined;
+    vi.mocked(adapter.start).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveStart = resolve;
+        }),
+    );
+    render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
+
+    const start = screen.getByRole("button", { name: "Investigate the color fault" });
+    fireEvent.click(start);
+
+    expect(
+      await screen.findByText(/waiting for Grafana evidence and the bounded Gemini advisory/iu),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Preparing recovery…" })).toBeDisabled();
+
+    await act(async () => {
+      resolveStart?.(demoRun("awaiting-approval"));
+      await Promise.resolve();
+    });
+    expect(await screen.findByRole("heading", { name: "Expected versus observed" })).toBeVisible();
+  });
+
+  it("describes saved-run reconciliation without claiming a new live investigation", async () => {
+    const adapter = adapterFixture();
+    const storage = memoryStorage({ "colortrace.demo.run-id": RUN_ID });
+    let resolveGet: ((run: ReturnType<typeof demoRun>) => void) | undefined;
+    vi.mocked(adapter.get).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveGet = resolve;
+        }),
+    );
+    render(<ShotSafeColorRecoveryApp adapter={adapter} storage={storage} />);
+
+    expect(
+      await screen.findByText("Loading the saved run and reconciling it with the service."),
+    ).toBeVisible();
+    expect(screen.queryByText(/Live investigation running/iu)).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveGet?.(demoRun("awaiting-approval"));
+      await Promise.resolve();
+    });
+    expect(await screen.findByRole("heading", { name: "Expected versus observed" })).toBeVisible();
+  });
+
   it("never lets decoded preview blobs satisfy the run-bound approval gate", async () => {
     const adapter = adapterFixture();
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
@@ -146,7 +199,7 @@ describe("shot-safe color recovery", () => {
     expect(adapter.approve).not.toHaveBeenCalled();
   });
 
-  it("shows evidence, authority, bounded scope, and durable activity without expanding details", async () => {
+  it("shows the concise authority chain and keeps complete evidence inspectable", async () => {
     const adapter = adapterFixture();
     const hostileInvestigation = investigationProof();
     vi.mocked(adapter.start).mockImplementation(async (request) =>
@@ -170,31 +223,114 @@ describe("shot-safe color recovery", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
     const evidenceRegion = await screen.findByRole("region", {
-      name: "Four Grafana evidence views",
+      name: "Gemini gathered evidence; validators decided",
     });
 
-    expect(evidenceRegion.querySelectorAll("article")).toHaveLength(4);
+    const facts = screen.getByLabelText("Investigation facts");
+    expect(facts).toHaveTextContent(/Renders\s*2 succeeded/u);
+    expect(facts).toHaveTextContent(/Declared configuration\s*Same/u);
+    expect(facts).toHaveTextContent(/Resolved LUT\s*Different/u);
+    expect(facts).toHaveTextContent(/Affected\s*4 outputs/u);
+    expect(facts).toHaveTextContent(/Protected\s*3 outputs/u);
+    expect(within(evidenceRegion).getByText("3 bounded Grafana reads")).toBeVisible();
+    expect(within(evidenceRegion).getByText("4 current evidence views")).toBeVisible();
+    expect(within(evidenceRegion).getByText("Cause and scope authority")).toBeVisible();
+    expect(within(evidenceRegion).getByText("Approve or reject the exact plan")).toBeVisible();
+    const decisiveSignal = evidenceRegion.querySelector(".shot-evidence-highlight");
+    expect(decisiveSignal).not.toBeNull();
+    expect(
+      within(decisiveSignal as HTMLElement).getByText(
+        "Resolved LUT digests differ across the compared successful renders.",
+      ),
+    ).toBeVisible();
+    expect(within(evidenceRegion).getByText("Untrusted")).toBeVisible();
+    expect(
+      within(evidenceRegion).getByText("Deterministic code—not model prose—", { exact: false }),
+    ).toBeVisible();
+    const disclosure = within(evidenceRegion).getByText("Inspect all 4 Grafana evidence views");
+    fireEvent.click(disclosure);
+    const evidenceGrid = evidenceRegion.querySelector(
+      '[data-proof-section="live-grafana-evidence"]',
+    );
+    expect(evidenceGrid).not.toBeNull();
+    expect(evidenceGrid?.querySelectorAll("article")).toHaveLength(4);
     for (const name of ["Metrics", "Logs", "Traces", "Alert"]) {
-      expect(within(evidenceRegion).getByRole("heading", { name })).toBeVisible();
+      expect(within(evidenceGrid as HTMLElement).getByRole("heading", { name })).toBeVisible();
     }
-    expect(within(evidenceRegion).getAllByText("Grafana MCP")).toHaveLength(4);
-    expect(within(evidenceRegion).getAllByText("12:00:01 UTC")).toHaveLength(4);
-    expect(screen.getByText("Untrusted model output")).toBeVisible();
+    expect(within(evidenceGrid as HTMLElement).getAllByText("Grafana MCP")).toHaveLength(4);
+    expect(within(evidenceGrid as HTMLElement).getAllByText("12:00:01 UTC")).toHaveLength(4);
     expect(screen.getByText("Deterministic validator · decision authority")).toBeVisible();
     expect(
-      within(evidenceRegion).getByText('<script data-hostile="evidence">alert(1)</script>'),
+      within(evidenceGrid as HTMLElement).getByText(
+        '<script data-hostile="evidence">alert(1)</script>',
+      ),
     ).toBeVisible();
     expect(screen.getByText('<img data-hostile="advisory" src=x onerror=alert(1)>')).toBeVisible();
     expect(document.querySelector("[data-hostile]")).toBeNull();
 
     const plan = screen.getByRole("region", { name: "Recover only the affected work" });
     const counts = plan.querySelector(".shot-counts");
-    expect(counts).toHaveTextContent(/Affected\s*4\s*Safe\s*3\s*Unknown\s*0/u);
-    expect(screen.getByRole("heading", { name: "What actually happened" })).toBeVisible();
-    expect(screen.getByText("Run created")).toBeVisible();
-    expect(screen.getByText("Investigation completed")).toBeVisible();
+    expect(counts).toHaveTextContent(/Affected\s*4\s*Protected\s*3\s*Unknown\s*0/u);
+    expect(plan).toHaveTextContent(/3 of 7 outputs protected \(43%\)/u);
+    expect(plan).toHaveTextContent(
+      /5 bounded commands: 1 LUT replacement, 3 frame rerenders, and 1 derivative rerender/u,
+    );
+    expect(screen.getByText("Inspect 5 bounded commands")).toBeVisible();
+    const activity = screen.getByRole("region", { name: "What actually happened" });
+    const activityDisclosure = within(activity).getByText("Inspect 2 recorded events");
+    expect(activityDisclosure).toBeVisible();
+    expect(within(activity).getByText("Run created")).not.toBeVisible();
+    expect(within(activity).getByText("Investigation completed")).not.toBeVisible();
+    fireEvent.click(activityDisclosure);
+    expect(within(activity).getByText("Run created")).toBeVisible();
+    expect(within(activity).getByText("Investigation completed")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Decide the exact plan" })).toBeVisible();
     expect(screen.getByText("Technical proof and provenance")).toBeVisible();
+  });
+
+  it("keeps legacy investigation proof reviewable without inventing an agent summary", async () => {
+    const adapter = adapterFixture();
+    vi.mocked(adapter.start).mockImplementation(async (request) =>
+      demoRun("awaiting-approval", {
+        approval_nonce: request.approval_nonce,
+        investigation: investigationProofV1(),
+      }),
+    );
+    render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
+
+    expect(await screen.findByRole("heading", { name: "Investigation proof v1" })).toBeVisible();
+    expect(screen.queryByLabelText("Investigation facts")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "Gemini gathered evidence; validators decided" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the concise facts and bounded commands available for v2 proof", async () => {
+    const adapter = adapterFixture();
+    vi.mocked(adapter.start).mockImplementation(async (request) =>
+      demoRun("awaiting-approval", {
+        approval_nonce: request.approval_nonce,
+        investigation: investigationProofV2(),
+      }),
+    );
+    render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
+
+    const facts = await screen.findByLabelText("Investigation facts");
+    expect(facts).toHaveTextContent(/Affected\s*4 outputs/u);
+    expect(facts).toHaveTextContent(/Protected\s*3 outputs/u);
+    expect(
+      screen.queryByRole("region", { name: "Gemini gathered evidence; validators decided" }),
+    ).not.toBeInTheDocument();
+    const disclosure = screen.getByText("Inspect 5 bounded commands");
+    const firstCommand = document.querySelector(".shot-plan-review .shot-command");
+    expect(firstCommand).not.toBeNull();
+    expect(firstCommand).not.toBeVisible();
+    fireEvent.click(disclosure);
+    expect(firstCommand).toBeVisible();
   });
 
   it("guides an exact approval through recovered output, closure, receipt, and reset", async () => {
@@ -227,6 +363,8 @@ describe("shot-safe color recovery", () => {
     expect(screen.getByText("Unrelated event ruled out")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Recover only the affected work" })).toBeVisible();
     expect(screen.getByText("artifact-b-02-derivative", { exact: true })).toBeVisible();
+    expect(screen.getByText("Rerender the affected derivative")).not.toBeVisible();
+    fireEvent.click(screen.getByText("Inspect 5 bounded commands"));
     expect(screen.getByText("Rerender the affected derivative")).toBeVisible();
 
     const approveButton = screen.getByRole("button", { name: "Approve recovery action" });
@@ -246,7 +384,16 @@ describe("shot-safe color recovery", () => {
     expect(await screen.findByRole("heading", { name: "Recovered output" })).toBeVisible();
     expect(await screen.findByAltText("Recovered output")).toBeVisible();
     await decodeRenderedImages();
-    expect(screen.getAllByText("Protected outputs verified.").length).toBeGreaterThan(0);
+    const outcome = screen.getByLabelText("Recovery outcome");
+    expect(outcome).toHaveTextContent(/Recovered\s*4 outputs/u);
+    expect(outcome).toHaveTextContent(/Protected\s*3 unchanged/u);
+    expect(outcome).toHaveTextContent(/Checks\s*7\/7 passed/u);
+    expect(outcome).toHaveTextContent(/Next\s*Ready for human closure/u);
+    expect(
+      screen.getByText(
+        "The affected outputs changed and every protected output remained unchanged.",
+      ),
+    ).toBeVisible();
     expect(storage.values.has("colortrace.demo.approval-nonce")).toBe(false);
     fireEvent.click(screen.getByText("Technical proof and provenance", { exact: true }));
     expect(screen.getAllByText("query_loki_logs", { exact: true }).length).toBeGreaterThan(0);
@@ -292,6 +439,45 @@ describe("shot-safe color recovery", () => {
       idempotency_key: expect.stringMatching(/^demo-start-/u),
     });
   }, 15_000);
+
+  it("does not present an incomplete recovery proof as successful", async () => {
+    const adapter = adapterFixture();
+    const execution = executionProof();
+    const incomplete = demoRun("awaiting-closure", {
+      execution: {
+        ...execution,
+        recovery: {
+          ...execution.recovery,
+          status: "recovery_failed",
+          checks: execution.recovery.checks.map((check, index) =>
+            index === 0 ? { ...check, status: "failed" as const } : check,
+          ),
+        },
+      },
+    });
+    vi.mocked(adapter.start).mockResolvedValue(incomplete);
+    vi.mocked(adapter.get).mockResolvedValue(incomplete);
+    render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
+
+    expect(await screen.findByRole("heading", { name: "Recovered output" })).toBeVisible();
+    const outcome = screen.getByLabelText("Recovery outcome");
+    expect(outcome).toHaveTextContent(/Affected scope\s*4 outputs/u);
+    expect(outcome).toHaveTextContent(/6\/7 passed/u);
+    expect(outcome).toHaveTextContent(/Next\s*Verification incomplete/u);
+    const incompleteMessage = screen.getByText(
+      "Recovery verification is incomplete, so this result is not presented as successful.",
+    );
+    expect(incompleteMessage).toBeVisible();
+    expect(incompleteMessage).toHaveAttribute("role", "alert");
+    const banner = screen.getByRole("banner");
+    expect(within(banner).getByText("Verification incomplete")).toBeVisible();
+    expect(within(banner).queryByText("Recovery verified")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Recovered image verified" }),
+    ).not.toBeInTheDocument();
+  });
 
   it("does not let an older poll response reverse an accepted recovery", async () => {
     const adapter = adapterFixture();
