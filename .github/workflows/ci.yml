@@ -11,14 +11,14 @@ on:
         required: true
         type: boolean
         default: false
-      image_runner:
-        description: Isolated runner lane for final-image evidence
+      image_lane:
+        description: Logical execution lane for final-image evidence
         required: true
         type: choice
-        default: colortrace-secret
+        default: secret
         options:
-          - colortrace-secret
-          - colortrace-docker
+          - secret
+          - docker
 
 permissions:
   contents: read
@@ -29,17 +29,13 @@ concurrency:
 
 jobs:
   secret-scan:
-    name: ${{ github.event_name == 'workflow_dispatch' && (inputs.final_image_evidence && format('Final image evidence - {0}', inputs.image_runner) || 'Manual secret scan') || 'Secret scan' }}
-    runs-on:
-      - self-hosted
-      - Linux
-      - X64
-      - ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && inputs.image_runner || 'colortrace-secret' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && (inputs.final_image_evidence && format('Final image evidence - {0}', inputs.image_lane) || 'Manual secret scan') || 'Secret scan' }}
+    runs-on: ${{ fromJSON(vars.COLORTRACE_RUNNER_ROUTES)[github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && format('final-image-{0}', inputs.image_lane) || 'secret-scan'] }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && 120 || 20 }}
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       CACHE_ROOT: ${{ github.workspace }}/../../_colortrace-cache
-      EVIDENCE_ARTIFACT_PREFIX: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && format('final-image-evidence-{0}', inputs.image_runner) || 'security-evidence' }}
+      EVIDENCE_ARTIFACT_PREFIX: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && format('final-image-evidence-{0}', inputs.image_lane) || 'security-evidence' }}
       SECURITY_REQUIRE_IMAGES: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && 'true' || 'false' }}
     steps:
       - name: Check out repository history
@@ -71,8 +67,8 @@ jobs:
 
   quality:
     name: ${{ github.event_name == 'workflow_dispatch' && (inputs.final_image_evidence && 'Final image dispatch - quality not applicable' || 'Manual quality') || 'Quality' }}
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.final_image_evidence) }}
-    runs-on: [self-hosted, Linux, X64, colortrace-docker]
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.final_image_evidence }}
+    runs-on: ${{ fromJSON(vars.COLORTRACE_RUNNER_ROUTES).quality }}
     timeout-minutes: 45
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
