@@ -216,7 +216,8 @@ python3 "$contract_helper" verify-instance-metadata \
 
 host_ready=false
 for _ in $(seq 1 60); do
-  if test "$(request_status authenticated "$public_url/" 2>/dev/null || true)" = 200; then
+  if test "$(request_status authenticated "$public_url/" 2>/dev/null || true)" = 200 \
+    && test "$(request_status authenticated "$public_url/v1/demo" 2>/dev/null || true)" = 200; then
     host_ready=true
     break
   fi

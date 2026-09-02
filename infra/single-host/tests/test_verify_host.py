@@ -1048,6 +1048,13 @@ output = None
 if "--output" in arguments:
     output = pathlib.Path(arguments[arguments.index("--output") + 1])
 responses = pathlib.Path(os.environ["FAKE_RESPONSES"])
+if url.endswith("/v1/demo") and "--write-out" in arguments:
+    counter = pathlib.Path(os.environ["FAKE_API_READY_COUNTER"])
+    count = int(counter.read_text()) if counter.exists() else 0
+    counter.write_text(str(count + 1))
+    failures = int(os.environ["FAKE_API_READY_FAILURES"])
+    print("502" if count < failures else "200", end="")
+    raise SystemExit(0)
 if "--write-out" in arguments and "%{content_type}" in arguments:
     kind = url.rsplit("/", 1)[-1]
     shutil.copyfile(responses / f"{kind}.png", output)
@@ -1145,6 +1152,24 @@ raise SystemExit(124)
             )
             timeout.chmod(0o755)
 
+            sleep = binary_directory / "sleep"
+            sleep.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+import pathlib
+import sys
+
+if "COLORTRACE_ACCESS_PASSWORD" in os.environ:
+    raise SystemExit(90)
+with pathlib.Path(os.environ["FAKE_COMMAND_LOG"]).open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(["sleep", *sys.argv[1:]]) + "\\n")
+raise SystemExit(0)
+""",
+                encoding="utf-8",
+            )
+            sleep.chmod(0o755)
+
             password = "CorrectHorse42"
             artifact_path = temporary / "artifact.json"
             artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
@@ -1159,6 +1184,8 @@ raise SystemExit(124)
                 "FAKE_HARD_STOP_EPOCH": "2000000000",
                 "FAKE_TERRAFORM_HARD_STOP": "2000000000",
                 "FAKE_RESPONSES": str(responses),
+                "FAKE_API_READY_COUNTER": str(temporary / "api-ready-counter"),
+                "FAKE_API_READY_FAILURES": "0",
                 "FAKE_START_COUNTER": str(temporary / "start-counter"),
                 "FAKE_APT_ENABLED_STATE": "masked",
                 "FAKE_APT_ACTIVE_STATE": "inactive",
@@ -1291,11 +1318,17 @@ raise SystemExit(124)
                         )
                     )
 
+            api_ready_counter = temporary / "successful-api-ready-counter"
+            completed_environment = {
+                **environment,
+                "FAKE_API_READY_COUNTER": str(api_ready_counter),
+                "FAKE_API_READY_FAILURES": "1",
+            }
             completed = subprocess.run(
                 verify_command,
                 check=False,
                 capture_output=True,
-                env=environment,
+                env=completed_environment,
                 text=True,
             )
 
@@ -1331,8 +1364,20 @@ raise SystemExit(124)
             self.assertFalse(report["workflows"]["rejected"]["action_bindings_present"])
             self.assertTrue(all(value == "pass" for value in report["checks"].values()))
             calls = [json.loads(line) for line in command_log.read_text().splitlines()]
+            self.assertEqual(api_ready_counter.read_text(encoding="utf-8"), "2")
             serialized_calls = json.dumps(calls)
             self.assertNotIn(password, serialized_calls)
+            readiness_events = [call for call in calls if call[0] in {"curl", "sleep"}][:5]
+            self.assertEqual(
+                [(call[0], call[-1]) for call in readiness_events],
+                [
+                    ("curl", "https://203-0-113-42.sslip.io/"),
+                    ("curl", "https://203-0-113-42.sslip.io/v1/demo"),
+                    ("sleep", "5"),
+                    ("curl", "https://203-0-113-42.sslip.io/"),
+                    ("curl", "https://203-0-113-42.sslip.io/v1/demo"),
+                ],
+            )
             self.assertEqual(serialized_calls.count("docker restart colortrace-runtime"), 2)
             self.assertIn("python -m colortrace_grafana_mcp.cli catalog", serialized_calls)
             self.assertNotIn("/opt/colortrace/bin/colortrace-grafana-mcp", serialized_calls)
@@ -1380,6 +1425,16 @@ raise SystemExit(124)
                 and call[-1].endswith("/v1/demo/runs")
             ]
             self.assertEqual(len(start_calls), 2)
+            api_readiness_indices = [
+                index
+                for index, call in enumerate(calls)
+                if call[0] == "curl" and "--write-out" in call and call[-1].endswith("/v1/demo")
+            ]
+            self.assertEqual(len(api_readiness_indices), 2)
+            first_start_index = next(
+                index for index, call in enumerate(calls) if call == start_calls[0]
+            )
+            self.assertLess(api_readiness_indices[-1], first_start_index)
             boundary_urls = {
                 call[-1] for call in calls if call[0] == "curl" and "--write-out" in call
             }
@@ -1393,7 +1448,9 @@ raise SystemExit(124)
                 boundary_urls,
             )
             preview_calls = [
-                call for call in calls if call[0] == "curl" and call[-1].endswith("/v1/demo")
+                call
+                for call in calls
+                if call[0] == "curl" and "--write-out" not in call and call[-1].endswith("/v1/demo")
             ]
             self.assertEqual(len(preview_calls), 3)
             self.assertLess(calls.index(preview_calls[0]), calls.index(start_calls[0]))
