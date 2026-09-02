@@ -260,17 +260,35 @@ test("completes the visual-first recovery flow with exact bound approval", async
   await expect(
     page.getByRole("heading", { name: "Same configuration, different resolved LUT" }),
   ).toBeVisible();
+  const facts = page.getByLabel("Investigation facts");
+  await expect(facts).toContainText("2 succeeded");
+  await expect(facts).toContainText("Same");
+  await expect(facts).toContainText("Different");
+  await expect(facts).toContainText("4 outputs");
+  await expect(facts).toContainText("3 outputs");
+  const factsBox = await facts.boundingBox();
+  expect(factsBox).not.toBeNull();
+  expect(factsBox?.y ?? -1).toBeGreaterThanOrEqual(0);
+  expect((factsBox?.y ?? 901) + (factsBox?.height ?? 0)).toBeLessThanOrEqual(900);
   await expect(page.getByText("Root cause confirmed")).toBeVisible();
   await expect(page.getByText("Declared configuration ruled out")).toBeVisible();
   await expect(page.getByText("Worker-only explanation rejected")).toBeVisible();
   await expect(page.getByText("Unrelated event ruled out")).toBeVisible();
-  await expect(page.locator('[data-proof-section="live-grafana-evidence"] article')).toHaveCount(4);
-  await expect(page.getByText("Untrusted model output", { exact: true })).toBeVisible();
+  await expect(page.getByText("3 bounded Grafana reads", { exact: true })).toBeVisible();
+  await expect(page.getByText("4 current evidence views", { exact: true })).toBeVisible();
+  await expect(page.getByText("Untrusted", { exact: true })).toBeVisible();
   await expect(
     page.getByText("Deterministic validator · decision authority", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "What actually happened" })).toBeVisible();
+  const activity = page.getByRole("region", { name: "What actually happened" });
+  await expect(activity.getByText("Inspect 2 recorded events", { exact: true })).toBeVisible();
+  await expect(activity.getByText("Run created", { exact: true })).toBeHidden();
+  await expect(page.getByText("3 of 7 outputs protected (43%).", { exact: true })).toBeVisible();
+  await expect(page.getByText("Inspect 5 bounded commands", { exact: true })).toBeVisible();
   await expect(page.locator(".shot-plan-review .shot-command")).toHaveCount(5);
+  await expect(page.locator(".shot-plan-review .shot-command").first()).toBeHidden();
+  await page.getByText("Inspect 5 bounded commands", { exact: true }).click();
+  await expect(page.locator(".shot-plan-review .shot-command").first()).toBeVisible();
   expect(await page.locator("main").innerText()).not.toContain("sha256:");
   await expect(page.getByText(PLAN_DIGEST, { exact: true }).first()).toBeHidden();
 
@@ -306,20 +324,30 @@ test("completes the visual-first recovery flow with exact bound approval", async
   await expect(
     page
       .getByRole("region", { name: "Recovered output", exact: true })
-      .getByText("Protected outputs verified.", { exact: true }),
+      .getByText("The affected outputs changed and every protected output remained unchanged.", {
+        exact: true,
+      }),
   ).toBeVisible();
+  const outcome = page.getByLabel("Recovery outcome");
+  await expect(outcome).toContainText("4 outputs");
+  await expect(outcome).toContainText("3 unchanged");
+  await expect(outcome).toContainText("7/7 passed");
+  await expect(outcome).toContainText("Ready for human closure");
   await page.getByLabel(/I verified the recovered image/u).check();
   await page.getByRole("button", { name: "Verify and close recovery" }).click();
 
   await expect(page.getByRole("heading", { name: /verified receipt/u })).toBeVisible();
   await expect(page.getByText("Recorded and verified", { exact: true })).toBeVisible();
   await page.getByText("Technical proof and provenance", { exact: true }).click();
-  await expect(page.getByText("log.correlated-events", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("query_loki_logs", { exact: true }).first()).toBeVisible();
+  const technicalProof = page.locator(".shot-technical");
   await expect(
-    page.getByText("post-action-telemetry-correlation", { exact: true }).first(),
+    technicalProof.getByText("log.correlated-events", { exact: true }).first(),
   ).toBeVisible();
-  await expect(page.getByText(PLAN_DIGEST, { exact: true }).first()).toBeVisible();
+  await expect(technicalProof.getByText("query_loki_logs", { exact: true }).first()).toBeVisible();
+  await expect(
+    technicalProof.getByText("post-action-telemetry-correlation", { exact: true }).first(),
+  ).toBeVisible();
+  await expect(technicalProof.getByText(PLAN_DIGEST, { exact: true }).first()).toBeVisible();
   expect(
     await page.evaluate(() => ({
       nonce: sessionStorage.getItem("colortrace.demo.approval-nonce"),
@@ -389,6 +417,7 @@ test("keeps the clean-session flow usable on a small reduced-motion viewport", a
   await expect(expectedVisual).toBeVisible();
   await expect(expectedVisual).toHaveJSProperty("naturalWidth", 160);
   await expect(observedVisual).toHaveJSProperty("naturalWidth", 160);
+  await expect(page.getByLabel("Investigation facts")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
   );

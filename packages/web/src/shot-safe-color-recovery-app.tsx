@@ -199,6 +199,73 @@ function utcTime(timestamp: string): string {
   return `${timestamp.slice(11, 19)} UTC`;
 }
 
+function countLabel(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function pendingDescription(phase: DemoPhase): string {
+  switch (phase) {
+    case "preparing":
+      return "Waiting for a real Grafana alert, bounded MCP evidence reads, and the Gemini advisory.";
+    case "executing":
+      return "Waiting for fresh post-action telemetry and deterministic recovery checks.";
+    case "closing":
+      return "Binding the human closure decision to the verified recovery receipt.";
+    default:
+      return "No additional action is available while this operation is reconciled.";
+  }
+}
+
+function InvestigationFactStrip({
+  investigation,
+}: {
+  readonly investigation: DemoInvestigationProof;
+}) {
+  if (investigation.schema === "colortrace-demo-investigation-proof/v1") return null;
+  return (
+    <dl aria-label="Investigation facts" className="shot-investigation-facts">
+      <div>
+        <dt>Renders</dt>
+        <dd>{investigation.comparison.renders.length} succeeded</dd>
+      </div>
+      <div>
+        <dt>Declared configuration</dt>
+        <dd>{investigation.comparison.nominal_config_match ? "Same" : "Different"}</dd>
+      </div>
+      <div data-result={investigation.comparison.resolved_lut_match ? "same" : "different"}>
+        <dt>Resolved LUT</dt>
+        <dd>{investigation.comparison.resolved_lut_match ? "Same" : "Different"}</dd>
+      </div>
+      <div>
+        <dt>Affected</dt>
+        <dd>{investigation.scope.affected_count} outputs</dd>
+      </div>
+      <div>
+        <dt>Protected</dt>
+        <dd>{investigation.scope.safe_count} outputs</dd>
+      </div>
+    </dl>
+  );
+}
+
+function recoveryIsVerified(execution: DemoRun["execution"]): boolean {
+  return (
+    execution !== undefined &&
+    execution.action.status === "succeeded" &&
+    execution.recovery.status === "recovery_verified" &&
+    execution.recovery.checks.length > 0 &&
+    execution.recovery.checks.every((check) => check.status === "passed") &&
+    execution.action.safe_complement_before_sha256 === execution.action.safe_complement_after_sha256
+  );
+}
+
+function currentPhaseLabel(run: DemoRun): string {
+  if (run.phase === "awaiting-closure" && !recoveryIsVerified(run.execution)) {
+    return "Verification incomplete";
+  }
+  return phaseLabel(run.phase);
+}
+
 function PreviewVisual({
   alt,
   kind,
@@ -520,6 +587,41 @@ const EVIDENCE_PRESENTATION = {
   "alert.rule": { label: "Alert", order: 3 },
 } as const;
 
+function EvidenceRecord({
+  evidence,
+}: {
+  readonly evidence: DemoInvestigationProofV3["evidence"][number];
+}) {
+  const presentation =
+    EVIDENCE_PRESENTATION[evidence.query_key as keyof typeof EVIDENCE_PRESENTATION];
+  return (
+    <article data-evidence-source={presentation.label.toLowerCase()}>
+      <div className="shot-evidence-heading">
+        <h3>{presentation.label}</h3>
+        <span>Current</span>
+      </div>
+      <p className="shot-evidence-source">
+        {evidence.source.server} · <code>{evidence.tool}</code>
+      </p>
+      <pre>{evidence.display_excerpt}</pre>
+      <dl>
+        <div>
+          <dt>Source</dt>
+          <dd>Grafana MCP</dd>
+        </div>
+        <div>
+          <dt>Retrieved</dt>
+          <dd>
+            <time dateTime={evidence.timing.retrieved_at}>
+              {utcTime(evidence.timing.retrieved_at)}
+            </time>
+          </dd>
+        </div>
+      </dl>
+    </article>
+  );
+}
+
 function EvidenceAuthorityReview({
   investigation,
 }: {
@@ -533,88 +635,123 @@ function EvidenceAuthorityReview({
   const acceptedInvocations = investigation.model_invocations.filter(
     (invocation) => invocation.result_class === "accepted",
   );
+  const evidenceSelection = acceptedInvocations.find(
+    (invocation) => invocation.turn_kind === "evidence-selection",
+  );
+  const advisoryDraft = acceptedInvocations.find(
+    (invocation) => invocation.turn_kind === "response-drafting",
+  );
+  const highlightedEvidence =
+    evidence.find((item) => item.query_key === "metric.correlated-observations") ?? evidence[0];
+  const boundedReadCount = evidence.filter((item) => item.query_key !== "alert.rule").length;
   return (
     <div className="shot-authority-review">
-      <section aria-labelledby="shot-live-evidence-title" className="shot-panel">
+      <section aria-labelledby="shot-live-evidence-title" className="shot-panel shot-agent-proof">
         <div className="shot-section-heading">
           <div>
-            <p className="shot-eyebrow">Live operational record</p>
-            <h2 id="shot-live-evidence-title">Four Grafana evidence views</h2>
+            <p className="shot-eyebrow">Bounded agent investigation</p>
+            <h2 id="shot-live-evidence-title">Gemini gathered evidence; validators decided</h2>
           </div>
-          <span className="shot-authority shot-authority--source">Official MCP · read-only</span>
+          <span className="shot-authority shot-authority--source">
+            {evidenceSelection?.model ?? "Gemini"} · Google ADK
+          </span>
         </div>
         <p className="shot-section-copy">
-          Metrics, logs, traces, and the alert describe one correlated incident. The calls are
-          bounded evidence reads, not a sequence of model guesses.
+          The Gemini agent drove {boundedReadCount} bounded, read-only Grafana queries and drafted
+          the cited advisory. Deterministic code—not model prose—established the cause and scope.
         </p>
-        <div className="shot-evidence-grid" data-proof-section="live-grafana-evidence">
-          {evidence.map((item) => {
-            const presentation =
-              EVIDENCE_PRESENTATION[item.query_key as keyof typeof EVIDENCE_PRESENTATION];
-            return (
-              <article
-                data-evidence-source={presentation.label.toLowerCase()}
-                key={item.evidence_id}
-              >
-                <div className="shot-evidence-heading">
-                  <h3>{presentation.label}</h3>
-                  <span>Current</span>
-                </div>
-                <p className="shot-evidence-source">
-                  {item.source.server} · <code>{item.tool}</code>
-                </p>
-                <pre>{item.display_excerpt}</pre>
-                <dl>
-                  <div>
-                    <dt>Source</dt>
-                    <dd>Grafana MCP</dd>
-                  </div>
-                  <div>
-                    <dt>Retrieved</dt>
-                    <dd>
-                      <time dateTime={item.timing.retrieved_at}>
-                        {utcTime(item.timing.retrieved_at)}
-                      </time>
-                    </dd>
-                  </div>
-                </dl>
-              </article>
-            );
-          })}
-        </div>
-      </section>
+        <ol aria-label="Decision authority chain" className="shot-authority-chain">
+          <li>
+            <span>1</span>
+            <div>
+              <strong>{evidenceSelection?.model ?? "Gemini"}</strong>
+              <small>{boundedReadCount} bounded Grafana reads</small>
+            </div>
+          </li>
+          <li>
+            <span>2</span>
+            <div>
+              <strong>Official Grafana MCP</strong>
+              <small>{evidence.length} current evidence views</small>
+            </div>
+          </li>
+          <li>
+            <span>3</span>
+            <div>
+              <strong>Deterministic validators</strong>
+              <small>Cause and scope authority</small>
+            </div>
+          </li>
+          <li>
+            <span>4</span>
+            <div>
+              <strong>Human review</strong>
+              <small>Approve or reject the exact plan</small>
+            </div>
+          </li>
+        </ol>
 
-      <section aria-labelledby="shot-advisory-title" className="shot-panel shot-advisory">
-        <div className="shot-section-heading">
-          <div>
-            <p className="shot-eyebrow">Gemini advisory</p>
-            <h2 id="shot-advisory-title">A bounded explanation, never the decision authority</h2>
-          </div>
-          <span className="shot-authority shot-authority--advisory">Untrusted model output</span>
+        <div className="shot-agent-evidence">
+          {highlightedEvidence === undefined ? null : (
+            <article className="shot-evidence-highlight">
+              <div className="shot-evidence-heading">
+                <div>
+                  <p className="shot-eyebrow">Visible Grafana evidence</p>
+                  <h3>
+                    {
+                      EVIDENCE_PRESENTATION[
+                        highlightedEvidence.query_key as keyof typeof EVIDENCE_PRESENTATION
+                      ].label
+                    }
+                  </h3>
+                </div>
+                <span>Current</span>
+              </div>
+              <p className="shot-evidence-source">
+                Official MCP · <code>{highlightedEvidence.tool}</code>
+              </p>
+              <pre>{highlightedEvidence.display_excerpt}</pre>
+            </article>
+          )}
+          <article className="shot-agent-advisory">
+            <div className="shot-evidence-heading">
+              <div>
+                <p className="shot-eyebrow">Gemini advisory</p>
+                <h3>Evidence-linked explanation</h3>
+              </div>
+              <span className="shot-authority--advisory">Untrusted</span>
+            </div>
+            <blockquote>{investigation.model_advisory.summary}</blockquote>
+            <p>Advisory only. It cannot establish facts, change scope, or authorize an action.</p>
+          </article>
         </div>
-        <blockquote>{investigation.model_advisory.summary}</blockquote>
-        <p>
-          This text may guide review. It cannot establish the cause, change scope, or authorize an
-          action.
-        </p>
-        <dl className="shot-advisory-usage">
-          <div>
-            <dt>Model</dt>
-            <dd>{acceptedInvocations[0]?.model ?? "Not reported"}</dd>
+
+        <details className="shot-disclosure shot-evidence-disclosure">
+          <summary>Inspect all {evidence.length} Grafana evidence views</summary>
+          <div className="shot-evidence-grid" data-proof-section="live-grafana-evidence">
+            {evidence.map((item) => (
+              <EvidenceRecord evidence={item} key={item.evidence_id} />
+            ))}
           </div>
-          <div>
-            <dt>Accepted turns</dt>
-            <dd>{acceptedInvocations.length}</dd>
-          </div>
-          <div>
-            <dt>Input tokens</dt>
-            <dd>{investigation.budget_use.input_tokens}</dd>
-          </div>
-          <div>
-            <dt>Output tokens</dt>
-            <dd>{investigation.budget_use.output_tokens}</dd>
-          </div>
-        </dl>
+          <dl className="shot-advisory-usage">
+            <div>
+              <dt>Model</dt>
+              <dd>{evidenceSelection?.model ?? advisoryDraft?.model ?? "Not reported"}</dd>
+            </div>
+            <div>
+              <dt>Accepted turns</dt>
+              <dd>{acceptedInvocations.length}</dd>
+            </div>
+            <div>
+              <dt>Input tokens</dt>
+              <dd>{investigation.budget_use.input_tokens}</dd>
+            </div>
+            <div>
+              <dt>Output tokens</dt>
+              <dd>{investigation.budget_use.output_tokens}</dd>
+            </div>
+          </dl>
+        </details>
       </section>
     </div>
   );
@@ -643,21 +780,24 @@ function RunActivity({ run }: { readonly run: DemoRun }) {
         </div>
         <span className="shot-authority">Server recorded</span>
       </div>
-      <ol>
-        {run.timeline.map((item) => (
-          <li data-phase={item.phase} key={item.run_version}>
-            <span aria-hidden="true">{item.run_version}</span>
-            <div>
-              <strong>{TIMELINE_LABELS[item.kind]}</strong>
-              <small>{phaseLabel(item.phase)}</small>
-            </div>
-            <time dateTime={item.recorded_at}>{utcTime(item.recorded_at)}</time>
-          </li>
-        ))}
-      </ol>
-      <p className="shot-form-note">
-        This is durable run activity, not a cryptographic audit or simulated progress.
-      </p>
+      <details className="shot-disclosure shot-timeline-disclosure">
+        <summary>Inspect {countLabel(run.timeline.length, "recorded event")}</summary>
+        <ol>
+          {run.timeline.map((item) => (
+            <li data-phase={item.phase} key={item.run_version}>
+              <span aria-hidden="true">{item.run_version}</span>
+              <div>
+                <strong>{TIMELINE_LABELS[item.kind]}</strong>
+                <small>{phaseLabel(item.phase)}</small>
+              </div>
+              <time dateTime={item.recorded_at}>{utcTime(item.recorded_at)}</time>
+            </li>
+          ))}
+        </ol>
+        <p className="shot-form-note">
+          This is durable run activity, not a cryptographic audit or simulated progress.
+        </p>
+      </details>
     </section>
   );
 }
@@ -700,6 +840,24 @@ function InvestigationReview({
   }
 
   const { comparison, claims, plan, scope } = investigation;
+  const evaluatedOutputCount = scope.affected_count + scope.safe_count + scope.unknown_count;
+  const protectedPercent =
+    scope.unknown_count === 0 && evaluatedOutputCount > 0
+      ? Math.round((scope.safe_count / evaluatedOutputCount) * 100)
+      : null;
+  const resourceCommandCount = plan.command_summaries.filter(
+    (command) => command.schema === "simulator-quarantine-command/v1",
+  ).length;
+  const frameCommandCount = plan.command_summaries.filter(
+    (command) =>
+      command.schema === "simulator-targeted-rerender-command/v1" &&
+      command.target.kind === "frame",
+  ).length;
+  const derivativeCommandCount = plan.command_summaries.filter(
+    (command) =>
+      command.schema === "simulator-targeted-rerender-command/v1" &&
+      command.target.kind === "derivative",
+  ).length;
   const findings = claims.map((claim) => {
     const finding =
       claim.claim_type === "causal-resource" && claim.state === "confirmed"
@@ -792,7 +950,7 @@ function InvestigationReview({
             <dd>{scope.affected_count}</dd>
           </div>
           <div>
-            <dt>Safe</dt>
+            <dt>Protected</dt>
             <dd>{scope.safe_count}</dd>
           </div>
           <div>
@@ -802,11 +960,16 @@ function InvestigationReview({
         </dl>
         <div className="shot-plan-summary">
           <p>
-            <strong>Replace one shadowed LUT.</strong>
+            <strong>
+              {scope.safe_count} of {evaluatedOutputCount} outputs protected
+              {protectedPercent === null ? "" : ` (${protectedPercent}%)`}.
+            </strong>
           </p>
           <p>
-            Five action targets: one LUT replacement, then three frame rerenders and one derivative
-            rerender.
+            {plan.command_summaries.length} bounded commands:{" "}
+            {countLabel(resourceCommandCount, "LUT replacement")},{" "}
+            {countLabel(frameCommandCount, "frame rerender")}, and{" "}
+            {countLabel(derivativeCommandCount, "derivative rerender")}.
           </p>
         </div>
         <div className="shot-plan-scope">
@@ -819,11 +982,14 @@ function InvestigationReview({
             <TargetList emptyText="No protected exclusions." targets={plan.protected_exclusions} />
           </section>
         </div>
-        <ol className="shot-command-list">
-          {plan.command_summaries.map((command, index) => (
-            <CommandSummary command={command} index={index} key={command.command_id} />
-          ))}
-        </ol>
+        <details className="shot-command-disclosure shot-disclosure">
+          <summary>Inspect {plan.command_summaries.length} bounded commands</summary>
+          <ol className="shot-command-list">
+            {plan.command_summaries.map((command, index) => (
+              <CommandSummary command={command} index={index} key={command.command_id} />
+            ))}
+          </ol>
+        </details>
       </section>
     </div>
   );
@@ -1422,6 +1588,60 @@ function ApprovalPanel({
         </section>
       </div>
     </section>
+  );
+}
+
+function RecoveryOutcome({ run }: { readonly run: DemoRun }) {
+  const execution = run.execution;
+  if (execution === undefined) {
+    return <p className="shot-alert">Recovery proof is unavailable.</p>;
+  }
+  const passedCheckCount = execution.recovery.checks.filter(
+    (check) => check.status === "passed",
+  ).length;
+  const protectedOutputsUnchanged =
+    execution.action.safe_complement_before_sha256 ===
+    execution.action.safe_complement_after_sha256;
+  const verified = recoveryIsVerified(execution);
+  const nextStep = !verified
+    ? "Verification incomplete"
+    : run.phase === "awaiting-closure"
+      ? "Ready for human closure"
+      : run.phase === "closed"
+        ? "Closure verified"
+        : "Verification complete";
+  return (
+    <div className="shot-recovery-summary">
+      <dl aria-label="Recovery outcome" className="shot-recovery-outcome">
+        <div>
+          <dt>{verified ? "Recovered" : "Affected scope"}</dt>
+          <dd>{countLabel(execution.action.affected_count, "output")}</dd>
+        </div>
+        <div>
+          <dt>Protected</dt>
+          <dd>
+            {protectedOutputsUnchanged
+              ? `${execution.action.safe_count} unchanged`
+              : "Not verified"}
+          </dd>
+        </div>
+        <div>
+          <dt>Checks</dt>
+          <dd>
+            {passedCheckCount}/{execution.recovery.checks.length} passed
+          </dd>
+        </div>
+        <div>
+          <dt>Next</dt>
+          <dd>{nextStep}</dd>
+        </div>
+      </dl>
+      <p className={verified ? "shot-success" : "shot-alert"} role={verified ? "status" : "alert"}>
+        {verified
+          ? "The affected outputs changed and every protected output remained unchanged."
+          : "Recovery verification is incomplete, so this result is not presented as successful."}
+      </p>
+    </div>
   );
 }
 
@@ -2267,7 +2487,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
           <span className="shot-mode">Shot-safe recovery</span>
         ) : (
           <div className="shot-run-chip">
-            <span data-phase={run.phase}>{phaseLabel(run.phase)}</span>
+            <span data-phase={run.phase}>{currentPhaseLabel(run)}</span>
             <LeaseStatus expiresAt={run.lease_expires_at} />
           </div>
         )}
@@ -2309,8 +2529,12 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                 >
                   {busy ? "Preparing recovery…" : "Investigate the color fault"}
                 </button>
-                <p className="shot-landing__note">
-                  No investigation has run yet · one active run · explicit human approval
+                <p aria-live="polite" className="shot-landing__note">
+                  {busy
+                    ? pendingStartKey.current === null
+                      ? "Loading the saved run and reconciling it with the service."
+                      : "Live investigation running: waiting for Grafana evidence and the bounded Gemini advisory before showing a result."
+                    : "No investigation has run yet · one active run · explicit human approval"}
                 </p>
               </div>
               <div className="shot-landing__visual">
@@ -2402,9 +2626,12 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                 </div>
                 <div className="shot-identity">
                   <span>Current phase</span>
-                  <strong>{phaseLabel(run.phase)}</strong>
+                  <strong>{currentPhaseLabel(run)}</strong>
                 </div>
               </div>
+              {run.investigation === undefined ? null : (
+                <InvestigationFactStrip investigation={run.investigation} />
+              )}
               {visualError === null ? null : (
                 <p className="shot-alert" role="alert">
                   {visualError}
@@ -2466,8 +2693,6 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
 
             <InvestigationReview investigation={run.investigation} />
 
-            <RunActivity run={run} />
-
             {run.phase === "awaiting-approval" ? (
               <ApprovalPanel
                 actionError={actionError}
@@ -2486,7 +2711,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                 <div>
                   <p className="shot-eyebrow">Bound workflow</p>
                   <h2>{phaseLabel(run.phase)}</h2>
-                  <p>No additional action is available while this operation is reconciled.</p>
+                  <p>{pendingDescription(run.phase)}</p>
                   {actionError === null ? null : (
                     <>
                       <p className="shot-alert" role="alert">
@@ -2512,7 +2737,11 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                     <p className="shot-eyebrow">Post-action comparison</p>
                     <h2 id="recovered-title">Recovered output</h2>
                   </div>
-                  <span className="shot-authority">Recovery verified</span>
+                  <span className="shot-authority">
+                    {recoveryIsVerified(run.execution)
+                      ? "Recovery verified"
+                      : "Verification incomplete"}
+                  </span>
                 </div>
                 <div className="shot-recovered__content">
                   <VisualCard
@@ -2527,17 +2756,12 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                     }
                     visual={visuals.recovered}
                   />
-                  <div>
-                    <p className="shot-result-summary">
-                      <strong>Protected outputs verified.</strong>
-                    </p>
-                    <p>The affected outputs changed; the excluded outputs remained intact.</p>
-                  </div>
+                  <RecoveryOutcome run={run} />
                 </div>
               </section>
             )}
 
-            {run.phase === "awaiting-closure" ? (
+            {run.phase === "awaiting-closure" && recoveryIsVerified(run.execution) ? (
               <ClosurePanel
                 actionError={actionError}
                 busy={busy}
@@ -2557,6 +2781,8 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                 run={run}
               />
             ) : null}
+
+            <RunActivity run={run} />
 
             <TechnicalDetails receipt={receipt} run={run} visuals={visuals} />
           </div>
