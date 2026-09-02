@@ -35,7 +35,7 @@ jobs:
       - Linux
       - X64
       - ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && inputs.image_runner || 'colortrace-secret' }}
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && 120 || 10 }}
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && 120 || 20 }}
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       CACHE_ROOT: ${{ github.workspace }}/../../_colortrace-cache
