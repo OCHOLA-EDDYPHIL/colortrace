@@ -203,6 +203,66 @@ function countLabel(count: number, singular: string, plural = `${singular}s`): s
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
+type FixtureImpactComparison = {
+  readonly affectedSourceFrames: number;
+  readonly protectedSourceFrames: number;
+  readonly rerenderAllSourceFrames: number;
+  readonly sourceFrameRerendersAvoided: number;
+};
+
+function planTargetKey(target: DemoPlanTarget): string {
+  return `${target.namespace}:${target.kind}:${target.id}`;
+}
+
+function fixtureImpactComparison(
+  investigation: DemoInvestigationProof,
+): FixtureImpactComparison | null {
+  if (
+    investigation.schema === "colortrace-demo-investigation-proof/v1" ||
+    investigation.scope.unknown_count !== 0
+  ) {
+    return null;
+  }
+
+  const affectedRerenderTargets = investigation.plan.command_summaries.flatMap((command) =>
+    command.schema === "simulator-targeted-rerender-command/v1" &&
+    (command.target.kind === "frame" || command.target.kind === "derivative")
+      ? [command.target]
+      : [],
+  );
+  const affectedSourceFrames = affectedRerenderTargets.filter((target) => target.kind === "frame");
+  const protectedSourceFrames = investigation.plan.protected_exclusions.filter(
+    (target) => target.kind === "frame",
+  );
+  const affectedRerenderKeys = affectedRerenderTargets.map(planTargetKey);
+  const affectedKeys = affectedSourceFrames.map(planTargetKey);
+  const protectedKeys = protectedSourceFrames.map(planTargetKey);
+  const declaredTargetKeys = new Set(investigation.plan.targets.map(planTargetKey));
+  const affectedRerenderKeySet = new Set(affectedRerenderKeys);
+  const protectedKeySet = new Set(protectedKeys);
+
+  if (
+    affectedSourceFrames.length === 0 ||
+    protectedSourceFrames.length === 0 ||
+    affectedRerenderTargets.length !== investigation.scope.affected_count ||
+    protectedSourceFrames.length !== investigation.scope.safe_count ||
+    protectedSourceFrames.length !== investigation.plan.protected_exclusions.length ||
+    affectedRerenderKeySet.size !== affectedRerenderKeys.length ||
+    protectedKeySet.size !== protectedKeys.length ||
+    affectedRerenderKeys.some((key) => !declaredTargetKeys.has(key)) ||
+    affectedKeys.some((key) => protectedKeySet.has(key))
+  ) {
+    return null;
+  }
+
+  return {
+    affectedSourceFrames: affectedSourceFrames.length,
+    protectedSourceFrames: protectedSourceFrames.length,
+    rerenderAllSourceFrames: affectedSourceFrames.length + protectedSourceFrames.length,
+    sourceFrameRerendersAvoided: protectedSourceFrames.length,
+  };
+}
+
 function pendingDescription(phase: DemoPhase): string {
   switch (phase) {
     case "preparing":
@@ -245,6 +305,34 @@ function InvestigationFactStrip({
         <dd>{investigation.scope.safe_count} outputs</dd>
       </div>
     </dl>
+  );
+}
+
+function FixtureImpactSummary({
+  investigation,
+}: {
+  readonly investigation: DemoInvestigationProof;
+}) {
+  const comparison = fixtureImpactComparison(investigation);
+  if (comparison === null) return null;
+
+  return (
+    <aside aria-label="Synthetic fixture impact comparison" className="shot-impact-summary">
+      <p className="shot-eyebrow">Fixture impact comparison</p>
+      <p className="shot-impact-summary__headline">
+        <strong>{comparison.affectedSourceFrames} affected source frames targeted</strong>
+        <span aria-hidden="true"> · </span>
+        <strong>{comparison.protectedSourceFrames} verified-safe source frames excluded</strong>
+      </p>
+      <p>
+        This plan calls for {comparison.sourceFrameRerendersAvoided} fewer source-frame rerenders
+        than rerendering all {comparison.rerenderAllSourceFrames} observed source frames.
+      </p>
+      <p className="shot-impact-summary__limit">
+        Synthetic fixture comparison—not a production benchmark. Time, compute, and cost savings
+        were not measured.
+      </p>
+    </aside>
   );
 }
 
@@ -1638,7 +1726,7 @@ function RecoveryOutcome({ run }: { readonly run: DemoRun }) {
       </dl>
       <p className={verified ? "shot-success" : "shot-alert"} role={verified ? "status" : "alert"}>
         {verified
-          ? "The affected outputs changed and every protected output remained unchanged."
+          ? `Recovered all ${execution.action.affected_count} affected outputs; all ${execution.action.safe_count} protected outputs remained unchanged.`
           : "Recovery verification is incomplete, so this result is not presented as successful."}
       </p>
     </div>
@@ -2501,8 +2589,9 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                 <p className="shot-eyebrow">Shot-Safe Color Recovery</p>
                 <h1>Both renders succeeded—why do they look different?</h1>
                 <p className="shot-lede">
-                  The same cinematic frame came back with a different color result. Trace the real
-                  operational record, prove the cause, and keep recovery behind human approval.
+                  ColorTrace helps VFX pipeline technical directors trace successful renders with
+                  the wrong color, prove the affected outputs, and recover only that work while
+                  verified-safe outputs stay untouched.
                 </p>
                 <div className="shot-landing__outcome">
                   <span>Expected</span>
@@ -2620,8 +2709,8 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                     Expected versus observed
                   </h1>
                   <p>
-                    Compare the visible fault, understand its cause, and approve only the work that
-                    needs recovery.
+                    For a VFX pipeline technical director, compare the visible fault, understand its
+                    cause, and approve only the work that needs recovery.
                   </p>
                 </div>
                 <div className="shot-identity">
@@ -2630,7 +2719,10 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                 </div>
               </div>
               {run.investigation === undefined ? null : (
-                <InvestigationFactStrip investigation={run.investigation} />
+                <>
+                  <InvestigationFactStrip investigation={run.investigation} />
+                  <FixtureImpactSummary investigation={run.investigation} />
+                </>
               )}
               {visualError === null ? null : (
                 <p className="shot-alert" role="alert">
