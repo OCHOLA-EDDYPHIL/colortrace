@@ -12,6 +12,7 @@ from colortrace_repo.actions import check_actions
 from colortrace_repo.cli import main as cli_main
 from colortrace_repo.common import is_canonical_spdx
 from colortrace_repo.generated import check_generated_manifest, compare_generated_trees
+from yaml import BaseLoader, load  # type: ignore[import-untyped]
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
@@ -60,6 +61,125 @@ def _cli_findings(root: Path, command: str, option: str, value: str) -> list[dic
 
 
 class RepositoryChecksTest(unittest.TestCase):
+    def test_repository_ci_keeps_quality_manual_and_runner_routes_external(self) -> None:
+        workflow_source = (_REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8"
+        )
+        workflow = load(workflow_source, Loader=BaseLoader)
+
+        triggers = workflow["on"]
+        self.assertEqual(triggers["push"]["branches"], ["main"])
+        self.assertIn("pull_request", triggers)
+        dispatch_inputs = triggers["workflow_dispatch"]["inputs"]
+        self.assertEqual(
+            dispatch_inputs["final_image_evidence"],
+            {
+                "description": "Build and seal exact final-image evidence",
+                "required": "true",
+                "type": "boolean",
+                "default": "false",
+            },
+        )
+        image_lane = dispatch_inputs["image_lane"]
+        self.assertEqual(image_lane["required"], "true")
+        self.assertEqual(image_lane["type"], "choice")
+        self.assertEqual(image_lane["default"], "secret")
+        self.assertEqual(image_lane["options"], ["secret", "docker"])
+        self.assertNotIn("image_runner", workflow_source)
+
+        secret_scan = workflow["jobs"]["secret-scan"]
+        self.assertNotIn("if", secret_scan)
+        self.assertEqual(
+            secret_scan["name"],
+            "${{ github.event_name == 'workflow_dispatch' && "
+            "(inputs.final_image_evidence && format('Final image evidence - {0}', "
+            "inputs.image_lane) || 'Manual secret scan') || 'Secret scan' }}",
+        )
+        self.assertEqual(
+            secret_scan["runs-on"],
+            "${{ fromJSON(vars.COLORTRACE_RUNNER_ROUTES)"
+            "[github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && "
+            "format('final-image-{0}', inputs.image_lane) || 'secret-scan'] }}",
+        )
+        self.assertEqual(
+            secret_scan["env"]["SECURITY_REQUIRE_IMAGES"],
+            "${{ github.event_name == 'workflow_dispatch' && "
+            "inputs.final_image_evidence && 'true' || 'false' }}",
+        )
+        self.assertEqual(
+            secret_scan["env"]["EVIDENCE_ARTIFACT_PREFIX"],
+            "${{ github.event_name == 'workflow_dispatch' && "
+            "inputs.final_image_evidence && format('final-image-evidence-{0}', "
+            "inputs.image_lane) || 'security-evidence' }}",
+        )
+        self.assertEqual(
+            secret_scan["timeout-minutes"],
+            "${{ github.event_name == 'workflow_dispatch' && "
+            "inputs.final_image_evidence && 120 || 20 }}",
+        )
+        secret_steps = {step["name"]: step for step in secret_scan["steps"]}
+        self.assertEqual(
+            secret_steps["Bootstrap secret scanner"]["if"],
+            "${{ env.SECURITY_REQUIRE_IMAGES != 'true' }}",
+        )
+        self.assertEqual(
+            secret_steps["Bootstrap secret scanner"]["run"], "make ensure-gitleaks-image"
+        )
+        self.assertEqual(secret_steps["Scan repository for secrets"]["run"], "make check-secret")
+        self.assertEqual(
+            secret_steps["Bootstrap security evidence tools"]["if"],
+            "${{ env.SECURITY_REQUIRE_IMAGES == 'true' }}",
+        )
+        self.assertEqual(
+            secret_steps["Produce exact-candidate security evidence"]["if"],
+            "${{ env.SECURITY_REQUIRE_IMAGES == 'true' }}",
+        )
+        self.assertEqual(
+            secret_steps["Verify exact-candidate image cleanup"]["if"],
+            "${{ always() && env.SECURITY_REQUIRE_IMAGES == 'true' }}",
+        )
+        evidence_upload = secret_steps["Retain private security evidence"]
+        self.assertEqual(
+            evidence_upload["if"],
+            "${{ always() && env.SECURITY_REQUIRE_IMAGES == 'true' }}",
+        )
+        self.assertEqual(evidence_upload["with"]["if-no-files-found"], "error")
+        self.assertEqual(evidence_upload["with"]["include-hidden-files"], "true")
+        self.assertEqual(evidence_upload["with"]["retention-days"], "90")
+
+        quality = workflow["jobs"]["quality"]
+        self.assertEqual(
+            quality["if"],
+            "${{ github.event_name == 'workflow_dispatch' && !inputs.final_image_evidence }}",
+        )
+        self.assertEqual(
+            quality["runs-on"],
+            "${{ fromJSON(vars.COLORTRACE_RUNNER_ROUTES).quality }}",
+        )
+        quality_steps = {step["name"]: step for step in quality["steps"]}
+        self.assertEqual(quality_steps["Bootstrap quality tools"]["run"], "make bootstrap-quality")
+        self.assertEqual(
+            quality_steps["Run independent quality shards"]["run"],
+            "make --jobs=2 check-fast check-telemetry",
+        )
+
+        physical_runner_labels = (
+            "self-hosted",
+            "Linux",
+            "X64",
+            "colortrace-secret",
+            "colortrace-docker",
+        )
+        for job in workflow["jobs"].values():
+            runs_on = job["runs-on"]
+            self.assertIn("fromJSON(vars.COLORTRACE_RUNNER_ROUTES)", runs_on)
+            for label in physical_runner_labels:
+                self.assertNotIn(label, runs_on)
+
+        makefile = (_REPOSITORY_ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn('--env "COLORTRACE_RUNNER_ENVIRONMENT=$(RUNNER_ENVIRONMENT)"', makefile)
+        self.assertIn('--env "COLORTRACE_RUNNER_NAME=$(RUNNER_NAME)"', makefile)
+
     def test_spdx_licenses_must_be_known_and_canonical(self) -> None:
         for value in ("Apache-2.0", "MIT", "Apache-2.0 OR MIT"):
             self.assertTrue(is_canonical_spdx(value))

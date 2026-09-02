@@ -11,14 +11,14 @@ on:
         required: true
         type: boolean
         default: false
-      image_runner:
-        description: Isolated runner lane for final-image evidence
+      image_lane:
+        description: Logical execution lane for final-image evidence
         required: true
         type: choice
-        default: colortrace-secret
+        default: secret
         options:
-          - colortrace-secret
-          - colortrace-docker
+          - secret
+          - docker
 
 permissions:
   contents: read
@@ -29,17 +29,13 @@ concurrency:
 
 jobs:
   secret-scan:
-    name: ${{ github.event_name == 'workflow_dispatch' && (inputs.final_image_evidence && format('Final image evidence - {0}', inputs.image_runner) || 'Manual secret scan') || 'Secret scan' }}
-    runs-on:
-      - self-hosted
-      - Linux
-      - X64
-      - ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && inputs.image_runner || 'colortrace-secret' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && (inputs.final_image_evidence && format('Final image evidence - {0}', inputs.image_lane) || 'Manual secret scan') || 'Secret scan' }}
+    runs-on: ${{ fromJSON(vars.COLORTRACE_RUNNER_ROUTES)[github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && format('final-image-{0}', inputs.image_lane) || 'secret-scan'] }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && 120 || 20 }}
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       CACHE_ROOT: ${{ github.workspace }}/../../_colortrace-cache
-      EVIDENCE_ARTIFACT_PREFIX: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && format('final-image-evidence-{0}', inputs.image_runner) || 'security-evidence' }}
+      EVIDENCE_ARTIFACT_PREFIX: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && format('final-image-evidence-{0}', inputs.image_lane) || 'security-evidence' }}
       SECURITY_REQUIRE_IMAGES: ${{ github.event_name == 'workflow_dispatch' && inputs.final_image_evidence && 'true' || 'false' }}
     steps:
       - name: Check out repository history
@@ -48,9 +44,17 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ env.CANDIDATE_SHA }}
-      - name: Bootstrap security tools
+      - name: Bootstrap secret scanner
+        if: ${{ env.SECURITY_REQUIRE_IMAGES != 'true' }}
+        run: make ensure-gitleaks-image
+      - name: Scan repository for secrets
+        if: ${{ env.SECURITY_REQUIRE_IMAGES != 'true' }}
+        run: make check-secret
+      - name: Bootstrap security evidence tools
+        if: ${{ env.SECURITY_REQUIRE_IMAGES == 'true' }}
         run: make bootstrap-security
       - name: Produce exact-candidate security evidence
+        if: ${{ env.SECURITY_REQUIRE_IMAGES == 'true' }}
         timeout-minutes: ${{ env.SECURITY_REQUIRE_IMAGES == 'true' && 105 || 8 }}
         run: >-
           make security-evidence
@@ -60,7 +64,7 @@ jobs:
         if: ${{ always() && env.SECURITY_REQUIRE_IMAGES == 'true' }}
         run: make final-image-cleanup SECURITY_CANDIDATE_SHA="$CANDIDATE_SHA"
       - name: Retain private security evidence
-        if: ${{ always() }}
+        if: ${{ always() && env.SECURITY_REQUIRE_IMAGES == 'true' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ env.EVIDENCE_ARTIFACT_PREFIX }}-${{ env.CANDIDATE_SHA }}
@@ -71,8 +75,8 @@ jobs:
 
   quality:
     name: ${{ github.event_name == 'workflow_dispatch' && (inputs.final_image_evidence && 'Final image dispatch - quality not applicable' || 'Manual quality') || 'Quality' }}
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.final_image_evidence) }}
-    runs-on: [self-hosted, Linux, X64, colortrace-docker]
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.final_image_evidence }}
+    runs-on: ${{ fromJSON(vars.COLORTRACE_RUNNER_ROUTES).quality }}
     timeout-minutes: 45
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
