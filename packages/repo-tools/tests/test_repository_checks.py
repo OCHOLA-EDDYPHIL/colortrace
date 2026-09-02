@@ -157,6 +157,9 @@ class RepositoryChecksTest(unittest.TestCase):
             for label in physical_runner_labels:
                 self.assertNotIn(label, runs_on)
 
+        makefile = (_REPOSITORY_ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn('--env "COLORTRACE_RUNNER_NAME=$(RUNNER_NAME)"', makefile)
+
     def test_spdx_licenses_must_be_known_and_canonical(self) -> None:
         for value in ("Apache-2.0", "MIT", "Apache-2.0 OR MIT"):
             self.assertTrue(is_canonical_spdx(value))
