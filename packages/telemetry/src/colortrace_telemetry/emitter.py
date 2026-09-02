@@ -127,6 +127,12 @@ def _flat_attributes(event: TelemetryEvent) -> dict[str, str | int]:
     return attributes
 
 
+def _log_message(event: TelemetryEvent) -> str:
+    # Loki treats equal-timestamp entries with identical lines as duplicates;
+    # keep each logical delivery distinct in the line as well as its metadata.
+    return f"{event.event_name} event_id={event.event_id} delivery_ordinal={event.delivery_ordinal}"
+
+
 class OtelSink:
     """One isolated SDK pipeline for a bounded local verification run."""
 
@@ -183,7 +189,7 @@ class OtelSink:
             self._observations.add(1, attributes=metric_attributes)
             return
         if event.signal == "log":
-            self._logger.info(event.event_name, extra=attributes)
+            self._logger.info(_log_message(event), extra=attributes)
             return
         if event.signal != "trace":
             raise ValueError(f"unknown telemetry signal: {event.signal}")

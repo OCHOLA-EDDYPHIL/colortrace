@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -9,6 +10,7 @@ from threading import Thread
 from typing import Any
 
 import colortrace_telemetry.cli as telemetry_cli
+import colortrace_telemetry.emitter as telemetry_emitter
 import colortrace_telemetry.observer as observer
 import pytest
 import yaml  # type: ignore[import-untyped]
@@ -22,7 +24,7 @@ from colortrace_telemetry.contract import (
     sha256_file,
     validate_schema,
 )
-from colortrace_telemetry.emitter import MemorySink, emit_plans
+from colortrace_telemetry.emitter import MemorySink, TelemetryEvent, emit_plans
 from colortrace_telemetry.observer import (
     BackendEndpoints,
     BackendUnavailable,
@@ -487,6 +489,34 @@ def test_fifty_run_delivery_matrix_is_observable_without_waiting(scenario: Path)
             scheduled = datetime.fromisoformat(event["scheduled_at"].replace("Z", "+00:00"))
             emitted = datetime.fromisoformat(event["emitted_at"].replace("Z", "+00:00"))
             assert int((emitted - scheduled).total_seconds() * 1000) >= 11_000
+
+
+def test_log_message_distinguishes_each_logical_delivery() -> None:
+    event = TelemetryEvent(
+        event_id="evt-35d1d2c1a5b0d90e058081f6",
+        signal="log",
+        event_name="colortrace.declared_reference.log",
+        scheduled_at="2026-09-02T00:00:00.000Z",
+        emitted_at="2026-09-02T00:00:00.000Z",
+        delivery_delay_ms=0,
+        delivery_ordinal=0,
+        correlation={},
+        observation={},
+    )
+    messages = {
+        telemetry_emitter._log_message(event),
+        telemetry_emitter._log_message(replace(event, delivery_ordinal=1)),
+        telemetry_emitter._log_message(replace(event, event_id="evt-bbbbbbbbbbbbbbbbbbbbbbbb")),
+    }
+
+    assert messages == {
+        "colortrace.declared_reference.log "
+        "event_id=evt-35d1d2c1a5b0d90e058081f6 delivery_ordinal=0",
+        "colortrace.declared_reference.log "
+        "event_id=evt-35d1d2c1a5b0d90e058081f6 delivery_ordinal=1",
+        "colortrace.declared_reference.log "
+        "event_id=evt-bbbbbbbbbbbbbbbbbbbbbbbb delivery_ordinal=0",
+    }
 
 
 def test_no_grafana_is_candidate_bound_and_fact_free(scenario: Path) -> None:
