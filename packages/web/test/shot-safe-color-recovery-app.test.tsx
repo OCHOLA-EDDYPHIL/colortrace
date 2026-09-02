@@ -113,6 +113,7 @@ describe("shot-safe color recovery", () => {
     expect(
       screen.getByRole("heading", { name: "Both renders succeeded—why do they look different?" }),
     ).toBeVisible();
+    expect(screen.getByText(/ColorTrace helps VFX pipeline technical directors/iu)).toBeVisible();
     expect(
       screen.getByText("Build-time fixture · hash verified · no live investigation yet"),
     ).toBeVisible();
@@ -232,6 +233,14 @@ describe("shot-safe color recovery", () => {
     expect(facts).toHaveTextContent(/Resolved LUT\s*Different/u);
     expect(facts).toHaveTextContent(/Affected\s*4 outputs/u);
     expect(facts).toHaveTextContent(/Protected\s*3 outputs/u);
+    const impact = screen.getByLabelText("Synthetic fixture impact comparison");
+    expect(impact).toHaveTextContent(/3 affected source frames targeted/u);
+    expect(impact).toHaveTextContent(/3 verified-safe source frames excluded/u);
+    expect(impact).toHaveTextContent(
+      /3 fewer source-frame rerenders than rerendering all 6 observed source frames/u,
+    );
+    expect(impact).toHaveTextContent(/Synthetic fixture comparison—not a production benchmark/u);
+    expect(impact).toHaveTextContent(/Time, compute, and cost savings were not measured/u);
     expect(within(evidenceRegion).getByText("3 bounded Grafana reads")).toBeVisible();
     expect(within(evidenceRegion).getByText("4 current evidence views")).toBeVisible();
     expect(within(evidenceRegion).getByText("Cause and scope authority")).toBeVisible();
@@ -305,6 +314,35 @@ describe("shot-safe color recovery", () => {
     expect(
       screen.queryByRole("region", { name: "Gemini gathered evidence; validators decided" }),
     ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Synthetic fixture impact comparison")).not.toBeInTheDocument();
+  });
+
+  it("withholds the fixture comparison when protected and affected scope overlap", async () => {
+    const adapter = adapterFixture();
+    const investigation = investigationProofV2();
+    const affectedFrame = investigation.plan.targets.find((target) => target.kind === "frame");
+    if (affectedFrame === undefined) throw new Error("missing affected frame fixture");
+    vi.mocked(adapter.start).mockImplementation(async (request) =>
+      demoRun("awaiting-approval", {
+        approval_nonce: request.approval_nonce,
+        investigation: {
+          ...investigation,
+          plan: {
+            ...investigation.plan,
+            protected_exclusions: [
+              affectedFrame,
+              ...investigation.plan.protected_exclusions.slice(1),
+            ],
+          },
+        },
+      }),
+    );
+    render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
+
+    expect(await screen.findByLabelText("Investigation facts")).toBeVisible();
+    expect(screen.queryByLabelText("Synthetic fixture impact comparison")).not.toBeInTheDocument();
   });
 
   it("keeps the concise facts and bounded commands available for v2 proof", async () => {
@@ -322,6 +360,9 @@ describe("shot-safe color recovery", () => {
     const facts = await screen.findByLabelText("Investigation facts");
     expect(facts).toHaveTextContent(/Affected\s*4 outputs/u);
     expect(facts).toHaveTextContent(/Protected\s*3 outputs/u);
+    expect(screen.getByLabelText("Synthetic fixture impact comparison")).toHaveTextContent(
+      /3 fewer source-frame rerenders than rerendering all 6 observed source frames/u,
+    );
     expect(
       screen.queryByRole("region", { name: "Gemini gathered evidence; validators decided" }),
     ).not.toBeInTheDocument();
@@ -391,9 +432,12 @@ describe("shot-safe color recovery", () => {
     expect(outcome).toHaveTextContent(/Next\s*Ready for human closure/u);
     expect(
       screen.getByText(
-        "The affected outputs changed and every protected output remained unchanged.",
+        "Recovered all 4 affected outputs; all 3 protected outputs remained unchanged.",
       ),
     ).toBeVisible();
+    expect(screen.getByLabelText("Synthetic fixture impact comparison")).toHaveTextContent(
+      /This plan calls for 3 fewer source-frame rerenders/u,
+    );
     expect(storage.values.has("colortrace.demo.approval-nonce")).toBe(false);
     fireEvent.click(screen.getByText("Technical proof and provenance", { exact: true }));
     expect(screen.getAllByText("query_loki_logs", { exact: true }).length).toBeGreaterThan(0);

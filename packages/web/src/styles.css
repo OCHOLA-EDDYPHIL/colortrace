@@ -747,6 +747,31 @@ h4 {
   overflow-wrap: anywhere;
 }
 
+.shot-impact-summary {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.7rem 0 0;
+  border: 1px solid rgb(169 240 197 / 38%);
+  border-left: 3px solid var(--shot-lime);
+  border-radius: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  background: rgb(169 240 197 / 7%);
+}
+
+.shot-impact-summary p {
+  margin: 0;
+}
+
+.shot-impact-summary__headline {
+  color: var(--shot-text);
+  font-size: 0.86rem;
+}
+
+.shot-impact-summary__limit {
+  color: var(--shot-muted);
+  font-size: 0.72rem;
+}
+
 .shot-finding-list {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

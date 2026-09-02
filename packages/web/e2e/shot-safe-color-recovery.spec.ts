@@ -201,6 +201,7 @@ test("redirects the legacy workspace to the canonical product without legacy API
   await expect(
     page.getByRole("heading", { name: /both renders succeeded.*look different/iu }),
   ).toBeVisible();
+  await expect(page.getByText(/ColorTrace helps VFX pipeline technical directors/iu)).toBeVisible();
   expect(requestedPaths.some((path) => path.startsWith("/v1/session"))).toBe(false);
   expect(requestedPaths.some((path) => path.startsWith("/v1/incidents"))).toBe(false);
 });
@@ -270,6 +271,17 @@ test("completes the visual-first recovery flow with exact bound approval", async
   expect(factsBox).not.toBeNull();
   expect(factsBox?.y ?? -1).toBeGreaterThanOrEqual(0);
   expect((factsBox?.y ?? 901) + (factsBox?.height ?? 0)).toBeLessThanOrEqual(900);
+  const impact = page.getByLabel("Synthetic fixture impact comparison");
+  await expect(impact).toContainText("3 affected source frames targeted");
+  await expect(impact).toContainText("3 verified-safe source frames excluded");
+  await expect(impact).toContainText(
+    "3 fewer source-frame rerenders than rerendering all 6 observed source frames",
+  );
+  await expect(impact).toContainText("Synthetic fixture comparison—not a production benchmark");
+  await expect(impact).toContainText("Time, compute, and cost savings were not measured");
+  const impactBox = await impact.boundingBox();
+  expect(impactBox).not.toBeNull();
+  expect((impactBox?.y ?? 901) + (impactBox?.height ?? 0)).toBeLessThanOrEqual(900);
   await expect(page.getByText("Root cause confirmed")).toBeVisible();
   await expect(page.getByText("Declared configuration ruled out")).toBeVisible();
   await expect(page.getByText("Worker-only explanation rejected")).toBeVisible();
@@ -324,7 +336,7 @@ test("completes the visual-first recovery flow with exact bound approval", async
   await expect(
     page
       .getByRole("region", { name: "Recovered output", exact: true })
-      .getByText("The affected outputs changed and every protected output remained unchanged.", {
+      .getByText("Recovered all 4 affected outputs; all 3 protected outputs remained unchanged.", {
         exact: true,
       }),
   ).toBeVisible();
@@ -418,6 +430,9 @@ test("keeps the clean-session flow usable on a small reduced-motion viewport", a
   await expect(expectedVisual).toHaveJSProperty("naturalWidth", 160);
   await expect(observedVisual).toHaveJSProperty("naturalWidth", 160);
   await expect(page.getByLabel("Investigation facts")).toBeVisible();
+  await expect(page.getByLabel("Synthetic fixture impact comparison")).toContainText(
+    "3 fewer source-frame rerenders than rerendering all 6 observed source frames",
+  );
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
   );
