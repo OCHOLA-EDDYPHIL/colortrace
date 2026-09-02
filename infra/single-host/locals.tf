@@ -6,17 +6,16 @@ locals {
     topology    = "single-host"
   }
 
-  staging_lifetime_hours    = 168
-  subnet_cidr               = "10.72.0.0/28"
-  iap_tcp_source_range      = "35.235.240.0/20"
-  registry_host             = "${var.region}-docker.pkg.dev"
-  expected_registry         = "${local.registry_host}/${var.project_id}/${var.resource_prefix}-images"
-  expected_prometheus_image = "docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0"
-  trivy_image               = "aquasec/trivy@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c"
-  frozen_database_image     = "ghcr.io/aquasecurity/trivy-db@sha256:67136d9c032b639278e256601e29b8af0ff4ed28e66d859e4cac692f7c1deef6"
-  frozen_database_sha256    = "sha256:eb94cd71f35e20ce5b572803f65009bb61a13a75f8d7c4f1f111ec732c98d314"
-  frozen_database_time      = "2026-08-22T12:57:22.518776499Z"
-  build_config_sha256       = "sha256:${filesha256("${path.module}/cloudbuild.images.yaml")}"
+  staging_lifetime_hours = 168
+  subnet_cidr            = "10.72.0.0/28"
+  iap_tcp_source_range   = "35.235.240.0/20"
+  registry_host          = "${var.region}-docker.pkg.dev"
+  expected_registry      = "${local.registry_host}/${var.project_id}/${var.resource_prefix}-images"
+  trivy_image            = "aquasec/trivy@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c"
+  frozen_database_image  = "ghcr.io/aquasecurity/trivy-db@sha256:67136d9c032b639278e256601e29b8af0ff4ed28e66d859e4cac692f7c1deef6"
+  frozen_database_sha256 = "sha256:eb94cd71f35e20ce5b572803f65009bb61a13a75f8d7c4f1f111ec732c98d314"
+  frozen_database_time   = "2026-08-22T12:57:22.518776499Z"
+  build_config_sha256    = "sha256:${filesha256("${path.module}/cloudbuild.images.yaml")}"
   observability_lock_sha256 = "sha256:${filesha256(
     "${path.module}/../../config/observability/images.lock.json"
   )}"
@@ -29,6 +28,7 @@ locals {
     "caddy",
     "grafana",
     "loki",
+    "prometheus",
     "tempo",
   ])
 
@@ -64,7 +64,6 @@ locals {
       )
       && length(var.deployment_artifact_binding.images[component]) == length("${local.expected_registry}/${component}@sha256:") + 64
     ])
-    && var.deployment_artifact_binding.images.prometheus == local.expected_prometheus_image
     && var.deployment_artifact_binding.scanner.image == local.trivy_image
     && can(timecmp(
       var.deployment_artifact_binding.scanner.databases.current.updated_at,

@@ -92,9 +92,27 @@ steps:
       - --file=containers/Dockerfile.observability
       - .
 
-  - id: tempo
+  - id: prometheus
     waitFor:
       - loki
+    name: gcr.io/cloud-builders/docker@sha256:2e8d40d8e48dc14fab4213d5e532d74f63fd403d9e8d7f6463096a75820286c3
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - build
+      - --pull
+      - --platform=linux/amd64
+      - --target=prometheus
+      - --build-arg=SOURCE_COMMIT=${_SOURCE_COMMIT}
+      - --build-arg=SOURCE_TREE=${_SOURCE_TREE}
+      - --build-arg=SOURCE_DATE_EPOCH=${_SOURCE_DATE_EPOCH}
+      - --tag=${_REGISTRY}/prometheus:${_SOURCE_COMMIT}
+      - --file=containers/Dockerfile.observability
+      - .
+
+  - id: tempo
+    waitFor:
+      - prometheus
     name: gcr.io/cloud-builders/docker@sha256:2e8d40d8e48dc14fab4213d5e532d74f63fd403d9e8d7f6463096a75820286c3
     env:
       - DOCKER_BUILDKIT=1
@@ -116,4 +134,5 @@ images:
   - ${_REGISTRY}/caddy:${_SOURCE_COMMIT}
   - ${_REGISTRY}/grafana:${_SOURCE_COMMIT}
   - ${_REGISTRY}/loki:${_SOURCE_COMMIT}
+  - ${_REGISTRY}/prometheus:${_SOURCE_COMMIT}
   - ${_REGISTRY}/tempo:${_SOURCE_COMMIT}

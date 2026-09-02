@@ -165,6 +165,7 @@ printf '%s' "$build_result" | jq -e \
             caddy: ($build | image_result("caddy"; "containers/Dockerfile.caddy"; null)),
             grafana: ($build | image_result("grafana"; "containers/Dockerfile.observability"; "grafana")),
             loki: ($build | image_result("loki"; "containers/Dockerfile.observability"; "loki")),
+            prometheus: ($build | image_result("prometheus"; "containers/Dockerfile.observability"; "prometheus")),
             tempo: ($build | image_result("tempo"; "containers/Dockerfile.observability"; "tempo"))
           }
         }

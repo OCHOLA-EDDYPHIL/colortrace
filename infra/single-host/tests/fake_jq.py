@@ -38,13 +38,14 @@ def _arguments() -> tuple[bool, bool, dict[str, str], dict[str, list[Any]], list
 
 
 def _build_manifest(document: dict[str, Any], values: dict[str, str]) -> dict[str, Any]:
-    components = ("runtime", "web", "caddy", "grafana", "loki", "tempo")
+    components = ("runtime", "web", "caddy", "grafana", "loki", "prometheus", "tempo")
     build_paths: dict[str, tuple[str, str | None]] = {
         "runtime": ("containers/Dockerfile.runtime", "runtime"),
         "web": ("containers/Dockerfile.web", None),
         "caddy": ("containers/Dockerfile.caddy", None),
         "grafana": ("containers/Dockerfile.observability", "grafana"),
         "loki": ("containers/Dockerfile.observability", "loki"),
+        "prometheus": ("containers/Dockerfile.observability", "prometheus"),
         "tempo": ("containers/Dockerfile.observability", "tempo"),
     }
     storage_source = document.get("source", {}).get("storageSource", {})
@@ -130,15 +131,13 @@ def main() -> int:
             result = document["files"]["runtime/manifests/fixture-runtime-manifest.json"]
         elif expression.startswith(".images[$component]."):
             result = document["images"][values["component"]][expression.rsplit(".", 1)[1]]
-        elif expression == ".upstream.prometheus.index_digest":
-            result = document["upstream"]["prometheus"]["index_digest"]
         elif "colortrace-single-host-image-build/v2" in expression:
             result = (
                 document["schema"] == "colortrace-single-host-image-build/v2"
                 and re.fullmatch(r"[0-9a-f]{40}", document["source"]["commit"]) is not None
                 and re.fullmatch(r"[0-9a-f]{40}", document["source"]["tree"]) is not None
                 and sorted(document["images"])
-                == ["caddy", "grafana", "loki", "runtime", "tempo", "web"]
+                == ["caddy", "grafana", "loki", "prometheus", "runtime", "tempo", "web"]
             )
         elif '.UpdatedAt == "2026-08-22' in expression:
             result = (
@@ -173,10 +172,6 @@ def main() -> int:
         elif "colortrace-single-host-image-scan/v1" in expression:
             build = files["build"][0]
             images = dict(build["images"])
-            images["prometheus"] = {
-                "reference": values["prometheus_reference"],
-                "upstream": files["observability"][0]["upstream"]["prometheus"],
-            }
             result = {
                 "schema": "colortrace-single-host-image-scan/v1",
                 "source": build["source"],

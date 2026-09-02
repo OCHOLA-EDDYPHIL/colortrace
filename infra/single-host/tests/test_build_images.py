@@ -47,7 +47,7 @@ class BuildImagesTests(unittest.TestCase):
                 self.assertNotIn("ARG GODEBUG", contents)
 
         observability = OBSERVABILITY_DOCKERFILE.read_text(encoding="utf-8")
-        self.assertEqual(observability.count("go mod tidy"), 1)
+        self.assertEqual(observability.count("go mod tidy"), 2)
         self.assertEqual(
             observability.count("go mod tidy"),
             observability.count("GODEBUG=http2client=0 go mod tidy"),
@@ -72,8 +72,8 @@ class BuildImagesTests(unittest.TestCase):
             "2e8d40d8e48dc14fab4213d5e532d74f63fd403d9e8d7f6463096a75820286c3"
         )
 
-        self.assertEqual(configuration.count(f"name: {builder}"), 6)
-        self.assertEqual(configuration.count("- DOCKER_BUILDKIT=1"), 6)
+        self.assertEqual(configuration.count(f"name: {builder}"), 7)
+        self.assertEqual(configuration.count("- DOCKER_BUILDKIT=1"), 7)
         self.assertIn("machineType: E2_HIGHCPU_8", configuration)
         self.assertIn("logging: CLOUD_LOGGING_ONLY", configuration)
         self.assertIn("--build-arg=SOURCE_COMMIT=${_SOURCE_COMMIT}", configuration)
@@ -84,6 +84,9 @@ class BuildImagesTests(unittest.TestCase):
         self.assertIn("- caddy\n    name:", configuration)
         self.assertIn("- grafana\n    name:", configuration)
         self.assertIn("- loki\n    name:", configuration)
+        self.assertIn("- prometheus\n    name:", configuration)
+        self.assertIn("--target=prometheus", configuration)
+        self.assertIn("--tag=${_REGISTRY}/prometheus:${_SOURCE_COMMIT}", configuration)
         observability = OBSERVABILITY_DOCKERFILE.read_text(encoding="utf-8")
         self.assertIn(
             'org.opencontainers.image.source="https://github.com/OCHOLA-EDDYPHIL/colortrace"',
@@ -157,7 +160,7 @@ if sys.argv[1:3] == ["builds", "describe"]:
     )
     service_account = os.environ["FAKE_SERVICE_ACCOUNT"]
     substitution_commit = os.environ.get("FAKE_SUBSTITUTION_COMMIT", commit)
-    components = ["runtime", "web", "caddy", "grafana", "loki", "tempo"]
+    components = ["runtime", "web", "caddy", "grafana", "loki", "prometheus", "tempo"]
     print(json.dumps({
         "id": "build-123",
         "status": "SUCCESS",
@@ -279,7 +282,7 @@ raise SystemExit(2)
             )
             self.assertEqual(
                 set(manifest["images"]),
-                {"runtime", "web", "caddy", "grafana", "loki", "tempo"},
+                {"runtime", "web", "caddy", "grafana", "loki", "prometheus", "tempo"},
             )
             self.assertEqual(
                 manifest["images"]["runtime"]["reference"],
@@ -292,6 +295,13 @@ raise SystemExit(2)
                     manifest["images"]["runtime"]["target"],
                 ),
                 ("containers/Dockerfile.runtime", "runtime"),
+            )
+            self.assertEqual(
+                (
+                    manifest["images"]["prometheus"]["dockerfile"],
+                    manifest["images"]["prometheus"]["target"],
+                ),
+                ("containers/Dockerfile.observability", "prometheus"),
             )
             calls = [json.loads(line) for line in log.read_text().splitlines()]
             self.assertEqual(calls[0][:2], ["builds", "submit"])

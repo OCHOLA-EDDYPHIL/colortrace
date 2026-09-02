@@ -312,7 +312,7 @@ def _v3_investigation(investigation: dict[str, Any], approval: dict[str, Any]) -
                 "server_version": "1.1.0",
                 "server_commit": "007e8d82154899a28e19e8dfe9c2bb4452c5211a",
                 "binary_sha256": (
-                    "5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93"
+                    "a3dacdcace8d8082dd7cb245e41be54e8da4a9375969cb39c85c420a30ea0809"
                 ),
                 "mcp_sdk_version": "1.29.0",
                 "mcp_protocol_version": "2025-06-18",
@@ -372,15 +372,11 @@ def _timeline(phase: str) -> list[dict[str, Any]]:
 
 def _artifact() -> dict[str, Any]:
     registry = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images"
-    components = ("runtime", "web", "caddy", "grafana", "loki", "tempo")
+    components = ("runtime", "web", "caddy", "grafana", "loki", "prometheus", "tempo")
     images = {
         component: f"{registry}/{component}@sha256:{str(index) * 64}"
         for index, component in enumerate(components, 1)
     }
-    images["prometheus"] = (
-        "docker.io/prom/prometheus@sha256:"
-        "5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0"
-    )
     fixture = json.loads(
         (ROOT / "packages/fixture-generator/fixtures/canonical-digests.json").read_text(
             encoding="utf-8"
@@ -666,7 +662,7 @@ def _workflow(
             "source_commit": "007e8d82154899a28e19e8dfe9c2bb4452c5211a",
             "source_version": "1.1.0",
             "binary_sha256": (
-                "sha256:5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93"
+                "sha256:a3dacdcace8d8082dd7cb245e41be54e8da4a9375969cb39c85c420a30ea0809"
             ),
             "inventory_sha256": "sha256:" + "7" * 64,
             "transport": "stdio",
