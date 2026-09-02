@@ -19,9 +19,9 @@ ADD --checksum=sha256:91bdd1dece9d4aaaf9b5bda899d64f36ca65a37fd7511acbd6d69cd1c6
     https://codeload.github.com/grafana/mcp-grafana/tar.gz/007e8d82154899a28e19e8dfe9c2bb4452c5211a \
     /tmp/mcp-grafana-source.tar.gz
 RUN test "$(go version)" = "go version go1.26.6 linux/amd64" \
-    && echo "bec38d3e8473226980e03364209db2a3180782d1f531ede5cb52983c5c9721cc  go.mod" | sha256sum -c - \
-    && echo "a793edc44adea4185d8bdef99e522bce47b3341d45d0d4b88723390169bb8f45  go.sum" | sha256sum -c - \
-    && echo "29f223acc1d2d9ac9e136d246d934e3c3130d1a57eed002f97a680b20b8050ed  modules.txt" | sha256sum -c - \
+    && echo "85e4bf83e6c532ea5899f573889d3a81822ad9cb300b2099ffcb872a32c2f844  go.mod" | sha256sum -c - \
+    && echo "20db324e5dfc00c37c078d95234924e08812d24e584c920e44f753973ba6fda3  go.sum" | sha256sum -c - \
+    && echo "5ea9252de893c5cbb0d9affad74eb66f994bcb9e5b08373487b7df83608071ce  modules.txt" | sha256sum -c - \
     && echo "91bdd1dece9d4aaaf9b5bda899d64f36ca65a37fd7511acbd6d69cd1c6ddbb59  /tmp/mcp-grafana-source.tar.gz" | sha256sum -c - \
     && GODEBUG=http2client=0 go mod download all \
     && GODEBUG=http2client=0 go list -mod=readonly -m all > /tmp/modules.txt \
@@ -31,12 +31,41 @@ RUN --network=none go mod verify \
     && module_root="$(go env GOMODCACHE)/github.com/grafana/mcp-grafana@v1.1.0" \
     && source_root="/tmp/mcp-grafana-007e8d82154899a28e19e8dfe9c2bb4452c5211a" \
     && find "$module_root" -type f -exec sh -eu -c 'module_root=$1; source_root=$2; shift 2; for module_file do relative=${module_file#${module_root}/}; cmp "$module_file" "$source_root/$relative"; done' sh "$module_root" "$source_root" {} + \
+    && printf '%s  %s\n' \
+        106c6df91baf0fcb1b771d714a20675155c4fd5f7f50939742cc4e704fb291d6 "$module_root/cmd/mcp-grafana/main.go" \
+        b6b731a1998aeea4739ba7a02f01abe5824d02512b49bcdca034a51b02824764 "$module_root/observability/observability.go" \
+        267a55ebe84f99a42b401128ecfd3e35081b7200e9f2753c45c35146627c2c69 "$module_root/observability/observability_test.go" \
+        ff4d1a94ea75f670ae18ffb179867a8697f9dcf6308d9d930bc02d419c419072 "$module_root/tools.go" \
+        | sha256sum -c - \
+    && test "$(grep -Fh 'go.opentelemetry.io/otel/semconv/v1.40.0' \
+        "$module_root/cmd/mcp-grafana/main.go" \
+        "$module_root/observability/observability.go" \
+        "$module_root/observability/observability_test.go" \
+        "$module_root/tools.go" | wc -l)" -eq 5 \
+    && chmod u+w \
+        "$module_root/cmd/mcp-grafana/main.go" \
+        "$module_root/observability/observability.go" \
+        "$module_root/observability/observability_test.go" \
+        "$module_root/tools.go" \
+    && sed -i 's#go.opentelemetry.io/otel/semconv/v1.40.0#go.opentelemetry.io/otel/semconv/v1.41.0#g' \
+        "$module_root/cmd/mcp-grafana/main.go" \
+        "$module_root/observability/observability.go" \
+        "$module_root/observability/observability_test.go" \
+        "$module_root/tools.go" \
+    && printf '%s  %s\n' \
+        96287c1f971a3811900b3d219f47f6ce9a652694efffbceb1e3029e46a0627a0 "$module_root/cmd/mcp-grafana/main.go" \
+        41f8bd487379fd466b8f7bc26845e245838b6bcd6b517c868fd1844a4b349ac5 "$module_root/observability/observability.go" \
+        f2fe3fd272dc3d0182af3157bf4bf504e450ba11b085b7fcd95a1c881f8e8059 "$module_root/observability/observability_test.go" \
+        1aafcc6fe24cef0a06f7f2725376d2fa29db8d2a828687e1e2f320b9cf82cbe0 "$module_root/tools.go" \
+        | sha256sum -c - \
+    && go test -count=1 github.com/grafana/mcp-grafana \
+    && go test -count=1 github.com/grafana/mcp-grafana/cmd/mcp-grafana -run '^TestNewServer_' \
     && go build -trimpath -buildvcs=false -mod=readonly \
         -ldflags="-s -w -buildid= -X github.com/grafana/mcp-grafana.version=1.1.0" \
         -o /usr/local/bin/mcp-grafana \
         github.com/grafana/mcp-grafana/cmd/mcp-grafana \
     && test "$(/usr/local/bin/mcp-grafana --version)" = 1.1.0 \
-    && echo "5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93  /usr/local/bin/mcp-grafana" | sha256sum -c - \
+    && echo "a3dacdcace8d8082dd7cb245e41be54e8da4a9375969cb39c85c420a30ea0809  /usr/local/bin/mcp-grafana" | sha256sum -c - \
     && install -m 0444 /go/pkg/mod/github.com/grafana/mcp-grafana@v1.1.0/LICENSE /tmp/mcp-grafana.LICENSE \
     && echo "6ec12926d6478d895ccec681c3739c170a88773d6c54d0a57e46682ae6f0adc0  /tmp/mcp-grafana.LICENSE" | sha256sum -c - \
     && install -m 0444 /usr/local/go/LICENSE /tmp/go.LICENSE \
@@ -179,7 +208,7 @@ COPY --from=mcp-grafana /usr/local/bin/mcp-grafana /usr/local/bin/mcp-grafana
 COPY --from=mcp-grafana /tmp/mcp-grafana.LICENSE /usr/share/licenses/mcp-grafana/LICENSE
 COPY --from=mcp-grafana /tmp/go.LICENSE /usr/share/licenses/go/LICENSE
 RUN test "$(/usr/local/bin/mcp-grafana --version)" = 1.1.0 \
-    && echo "5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93  /usr/local/bin/mcp-grafana" | sha256sum -c - \
+    && echo "a3dacdcace8d8082dd7cb245e41be54e8da4a9375969cb39c85c420a30ea0809  /usr/local/bin/mcp-grafana" | sha256sum -c - \
     && python /usr/local/libexec/colortrace-image-licenses.py runtime \
         --output /usr/share/colortrace/licenses \
         --profile private-full \

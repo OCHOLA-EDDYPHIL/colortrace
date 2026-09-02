@@ -6,16 +6,32 @@
   },
   "source_built": {
     "grafana": {
-      "version": "13.2.0-colortrace.1",
+      "version": "13.2.1-colortrace.1",
+      "core_source": {
+        "version": "13.2.1",
+        "source_repository": "https://github.com/grafana/grafana",
+        "source_tag": "v13.2.1",
+        "source_commit": "56cd3e9288d8255fecebe5d05b48d191f50674b5",
+        "source_tree": "9efca8db9ccd0b8b4b41e36b6e71fba38f2f8c9d",
+        "source_archive": "https://codeload.github.com/grafana/grafana/tar.gz/56cd3e9288d8255fecebe5d05b48d191f50674b5",
+        "source_archive_sha256": "5551b5719a3f96688d2f809c5e2b5fec208c03f392d261feb8ce36caf847c0a6",
+        "patched_go_mod_sha256": "24668ba208a38fc20b9730e301a8d5707fc9e06e3e44ea0b8adf07150eaeb22e",
+        "patched_go_sum_sha256": "427145a729468448c575f9be2dff937eea6e06c864356bc01e0ef240a2defc0a",
+        "module_list_sha256": "bbee7e757e480f28ce7dd89bd2437fe2a68a405285118fb25237c365f7a0a5d5",
+        "binary_sha256": "2e858933132cd272de5af08e15fab6fac8d43fb154802fd438705768b60af301",
+        "security_dependency_changes": [
+          {"module": "google.golang.org/grpc", "upstream": "v1.82.1", "selected": "v1.83.1"}
+        ]
+      },
       "runtime_base": {
-        "version": "13.2.0-distroless-slim",
-        "index_digest": "sha256:bbaacd430cde39037818a05a6926ff18f7c67a4e1aa34ba034eedf7f4337103f",
-        "linux_amd64_digest": "sha256:19adcd07c96e2a99da64dd5e19b5ad115ca8e449ecac100ca5ab5c0a3da9a158"
+        "version": "13.2.1-distroless-slim",
+        "index_digest": "sha256:deaf0edc90d7b439fa1c779fb6ca50bdadf6e211ba20e556f7d0ba62d1fc47cc",
+        "linux_amd64_digest": "sha256:5896a4d175862e70440b0882d1fe0e467028b04a1db4061ba821986a77ff0a93"
       },
       "official_plugin_assets": {
-        "version": "13.2.0-distroless",
-        "index_digest": "sha256:08e6ab6d67a5e21e6540724d3673a572840a43b1ba02d03922d0a21a7dbb38f9",
-        "linux_amd64_digest": "sha256:4a8233a6a672604bd88f02bafad7b6631de490b3c6d3c6718a5de11e23de36e7"
+        "version": "13.2.1-distroless",
+        "index_digest": "sha256:3600073f45a9895d2e2c4042da0e745819f5b78bf781266952a400c40dcd8d69",
+        "linux_amd64_digest": "sha256:5e655f9a271aadf00d1db513f64c927af9319b0ce673359bba5072413c0da5fd"
       },
       "plugins": {
         "prometheus": {
@@ -29,16 +45,17 @@
           "official_package": "https://grafana.com/api/plugins/prometheus/versions/13.1.7/download?os=linux&arch=amd64",
           "official_package_sha256": "31b0e919ae51db0fdb91ffb2ba0991f358bbd5e02fac676b6ffad56cc223d57c",
           "official_static_tree_sha256": "3fd8a9aa58220c26df0275ca4dd1d34e67e86a2a3a245e8c33417458dae08d72",
-          "patched_go_mod_sha256": "647e86f151c2b2018051d8dff32a6b9856043ae267506217477ef382b07e611e",
-          "patched_go_sum_sha256": "2a6fc7761327d376a3da255359ff40a54992d10eddc61cae31982caf6e4920db",
-          "module_list_sha256": "1f8faa81bca09e5e00b996b93f71b244a40bb45e9267bf1e884519ca71e606f1",
-          "binary_sha256": "4ab13cfd975a13faaf729fe9751a786f58eb6ba23251273be109f788ea093416",
+          "patched_go_mod_sha256": "b22a7e4ea3f9e3763fd26646235b1e44a2f8246c31ddc6a519a23528757f8e34",
+          "patched_go_sum_sha256": "26810febd851e459a36dae31faa46cde7edb738c84a5c57e56cc684913ef4517",
+          "module_list_sha256": "a2bac0431748f9c5cef6dae087d2368f242f4c384f7a15af35dd54bc5e1f676d",
+          "binary_sha256": "75e624fd1a3af40dd6026afdcb2a6fee117967ca45926aa33a97743a7dd829f1",
           "security_dependency_changes": [
             {
               "module": "go toolchain",
               "upstream": "1.26.5",
               "selected": "1.26.6"
-            }
+            },
+            {"module": "google.golang.org/grpc", "upstream": "v1.82.1", "selected": "v1.83.1"}
           ]
         },
         "loki": {
@@ -52,10 +69,10 @@
           "official_package": "https://grafana.com/api/plugins/loki/versions/13.1.0/download?os=linux&arch=amd64",
           "official_package_sha256": "e09d6c6fbadb9e486c4e01f4adb8477a7064d02fa44ca80c639efa47334d731d",
           "official_static_tree_sha256": "b6bdbe3d6c5b2dfc908ffeb824baa152e3a6da01143783e51561972888a57f7c",
-          "patched_go_mod_sha256": "be6066dde4e9362f4d1b8d05386b304e510601fb1b95b67df87b96a24d33344c",
-          "patched_go_sum_sha256": "9873feeb0546ceef0df2222194378653aa7341e89092fcdad1e141a56e4bc2c7",
-          "module_list_sha256": "c2cb650318bf576468ac0d2b78f494a223dc57c537e5af9cfbf1621e2dd71d0b",
-          "binary_sha256": "049f5fdaebb14c383cc0a237dd3e22c9083538bd09849b2381d9b2d0f01b3b42",
+          "patched_go_mod_sha256": "2b79a960b5bd9d4a78c36cab5ea5d3ceec929c20032685098b1eaee0a08ac2d8",
+          "patched_go_sum_sha256": "ff04f594f7c141dd25bd8fbce8920eb200da0b27dcd9fbfc7dbec2c4ec31b97b",
+          "module_list_sha256": "00521388dd253b23c852ce4692bca9198f07275770d9ddc90dbff18a6ea12841",
+          "binary_sha256": "0d50b898b59d59ad6a4d99a192aecaaf2d0da3e55da4649504717a08d4a148c6",
           "security_dependency_changes": [
             {
               "module": "go toolchain",
@@ -65,7 +82,12 @@
             {
               "module": "google.golang.org/grpc",
               "upstream": "v1.82.0",
-              "selected": "v1.82.1"
+              "selected": "v1.83.1"
+            },
+            {
+              "module": "golang.org/x/crypto",
+              "upstream": "v0.54.0",
+              "selected": "v0.55.0"
             }
           ]
         },
@@ -90,10 +112,10 @@
             "source_archive_sha256": "6159f130af77216215137a1033e3f573cc83e7aba69a19d618b521b7ab41d81f",
             "copied_path": "pkg/tempopb"
           },
-          "patched_go_mod_sha256": "8ee9e1a3973a97d72e05b2c3d7e60a8be4b8cf4de6115440eb935c85c2c2d9f1",
-          "patched_go_sum_sha256": "10925c8ef07e5cb99cf2fdf23040112ea48c2f4f9077b2866bd9d0ace2dfdc16",
-          "module_list_sha256": "1c53069dcdba3cd7e05a920cf2e2c162bde508a9676eb939315e3c4158bb5415",
-          "binary_sha256": "b622f14cf02a740d81848222eebf89c0d3e1358835339386851758d9a5357dbd",
+          "patched_go_mod_sha256": "7ea78ecde7f2fb531ae7ba701d9fe8c84326d8654d3e9768adcaa31268691a1f",
+          "patched_go_sum_sha256": "b66821dbbc4d51770df72ad566bb63dd569583af66d9efb4d8d1c8fad147e52b",
+          "module_list_sha256": "3187f8933281b6522b6bd5107fa670c54de019471ed2b496eddfadc26ac3b6ff",
+          "binary_sha256": "0f232e9d491e1f9799d1b41b79088cc7228ba3a6b674b0c3e760feaab002f151",
           "security_dependency_changes": [
             {
               "module": "go toolchain",
@@ -108,17 +130,17 @@
             {
               "module": "google.golang.org/grpc",
               "upstream": "v1.81.1",
-              "selected": "v1.82.1"
+              "selected": "v1.83.1"
             },
             {
               "module": "golang.org/x/net",
               "upstream": "v0.55.0",
-              "selected": "v0.56.0"
+              "selected": "v0.57.0"
             },
             {
               "module": "golang.org/x/text",
               "upstream": "v0.37.0",
-              "selected": "v0.39.0"
+              "selected": "v0.41.0"
             }
           ]
         }
@@ -132,30 +154,91 @@
       ],
       "signature_policy": "Only prometheus,loki,tempo may load unsigned because their exact official static assets are paired with source-built, hash-locked backends; all runtime plugin download and update paths are disabled.",
       "runtime_uid": 472,
-      "runtime_rootfs": "grafana-13.2.0-distroless-slim"
+      "runtime_rootfs": "grafana-13.2.1-distroless-slim"
     },
     "loki": {
-      "version": "3.7.6",
+      "version": "3.7.7-colortrace.1",
       "source_repository": "https://github.com/grafana/loki",
-      "source_commit": "5003600d7c787b5f047c8d1b0198559471b0caa5",
-      "source_tree": "86028fb3d395adad00f896d9f07b97f0b6994b55",
-      "source_archive": "https://codeload.github.com/grafana/loki/tar.gz/5003600d7c787b5f047c8d1b0198559471b0caa5",
-      "source_archive_sha256": "a9d85e56871a3d00134e67344f70e2c23d3bf13f5b88fa4dc372cead0ec3d5a6",
-      "build_flags": ["-p=2", "-trimpath", "-buildvcs=false", "-mod=readonly", "-tags=netgo", "-ldflags=-s -w -buildid="],
-      "binary_sha256": "497603946881b941432dee393c6ea9d9b8e6a31477def03274e1924f7c68e2ff",
+      "source_tag": "v3.7.7",
+      "source_commit": "7a40404f32b3e6464c9cfc6cc7dd75a40f3931da",
+      "source_tree": "ec57695087bd9452e1df9cede94339e4c34d107f",
+      "source_archive": "https://codeload.github.com/grafana/loki/tar.gz/7a40404f32b3e6464c9cfc6cc7dd75a40f3931da",
+      "source_archive_sha256": "426e46991bc84535681b7b38a407655bfc2c685c7da6358adffe3aa53c79ef09",
+      "patched_go_mod_sha256": "2bd0cfe36eb2ce37214fdff583176b35c6db1381df5990c859db47ba704404b1",
+      "patched_go_sum_sha256": "52e2bbc17909fde16b2ee0f3143b36fdffd45d66e6667e1773f4122629f750c8",
+      "module_list_sha256": "d93492fcd71c6f089033170ea0e3a3d97df0d0c96b93ae02a331535a44336851",
+      "build_flags": ["-p=2", "-trimpath", "-buildvcs=false", "-mod=readonly", "-tags=netgo", "-ldflags=-s -w -buildid= -extldflags=-static"],
+      "binary_sha256": "55c703031c8ea2db63e7b6098f71d102d247c468f8f7a01de380c570e897c203",
+      "security_dependency_changes": [
+        {
+          "module": "google.golang.org/grpc",
+          "upstream": "v1.82.1",
+          "selected": "v1.83.1"
+        }
+      ],
       "runtime_uid": 10001,
       "runtime_gid": 10001,
       "runtime_rootfs": "scratch"
     },
+    "prometheus": {
+      "version": "3.14.0-colortrace.1",
+      "source_repository": "https://github.com/prometheus/prometheus",
+      "source_tag": "v3.14.0",
+      "source_commit": "d7598b7141418fa35be2b5ec5d0fefb634199610",
+      "source_tree": "26aab94032c15bdc2deec9b540375ef3112aea9f",
+      "source_archive": "https://codeload.github.com/prometheus/prometheus/tar.gz/d7598b7141418fa35be2b5ec5d0fefb634199610",
+      "source_archive_sha256": "8370fdaecc92d528e181cd263157ecd6950b0b9d965348ddb8e8d62f66a48ca6",
+      "web_ui_archive": "https://github.com/prometheus/prometheus/releases/download/v3.14.0/prometheus-web-ui-3.14.0.tar.gz",
+      "web_ui_archive_sha256": "be18623c5891d32572998070de0d48522c966b737d9204aa41e0e88d6318e029",
+      "generated_embed_sha256": "26c85a856ffb9772129a732ac0905ef52a087d53ac91493a8f84d8e848cceb3e",
+      "patched_go_mod_sha256": "33760b22556c1de2563d1af5f7b5a2f2fb02de8dce135d69fcaa11edb1cf7561",
+      "patched_go_sum_sha256": "d842281405095ac33378df19c4e2b8fdf8e9f7fdfb69f5c14e2be27bc127a7dc",
+      "module_list_sha256": "359da558acdd8c328eb73dd38e7198e17fdf696d4bf4ea764d938c64e52f4ab9",
+      "prometheus_binary_sha256": "afc9191bf367e365f1cfcacbae8adbfb94d3d14fd3e512c9ab6f865a880ded20",
+      "promtool_binary_sha256": "baae18623d8bb7060868a3b6b7a4d71965c93b50e3ac70d2ed0d8e841a95ac69",
+      "security_dependency_changes": [
+        {
+          "module": "golang.org/x/crypto",
+          "upstream": "v0.54.0",
+          "selected": "v0.55.0"
+        },
+        {
+          "module": "google.golang.org/grpc",
+          "upstream": "v1.82.1",
+          "selected": "v1.83.1"
+        }
+      ],
+      "build_flags": ["-p=2", "-trimpath", "-buildvcs=false", "-mod=readonly", "-tags=netgo builtinassets", "-ldflags=-s -w -buildid="],
+      "runtime_uid": 65534,
+      "runtime_gid": 65534,
+      "runtime_rootfs": "prometheus-3.14.0"
+    },
     "tempo": {
-      "version": "3.0.3",
+      "version": "3.0.3-colortrace.1",
       "source_repository": "https://github.com/grafana/tempo",
+      "source_tag": "v3.0.3",
       "source_commit": "1900ed7bb5cad1a3edc285783d7d4ac4278337dc",
       "source_tree": "0b2438d617ca4c03223fc5236c82324a1fe496f5",
       "source_archive": "https://codeload.github.com/grafana/tempo/tar.gz/1900ed7bb5cad1a3edc285783d7d4ac4278337dc",
       "source_archive_sha256": "f10ae5ecaa7f1eade220b9d013ae73961227b51a7602694896675df1cb96e8e7",
+      "patched_go_mod_sha256": "07009e824add5309cb482e22466947304296f2b663231e137e588854ae72f30d",
+      "patched_go_sum_sha256": "5d349164dfe990ad1795083c5adda3153d06612b1ca1b39a67b25dd71b80f96c",
+      "module_list_sha256": "c829012647b2687e949b064554327d5186915661e6aad4ef11ff11afb44674bb",
+      "vendor_tree_sha256": "e7159e8cf154a6ec7f4deff1d52ef4ac66a46639ddc055647f00363e3b1c6f4d",
       "build_flags": ["-p=1", "-trimpath", "-buildvcs=false", "-mod=vendor", "-ldflags=-s -w -buildid="],
-      "binary_sha256": "8a324cfc382a8829549bb80c71c85bfe12f932f9aa393c33867d652f22b8038d",
+      "binary_sha256": "3519e8529625f9d6f2505077429bcdb96561970818cb49e96afd888ef9e9cbd9",
+      "security_dependency_changes": [
+        {
+          "module": "golang.org/x/crypto",
+          "upstream": "v0.54.0",
+          "selected": "v0.55.0"
+        },
+        {
+          "module": "google.golang.org/grpc",
+          "upstream": "v1.82.1",
+          "selected": "v1.83.1"
+        }
+      ],
       "runtime_uid": 10001,
       "runtime_gid": 10001,
       "runtime_rootfs": "scratch"
@@ -167,9 +250,9 @@
   },
   "upstream": {
     "grafana": {
-      "version": "13.2.0-distroless-slim",
-      "index_digest": "sha256:bbaacd430cde39037818a05a6926ff18f7c67a4e1aa34ba034eedf7f4337103f",
-      "linux_amd64_digest": "sha256:19adcd07c96e2a99da64dd5e19b5ad115ca8e449ecac100ca5ab5c0a3da9a158"
+      "version": "13.2.1-distroless-slim",
+      "index_digest": "sha256:deaf0edc90d7b439fa1c779fb6ca50bdadf6e211ba20e556f7d0ba62d1fc47cc",
+      "linux_amd64_digest": "sha256:5896a4d175862e70440b0882d1fe0e467028b04a1db4061ba821986a77ff0a93"
     },
     "prometheus": {
       "version": "3.14.0",

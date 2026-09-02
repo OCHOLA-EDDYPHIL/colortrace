@@ -48,7 +48,7 @@ python3 "$admission_helper" validate-build "$manifest"
 readonly source_commit=$(jq -er '.source.commit' "$manifest")
 readonly tag_pattern="^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9_./-]+:${source_commit}$"
 
-readonly components=(runtime web caddy grafana loki tempo)
+readonly components=(runtime web caddy grafana loki prometheus tempo)
 declare -A references
 for component in "${components[@]}"; do
   tag=$(jq -er --arg component "$component" '.images[$component].tag' "$manifest")
@@ -60,13 +60,7 @@ for component in "${components[@]}"; do
   references[$component]=$reference
 done
 
-prometheus_digest=$(jq -er '.upstream.prometheus.index_digest' "$observability_lock")
-[[ "$prometheus_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 65
-readonly prometheus_reference="docker.io/prom/prometheus@$prometheus_digest"
-references[prometheus]=$prometheus_reference
-readonly scan_components=(runtime web caddy grafana loki prometheus tempo)
-
-for component in "${scan_components[@]}"; do
+for component in "${components[@]}"; do
   docker pull "${references[$component]}" >/dev/null
   docker image inspect "${references[$component]}" >/dev/null
 done
@@ -153,7 +147,7 @@ scan_image() {
   ' "$report" >/dev/null
 }
 
-for component in "${scan_components[@]}"; do
+for component in "${components[@]}"; do
   scan_image current "$current_cache" "$component" "${references[$component]}"
   scan_image frozen "$frozen_cache" "$component" "${references[$component]}"
 done

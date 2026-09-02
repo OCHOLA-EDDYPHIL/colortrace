@@ -23,23 +23,14 @@ FROZEN_DATABASE_IMAGE = (
 FROZEN_DATABASE_SHA256 = "sha256:eb94cd71f35e20ce5b572803f65009bb61a13a75f8d7c4f1f111ec732c98d314"
 FROZEN_DATABASE_UPDATED_AT = "2026-08-22T12:57:22.518776499Z"
 FROZEN_DATABASE_NEXT_UPDATE = "2026-08-23T12:57:22.518775968Z"
-PROMETHEUS_REFERENCE = (
-    "docker.io/prom/prometheus@sha256:"
-    "5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0"
-)
-PROMETHEUS_UPSTREAM = {
-    "version": "3.14.0",
-    "index_digest": "sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0",
-    "linux_amd64_digest": "sha256:e906cef998316bbe319f98711e1b4d8613ad37e14b08ff831d7036e77b7464f9",
-}
-COMPONENTS = ("runtime", "web", "caddy", "grafana", "loki", "tempo")
-SCAN_COMPONENTS = (*COMPONENTS[:5], "prometheus", COMPONENTS[5])
+COMPONENTS = ("runtime", "web", "caddy", "grafana", "loki", "prometheus", "tempo")
 BUILD_PATHS: dict[str, tuple[str, str | None]] = {
     "runtime": ("containers/Dockerfile.runtime", "runtime"),
     "web": ("containers/Dockerfile.web", None),
     "caddy": ("containers/Dockerfile.caddy", None),
     "grafana": ("containers/Dockerfile.observability", "grafana"),
     "loki": ("containers/Dockerfile.observability", "loki"),
+    "prometheus": ("containers/Dockerfile.observability", "prometheus"),
     "tempo": ("containers/Dockerfile.observability", "tempo"),
 }
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -212,43 +203,20 @@ def _validate_build(value: dict[str, Any]) -> tuple[str, str, str]:
     return project, prefix, source["commit"]
 
 
-def _validate_observability(lock: dict[str, Any]) -> None:
-    try:
-        prometheus = lock["upstream"]["prometheus"]
-    except (KeyError, TypeError) as error:
-        raise BindingError("prometheus-lock-invalid") from error
-    if (
-        lock.get("schema") != "colortrace-staging-observability-images/v2"
-        or prometheus != PROMETHEUS_UPSTREAM
-    ):
-        raise BindingError("prometheus-lock-invalid")
-
-
-def _expected_scan_images(build: dict[str, Any], observability: dict[str, Any]) -> dict[str, Any]:
-    _validate_observability(observability)
-    images = dict(build["images"])
-    images["prometheus"] = {
-        "reference": PROMETHEUS_REFERENCE,
-        "upstream": observability["upstream"]["prometheus"],
-    }
-    return images
+def _expected_scan_images(build: dict[str, Any]) -> dict[str, Any]:
+    return dict(build["images"])
 
 
 def _report_records(output: Path, images: dict[str, Any]) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
     for database in ("current", "frozen"):
-        for component in SCAN_COMPONENTS:
+        for component in COMPONENTS:
             filename = f"{database}-{component}.json"
             report_path = output / filename
             report = _load(report_path)
             expected_reference = images[component]["reference"]
-            accepted_artifact_names = {expected_reference}
-            if component == "prometheus":
-                accepted_artifact_names.add(expected_reference.removeprefix("docker.io/"))
             results = report.get("Results")
-            if report.get("ArtifactName") not in accepted_artifact_names or not isinstance(
-                results, list
-            ):
+            if report.get("ArtifactName") != expected_reference or not isinstance(results, list):
                 raise BindingError(f"scan-report-invalid:{filename}")
             for result in results:
                 if not isinstance(result, dict):
@@ -317,7 +285,7 @@ def _expected_evidence_files() -> set[str]:
     files.update(
         f"{database}-{component}.json"
         for database in ("current", "frozen")
-        for component in SCAN_COMPONENTS
+        for component in COMPONENTS
     )
     return files
 
@@ -351,11 +319,11 @@ def record_scan(arguments: argparse.Namespace) -> None:
     observability_path = arguments.observability_lock.resolve(strict=True)
     output = arguments.output.resolve(strict=True)
     build = _load(manifest_path)
-    observability = _load(observability_path)
+    _load(observability_path)
     _validate_build(build)
     if _sha256_file(observability_path) != _sha256_file(OBSERVABILITY_LOCK):
         raise BindingError("observability-lock-digest-invalid")
-    images = _expected_scan_images(build, observability)
+    images = _expected_scan_images(build)
     current_metadata = _load(output / "current-db-metadata.json")
     frozen_metadata = _load(output / "frozen-db-metadata.json")
     _validate_database_metadata(current_metadata, frozen=False)
@@ -483,8 +451,7 @@ def _validate_scan(
         or set(frozen) != {"image", "content_sha256", "metadata_sha256", "updated_at"}
     ):
         raise BindingError("scan-database-invalid")
-    observability = _load(OBSERVABILITY_LOCK)
-    expected_images = _expected_scan_images(build, observability)
+    expected_images = _expected_scan_images(build)
     if value["images"] != expected_images:
         raise BindingError("scan-images-invalid")
     if scanner["version"] != _load(scan_path.parent / "scanner.json"):
@@ -516,7 +483,7 @@ def prepare(arguments: argparse.Namespace) -> None:
     project, prefix, _commit = _validate_build(build)
     _validate_scan(scan, scan_path=scan_path, build=build, build_path=build_path)
     image_references = {
-        component: scan["images"][component]["reference"] for component in SCAN_COMPONENTS
+        component: scan["images"][component]["reference"] for component in COMPONENTS
     }
     artifact_binding = {
         "schema": ADMISSION_SCHEMA,
@@ -658,7 +625,7 @@ def _validate_admission(value: dict[str, Any]) -> dict[str, Any]:
         or source["date_epoch"] <= 0
     ):
         raise BindingError("admission-identity-invalid")
-    if set(images) != set(SCAN_COMPONENTS):
+    if set(images) != set(COMPONENTS):
         raise BindingError("admission-images-invalid")
     for component in COMPONENTS:
         expected_prefix = f"{build['registry']}/{component}@sha256:"
@@ -669,8 +636,6 @@ def _validate_admission(value: dict[str, Any]) -> dict[str, Any]:
             or DIGEST.fullmatch(reference.rsplit("@", 1)[1]) is None
         ):
             raise BindingError("admission-images-invalid")
-    if images["prometheus"] != PROMETHEUS_REFERENCE:
-        raise BindingError("admission-images-invalid")
     databases = scanner.get("databases")
     if not isinstance(databases, dict) or set(databases) != {"current", "frozen"}:
         raise BindingError("admission-scanner-invalid")

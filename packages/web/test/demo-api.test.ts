@@ -70,7 +70,7 @@ describe("demo API adapter", () => {
       "sha256:a5ff48f8c5356c7c6dc51fb9b3578fcc63e786cde2a3db789b2d11daf9e660bd",
     );
     expect(demoReceipt().receipt_sha256).toBe(
-      "sha256:62f764fbcd42cde727edce70a4dec92d304e167a38b9e651b2ab8999a6486187",
+      "sha256:f69ff7407483b5a7d895bd1dd809ad937dbbee324d35aa4e794cf4dddafac572",
     );
   });
 
