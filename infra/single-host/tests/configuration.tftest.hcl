@@ -21,14 +21,14 @@ variables {
     schema                    = "colortrace-single-host-admission/v1"
     build_manifest_sha256     = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     scan_binding_sha256       = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    observability_lock_sha256 = "sha256:856778e5e36b0800797b4e187923e8ff86c7fc855fe6ff7afb7844b9dadc4001"
+    observability_lock_sha256 = "sha256:253efb8bc5bfc2ab326a9cd96fe5c5c6899563ed8a89231db7b4e7f03008d637"
     build = {
       id              = "build-123"
       project         = "colortrace-test-project"
       region          = "us-central1"
       service_account = "projects/colortrace-test-project/serviceAccounts/ct-singlehost-builder@colortrace-test-project.iam.gserviceaccount.com"
       registry        = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images"
-      config_sha256   = "sha256:a1479a6f614ce006edc83131562934e0c05307f88fbc90ddfeac8c13f6d94fe9"
+      config_sha256   = "sha256:883c8a57f8e094e01fe1d66da41bdf2eb025939b537a5b0a003510adb9722dd0"
       create_time     = "2026-08-23T01:00:00Z"
       finish_time     = "2026-08-23T01:10:00Z"
     }
@@ -44,7 +44,7 @@ variables {
       caddy      = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/caddy@sha256:5555555555555555555555555555555555555555555555555555555555555555"
       grafana    = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/grafana@sha256:6666666666666666666666666666666666666666666666666666666666666666"
       loki       = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/loki@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-      prometheus = "docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0"
+      prometheus = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/prometheus@sha256:8888888888888888888888888888888888888888888888888888888888888888"
       tempo      = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/tempo@sha256:9999999999999999999999999999999999999999999999999999999999999999"
     }
     scanner = {
@@ -66,7 +66,7 @@ variables {
       report_set_sha256 = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
     }
   }
-  deployment_artifact_binding_sha256 = "sha256:0b5d8b9edab8380ebc2f6e5ec1588d468d0a5f3d0f62d2dc0cc90148dd7bb03f"
+  deployment_artifact_binding_sha256 = "sha256:81a6854e99690bbba14a6e605b68f17c5505cf55774c9c981fdd16f6b5c9f9fc"
 }
 
 run "foundation_has_no_billable_host" {
@@ -343,7 +343,7 @@ run "bounded_single_host_is_admitted" {
       && google_compute_instance.host[0].metadata["block-project-ssh-keys"] == "TRUE"
       && google_compute_instance.host[0].metadata["serial-port-enable"] == "FALSE"
       && google_compute_instance.host[0].metadata["colortrace-staging-hard-stop-epoch"] == "1900000000"
-      && google_compute_instance.host[0].metadata["colortrace-artifact-binding-sha256"] == "sha256:0b5d8b9edab8380ebc2f6e5ec1588d468d0a5f3d0f62d2dc0cc90148dd7bb03f"
+      && google_compute_instance.host[0].metadata["colortrace-artifact-binding-sha256"] == "sha256:81a6854e99690bbba14a6e605b68f17c5505cf55774c9c981fdd16f6b5c9f9fc"
       && google_compute_instance.host[0].metadata["colortrace-build-manifest-sha256"] == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       && google_compute_instance.host[0].metadata["colortrace-scan-binding-sha256"] == "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       && google_compute_instance.host[0].metadata["colortrace-runtime-build-binding-sha256"] == "sha256:94dcf637a46182cd88090369a68dd2295a43df1fcb1e0d3ce885cd8d62debbba"
@@ -485,7 +485,7 @@ run "bounded_single_host_is_admitted" {
       && !strcontains(local.compose_yaml, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
       && strcontains(local.compose_yaml, "GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: \"prometheus,loki,tempo\"")
       && strcontains(local.compose_yaml, "image: us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/grafana@sha256:6666666666666666666666666666666666666666666666666666666666666666")
-      && strcontains(local.compose_yaml, "image: docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0")
+      && strcontains(local.compose_yaml, "image: us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images/prometheus@sha256:8888888888888888888888888888888888888888888888888888888888888888")
       && !strcontains(local.compose_yaml, "otel-lgtm")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "chown -R 65532:65532 \"$ROOT_DIR/caddy-config\" \"$ROOT_DIR/caddy-data\"")
       && strcontains(google_compute_instance.host[0].metadata["startup-script"], "grafana-datasources.yaml")
@@ -533,10 +533,10 @@ run "bounded_single_host_is_admitted" {
       && output.staging_hard_stop_epoch == 1900000000
       && output.deployment_contract.estimated_cost_usd == 24
       && output.deployment_contract.public_url == "https://203-0-113-42.sslip.io"
-      && output.deployment_contract.artifact_hashes.deployment_artifact_binding_sha256 == "sha256:0b5d8b9edab8380ebc2f6e5ec1588d468d0a5f3d0f62d2dc0cc90148dd7bb03f"
+      && output.deployment_contract.artifact_hashes.deployment_artifact_binding_sha256 == "sha256:81a6854e99690bbba14a6e605b68f17c5505cf55774c9c981fdd16f6b5c9f9fc"
       && output.deployment_contract.artifact_hashes.runtime_build_binding_sha256 == "sha256:94dcf637a46182cd88090369a68dd2295a43df1fcb1e0d3ce885cd8d62debbba"
       && output.deployment_contract.scanner.image == local.trivy_image
-      && output.resume_identity.artifact_binding_sha256 == "sha256:0b5d8b9edab8380ebc2f6e5ec1588d468d0a5f3d0f62d2dc0cc90148dd7bb03f"
+      && output.resume_identity.artifact_binding_sha256 == "sha256:81a6854e99690bbba14a6e605b68f17c5505cf55774c9c981fdd16f6b5c9f9fc"
       && output.resume_identity.member == "serviceAccount:resume@example.test"
     )
     error_message = "The deployment output must preserve its bounded lifecycle and complete artifact hash contract."

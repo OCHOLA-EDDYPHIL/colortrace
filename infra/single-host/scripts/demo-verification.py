@@ -47,8 +47,8 @@ CHECK_NAMES = [
     "safe-complement-preservation",
     "post-action-telemetry-correlation",
 ]
-SOURCE_COMPONENTS = ("runtime", "web", "caddy", "grafana", "loki", "tempo")
-ALL_COMPONENTS = (*SOURCE_COMPONENTS[:5], "prometheus", SOURCE_COMPONENTS[5])
+SOURCE_COMPONENTS = ("runtime", "web", "caddy", "grafana", "loki", "prometheus", "tempo")
+ALL_COMPONENTS = SOURCE_COMPONENTS
 VISUAL_KINDS = ("diff", "expected", "observed", "recovered")
 RUN_BASE_FIELDS_V1 = {
     "schema",
@@ -93,7 +93,7 @@ MODEL: dict[str, Any] = {
 MCP_IDENTITY: dict[str, Any] = {
     "source_commit": "007e8d82154899a28e19e8dfe9c2bb4452c5211a",
     "source_version": "1.1.0",
-    "binary_sha256": ("sha256:5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93"),
+    "binary_sha256": ("sha256:a3dacdcace8d8082dd7cb245e41be54e8da4a9375969cb39c85c420a30ea0809"),
     "transport": "stdio",
     "write_tools_enabled": False,
 }

@@ -413,7 +413,7 @@ export type GrafanaEvidenceSource = {
   server: "mcp-grafana";
   server_version: "1.1.0";
   server_commit: "007e8d82154899a28e19e8dfe9c2bb4452c5211a";
-  binary_sha256: "5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93";
+  binary_sha256: "a3dacdcace8d8082dd7cb245e41be54e8da4a9375969cb39c85c420a30ea0809";
   mcp_sdk_version: "1.29.0";
   mcp_protocol_version: "2025-06-18";
   tool: "alerting_manage_rules" | "query_loki_logs" | "query_prometheus" | "tempo_get-trace";
@@ -555,7 +555,7 @@ export type GrafanaToolInventory = {
   schema: "grafana-mcp-tool-inventory/v1";
   server_version: "1.1.0";
   server_commit: "007e8d82154899a28e19e8dfe9c2bb4452c5211a";
-  binary_sha256: "5f6b1492ff35f92506e17310b3ea8b689c3f04c1fe0f6d4cc0a1f6e50bd52d93";
+  binary_sha256: "a3dacdcace8d8082dd7cb245e41be54e8da4a9375969cb39c85c420a30ea0809";
   mcp_sdk_version: "1.29.0";
   mcp_protocol_version: "2025-06-18";
   selected_tools: {

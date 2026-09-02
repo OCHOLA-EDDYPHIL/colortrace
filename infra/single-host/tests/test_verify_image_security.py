@@ -53,7 +53,7 @@ class VerifyImageSecurityTests(unittest.TestCase):
 
             commit = "1" * 40
             registry = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images"
-            components = ["runtime", "web", "caddy", "grafana", "loki", "tempo"]
+            components = ["runtime", "web", "caddy", "grafana", "loki", "prometheus", "tempo"]
             images = {}
             build_paths = {
                 "runtime": ("containers/Dockerfile.runtime", "runtime"),
@@ -61,6 +61,7 @@ class VerifyImageSecurityTests(unittest.TestCase):
                 "caddy": ("containers/Dockerfile.caddy", None),
                 "grafana": ("containers/Dockerfile.observability", "grafana"),
                 "loki": ("containers/Dockerfile.observability", "loki"),
+                "prometheus": ("containers/Dockerfile.observability", "prometheus"),
                 "tempo": ("containers/Dockerfile.observability", "tempo"),
             }
             for index, component in enumerate(components, 1):
@@ -199,7 +200,7 @@ for value in sys.argv[1:]:
             self.assertEqual(bindings["schema"], "colortrace-single-host-image-scan/v2")
             self.assertEqual(bindings["result"], "pass")
             self.assertFalse(bindings["vulnerability_ignores"])
-            self.assertEqual(set(bindings["images"]), {*components, "prometheus"})
+            self.assertEqual(set(bindings["images"]), set(components))
             self.assertEqual(len(bindings["reports"]), 14)
             calls = [json.loads(line) for line in command_log.read_text().splitlines()]
             scan_calls = [call for call in calls if "--output" in call]

@@ -19,10 +19,10 @@ ADD --checksum=sha256:a593bd7077c76102ca76d19287a5e247d4e359dd67eddbc933f865afd3
     https://codeload.github.com/caddyserver/caddy/tar.gz/e2eee6a7fce366321294c9c2a79f3146891dcbdf \
     /tmp/caddy-source.tar.gz
 RUN test "$(go version)" = "go version go1.26.6 linux/amd64" \
-    && echo "ead34b17f4bf81fa214fc790ab80029f18222530c0bd8d4d03e5cd9bb1783872  go.mod" | sha256sum -c - \
-    && echo "c547ceb00efbc9670c92d4074cd0fa58341e1411ccc057e81dbeb04177f330ae  go.sum" | sha256sum -c - \
+    && echo "047f2517f736719c1c94c536f797584cdda6a9aa1d323a18f40f4821b14babf9  go.mod" | sha256sum -c - \
+    && echo "4b1955ae0131cad1dcbbc262dac01abdbf83852661b6e7ab2a6aa7f8ef984662  go.sum" | sha256sum -c - \
     && echo "c1614b4d01d82b6d9fe7da448fbc9c91201223b5e23cb67cf7f17ecb65306e51  main.go" | sha256sum -c - \
-    && echo "66fe492187a1f400b7e932369bd59af454ce98d52c20d40218f5a6342432b08f  modules.txt" | sha256sum -c - \
+    && echo "1b4a9c0202c0eb1d375cec5ae4848c9c198dca7ae69bf166beff8759c45f5d9c  modules.txt" | sha256sum -c - \
     && echo "a593bd7077c76102ca76d19287a5e247d4e359dd67eddbc933f865afd3c131eb  /tmp/caddy-source.tar.gz" | sha256sum -c - \
     && GODEBUG=http2client=0 go mod download all \
     && GODEBUG=http2client=0 go list -mod=readonly -m all >/tmp/modules.txt \
@@ -35,7 +35,7 @@ RUN --network=none go mod verify \
     && go build -trimpath -buildvcs=false -mod=readonly \
         -ldflags="-s -w -buildid= -X github.com/caddyserver/caddy/v2.CustomVersion=v2.11.4" \
         -o /usr/local/bin/caddy . \
-    && echo "4b57bb1bd9cd9a97b9dfec1ef56e530d4726574954b12d699789da862fc94988  /usr/local/bin/caddy" | sha256sum -c - \
+    && echo "d1ad562581bd65fb634fe6fe8b9df44c60cd6bba349fc63030b270d62cc68549  /usr/local/bin/caddy" | sha256sum -c - \
     && test "$(/usr/local/bin/caddy version)" = "v2.11.4 v2.11.4 h1:XKxkMTgNSizEvKG6QHue6cAsFOteU2qA61w2tKkCWi0=" \
     && printf ':8080 {\n respond "ok"\n}\n' >/tmp/Caddyfile \
     && /usr/local/bin/caddy adapt --adapter caddyfile --config /tmp/Caddyfile >/dev/null \

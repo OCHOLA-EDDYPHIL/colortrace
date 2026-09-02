@@ -11,10 +11,10 @@
   "source_module_sum": "h1:XKxkMTgNSizEvKG6QHue6cAsFOteU2qA61w2tKkCWi0=",
   "toolchain_image": "golang@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83",
   "toolchain_version": "go1.26.6",
-  "build_module_sha256": "ead34b17f4bf81fa214fc790ab80029f18222530c0bd8d4d03e5cd9bb1783872",
-  "build_sum_sha256": "c547ceb00efbc9670c92d4074cd0fa58341e1411ccc057e81dbeb04177f330ae",
+  "build_module_sha256": "047f2517f736719c1c94c536f797584cdda6a9aa1d323a18f40f4821b14babf9",
+  "build_sum_sha256": "4b1955ae0131cad1dcbbc262dac01abdbf83852661b6e7ab2a6aa7f8ef984662",
   "build_main_sha256": "c1614b4d01d82b6d9fe7da448fbc9c91201223b5e23cb67cf7f17ecb65306e51",
-  "build_list_sha256": "66fe492187a1f400b7e932369bd59af454ce98d52c20d40218f5a6342432b08f",
+  "build_list_sha256": "1b4a9c0202c0eb1d375cec5ae4848c9c198dca7ae69bf166beff8759c45f5d9c",
   "build_flags": [
     "-trimpath",
     "-buildvcs=false",
@@ -25,22 +25,22 @@
     {
       "module": "golang.org/x/crypto",
       "upstream": "v0.52.0",
-      "selected": "v0.53.0"
+      "selected": "v0.55.0"
     },
     {
       "module": "golang.org/x/net",
       "upstream": "v0.55.0",
-      "selected": "v0.56.0"
+      "selected": "v0.57.0"
     },
     {
       "module": "golang.org/x/text",
       "upstream": "v0.37.0",
-      "selected": "v0.39.0"
+      "selected": "v0.41.0"
     },
     {
       "module": "google.golang.org/grpc",
       "upstream": "v1.81.0",
-      "selected": "v1.82.1"
+      "selected": "v1.83.1"
     }
   ],
   "required_modules": [
@@ -52,7 +52,7 @@
     "tls.issuance.acme",
     "tls.issuance.internal"
   ],
-  "binary_sha256": "4b57bb1bd9cd9a97b9dfec1ef56e530d4726574954b12d699789da862fc94988",
+  "binary_sha256": "d1ad562581bd65fb634fe6fe8b9df44c60cd6bba349fc63030b270d62cc68549",
   "caddy_license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
   "go_license_sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
   "runtime_uid": 65532,

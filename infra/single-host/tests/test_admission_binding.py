@@ -15,10 +15,6 @@ BUILD_CONFIG = ROOT / "infra/single-host/cloudbuild.images.yaml"
 OBSERVABILITY_LOCK = ROOT / "config/observability/images.lock.json"
 FIXTURE_DIGESTS = ROOT / "packages/fixture-generator/fixtures/canonical-digests.json"
 FROZEN_DATABASE_SHA256 = "sha256:eb94cd71f35e20ce5b572803f65009bb61a13a75f8d7c4f1f111ec732c98d314"
-PROMETHEUS_REFERENCE = (
-    "docker.io/prom/prometheus@sha256:"
-    "5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0"
-)
 
 
 def _sha256(path: Path) -> str:
@@ -41,13 +37,14 @@ class AdmissionBindingTests(unittest.TestCase):
         fixture_digest = fixture["files"]["runtime/manifests/fixture-runtime-manifest.json"]
         commit = "1" * 40
         registry = "us-central1-docker.pkg.dev/colortrace-test-project/ct-singlehost-images"
-        components = ("runtime", "web", "caddy", "grafana", "loki", "tempo")
+        components = ("runtime", "web", "caddy", "grafana", "loki", "prometheus", "tempo")
         build_paths = {
             "runtime": ("containers/Dockerfile.runtime", "runtime"),
             "web": ("containers/Dockerfile.web", None),
             "caddy": ("containers/Dockerfile.caddy", None),
             "grafana": ("containers/Dockerfile.observability", "grafana"),
             "loki": ("containers/Dockerfile.observability", "loki"),
+            "prometheus": ("containers/Dockerfile.observability", "prometheus"),
             "tempo": ("containers/Dockerfile.observability", "tempo"),
         }
         images = {}
@@ -85,12 +82,7 @@ class AdmissionBindingTests(unittest.TestCase):
             "images": images,
         }
         _write_json(self.manifest, self.build)
-        observability = json.loads(OBSERVABILITY_LOCK.read_text(encoding="utf-8"))
         scan_images = dict(images)
-        scan_images["prometheus"] = {
-            "reference": PROMETHEUS_REFERENCE,
-            "upstream": observability["upstream"]["prometheus"],
-        }
         _write_json(
             self.evidence / "current-db-metadata.json",
             {
@@ -119,11 +111,7 @@ class AdmissionBindingTests(unittest.TestCase):
                     self.evidence / f"{database}-{component}.json",
                     {
                         "SchemaVersion": 2,
-                        "ArtifactName": (
-                            image["reference"].removeprefix("docker.io/")
-                            if component == "prometheus"
-                            else image["reference"]
-                        ),
+                        "ArtifactName": image["reference"],
                         "Results": [],
                     },
                 )
@@ -178,7 +166,10 @@ class AdmissionBindingTests(unittest.TestCase):
             value["deployment_artifact_binding_sha256"],
             f"sha256:{hashlib.sha256(canonical).hexdigest()}",
         )
-        self.assertEqual(binding["images"]["prometheus"], PROMETHEUS_REFERENCE)
+        self.assertEqual(
+            binding["images"]["prometheus"],
+            self.build["images"]["prometheus"]["reference"],
+        )
         self.assertEqual(
             binding["scanner"]["databases"]["frozen"]["content_sha256"], FROZEN_DATABASE_SHA256
         )
@@ -219,7 +210,7 @@ class AdmissionBindingTests(unittest.TestCase):
         binding_path = self.evidence / "scan-bindings.json"
         binding = json.loads(binding_path.read_text())
         binding["images"]["prometheus"]["reference"] = (
-            "docker.io/prom/prometheus@sha256:" + "f" * 64
+            self.build["build"]["registry"] + "/prometheus@sha256:" + "f" * 64
         )
         _write_json(binding_path, binding)
         self._rewrite_checksums()
