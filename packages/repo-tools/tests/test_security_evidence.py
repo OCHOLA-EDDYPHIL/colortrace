@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,8 @@ from unittest import mock
 from colortrace_repo.dependencies import resolved_locked_packages
 from colortrace_repo.security_evidence import (
     _deployment_inputs,
+    _report_status,
+    _runner_report,
     finalize_security_evidence,
     prepare_security_evidence,
 )
@@ -26,6 +29,56 @@ def _sha256(path: Path) -> str:
 
 
 class SecurityEvidenceTest(unittest.TestCase):
+    def test_runner_isolation_accepts_only_supported_ci_boundaries(self) -> None:
+        scenarios = (
+            (
+                "github-hosted",
+                {"COLORTRACE_HOST_DOCKER_SOCKET_PRESENT": "true"},
+                "pass",
+            ),
+            (
+                "github-hosted",
+                {
+                    "COLORTRACE_DOCKER_ENDPOINT": "tcp://127.0.0.1:2375",
+                    "COLORTRACE_HOST_DOCKER_SOCKET_PRESENT": "false",
+                },
+                "fail",
+            ),
+            (
+                "self-hosted",
+                {
+                    "COLORTRACE_DOCKER_ENDPOINT": "tcp://127.0.0.1:2375",
+                    "COLORTRACE_HOST_DOCKER_SOCKET_PRESENT": "false",
+                },
+                "pass",
+            ),
+            (
+                "self-hosted",
+                {"COLORTRACE_HOST_DOCKER_SOCKET_PRESENT": "true"},
+                "fail",
+            ),
+            (
+                "unknown",
+                {
+                    "COLORTRACE_DOCKER_ENDPOINT": "tcp://127.0.0.1:2375",
+                    "COLORTRACE_HOST_DOCKER_SOCKET_PRESENT": "false",
+                },
+                "fail",
+            ),
+        )
+
+        for environment, docker_environment, expected in scenarios:
+            with self.subTest(environment=environment, expected=expected):
+                runner_environment = {
+                    "COLORTRACE_CI": "true",
+                    "COLORTRACE_RUNNER_ENVIRONMENT": environment,
+                    **docker_environment,
+                }
+                with mock.patch.dict(os.environ, runner_environment, clear=True):
+                    report = _runner_report()
+                self.assertEqual(report["runner"]["environment"], environment)
+                self.assertEqual(_report_status("runner-isolation.json", report), expected)
+
     def _write_passing_image_reports(self, output: Path) -> None:
         images = output / "images"
         images.mkdir(exist_ok=True)

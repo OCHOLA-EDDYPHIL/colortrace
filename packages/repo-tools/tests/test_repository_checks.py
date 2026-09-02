@@ -119,11 +119,30 @@ class RepositoryChecksTest(unittest.TestCase):
         )
         secret_steps = {step["name"]: step for step in secret_scan["steps"]}
         self.assertEqual(
+            secret_steps["Bootstrap secret scanner"]["if"],
+            "${{ env.SECURITY_REQUIRE_IMAGES != 'true' }}",
+        )
+        self.assertEqual(
+            secret_steps["Bootstrap secret scanner"]["run"], "make ensure-gitleaks-image"
+        )
+        self.assertEqual(secret_steps["Scan repository for secrets"]["run"], "make check-secret")
+        self.assertEqual(
+            secret_steps["Bootstrap security evidence tools"]["if"],
+            "${{ env.SECURITY_REQUIRE_IMAGES == 'true' }}",
+        )
+        self.assertEqual(
+            secret_steps["Produce exact-candidate security evidence"]["if"],
+            "${{ env.SECURITY_REQUIRE_IMAGES == 'true' }}",
+        )
+        self.assertEqual(
             secret_steps["Verify exact-candidate image cleanup"]["if"],
             "${{ always() && env.SECURITY_REQUIRE_IMAGES == 'true' }}",
         )
         evidence_upload = secret_steps["Retain private security evidence"]
-        self.assertEqual(evidence_upload["if"], "${{ always() }}")
+        self.assertEqual(
+            evidence_upload["if"],
+            "${{ always() && env.SECURITY_REQUIRE_IMAGES == 'true' }}",
+        )
         self.assertEqual(evidence_upload["with"]["if-no-files-found"], "error")
         self.assertEqual(evidence_upload["with"]["include-hidden-files"], "true")
         self.assertEqual(evidence_upload["with"]["retention-days"], "90")
@@ -158,6 +177,7 @@ class RepositoryChecksTest(unittest.TestCase):
                 self.assertNotIn(label, runs_on)
 
         makefile = (_REPOSITORY_ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn('--env "COLORTRACE_RUNNER_ENVIRONMENT=$(RUNNER_ENVIRONMENT)"', makefile)
         self.assertIn('--env "COLORTRACE_RUNNER_NAME=$(RUNNER_NAME)"', makefile)
 
     def test_spdx_licenses_must_be_known_and_canonical(self) -> None:

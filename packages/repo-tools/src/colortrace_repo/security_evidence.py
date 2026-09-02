@@ -225,6 +225,7 @@ def _runner_report() -> dict[str, Any]:
         "runner": {
             "arch": os.environ.get("COLORTRACE_RUNNER_ARCH", "unknown"),
             "ci": os.environ.get("COLORTRACE_CI", "").lower() == "true",
+            "environment": os.environ.get("COLORTRACE_RUNNER_ENVIRONMENT", "unknown"),
             "name": os.environ.get("COLORTRACE_RUNNER_NAME", "local"),
             "os": os.environ.get("COLORTRACE_RUNNER_OS", "unknown"),
         },
@@ -297,13 +298,22 @@ def _report_status(name: str, document: Any) -> str:
         runner = document.get("runner", {})
         docker = document.get("docker", {})
         if isinstance(runner, dict) and runner.get("ci") is True:
-            return (
-                "pass"
-                if isinstance(docker, dict)
-                and docker.get("endpoint_class") == "loopback-tcp"
-                and docker.get("host_socket_present") is False
-                else "fail"
-            )
+            if not isinstance(docker, dict):
+                return "fail"
+            environment = runner.get("environment")
+            if environment == "github-hosted":
+                isolated = (
+                    docker.get("endpoint_class") == "not-observed"
+                    and docker.get("host_socket_present") is True
+                )
+            elif environment == "self-hosted":
+                isolated = (
+                    docker.get("endpoint_class") == "loopback-tcp"
+                    and docker.get("host_socket_present") is False
+                )
+            else:
+                isolated = False
+            return "pass" if isolated else "fail"
         return "informational"
     if name == "sbom.cdx.json" or name.endswith(("raw-sbom.cdx.json", "enriched-sbom.cdx.json")):
         return (

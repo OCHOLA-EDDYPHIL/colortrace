@@ -44,9 +44,17 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ env.CANDIDATE_SHA }}
-      - name: Bootstrap security tools
+      - name: Bootstrap secret scanner
+        if: ${{ env.SECURITY_REQUIRE_IMAGES != 'true' }}
+        run: make ensure-gitleaks-image
+      - name: Scan repository for secrets
+        if: ${{ env.SECURITY_REQUIRE_IMAGES != 'true' }}
+        run: make check-secret
+      - name: Bootstrap security evidence tools
+        if: ${{ env.SECURITY_REQUIRE_IMAGES == 'true' }}
         run: make bootstrap-security
       - name: Produce exact-candidate security evidence
+        if: ${{ env.SECURITY_REQUIRE_IMAGES == 'true' }}
         timeout-minutes: ${{ env.SECURITY_REQUIRE_IMAGES == 'true' && 105 || 8 }}
         run: >-
           make security-evidence
@@ -56,7 +64,7 @@ jobs:
         if: ${{ always() && env.SECURITY_REQUIRE_IMAGES == 'true' }}
         run: make final-image-cleanup SECURITY_CANDIDATE_SHA="$CANDIDATE_SHA"
       - name: Retain private security evidence
-        if: ${{ always() }}
+        if: ${{ always() && env.SECURITY_REQUIRE_IMAGES == 'true' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ env.EVIDENCE_ARTIFACT_PREFIX }}-${{ env.CANDIDATE_SHA }}

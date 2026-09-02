@@ -629,6 +629,7 @@ security-evidence: prepare-cache
 		--env COLORTRACE_DOCKER_ENDPOINT=$(DOCKER_HOST) \
 		--env COLORTRACE_HOST_DOCKER_SOCKET_PRESENT=$$(test -S /var/run/docker.sock && echo true || echo false) \
 		--env COLORTRACE_RUNNER_ARCH=$(RUNNER_ARCH) \
+		--env "COLORTRACE_RUNNER_ENVIRONMENT=$(RUNNER_ENVIRONMENT)" \
 		--env "COLORTRACE_RUNNER_NAME=$(RUNNER_NAME)" \
 		--env COLORTRACE_RUNNER_OS=$(RUNNER_OS) \
 		$(TOOL_IMAGE) uv run --offline colortrace-repo security-prepare \
