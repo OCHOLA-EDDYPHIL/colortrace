@@ -226,12 +226,12 @@
       "source_tree": "0b2438d617ca4c03223fc5236c82324a1fe496f5",
       "source_archive": "https://codeload.github.com/grafana/tempo/tar.gz/1900ed7bb5cad1a3edc285783d7d4ac4278337dc",
       "source_archive_sha256": "f10ae5ecaa7f1eade220b9d013ae73961227b51a7602694896675df1cb96e8e7",
-      "patched_go_mod_sha256": "07009e824add5309cb482e22466947304296f2b663231e137e588854ae72f30d",
-      "patched_go_sum_sha256": "5d349164dfe990ad1795083c5adda3153d06612b1ca1b39a67b25dd71b80f96c",
-      "module_list_sha256": "c829012647b2687e949b064554327d5186915661e6aad4ef11ff11afb44674bb",
-      "vendor_tree_sha256": "e7159e8cf154a6ec7f4deff1d52ef4ac66a46639ddc055647f00363e3b1c6f4d",
+      "patched_go_mod_sha256": "6e05ee89baac4ebdd20afb0e4d02b66a1c9f1f470c4ba08e47ec42bc58def750",
+      "patched_go_sum_sha256": "feac33a81d0bd86f3a7e19755ea86444fbd8abb0dfb1a1e2f145940e23febbbe",
+      "module_list_sha256": "3d2fbe57555056bbfd4c616baea35c8e5378867a989eff364848003e7d52fea6",
+      "vendor_tree_sha256": "8965dbff7f0371a448b5e3bbc7807e962e8a2d7ea5ffee944ae1e3545f9a86f8",
       "build_flags": ["-p=1", "-trimpath", "-buildvcs=false", "-mod=vendor", "-ldflags=-s -w -buildid="],
-      "binary_sha256": "3519e8529625f9d6f2505077429bcdb96561970818cb49e96afd888ef9e9cbd9",
+      "binary_sha256": "25d2ec5c3940cb0a1ed0342655e4f8b175fe7a3476dc2842721363dc24bfad95",
       "security_dependency_changes": [
         {
           "module": "golang.org/x/crypto",
@@ -242,6 +242,11 @@
           "module": "google.golang.org/grpc",
           "upstream": "v1.82.1",
           "selected": "v1.83.1"
+        },
+        {
+          "module": "github.com/apache/thrift",
+          "upstream": "v0.23.0",
+          "selected": "v0.24.0"
         }
       ],
       "runtime_uid": 10001,

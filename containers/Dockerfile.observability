@@ -81,14 +81,15 @@ WORKDIR /build/tempo-1900ed7bb5cad1a3edc285783d7d4ac4278337dc
 RUN go mod edit \
         -require=golang.org/x/crypto@v0.55.0 \
         -require=google.golang.org/grpc@v1.83.1 \
+        -require=github.com/apache/thrift@v0.24.0 \
     && GODEBUG=http2client=0 go mod tidy \
     && GODEBUG=http2client=0 go mod download all \
-    && test "$(sha256sum go.mod | cut -d ' ' -f 1)" = "07009e824add5309cb482e22466947304296f2b663231e137e588854ae72f30d" \
-    && test "$(sha256sum go.sum | cut -d ' ' -f 1)" = "5d349164dfe990ad1795083c5adda3153d06612b1ca1b39a67b25dd71b80f96c" \
+    && test "$(sha256sum go.mod | cut -d ' ' -f 1)" = "6e05ee89baac4ebdd20afb0e4d02b66a1c9f1f470c4ba08e47ec42bc58def750" \
+    && test "$(sha256sum go.sum | cut -d ' ' -f 1)" = "feac33a81d0bd86f3a7e19755ea86444fbd8abb0dfb1a1e2f145940e23febbbe" \
     && GODEBUG=http2client=0 go list -mod=readonly -m all > /tmp/tempo.modules \
-    && test "$(sha256sum /tmp/tempo.modules | cut -d ' ' -f 1)" = "c829012647b2687e949b064554327d5186915661e6aad4ef11ff11afb44674bb" \
+    && test "$(sha256sum /tmp/tempo.modules | cut -d ' ' -f 1)" = "3d2fbe57555056bbfd4c616baea35c8e5378867a989eff364848003e7d52fea6" \
     && go mod vendor \
-    && test "$(find vendor -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)" = "e7159e8cf154a6ec7f4deff1d52ef4ac66a46639ddc055647f00363e3b1c6f4d" \
+    && test "$(find vendor -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)" = "8965dbff7f0371a448b5e3bbc7807e962e8a2d7ea5ffee944ae1e3545f9a86f8" \
     && go mod verify
 RUN --network=none go build -p=1 -trimpath -buildvcs=false -mod=vendor \
         -ldflags="-s -w -buildid= -X main.Branch=HEAD -X main.Revision=1900ed7bb -X main.Version=v3.0.3" \
@@ -103,8 +104,8 @@ RUN --network=none go build -p=1 -trimpath -buildvcs=false -mod=vendor \
 
 FROM tempo-build AS tempo-verified
 COPY config/observability/images.lock.json /tmp/observability-images.lock.json
-RUN echo "3519e8529625f9d6f2505077429bcdb96561970818cb49e96afd888ef9e9cbd9  /usr/local/bin/tempo" | sha256sum -c - \
-    && grep -F '"binary_sha256": "3519e8529625f9d6f2505077429bcdb96561970818cb49e96afd888ef9e9cbd9"' /tmp/observability-images.lock.json
+RUN echo "25d2ec5c3940cb0a1ed0342655e4f8b175fe7a3476dc2842721363dc24bfad95  /usr/local/bin/tempo" | sha256sum -c - \
+    && grep -F '"binary_sha256": "25d2ec5c3940cb0a1ed0342655e4f8b175fe7a3476dc2842721363dc24bfad95"' /tmp/observability-images.lock.json
 
 FROM scratch AS tempo
 ARG SOURCE_COMMIT

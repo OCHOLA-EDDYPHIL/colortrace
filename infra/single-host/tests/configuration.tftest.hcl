@@ -21,7 +21,7 @@ variables {
     schema                    = "colortrace-single-host-admission/v1"
     build_manifest_sha256     = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     scan_binding_sha256       = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    observability_lock_sha256 = "sha256:253efb8bc5bfc2ab326a9cd96fe5c5c6899563ed8a89231db7b4e7f03008d637"
+    observability_lock_sha256 = "sha256:ca5a0f510defc4728d17e4bac2c8d17b4a1e43ff88419cf542ae922d4abd0df9"
     build = {
       id              = "build-123"
       project         = "colortrace-test-project"
@@ -66,7 +66,7 @@ variables {
       report_set_sha256 = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
     }
   }
-  deployment_artifact_binding_sha256 = "sha256:81a6854e99690bbba14a6e605b68f17c5505cf55774c9c981fdd16f6b5c9f9fc"
+  deployment_artifact_binding_sha256 = "sha256:daee9e9ddca5a2a62be24368e22f8ac5a40e84f22f1b9a9ff4689d9b0751827b"
 }
 
 run "foundation_has_no_billable_host" {
@@ -343,7 +343,7 @@ run "bounded_single_host_is_admitted" {
       && google_compute_instance.host[0].metadata["block-project-ssh-keys"] == "TRUE"
       && google_compute_instance.host[0].metadata["serial-port-enable"] == "FALSE"
       && google_compute_instance.host[0].metadata["colortrace-staging-hard-stop-epoch"] == "1900000000"
-      && google_compute_instance.host[0].metadata["colortrace-artifact-binding-sha256"] == "sha256:81a6854e99690bbba14a6e605b68f17c5505cf55774c9c981fdd16f6b5c9f9fc"
+      && google_compute_instance.host[0].metadata["colortrace-artifact-binding-sha256"] == "sha256:daee9e9ddca5a2a62be24368e22f8ac5a40e84f22f1b9a9ff4689d9b0751827b"
       && google_compute_instance.host[0].metadata["colortrace-build-manifest-sha256"] == "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       && google_compute_instance.host[0].metadata["colortrace-scan-binding-sha256"] == "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       && google_compute_instance.host[0].metadata["colortrace-runtime-build-binding-sha256"] == "sha256:94dcf637a46182cd88090369a68dd2295a43df1fcb1e0d3ce885cd8d62debbba"
@@ -533,10 +533,10 @@ run "bounded_single_host_is_admitted" {
       && output.staging_hard_stop_epoch == 1900000000
       && output.deployment_contract.estimated_cost_usd == 24
       && output.deployment_contract.public_url == "https://203-0-113-42.sslip.io"
-      && output.deployment_contract.artifact_hashes.deployment_artifact_binding_sha256 == "sha256:81a6854e99690bbba14a6e605b68f17c5505cf55774c9c981fdd16f6b5c9f9fc"
+      && output.deployment_contract.artifact_hashes.deployment_artifact_binding_sha256 == "sha256:daee9e9ddca5a2a62be24368e22f8ac5a40e84f22f1b9a9ff4689d9b0751827b"
       && output.deployment_contract.artifact_hashes.runtime_build_binding_sha256 == "sha256:94dcf637a46182cd88090369a68dd2295a43df1fcb1e0d3ce885cd8d62debbba"
       && output.deployment_contract.scanner.image == local.trivy_image
-      && output.resume_identity.artifact_binding_sha256 == "sha256:81a6854e99690bbba14a6e605b68f17c5505cf55774c9c981fdd16f6b5c9f9fc"
+      && output.resume_identity.artifact_binding_sha256 == "sha256:daee9e9ddca5a2a62be24368e22f8ac5a40e84f22f1b9a9ff4689d9b0751827b"
       && output.resume_identity.member == "serviceAccount:resume@example.test"
     )
     error_message = "The deployment output must preserve its bounded lifecycle and complete artifact hash contract."
