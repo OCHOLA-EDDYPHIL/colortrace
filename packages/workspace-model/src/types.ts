@@ -46,7 +46,7 @@ export type IncidentReplayProjectionInput = {
 };
 
 export type ProjectionEvidenceEnvelope = {
-  readonly schema: "evidence-envelope/v1";
+  readonly schema: "evidence-envelope/v1" | "evidence-envelope/v2";
   readonly evidence_id: string;
   readonly incident_id: string;
   readonly request_id: string;

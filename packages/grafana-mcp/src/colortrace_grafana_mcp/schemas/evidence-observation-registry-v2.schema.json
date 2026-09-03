@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/evidence-observation-registry-v2.schema.json",
+  "title": "Registered ColorTrace evidence observations",
+  "oneOf": [
+    {"$ref": "grafana-mcp-query-observation-v2.schema.json"}
+  ]
+}

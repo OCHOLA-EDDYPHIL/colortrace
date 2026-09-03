@@ -854,7 +854,7 @@ def _compose_canonical_demo(
         evidence = EvidenceAdapter(runtime=runtime, catalog=catalog, clock=clock)
         inventory = asyncio.run(evidence.verify_inventory()).to_dict()
         model = AdkVertexGateway(project_id=config.vertex_project_id)
-        incidents = VerticalSliceApi(incident_store, clock=clock)
+        incidents = VerticalSliceApi(incident_store, policy=policy, clock=clock)
         investigation = VerticalSliceWorker(
             incident_store,
             policy=policy,

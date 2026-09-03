@@ -903,6 +903,96 @@ h4 {
   line-height: 1.4;
 }
 
+.shot-adaptive-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(15rem, 0.65fr);
+  gap: 0.8rem;
+  margin-top: 0.8rem;
+}
+
+.shot-adaptive-outcome {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid rgb(169 240 197 / 34%);
+  border-radius: 0.7rem;
+  padding: 0.65rem 0.8rem;
+  background: rgb(169 240 197 / 5%);
+}
+
+.shot-adaptive-copy {
+  color: var(--shot-muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.shot-adaptive-outcome strong {
+  color: var(--shot-lime);
+  font-size: 0.78rem;
+  text-transform: capitalize;
+}
+
+.shot-adaptive-path,
+.shot-hypothesis-list {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shot-adaptive-path li {
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: start;
+  border-left: 2px solid var(--shot-border);
+  padding: 0.45rem 0.6rem;
+}
+
+.shot-adaptive-path li[data-disposition="resolved"] {
+  border-left-color: var(--shot-lime);
+}
+
+.shot-adaptive-path li > span {
+  display: grid;
+  place-items: center;
+  width: 1.45rem;
+  height: 1.45rem;
+  border-radius: 50%;
+  background: rgb(118 225 255 / 12%);
+  color: var(--shot-cyan);
+  font-size: 0.65rem;
+  font-weight: 800;
+}
+
+.shot-adaptive-path li > div,
+.shot-hypothesis-list li {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.shot-adaptive-path a,
+.shot-hypothesis-list a {
+  color: var(--shot-cyan);
+  overflow-wrap: anywhere;
+}
+
+.shot-hypothesis-list {
+  border: 1px solid var(--shot-border);
+  border-radius: 0.7rem;
+  padding: 0.65rem 0.8rem;
+  background: var(--shot-surface-raised);
+}
+
+.shot-hypothesis-list li + li {
+  border-top: 1px solid var(--shot-border);
+  padding-top: 0.5rem;
+}
+
 .shot-agent-evidence {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1636,7 +1726,8 @@ h4 {
 
   .shot-flow,
   .shot-finding-list,
-  .shot-evidence-grid {
+  .shot-evidence-grid,
+  .shot-adaptive-summary {
     grid-template-columns: 1fr;
   }
 

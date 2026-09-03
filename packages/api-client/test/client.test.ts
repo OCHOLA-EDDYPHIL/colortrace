@@ -1,6 +1,9 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
+  type AdaptiveHypothesis,
+  type AdaptiveQueryKey,
+  type AdaptiveTraceEntry,
   admitRecoveryVerification,
   type AdmitSimulatorActionRequest,
   admitSimulatorAction,
@@ -9,17 +12,26 @@ import {
   createClient,
   createIncident,
   type DeterministicResult,
+  type EvidenceBatch,
+  type EvidenceBatchV1,
+  type EvidenceBatchV2,
   type EvidenceEnvelope,
+  type EvidenceEnvelopeV1,
+  type EvidenceEnvelopeV2,
   executeRecoveryVerificationTask,
   getIncident,
   type IncidentReplay,
   type ModelInvocation,
+  type ModelInvocationV1,
+  type ModelInvocationV2,
   replayIncident,
   type RecoveryVerificationAdmission,
   type RecoveryVerificationAdmissionRequest,
   type RecoveryVerificationTask,
   type RecoveryVerificationTaskResult,
   type ResponsePacket,
+  type ResponsePacketV1,
+  type ResponsePacketV2,
   type SimulatorActionAdmission,
   type TraceEvent,
   type UnresolvedItem,
@@ -64,6 +76,39 @@ describe("generated incident client", () => {
     expectTypeOf<IncidentReplay["validator_results"][number]>().toEqualTypeOf<ValidatorResult>();
     expectTypeOf<IncidentReplay["invocations"][number]>().toEqualTypeOf<ModelInvocation>();
     expectTypeOf<IncidentReplay["trace_events"][number]>().toEqualTypeOf<TraceEvent>();
+
+    expectTypeOf<
+      Extract<ResponsePacket, { schema: "response-packet/v1" }>
+    >().toEqualTypeOf<ResponsePacketV1>();
+    expectTypeOf<
+      Extract<ResponsePacket, { schema: "response-packet/v2" }>
+    >().toEqualTypeOf<ResponsePacketV2>();
+    expectTypeOf<ResponsePacketV2["adaptive_trace"][number]>().toEqualTypeOf<AdaptiveTraceEntry>();
+    expectTypeOf<ResponsePacketV2["hypotheses"][number]>().toEqualTypeOf<AdaptiveHypothesis>();
+    expectTypeOf<
+      ResponsePacketV2["invocation_records"][number]
+    >().toEqualTypeOf<ModelInvocationV2>();
+    expectTypeOf<
+      Extract<ModelInvocation, { schema: "model-tool-invocation/v1" }>
+    >().toEqualTypeOf<ModelInvocationV1>();
+    expectTypeOf<
+      Extract<ModelInvocation, { schema: "model-tool-invocation/v2" }>
+    >().toEqualTypeOf<ModelInvocationV2>();
+    expectTypeOf<
+      Extract<EvidenceEnvelope, { schema: "evidence-envelope/v1" }>
+    >().toEqualTypeOf<EvidenceEnvelopeV1>();
+    expectTypeOf<
+      Extract<EvidenceEnvelope, { schema: "evidence-envelope/v2" }>
+    >().toEqualTypeOf<EvidenceEnvelopeV2>();
+    expectTypeOf<
+      Extract<EvidenceBatch, { schema: "grafana-evidence-batch-result/v1" }>
+    >().toEqualTypeOf<EvidenceBatchV1>();
+    expectTypeOf<
+      Extract<EvidenceBatch, { schema: "grafana-evidence-batch-result/v2" }>
+    >().toEqualTypeOf<EvidenceBatchV2>();
+    expectTypeOf<
+      EvidenceBatchV2["attempts"][number]["query_key"]
+    >().toEqualTypeOf<AdaptiveQueryKey>();
   });
 
   it("sends the exact typed alert body to the admission boundary", async () => {

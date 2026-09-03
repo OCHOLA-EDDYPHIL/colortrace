@@ -299,6 +299,10 @@ _MIGRATED_CLAIM_OWNER = "migration:v1"
 _INCIDENT_DELAY_SECONDS = 30
 _CURSOR_PREFIX = "cursor:v1:"
 _INCIDENT_ADMISSION_SCHEMA = "incident-admission/v1"
+_LEGACY_TASK_POLICY_VERSION = "bounded-investigation/v1"
+_LEGACY_TASK_POLICY_SHA256 = (
+    "sha256:215622df9dc7b3628a4256d10ef4dc672b7f70324d17347fbdfaa35d7892d080"
+)
 
 
 def _normalized_schema_sql(value: str) -> str:
@@ -342,6 +346,8 @@ class WorkItem:
     expected_incident_version: int
     alert_sha256: str
     trace_id: str
+    policy_version: str
+    policy_sha256: str
     claim_owner: str
     claim_generation: int
     claim_expires_at: str
@@ -373,6 +379,46 @@ class SqliteIncidentStore:
     def __init__(self, path: Path) -> None:
         self.path = path.expanduser().absolute()
         self._initialize()
+
+    @staticmethod
+    def _task_policy_binding(
+        policy_version: Any,
+        policy_sha256: Any,
+        *,
+        code: str = "task-policy-binding-invalid",
+    ) -> tuple[str, str]:
+        try:
+            return (
+                require_identifier(policy_version, code=code),
+                require_prefixed_digest(policy_sha256, code=code),
+            )
+        except SliceContractError as error:
+            if error.code == code:
+                raise
+            raise SliceContractError(code) from error
+
+    @classmethod
+    def _require_task_policy_match(
+        cls,
+        row: sqlite3.Row,
+        *,
+        policy_version: Any,
+        policy_sha256: Any,
+    ) -> tuple[str, str]:
+        requested_version, requested_sha256 = cls._task_policy_binding(
+            policy_version,
+            policy_sha256,
+        )
+        stored_version, stored_sha256 = cls._task_policy_binding(
+            row["policy_version"],
+            row["policy_sha256"],
+            code="stored-task-policy-binding",
+        )
+        if stored_version != requested_version:
+            raise SliceContractError("task-policy-generation-reset-required")
+        if stored_sha256 != requested_sha256:
+            raise SliceContractError("task-policy-digest-reset-required")
+        return stored_version, stored_sha256
 
     def _validate_database_file(self) -> None:
         try:
@@ -525,9 +571,28 @@ class SqliteIncidentStore:
                     (4,),
                 )
                 version = 4
+            if version == 4:
+                self._validate_schema_v4(connection)
+                connection.execute(
+                    "ALTER TABLE tasks ADD COLUMN policy_version TEXT NOT NULL "
+                    f"DEFAULT '{_LEGACY_TASK_POLICY_VERSION}' "
+                    "CHECK (length(policy_version) BETWEEN 1 AND 256)"
+                )
+                connection.execute(
+                    "ALTER TABLE tasks ADD COLUMN policy_sha256 TEXT NOT NULL "
+                    f"DEFAULT '{_LEGACY_TASK_POLICY_SHA256}' CHECK ("
+                    "length(policy_sha256) = 71 AND "
+                    "substr(policy_sha256, 1, 7) = 'sha256:' AND "
+                    "substr(policy_sha256, 8) NOT GLOB '*[^0-9a-f]*')"
+                )
+                connection.execute(
+                    "UPDATE store_metadata SET schema_version = ? WHERE singleton = 1",
+                    (5,),
+                )
+                version = 5
             if version != STORE_SCHEMA_VERSION:
                 raise SliceContractError("store-schema-drift")
-            self._validate_schema_v4(connection)
+            self._validate_schema_v5(connection)
             connection.execute("COMMIT")
         except BaseException:
             try:
@@ -698,6 +763,25 @@ class SqliteIncidentStore:
                 cast(str, incident["incident_id"]),
             )
             cls._incident_admission_for_incident(connection, incident, human_events)
+
+    @classmethod
+    def _validate_schema_v5(cls, connection: sqlite3.Connection) -> None:
+        cls._validate_schema_v4(connection)
+        columns = {
+            cast(str, row["name"])
+            for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        if not {"policy_version", "policy_sha256"}.issubset(columns):
+            raise SliceContractError("store-schema-drift")
+        tasks = connection.execute(
+            "SELECT policy_version, policy_sha256 FROM tasks ORDER BY task_id"
+        ).fetchall()
+        for task in tasks:
+            cls._task_policy_binding(
+                task["policy_version"],
+                task["policy_sha256"],
+                code="stored-task-policy-binding",
+            )
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -1201,23 +1285,30 @@ class SqliteIncidentStore:
             raise SliceContractError("human-audit-head-conflict")
         return event
 
-    @staticmethod
-    def _work_item(row: sqlite3.Row, alert: Mapping[str, Any]) -> WorkItem:
+    @classmethod
+    def _work_item(cls, row: sqlite3.Row, alert: Mapping[str, Any]) -> WorkItem:
         owner = row["claim_owner"]
         expires_at = row["claim_expires_at"]
         generation = row["claim_generation"]
         if owner is None or expires_at is None or not isinstance(generation, int) or generation < 1:
             raise SliceContractError("stored-claim-invalid")
+        policy_version, policy_sha256 = cls._task_policy_binding(
+            row["policy_version"],
+            row["policy_sha256"],
+            code="stored-task-policy-binding",
+        )
         return WorkItem(
-            cast(str, row["task_id"]),
-            cast(str, row["incident_id"]),
-            cast(int, row["expected_incident_version"]),
-            cast(str, row["alert_sha256"]),
-            cast(str, row["trace_id"]),
-            cast(str, owner),
-            generation,
-            cast(str, expires_at),
-            readonly_mapping(alert),
+            task_id=cast(str, row["task_id"]),
+            incident_id=cast(str, row["incident_id"]),
+            expected_incident_version=cast(int, row["expected_incident_version"]),
+            alert_sha256=cast(str, row["alert_sha256"]),
+            trace_id=cast(str, row["trace_id"]),
+            policy_version=policy_version,
+            policy_sha256=policy_sha256,
+            claim_owner=cast(str, owner),
+            claim_generation=generation,
+            claim_expires_at=cast(str, expires_at),
+            alert=readonly_mapping(alert),
         )
 
     def accept_alert(
@@ -1226,8 +1317,14 @@ class SqliteIncidentStore:
         *,
         now: str,
         human_actor: Mapping[str, Any] | None = None,
+        policy_version: str = _LEGACY_TASK_POLICY_VERSION,
+        policy_sha256: str = _LEGACY_TASK_POLICY_SHA256,
     ) -> AcceptedIncident:
         now_value = normalize_timestamp(now)
+        task_policy_version, task_policy_sha256 = self._task_policy_binding(
+            policy_version,
+            policy_sha256,
+        )
         try:
             intake = AlertIntake.from_mapping(alert)
             digest = alert_digest(alert)
@@ -1246,10 +1343,18 @@ class SqliteIncidentStore:
                 if existing["alert_sha256"] != digest:
                     raise SliceContractError("idempotency-conflict")
                 existing_task = connection.execute(
-                    "SELECT task_id FROM tasks WHERE incident_id = ?", (incident_id,)
+                    "SELECT task_id, status, policy_version, policy_sha256 "
+                    "FROM tasks WHERE incident_id = ?",
+                    (incident_id,),
                 ).fetchone()
                 if existing_task is None:
                     raise SliceContractError("store-integrity")
+                if existing_task["status"] != "complete":
+                    self._require_task_policy_match(
+                        existing_task,
+                        policy_version=task_policy_version,
+                        policy_sha256=task_policy_sha256,
+                    )
                 human_events = self._human_audit_events_for_incident(connection, incident_id)
                 self._incident_admission_for_incident(
                     connection,
@@ -1280,14 +1385,16 @@ class SqliteIncidentStore:
             )
             connection.execute(
                 "INSERT INTO tasks(task_id, incident_id, expected_incident_version, alert_sha256, "
-                "trace_id, status, packet_id, created_at, updated_at) "
-                "VALUES(?, ?, ?, ?, ?, 'queued', NULL, ?, ?)",
+                "trace_id, policy_version, policy_sha256, status, packet_id, created_at, "
+                "updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, ?)",
                 (
                     task["task_id"],
                     incident_id,
                     task["expected_incident_version"],
                     digest,
                     trace_id,
+                    task_policy_version,
+                    task_policy_sha256,
                     now_value,
                     now_value,
                 ),
@@ -1367,9 +1474,21 @@ class SqliteIncidentStore:
             raise SliceContractError("stored-packet-binding")
         return packet
 
-    def claim_task(self, task_id: str, *, owner: str, now: str) -> WorkItem:
+    def claim_task(
+        self,
+        task_id: str,
+        *,
+        owner: str,
+        now: str,
+        policy_version: str = _LEGACY_TASK_POLICY_VERSION,
+        policy_sha256: str = _LEGACY_TASK_POLICY_SHA256,
+    ) -> WorkItem:
         require_identifier(task_id)
         owner_value = require_identifier(owner, code="claim-owner-invalid")
+        requested_policy_version, requested_policy_sha256 = self._task_policy_binding(
+            policy_version,
+            policy_sha256,
+        )
         now_value = normalize_timestamp(now, code="claim-time-invalid")
         expires_at = claim_expiry(now_value)
         with self._transaction() as connection:
@@ -1383,6 +1502,11 @@ class SqliteIncidentStore:
                 raise SliceContractError("task-not-found")
             if row["status"] == "complete":
                 raise SliceContractError("task-complete")
+            self._require_task_policy_match(
+                row,
+                policy_version=requested_policy_version,
+                policy_sha256=requested_policy_sha256,
+            )
             alert = self._decode(row["alert_json"])
             if alert_digest(alert) != row["alert_sha256"]:
                 raise SliceContractError("stored-alert-digest")
@@ -1502,6 +1626,11 @@ class SqliteIncidentStore:
             ).fetchone()
             if row is None:
                 raise SliceContractError("task-not-found")
+            self._require_task_policy_match(
+                row,
+                policy_version=work.policy_version,
+                policy_sha256=work.policy_sha256,
+            )
             if (
                 row["status"] != "running"
                 or row["incident_status"] != "running"
@@ -1556,6 +1685,11 @@ class SqliteIncidentStore:
             ).fetchone()
             if row is None:
                 raise SliceContractError("task-not-found")
+            self._require_task_policy_match(
+                row,
+                policy_version=work.policy_version,
+                policy_sha256=work.policy_sha256,
+            )
             if (
                 row["status"] != "running"
                 or row["claim_owner"] != work.claim_owner
@@ -1673,7 +1807,8 @@ class SqliteIncidentStore:
         with self._transaction() as connection:
             row = connection.execute(
                 "SELECT t.status AS task_status, t.alert_sha256, t.trace_id, "
-                "t.claim_owner, t.claim_generation, t.claim_expires_at, t.updated_at, "
+                "t.policy_version, t.policy_sha256, t.claim_owner, t.claim_generation, "
+                "t.claim_expires_at, t.updated_at, "
                 "i.status AS incident_status, i.version AS incident_version "
                 "FROM tasks t JOIN incidents i ON i.incident_id = t.incident_id "
                 "WHERE t.task_id = ? AND t.incident_id = ?",
@@ -1681,6 +1816,11 @@ class SqliteIncidentStore:
             ).fetchone()
             if row is None:
                 raise SliceContractError("task-not-found")
+            self._require_task_policy_match(
+                row,
+                policy_version=work.policy_version,
+                policy_sha256=work.policy_sha256,
+            )
             if (
                 row["claim_owner"] != work.claim_owner
                 or row["claim_generation"] != work.claim_generation
@@ -2206,7 +2346,7 @@ class SqliteIncidentStore:
             ):
                 connection.execute(f"DELETE FROM {table}")
             self._create_human_audit_triggers(connection)
-            self._validate_schema_v4(connection)
+            self._validate_schema_v5(connection)
         return {"schema": "incident-store-reset/v1", **counts}
 
     def assert_empty(self) -> None:

@@ -178,7 +178,7 @@ export type Claim = {
   reason_codes: Array<string>;
 };
 
-export type ResponsePacket = {
+export type ResponsePacketV1 = {
   schema: "response-packet/v1";
   packet_id: string;
   incident_id: Identifier;
@@ -193,7 +193,7 @@ export type ResponsePacket = {
   deterministic_results: Array<DeterministicResult>;
   claims: Array<Claim>;
   scope: IncidentScope;
-  invocation_records: Array<ModelInvocation>;
+  invocation_records: Array<ModelInvocationV1>;
   budget_use: BudgetUse;
   unresolved_items: Array<UnresolvedItem>;
   candidate_plan: null | CandidatePlan;
@@ -223,6 +223,94 @@ export type ResponsePacket = {
   finalized_at: string;
   derivation_sha256: Digest;
 };
+
+export type InvestigationPolicyBinding = {
+  version: "bounded-adaptive-investigation/v1";
+  sha256: Digest;
+};
+
+export type AdaptiveHypothesis = {
+  ordinal: number;
+  hypothesis_key:
+    | "color-resource-drift"
+    | "nominal-config-drift"
+    | "unrelated-event"
+    | "worker-only-failure";
+  evidence_ids: Array<Identifier>;
+};
+
+export type AdaptiveTraceEntry = {
+  sequence: number;
+  selected_by: "policy" | "model";
+  query_key: null | AdaptiveQueryKey;
+  selection_request_sha256: Digest;
+  selection_invocation_id: null | string;
+  selection_output_sha256: null | Digest;
+  evidence_id: null | Identifier;
+  disposition: "continue" | "resolved" | "unresolved";
+  reason_code: string;
+  validator_result_id: null | Identifier;
+};
+
+export type AdaptiveQueryKey =
+  | "alert.rule"
+  | "log.correlated-events"
+  | "metric.correlated-observations"
+  | "trace.by-id"
+  | "metric.worker-cohort"
+  | "log.config-cohort";
+
+export type ResponsePacketV2 = {
+  schema: "response-packet/v2";
+  packet_id: string;
+  incident_id: Identifier;
+  version: 2;
+  status: "resolved" | "unresolved";
+  policy_binding: InvestigationPolicyBinding;
+  fixed_window: {
+    start: string;
+    end: string;
+    frozen_at: string;
+  };
+  evidence_ids: Array<Identifier>;
+  deterministic_results: Array<DeterministicResult>;
+  claims: Array<Claim>;
+  scope: IncidentScope;
+  invocation_records: Array<ModelInvocationV2>;
+  adaptive_trace: Array<AdaptiveTraceEntry>;
+  hypotheses: Array<AdaptiveHypothesis>;
+  stop_reason: string;
+  budget_use: BudgetUse;
+  unresolved_items: Array<UnresolvedItem>;
+  candidate_plan: null | CandidatePlan;
+  no_action_reason:
+    | null
+    | "budget-exhausted"
+    | "contradictory-evidence"
+    | "evidence-unavailable"
+    | "incomplete-evidence"
+    | "invalid-intake"
+    | "model-unavailable"
+    | "no-affected-targets"
+    | "policy-drift"
+    | "stale-evidence"
+    | "validator-unresolved";
+  model_advisory: null | ModelAdvisory;
+  state_history: Array<
+    | "intake"
+    | "evidence"
+    | "selection"
+    | "assessment"
+    | "validation"
+    | "drafting"
+    | "finalization"
+    | "complete"
+  >;
+  finalized_at: string;
+  derivation_sha256: Digest;
+};
+
+export type ResponsePacket = ResponsePacketV1 | ResponsePacketV2;
 
 export type IncidentView = {
   schema: "incident-view/v1";
@@ -272,7 +360,7 @@ export type Error = {
   code: string;
 };
 
-export type ModelInvocation = {
+export type ModelInvocationV1 = {
   schema: "model-tool-invocation/v1";
   invocation_id: string;
   incident_id: Identifier;
@@ -351,6 +439,39 @@ export type CandidatePlan = {
   claim_ids: Array<Identifier>;
 };
 
+export type ModelInvocationV2 = {
+  schema: "model-tool-invocation/v2";
+  invocation_id: string;
+  incident_id: Identifier;
+  turn_kind: "evidence-selection" | "response-drafting";
+  attempt: number;
+  model: "gemini-3.5-flash";
+  location: "global";
+  framework: "google-adk";
+  framework_version: "2.6.3";
+  client_version: "2.17.0";
+  prompt_version: "evidence-selection/v2" | "response-drafting/v2";
+  policy_version: "bounded-adaptive-investigation/v1";
+  policy_sha256: Digest;
+  tool_inventory_version: null | Digest;
+  normalized_input_sha256: Digest;
+  input_evidence_ids: Array<Identifier>;
+  output_sha256: null | Digest;
+  latency_ms: number;
+  usage: {
+    input_tokens: null | number;
+    output_tokens: null | number;
+    model_calls: number;
+    unobserved_model_calls: number;
+  };
+  result_class: "accepted" | "budget-rejected" | "failed" | "invalid";
+  error_code: null | string;
+  trace_id: string;
+  derivation_sha256: Digest;
+};
+
+export type ModelInvocation = ModelInvocationV1 | ModelInvocationV2;
+
 export type ModelAdvisory = {
   trust: "untrusted-model-output";
   summary: string;
@@ -361,13 +482,13 @@ export type ModelAdvisory = {
 /**
  * ColorTrace evidence envelope
  */
-export type EvidenceEnvelope = {
+export type EvidenceEnvelopeV1 = {
   schema: "evidence-envelope/v1";
   evidence_id: Digest;
   incident_id: Identifier;
   request_id: Identifier;
   source: EvidenceSource;
-  observation: EvidenceObservation;
+  observation: EvidenceObservationV1;
   timing: {
     source_time: null | string;
     event_time: null | string;
@@ -396,6 +517,45 @@ export type EvidenceEnvelope = {
 };
 
 /**
+ * ColorTrace evidence envelope
+ */
+export type EvidenceEnvelopeV2 = {
+  schema: "evidence-envelope/v2";
+  evidence_id: Digest;
+  incident_id: Identifier;
+  request_id: Identifier;
+  source: EvidenceSource;
+  observation: EvidenceObservationV2;
+  timing: {
+    source_time: null | string;
+    event_time: null | string;
+    retrieved_at: string;
+    freshness: "current" | "stale" | "unresolved";
+  };
+  content_sha256: Digest;
+  content: unknown;
+  display_excerpt: string;
+  correlation_keys: {
+    [key: string]: string;
+  };
+  collection: {
+    outcome: "collected" | "error";
+    attempts: number;
+    retries: number;
+    error: null | {
+      code: string;
+      retryable: false;
+    };
+  };
+  trust: "untrusted-provider-data" | "deterministic-result";
+  producer_version: Identifier;
+  predecessor_event_sha256: null | Digest;
+  event_sha256: Digest;
+};
+
+export type EvidenceEnvelope = EvidenceEnvelopeV1 | EvidenceEnvelopeV2;
+
+/**
  * Registered ColorTrace evidence sources
  */
 export type EvidenceSource = GrafanaEvidenceSource;
@@ -403,7 +563,14 @@ export type EvidenceSource = GrafanaEvidenceSource;
 /**
  * Registered ColorTrace evidence observations
  */
-export type EvidenceObservation = GrafanaQueryObservation;
+export type EvidenceObservationV1 = GrafanaQueryObservationV1;
+
+/**
+ * Registered ColorTrace evidence observations
+ */
+export type EvidenceObservationV2 = GrafanaQueryObservationV2;
+
+export type EvidenceObservation = EvidenceObservationV1 | EvidenceObservationV2;
 
 /**
  * Official Grafana MCP evidence source
@@ -425,13 +592,16 @@ export type GrafanaEvidenceSource = {
 /**
  * Typed Grafana MCP query observation
  */
-export type GrafanaQueryObservation = {
+export type GrafanaQueryObservationV1 = {
   kind: "grafana-mcp-query";
   query_key:
     | "alert.rule"
     | "log.correlated-events"
+    | "log.simulator-action-events"
     | "metric.correlated-observations"
-    | "trace.by-id";
+    | "metric.simulator-action-observations"
+    | "trace.by-id"
+    | "trace.simulator-action-command";
   catalog_version: "grafana-evidence-query-catalog/v1";
   catalog_sha256: string;
   normalized_arguments: {
@@ -443,6 +613,35 @@ export type GrafanaQueryObservation = {
     end: string;
   };
 };
+
+/**
+ * Typed Grafana MCP query observation
+ */
+export type GrafanaQueryObservationV2 = {
+  kind: "grafana-mcp-query";
+  query_key:
+    | "alert.rule"
+    | "log.correlated-events"
+    | "log.simulator-action-events"
+    | "metric.correlated-observations"
+    | "metric.simulator-action-observations"
+    | "trace.by-id"
+    | "trace.simulator-action-command"
+    | "metric.worker-cohort"
+    | "log.config-cohort";
+  catalog_version: "grafana-evidence-query-catalog/v2";
+  catalog_sha256: string;
+  normalized_arguments: {
+    [key: string]: unknown;
+  };
+  model_visible_arguments: Array<string>;
+  fixed_time_range: {
+    start: string;
+    end: string;
+  };
+};
+
+export type GrafanaQueryObservation = GrafanaQueryObservationV1 | GrafanaQueryObservationV2;
 
 export type ValidationReasonCode =
   | "candidate-resource-used-by-safe-job"
@@ -567,7 +766,7 @@ export type GrafanaToolInventory = {
   inventory_version: Digest;
 };
 
-export type EvidenceAttempt = {
+export type EvidenceAttemptV1 = {
   query_key:
     | "alert.rule"
     | "log.correlated-events"
@@ -595,14 +794,51 @@ export type EvidenceAttempt = {
     | "transport";
 };
 
-export type EvidenceBatch = {
+export type EvidenceAttemptV2 = {
+  query_key: AdaptiveQueryKey;
+  tool: "alerting_manage_rules" | "query_loki_logs" | "query_prometheus" | "tempo_get-trace";
+  attempt: number;
+  retry: boolean;
+  normalized_arguments: {
+    [key: string]: unknown;
+  };
+  arguments_sha256: Digest;
+  started_at: string;
+  completed_at: string;
+  outcome:
+    | "collected"
+    | "authentication"
+    | "authorization"
+    | "credential_exposure"
+    | "incomplete_result"
+    | "malformed_result"
+    | "oversized_result"
+    | "provider_error"
+    | "timeout"
+    | "transport";
+};
+
+export type EvidenceAttempt = EvidenceAttemptV1 | EvidenceAttemptV2;
+
+export type EvidenceBatchV1 = {
   schema: "grafana-evidence-batch-result/v1";
   inventory: GrafanaToolInventory;
   tool_calls_used: number;
   maximum_calls_in_flight_observed: number;
-  attempts: Array<EvidenceAttempt>;
-  envelopes: Array<EvidenceEnvelope>;
+  attempts: Array<EvidenceAttemptV1>;
+  envelopes: Array<EvidenceEnvelopeV1>;
 };
+
+export type EvidenceBatchV2 = {
+  schema: "grafana-evidence-batch-result/v2";
+  inventory: GrafanaToolInventory;
+  tool_calls_used: number;
+  maximum_calls_in_flight_observed: number;
+  attempts: Array<EvidenceAttemptV2>;
+  envelopes: Array<EvidenceEnvelopeV2>;
+};
+
+export type EvidenceBatch = EvidenceBatchV1 | EvidenceBatchV2;
 
 export type CompletedIncidentRecord = {
   schema: "incident-record/v1";

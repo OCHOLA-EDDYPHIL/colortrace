@@ -1,11 +1,13 @@
 """Bounded Gemini investigation with deterministic evidence authority."""
 
 from .contracts import (
+    AdaptiveModelSelection,
     AlertIntake,
     ContractError,
     InvestigationPolicy,
     ModelAdvisory,
     ModelSelection,
+    validate_adaptive_response_packet,
     validate_response_packet,
 )
 from .model import (
@@ -28,6 +30,7 @@ __all__ = [
     "AdkVertexGateway",
     "AllowedQueryKey",
     "AlertIntake",
+    "AdaptiveModelSelection",
     "ColorStateValidatorGateway",
     "ContractError",
     "InvestigationPolicy",
@@ -42,4 +45,5 @@ __all__ = [
     "WorkflowProgress",
     "WorkflowError",
     "validate_response_packet",
+    "validate_adaptive_response_packet",
 ]

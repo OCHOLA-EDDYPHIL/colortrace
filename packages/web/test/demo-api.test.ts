@@ -22,6 +22,7 @@ import {
   investigationProof,
   investigationProofV1,
   investigationProofV2,
+  investigationProofV3,
   NONCE,
   RUN_ID,
   scenarioPreview,
@@ -70,7 +71,7 @@ describe("demo API adapter", () => {
       "sha256:a5ff48f8c5356c7c6dc51fb9b3578fcc63e786cde2a3db789b2d11daf9e660bd",
     );
     expect(demoReceipt().receipt_sha256).toBe(
-      "sha256:f69ff7407483b5a7d895bd1dd809ad937dbbee324d35aa4e794cf4dddafac572",
+      "sha256:c103dcb1b80a62c30f401b4b990a7f5f7849b5fe6b1e5e5ec2b665018d0b4292",
     );
   });
 
@@ -99,6 +100,91 @@ describe("demo API adapter", () => {
       approval_nonce: NONCE,
       idempotency_key: "demo-start-1",
     });
+  });
+
+  it("accepts different permitted adaptive exact and cohort query choices", async () => {
+    const response = runResponse();
+    const investigation = investigationProof();
+    const sourceEvidence = investigation.evidence[1];
+    if (sourceEvidence === undefined) throw new Error("missing adaptive evidence fixture");
+    const traceEvidence = {
+      ...sourceEvidence,
+      query_key: "trace.by-id" as const,
+      tool: "tempo_get-trace",
+      source: { ...sourceEvidence.source, tool: "tempo_get-trace" },
+      observation: {
+        ...sourceEvidence.observation,
+        query_key: "trace.by-id" as const,
+        normalized_arguments: {
+          trace_id: "a".repeat(32),
+          datasourceUid: "tempo",
+        },
+      },
+    };
+    const cohortSource = investigation.evidence[2];
+    if (cohortSource === undefined) throw new Error("missing adaptive cohort fixture");
+    const configurationCohortEvidence = {
+      ...cohortSource,
+      query_key: "log.config-cohort" as const,
+      tool: "query_loki_logs",
+      source: { ...cohortSource.source, tool: "query_loki_logs" },
+      observation: {
+        ...cohortSource.observation,
+        query_key: "log.config-cohort" as const,
+        normalized_arguments: {
+          config_sha256: investigation.evidence[0]?.correlation_keys.config_sha256,
+          datasourceUid: "loki",
+        },
+      },
+      correlation_keys: {
+        fixture_id: cohortSource.correlation_keys.fixture_id,
+        run_id: cohortSource.correlation_keys.run_id,
+        config_sha256: investigation.evidence[0]?.correlation_keys.config_sha256 ?? "config",
+      },
+    };
+    const alternate = {
+      ...investigation,
+      evidence: [investigation.evidence[0], traceEvidence, configurationCohortEvidence],
+      adaptive_trace: investigation.adaptive_trace.map((entry, index) =>
+        index === 1
+          ? {
+              ...entry,
+              query_key: "trace.by-id" as const,
+              selection_request_sha256:
+                "sha256:c049616de85406ddbe9f8931b544ce0775780588655ea817a473798236e29d75",
+            }
+          : index === 2
+            ? {
+                ...entry,
+                query_key: "log.config-cohort" as const,
+                selection_request_sha256:
+                  "sha256:1799dd3aa33bc9fb5e784ed984d056de29579d9e676f46caa765af33d671eeb3",
+              }
+            : entry,
+      ),
+    };
+    const adapter = createDemoAdapter({
+      baseUrl: "https://colortrace.example",
+      fetch: async () =>
+        new Response(JSON.stringify({ ...response, investigation: alternate }), {
+          headers: { "Content-Type": "application/json" },
+          status: 201,
+        }),
+    });
+
+    const run = await adapter.start({
+      approval_nonce: NONCE,
+      idempotency_key: "alternate-adaptive-path",
+    });
+    expect(run.investigation?.schema).toBe("colortrace-demo-investigation-proof/v4");
+    if (run.investigation?.schema !== "colortrace-demo-investigation-proof/v4") {
+      throw new Error("missing adaptive investigation");
+    }
+    expect(run.investigation.adaptive_trace.map((entry) => entry.query_key)).toEqual([
+      "alert.rule",
+      "trace.by-id",
+      "log.config-cohort",
+    ]);
   });
 
   it("loads and verifies the authored comparison without starting a run", async () => {
@@ -183,7 +269,7 @@ describe("demo API adapter", () => {
     ).rejects.toMatchObject({ code: "demo-response-invalid" });
   });
 
-  it("reads stored v1 proofs but requires the v3 review projection from a new run", async () => {
+  it("reads stored v1 proofs but requires the v4 review projection from a new run", async () => {
     const legacy = demoRunV1("awaiting-approval", {
       approval_nonce: undefined,
       investigation: investigationProofV1(),
@@ -258,6 +344,25 @@ describe("demo API adapter", () => {
     });
   });
 
+  it("continues to read a stored v3 investigation without treating it as adaptive", async () => {
+    const stored = demoRun("awaiting-approval", {
+      approval_nonce: undefined,
+      investigation: investigationProofV3(),
+    });
+    const adapter = createDemoAdapter({
+      baseUrl: "https://colortrace.example",
+      fetch: async () =>
+        new Response(JSON.stringify(stored), {
+          headers: { "Content-Type": "application/json" },
+        }),
+    });
+
+    await expect(adapter.get(RUN_ID)).resolves.toMatchObject({
+      schema: "colortrace-demo-run/v2",
+      investigation: { schema: "colortrace-demo-investigation-proof/v3" },
+    });
+  });
+
   it("rejects a stored v1 run whose approval and investigation bindings diverge", async () => {
     const investigation = investigationProofV1();
     const legacy = demoRunV1("awaiting-approval", {
@@ -278,7 +383,7 @@ describe("demo API adapter", () => {
     await expect(adapter.get(RUN_ID)).rejects.toMatchObject({ code: "demo-response-invalid" });
   });
 
-  it("rejects malformed or unsafe v3 review projections", async () => {
+  it("rejects malformed or unsafe v4 review projections", async () => {
     const response = runResponse();
     const investigation = investigationProof();
     const malformed = [
@@ -404,7 +509,7 @@ describe("demo API adapter", () => {
     }
   });
 
-  it("rejects a fresh v3 proof with flipped, missing, or misreasoned canonical claims", async () => {
+  it("rejects a fresh v4 proof with flipped, missing, or misreasoned canonical claims", async () => {
     const response = runResponse();
     const investigation = investigationProof();
     const malformed = [
@@ -437,6 +542,79 @@ describe("demo API adapter", () => {
     });
 
     for (const idempotencyKey of ["flipped-claim", "missing-claim", "wrong-claim-reason"]) {
+      await expect(
+        adapter.start({ approval_nonce: NONCE, idempotency_key: idempotencyKey }),
+      ).rejects.toMatchObject({ code: "demo-response-invalid" });
+    }
+  });
+
+  it("rejects adaptive trace, policy, evidence-chain, correlation, and hypothesis tampering", async () => {
+    const response = runResponse();
+    const investigation = investigationProof();
+    const malformed = [
+      {
+        ...investigation,
+        adaptive_trace: investigation.adaptive_trace.map((entry, index) =>
+          index === 1 ? { ...entry, evidence_id: investigation.evidence[2]?.evidence_id } : entry,
+        ),
+      },
+      {
+        ...investigation,
+        policy_binding: { ...investigation.policy_binding, sha256: `sha256:${"0".repeat(64)}` },
+        model_invocations: investigation.model_invocations.map((invocation) => ({
+          ...invocation,
+          policy_sha256: `sha256:${"0".repeat(64)}`,
+        })),
+      },
+      {
+        ...investigation,
+        evidence: investigation.evidence.map((item, index) =>
+          index === 1 ? { ...item, predecessor_event_sha256: null } : item,
+        ),
+      },
+      {
+        ...investigation,
+        evidence: investigation.evidence.map((item, index) =>
+          index === 0 ? { ...item, predecessor_event_sha256: `sha256:${"0".repeat(64)}` } : item,
+        ),
+      },
+      {
+        ...investigation,
+        evidence: investigation.evidence.map((item, index) =>
+          index === 2
+            ? { ...item, correlation_keys: { ...item.correlation_keys, worker_id: "C" } }
+            : item,
+        ),
+      },
+      {
+        ...investigation,
+        hypotheses: investigation.hypotheses.map((hypothesis, index) =>
+          index === 0 ? { ...hypothesis, evidence_ids: [`sha256:${"0".repeat(64)}`] } : hypothesis,
+        ),
+      },
+      {
+        ...investigation,
+        adaptive_trace: investigation.adaptive_trace.slice(0, -1),
+      },
+    ];
+    const adapter = createDemoAdapter({
+      baseUrl: "https://colortrace.example",
+      fetch: async () =>
+        new Response(JSON.stringify({ ...response, investigation: malformed.shift() }), {
+          headers: { "Content-Type": "application/json" },
+          status: 201,
+        }),
+    });
+
+    for (const idempotencyKey of [
+      "trace-ledger-drift",
+      "policy-binding-drift",
+      "evidence-chain-drift",
+      "evidence-chain-root-drift",
+      "correlation-drift",
+      "hypothesis-citation-drift",
+      "missing-selection",
+    ]) {
       await expect(
         adapter.start({ approval_nonce: NONCE, idempotency_key: idempotencyKey }),
       ).rejects.toMatchObject({ code: "demo-response-invalid" });

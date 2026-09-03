@@ -2,12 +2,14 @@ import { createHash } from "node:crypto";
 
 import {
   canonicalJsonBytes,
+  type DemoAdaptiveQueryKey,
   type DemoActionEnvelope,
   type DemoBuildProvenance,
   type DemoExecutionProof,
   type DemoInvestigationProofV1,
   type DemoInvestigationProofV2,
   type DemoInvestigationProofV3,
+  type DemoInvestigationProofV4,
   type DemoPlanCommand,
   type DemoPreviewVisualKind,
   type DemoReceipt,
@@ -341,7 +343,7 @@ export function investigationProofV2(): DemoInvestigationProofV2 {
   };
 }
 
-export function investigationProof(): DemoInvestigationProofV3 {
+export function investigationProofV3(): DemoInvestigationProofV3 {
   const v2 = investigationProofV2();
   const retrievedAt = "2026-08-23T12:00:01.000Z";
   const modelInvocations = v2.model_invocations.map((invocation, index) => {
@@ -425,6 +427,179 @@ export function investigationProof(): DemoInvestigationProofV3 {
       output_sha256: modelInvocations[1]?.output_sha256 as string,
     },
     finalized_at: "2026-08-23T12:00:02.000Z",
+  };
+}
+
+export function investigationProof(): DemoInvestigationProofV4 {
+  const v3 = investigationProofV3();
+  const selectedEvidence = [
+    v3.evidence[0],
+    v3.evidence.find((item) => item.query_key === "log.correlated-events"),
+  ];
+  if (selectedEvidence.some((item) => item === undefined)) {
+    throw new Error("missing adaptive evidence fixture");
+  }
+  const policySha256 = "sha256:8126979fe5a9b054a67747debf3401bfd0d8f3deb82f4ffcb759ef0f046ef131";
+  const requestId = "evidence-request-adaptive-1";
+  const fixedWindow = {
+    start: "2026-08-23T11:55:00.000Z",
+    end: "2026-08-23T12:00:00.000Z",
+    frozen_at: "2026-08-23T12:00:00.000Z",
+  };
+  const cohortEvidenceId = `sha256:${"f".repeat(64)}`;
+  const commonCorrelation = {
+    fixture_id: "ct-shadowed-lut-v1",
+    run_id: "run-1",
+    job_id: "job-b-02",
+    worker_id: "worker-b",
+    artifact_id: "artifact-b-02",
+    trace_id: "a".repeat(32),
+    config_sha256: `sha256:${"e".repeat(64)}`,
+    transform_id: "look/main/v1",
+  };
+  const evidence = [
+    selectedEvidence[0] as DemoInvestigationProofV3["evidence"][number],
+    selectedEvidence[1] as DemoInvestigationProofV3["evidence"][number],
+    {
+      ...(selectedEvidence[1] as DemoInvestigationProofV3["evidence"][number]),
+      evidence_id: cohortEvidenceId,
+      content_sha256: cohortEvidenceId,
+      query_key: "metric.worker-cohort",
+      tool: "query_prometheus",
+      display_excerpt:
+        "The worker cohort contains unaffected renders, ruling out a worker-only failure.",
+      source: {
+        ...(selectedEvidence[1] as DemoInvestigationProofV3["evidence"][number]).source,
+        tool: "query_prometheus",
+      },
+    },
+  ];
+  const adaptiveEvidence: DemoInvestigationProofV4["evidence"] = evidence.map((item, index) => {
+    const queryKey = item.query_key as DemoAdaptiveQueryKey;
+    const correlationKeys =
+      queryKey === "metric.worker-cohort"
+        ? {
+            fixture_id: commonCorrelation.fixture_id,
+            run_id: commonCorrelation.run_id,
+            worker_id: commonCorrelation.worker_id,
+          }
+        : commonCorrelation;
+    const normalizedArguments =
+      queryKey === "alert.rule"
+        ? { operation: "get", rule_uid: "colortrace-alert", limit_alerts: 100 }
+        : queryKey === "metric.worker-cohort"
+          ? {
+              datasourceUid: "prometheus",
+              expr: 'colortrace_declared_reference_observations_total{fixture_id="ct-shadowed-lut-v1",run_id="run-1",worker_id="worker-b"}',
+              queryType: "instant",
+              endTime: fixedWindow.end,
+            }
+          : {
+              datasourceUid: "loki",
+              logql:
+                '{service_name="colortrace-simulator"} | fixture_id="ct-shadowed-lut-v1" | run_id="run-1" | job_id="job-b-02"',
+              queryType: "range",
+              startRfc3339: fixedWindow.start,
+              endRfc3339: fixedWindow.end,
+              direction: "forward",
+              limit: 200,
+            };
+    return {
+      ...item,
+      query_key: queryKey,
+      envelope_schema: "evidence-envelope/v2" as const,
+      incident_id: "incident-demo-11111111111111111111111111111111",
+      request_id: requestId,
+      observation: {
+        kind: "grafana-mcp-query" as const,
+        query_key: queryKey,
+        catalog_version: "grafana-evidence-query-catalog/v2" as const,
+        catalog_sha256: `sha256:${"9".repeat(64)}`,
+        normalized_arguments: normalizedArguments,
+        model_visible_arguments: [],
+        fixed_time_range: { start: fixedWindow.start, end: fixedWindow.end },
+      },
+      correlation_keys: correlationKeys,
+      collection: { outcome: "collected" as const, attempts: 1, retries: 0, error: null },
+      trust: "untrusted-provider-data" as const,
+      producer_version: "grafana-mcp-evidence-adapter/v1",
+      predecessor_event_sha256: index === 0 ? null : (evidence[index - 1]?.evidence_id ?? null),
+      event_sha256: item.evidence_id,
+    };
+  });
+  const evidenceIds = adaptiveEvidence.map((item) => item.evidence_id);
+  const modelInvocations = v3.model_invocations.map((invocation) => ({
+    ...invocation,
+    prompt_version:
+      invocation.turn_kind === "evidence-selection"
+        ? ("evidence-selection/v2" as const)
+        : ("response-drafting/v2" as const),
+    policy_version: "bounded-adaptive-investigation/v1" as const,
+    policy_sha256: policySha256,
+    input_evidence_ids:
+      invocation.turn_kind === "evidence-selection" ? [evidenceIds[0] as string] : evidenceIds,
+  }));
+  const selection = modelInvocations.find(
+    (invocation) => invocation.turn_kind === "evidence-selection",
+  );
+  const validatorResultId = v3.validators[0]?.result_id;
+  if (selection === undefined || validatorResultId === undefined) {
+    throw new Error("missing adaptive invocation or validator fixture");
+  }
+  const requestDigests = {
+    "alert.rule": "sha256:d8be9ef89383533032e5ade5b6ea9f89b11495cc3b1e2e5e0bc310bd5b5c06e9",
+    "log.correlated-events":
+      "sha256:fbd5e9c0a267d4f28ff7330aa3ef7c04a21255bad3f81ffd7d690e1b62a070f1",
+    "metric.worker-cohort":
+      "sha256:7be158e73642a1becfc0a6c49bdd8131e9156f2939b876f1c6d5595439e035bc",
+  } as const;
+  return {
+    ...v3,
+    schema: "colortrace-demo-investigation-proof/v4",
+    packet_schema: "response-packet/v2",
+    packet_version: 2,
+    packet_evidence_ids: [...evidenceIds].sort(),
+    incident_id: "incident-demo-11111111111111111111111111111111",
+    fixed_window: fixedWindow,
+    policy_binding: {
+      version: "bounded-adaptive-investigation/v1",
+      sha256: policySha256,
+    },
+    model_invocations: modelInvocations,
+    evidence: adaptiveEvidence,
+    adaptive_trace: adaptiveEvidence.map((item, index) => ({
+      sequence: index,
+      selected_by: index === 0 ? ("policy" as const) : ("model" as const),
+      query_key: item.query_key,
+      selection_request_sha256: requestDigests[item.query_key as keyof typeof requestDigests],
+      selection_invocation_id: index === 0 ? null : selection.invocation_id,
+      selection_output_sha256: index === 0 ? null : selection.output_sha256,
+      evidence_id: item.evidence_id,
+      disposition:
+        index === adaptiveEvidence.length - 1 ? ("resolved" as const) : ("continue" as const),
+      reason_code:
+        index === 0
+          ? "baseline-valid"
+          : index === adaptiveEvidence.length - 1
+            ? "sufficient-evidence"
+            : "additional-evidence-required",
+      validator_result_id: index === adaptiveEvidence.length - 1 ? validatorResultId : null,
+    })),
+    hypotheses: [
+      {
+        ordinal: 1,
+        hypothesis_key: "color-resource-drift",
+        evidence_ids: [evidenceIds[1] as string, evidenceIds[2] as string],
+      },
+      {
+        ordinal: 2,
+        hypothesis_key: "worker-only-failure",
+        evidence_ids: [evidenceIds[2] as string],
+      },
+    ],
+    stop_reason: "sufficient-evidence",
+    claims: v3.claims.map((claim) => ({ ...claim, evidence_ids: evidenceIds })),
+    model_advisory: { ...v3.model_advisory, evidence_ids: evidenceIds },
   };
 }
 
