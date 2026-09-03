@@ -240,6 +240,25 @@ class FakeModel:
             self.in_flight -= 1
 
 
+class EvidenceResponsiveModel(FakeModel):
+    def __init__(self) -> None:
+        super().__init__(selected=())
+        self.observed_sibling_states: list[bool] = []
+
+    async def generate(self, call: ModelCall) -> ModelOutput:
+        if call.turn_kind == "evidence-selection":
+            excerpt = call.payload["alert_baseline"]["display_excerpt"]
+            assert isinstance(excerpt, str)
+            has_sibling_alert = "job-sibling" in excerpt
+            self.observed_sibling_states.append(has_sibling_alert)
+            self.selected = (
+                ("alert.rule", "trace.by-id", "log.config-cohort")
+                if has_sibling_alert
+                else ("alert.rule", "log.correlated-events", "metric.worker-cohort")
+            )
+        return await super().generate(call)
+
+
 class DraftSequenceModel(FakeModel):
     def __init__(self, drafts: list[bytes | ModelFailure], **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -875,15 +894,27 @@ def test_canonical_packet_is_resolved_cited_and_bounded(
 def test_two_adaptive_paths_produce_the_same_deterministic_result(
     policy: InvestigationPolicy, bundles: dict[str, Path]
 ) -> None:
-    first, _, _ = asyncio.run(execute(policy, bundles["canonical"]))
+    first_model = EvidenceResponsiveModel()
+    first, _, _ = asyncio.run(
+        execute(
+            policy,
+            bundles["canonical"],
+            model=first_model,
+            evidence=FakeEvidence(),
+        )
+    )
+    second_model = EvidenceResponsiveModel()
     second, _, _ = asyncio.run(
         execute(
             policy,
             bundles["canonical"],
-            model=FakeModel(selected=("alert.rule", "trace.by-id", "log.config-cohort")),
+            model=second_model,
+            evidence=FakeEvidence(record_case="live-shapes"),
         )
     )
 
+    assert first_model.observed_sibling_states == [False]
+    assert second_model.observed_sibling_states == [True]
     assert first["status"] == second["status"] == "resolved"
     assert [item["query_key"] for item in first["adaptive_trace"]] == [
         "alert.rule",
@@ -902,6 +933,7 @@ def test_two_adaptive_paths_produce_the_same_deterministic_result(
             "sha256": policy.digest,
         }
         assert packet["stop_reason"] == "sufficient-evidence"
+        assert packet["candidate_plan"]["non_executable"] is True
         assert 1 <= len(packet["hypotheses"]) <= 4
         assert packet["adaptive_trace"][-1]["disposition"] == "resolved"
         assert all(
