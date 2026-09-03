@@ -15,12 +15,17 @@
         "source_tree": "9efca8db9ccd0b8b4b41e36b6e71fba38f2f8c9d",
         "source_archive": "https://codeload.github.com/grafana/grafana/tar.gz/56cd3e9288d8255fecebe5d05b48d191f50674b5",
         "source_archive_sha256": "5551b5719a3f96688d2f809c5e2b5fec208c03f392d261feb8ce36caf847c0a6",
-        "patched_go_mod_sha256": "24668ba208a38fc20b9730e301a8d5707fc9e06e3e44ea0b8adf07150eaeb22e",
+        "patched_go_mod_sha256": "bea427ff01a6296224cb6d1073ad90048b539b000b03000ee8c0fe632346dfe9",
         "patched_go_sum_sha256": "427145a729468448c575f9be2dff937eea6e06c864356bc01e0ef240a2defc0a",
-        "module_list_sha256": "bbee7e757e480f28ce7dd89bd2437fe2a68a405285118fb25237c365f7a0a5d5",
-        "binary_sha256": "2e858933132cd272de5af08e15fab6fac8d43fb154802fd438705768b60af301",
+        "module_list_sha256": "5737a66ef2d66446df9e1f36594dfdaf27e195a772b81819d27d9fab470044aa",
+        "binary_sha256": "14d6ce1cec4e5c2c4acfb4771e8987824a289c35f43dab91ebd6bfa875ff74b1",
         "security_dependency_changes": [
-          {"module": "google.golang.org/grpc", "upstream": "v1.82.1", "selected": "v1.83.1"}
+          {"module": "google.golang.org/grpc", "upstream": "v1.82.1", "selected": "v1.83.1"},
+          {
+            "module": "github.com/apache/thrift",
+            "upstream": "v0.23.1-0.20260429145742-d2acd3c49e58",
+            "selected": "v0.24.0"
+          }
         ]
       },
       "runtime_base": {
