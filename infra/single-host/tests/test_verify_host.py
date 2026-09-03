@@ -1777,6 +1777,116 @@ raise SystemExit(0)
                 ["output", "-raw", "staging_hard_stop_epoch"],
             )
 
+    def test_mcp_probe_accepts_allowlisted_catalog_with_adaptive_used_subset(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            binary_directory = temporary / "bin"
+            binary_directory.mkdir()
+            inventory_sha256 = "sha256:" + "f" * 64
+            used_tools = {
+                name: {
+                    "input_schema_sha256": digit * 64,
+                    "annotations_sha256": str(int(digit) + 4) * 64,
+                }
+                for name, digit in (
+                    ("alerting_manage_rules", "1"),
+                    ("query_loki_logs", "2"),
+                    ("tempo_get-trace", "3"),
+                )
+            }
+            selected_tools = {
+                **used_tools,
+                "query_prometheus": {
+                    "input_schema_sha256": "4" * 64,
+                    "annotations_sha256": "8" * 64,
+                },
+            }
+            summary = temporary / "summary.json"
+            summary.write_text(
+                json.dumps(
+                    {
+                        "mcp_inventory_sha256": inventory_sha256,
+                        "mcp_tool_bindings": used_tools,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            catalog = temporary / "catalog.json"
+            catalog_value = {
+                "schema": "grafana-mcp-tool-inventory/v1",
+                "server_version": "1.1.0",
+                "server_commit": "007e8d82154899a28e19e8dfe9c2bb4452c5211a",
+                "binary_sha256": (
+                    "a3dacdcace8d8082dd7cb245e41be54e8da4a9375969cb39c85c420a30ea0809"
+                ),
+                "mcp_sdk_version": "1.29.0",
+                "mcp_protocol_version": "2025-06-18",
+                "selected_tools": selected_tools,
+                "inventory_version": inventory_sha256,
+            }
+            catalog.write_text(json.dumps(catalog_value), encoding="utf-8")
+            probe = temporary / "mcp-probe.sh"
+            generated = subprocess.run(
+                [CONTRACT_HELPER, "mcp-script", summary, probe],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            self.assertEqual(set(selected_tools) - set(used_tools), {"query_prometheus"})
+
+            sudo = binary_directory / "sudo"
+            sudo.write_text(
+                """#!/usr/bin/env python3
+import os
+import pathlib
+import shutil
+import sys
+
+arguments = sys.argv[1:]
+if "rm" in arguments:
+    pathlib.Path(arguments[-1]).unlink(missing_ok=True)
+    raise SystemExit(0)
+if "-m" in arguments and "colortrace_grafana_mcp.cli" in arguments:
+    output = pathlib.Path(arguments[arguments.index("--output") + 1])
+    shutil.copyfile(os.environ["FAKE_MCP_CATALOG"], output)
+    raise SystemExit(0)
+if "-c" in arguments:
+    command_index = arguments.index("-c")
+    os.execv(sys.executable, [sys.executable, *arguments[command_index:]])
+raise SystemExit(2)
+""",
+                encoding="utf-8",
+            )
+            sudo.chmod(0o755)
+            environment = {
+                **os.environ,
+                "FAKE_MCP_CATALOG": str(catalog),
+                "PATH": f"{binary_directory}:{os.environ['PATH']}",
+            }
+            completed = subprocess.run(
+                ["bash", probe],
+                check=False,
+                capture_output=True,
+                env=environment,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+
+            catalog_value["selected_tools"]["delete_dashboard"] = {
+                "input_schema_sha256": "5" * 64,
+                "annotations_sha256": "9" * 64,
+            }
+            catalog.write_text(json.dumps(catalog_value), encoding="utf-8")
+            rejected = subprocess.run(
+                ["bash", probe],
+                check=False,
+                capture_output=True,
+                env=environment,
+                text=True,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+
     def test_legacy_zero_hard_stop_and_overflow_are_verified(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)

@@ -3250,19 +3250,22 @@ def mcp_script(arguments: argparse.Namespace) -> None:
     ):
         raise VerificationError("mcp-summary-invalid")
     expected_tools = json.dumps(tool_bindings, sort_keys=True)
+    allowed_tools = json.dumps(sorted(MCP_SELECTED_TOOLS))
     validation = """import json, sys
 value = json.load(open(sys.argv[1], encoding=\"utf-8\"))
 expected_identity = json.loads(sys.argv[2])
 expected_tools = json.loads(sys.argv[3])
+allowed_tools = json.loads(sys.argv[4])
 assert set(value) == set(expected_identity) | {\"selected_tools\", \"inventory_version\"}
 assert all(value[key] == expected for key, expected in expected_identity.items())
 assert isinstance(value[\"selected_tools\"], dict)
-assert set(value[\"selected_tools\"]) == set(expected_tools)
+assert set(value[\"selected_tools\"]) == set(allowed_tools)
+assert set(expected_tools) <= set(value[\"selected_tools\"])
 for name, expected in expected_tools.items():
     actual = value[\"selected_tools\"][name]
     assert actual[\"input_schema_sha256\"] == expected[\"input_schema_sha256\"]
     assert actual[\"annotations_sha256\"] == expected[\"annotations_sha256\"]
-assert value[\"inventory_version\"] == sys.argv[4]
+assert value[\"inventory_version\"] == sys.argv[5]
 """
     script = f"""set -Eeuo pipefail
 probe=/tmp/colortrace-hosted-mcp-inventory.json
@@ -3286,6 +3289,7 @@ sudo --non-interactive docker exec --user 65532:65532 colortrace-runtime \\
   \"$probe\" \\
   {shlex.quote(expected_identity)} \\
   {shlex.quote(expected_tools)} \\
+  {shlex.quote(allowed_tools)} \\
   {shlex.quote(expected_inventory)}
 """
     output = arguments.output.resolve()
