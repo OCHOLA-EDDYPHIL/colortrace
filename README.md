@@ -20,7 +20,7 @@ decision, and verifies the result before it records a receipt.
 | Stage | What ColorTrace does | What the operator sees |
 | --- | --- | --- |
 | Detect | Correlates render telemetry, configuration, and asset lineage. | The expected image, observed fault, pixel difference, and affected scope. |
-| Explain | Uses Gemini 3.5 Flash through Vertex AI and Google ADK to order the three read-only Grafana MCP queries that follow a fixed alert baseline. Deterministic validators establish the facts. | A concise diagnosis with the supporting signals and the proposed repair. |
+| Explain | Uses Gemini 3.5 Flash through Vertex AI and Google ADK to select one bounded, read-only Grafana MCP query at a time after a required alert baseline. Deterministic validators decide when the evidence is sufficient and establish the facts. | A concise diagnosis, the selected evidence path, and the proposed repair. |
 | Approve | Builds an exact action plan and requires a human to approve or reject it. | Five typed commands, the four affected outputs, and the three assets that stay protected. |
 | Verify | Applies one simulator-only recovery, checks fresh output and telemetry, and requires human confirmation before closure. | The recovered image, protected-output checks, and an immutable receipt. |
 
@@ -56,8 +56,10 @@ the included simulator. It does not connect to a production media system.
 
 The product separates useful AI assistance from action authority:
 
-- Grafana MCP exposes a fixed read-only query catalog.
-- Gemini 3.5 Flash can order the three cataloged queries that follow the fixed alert baseline.
+- Grafana MCP exposes a fixed read-only query catalog with server-owned arguments.
+- After a required alert baseline, Gemini 3.5 Flash selects one useful next query at a time, up to
+  a fixed investigation budget.
+- The visible trace binds each model selection to the Grafana result and deterministic disposition.
 - Deterministic validators decide whether the evidence, scope, and proposed plan agree.
 - A human approves the displayed targets and exclusions with a one-time challenge.
 - The recovery service consumes that authority once and can change only the local simulator.

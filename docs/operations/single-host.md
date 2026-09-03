@@ -163,7 +163,8 @@ Do not grant Token Creator at project scope.
 
 Use the owner/deployer identity. The build script rejects a dirty worktree and a source revision
 that does not match `HEAD`. It builds the runtime, web, and Caddy images from their definitions in
-`containers`, plus Grafana, Loki, and Tempo from three targets in `Dockerfile.observability`.
+`containers`, plus Grafana, Loki, Prometheus, and Tempo from four targets in
+`Dockerfile.observability`.
 
 ```sh
 gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
@@ -174,8 +175,8 @@ export CT_BUILD_MANIFEST="$(
 )"
 ```
 
-Scan the six private images and the pinned Prometheus image. The script checks both the current
-and pinned scanner databases and stops on a HIGH or CRITICAL finding.
+Scan all seven private images. The script checks each image with both the current and pinned
+scanner databases and stops on a HIGH or CRITICAL finding.
 
 ```sh
 export CT_SCAN_BINDING="$(

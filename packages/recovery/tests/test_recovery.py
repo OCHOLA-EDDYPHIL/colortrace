@@ -27,6 +27,7 @@ from colortrace_recovery import (
     build_verification_snapshot,
     canonical_json_bytes,
     document_sha256,
+    validate_evidence_request,
 )
 from colortrace_telemetry.action_emitter import build_action_events
 from colortrace_telemetry.contract import canonical_json_bytes as telemetry_json_bytes
@@ -262,6 +263,24 @@ def evidence_request_for(snapshot: Mapping[str, Any], *, at: datetime = BASE) ->
         catalog_sha256=digest("c"),
         evaluation_started_at=at,
     )
+
+
+def test_evidence_request_uses_current_catalog_and_reads_legacy_v1() -> None:
+    snapshot = snapshot_for(successful_outcome())
+    current = evidence_request_for(snapshot)
+    assert current["schema"] == "recovery-evidence-request/v2"
+    assert current["catalog_version"] == "grafana-evidence-query-catalog/v2"
+
+    legacy = copy.deepcopy(current)
+    legacy["schema"] = "recovery-evidence-request/v1"
+    legacy["catalog_version"] = "grafana-evidence-query-catalog/v1"
+    body = {
+        key: value for key, value in legacy.items() if key not in {"request_id", "request_sha256"}
+    }
+    request_sha256 = document_sha256(body)
+    legacy["request_sha256"] = request_sha256
+    legacy["request_id"] = f"recovery-evidence-request:{request_sha256.removeprefix('sha256:')}"
+    assert validate_evidence_request(legacy, snapshot=snapshot) == legacy
 
 
 def evidence_records(outcome: Mapping[str, Any]) -> list[dict[str, Any]]:

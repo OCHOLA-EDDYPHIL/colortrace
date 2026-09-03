@@ -1526,7 +1526,7 @@
           }
         }
       },
-      "ResponsePacket": {
+      "ResponsePacketV1": {
         "type": "object",
         "additionalProperties": false,
         "required": [
@@ -1615,7 +1615,7 @@
             "type": "array",
             "maxItems": 6,
             "items": {
-              "$ref": "#/components/schemas/ModelInvocation"
+              "$ref": "#/components/schemas/ModelInvocationV1"
             }
           },
           "budget_use": {
@@ -1694,6 +1694,350 @@
             "$ref": "#/components/schemas/Digest"
           }
         }
+      },
+      "InvestigationPolicyBinding": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "sha256"],
+        "properties": {
+          "version": {
+            "const": "bounded-adaptive-investigation/v1"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/Digest"
+          }
+        }
+      },
+      "AdaptiveHypothesis": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ordinal", "hypothesis_key", "evidence_ids"],
+        "properties": {
+          "ordinal": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4
+          },
+          "hypothesis_key": {
+            "enum": [
+              "color-resource-drift",
+              "nominal-config-drift",
+              "unrelated-event",
+              "worker-only-failure"
+            ]
+          },
+          "evidence_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          }
+        }
+      },
+      "AdaptiveTraceEntry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sequence",
+          "selected_by",
+          "query_key",
+          "selection_request_sha256",
+          "selection_invocation_id",
+          "selection_output_sha256",
+          "evidence_id",
+          "disposition",
+          "reason_code",
+          "validator_result_id"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4
+          },
+          "selected_by": {
+            "enum": ["policy", "model"]
+          },
+          "query_key": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AdaptiveQueryKey"
+              }
+            ]
+          },
+          "selection_request_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "selection_invocation_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^model-invocation:[0-9a-f]{64}$"
+              }
+            ]
+          },
+          "selection_output_sha256": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Digest"
+              }
+            ]
+          },
+          "evidence_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Identifier"
+              }
+            ]
+          },
+          "disposition": {
+            "enum": ["continue", "resolved", "unresolved"]
+          },
+          "reason_code": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,63}$"
+          },
+          "validator_result_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Identifier"
+              }
+            ]
+          }
+        }
+      },
+      "AdaptiveQueryKey": {
+        "enum": [
+          "alert.rule",
+          "log.correlated-events",
+          "metric.correlated-observations",
+          "trace.by-id",
+          "metric.worker-cohort",
+          "log.config-cohort"
+        ]
+      },
+      "ResponsePacketV2": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "packet_id",
+          "incident_id",
+          "version",
+          "status",
+          "policy_binding",
+          "fixed_window",
+          "evidence_ids",
+          "deterministic_results",
+          "claims",
+          "scope",
+          "invocation_records",
+          "adaptive_trace",
+          "hypotheses",
+          "stop_reason",
+          "budget_use",
+          "unresolved_items",
+          "candidate_plan",
+          "no_action_reason",
+          "model_advisory",
+          "state_history",
+          "finalized_at",
+          "derivation_sha256"
+        ],
+        "properties": {
+          "schema": {
+            "const": "response-packet/v2"
+          },
+          "packet_id": {
+            "type": "string",
+            "pattern": "^response-packet:[0-9a-f]{64}$"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "version": {
+            "const": 2
+          },
+          "status": {
+            "enum": ["resolved", "unresolved"]
+          },
+          "policy_binding": {
+            "$ref": "#/components/schemas/InvestigationPolicyBinding"
+          },
+          "fixed_window": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["start", "end", "frozen_at"],
+            "properties": {
+              "start": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "end": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "frozen_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 512,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          },
+          "deterministic_results": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "$ref": "#/components/schemas/DeterministicResult"
+            }
+          },
+          "claims": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "$ref": "#/components/schemas/Claim"
+            }
+          },
+          "scope": {
+            "$ref": "#/components/schemas/IncidentScope"
+          },
+          "invocation_records": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {
+              "$ref": "#/components/schemas/ModelInvocationV2"
+            }
+          },
+          "adaptive_trace": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "items": {
+              "$ref": "#/components/schemas/AdaptiveTraceEntry"
+            }
+          },
+          "hypotheses": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "$ref": "#/components/schemas/AdaptiveHypothesis"
+            }
+          },
+          "stop_reason": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,63}$"
+          },
+          "budget_use": {
+            "$ref": "#/components/schemas/BudgetUse"
+          },
+          "unresolved_items": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/components/schemas/UnresolvedItem"
+            }
+          },
+          "candidate_plan": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CandidatePlan"
+              }
+            ]
+          },
+          "no_action_reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "enum": [
+                  "budget-exhausted",
+                  "contradictory-evidence",
+                  "evidence-unavailable",
+                  "incomplete-evidence",
+                  "invalid-intake",
+                  "model-unavailable",
+                  "no-affected-targets",
+                  "policy-drift",
+                  "stale-evidence",
+                  "validator-unresolved"
+                ]
+              }
+            ]
+          },
+          "model_advisory": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModelAdvisory"
+              }
+            ]
+          },
+          "state_history": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 24,
+            "items": {
+              "enum": [
+                "intake",
+                "evidence",
+                "selection",
+                "assessment",
+                "validation",
+                "drafting",
+                "finalization",
+                "complete"
+              ]
+            }
+          },
+          "finalized_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "derivation_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          }
+        }
+      },
+      "ResponsePacket": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ResponsePacketV1"
+          },
+          {
+            "$ref": "#/components/schemas/ResponsePacketV2"
+          }
+        ]
       },
       "IncidentView": {
         "type": "object",
@@ -1893,7 +2237,7 @@
           }
         }
       },
-      "ModelInvocation": {
+      "ModelInvocationV1": {
         "type": "object",
         "additionalProperties": false,
         "required": [
@@ -2277,6 +2621,185 @@
           }
         }
       },
+      "ModelInvocationV2": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "invocation_id",
+          "incident_id",
+          "turn_kind",
+          "attempt",
+          "model",
+          "location",
+          "framework",
+          "framework_version",
+          "client_version",
+          "prompt_version",
+          "policy_version",
+          "policy_sha256",
+          "tool_inventory_version",
+          "normalized_input_sha256",
+          "input_evidence_ids",
+          "output_sha256",
+          "latency_ms",
+          "usage",
+          "result_class",
+          "error_code",
+          "trace_id",
+          "derivation_sha256"
+        ],
+        "properties": {
+          "schema": {
+            "const": "model-tool-invocation/v2"
+          },
+          "invocation_id": {
+            "type": "string",
+            "pattern": "^model-invocation:[0-9a-f]{64}$"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "turn_kind": {
+            "enum": ["evidence-selection", "response-drafting"]
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 6
+          },
+          "model": {
+            "const": "gemini-3.5-flash"
+          },
+          "location": {
+            "const": "global"
+          },
+          "framework": {
+            "const": "google-adk"
+          },
+          "framework_version": {
+            "const": "2.6.3"
+          },
+          "client_version": {
+            "const": "2.17.0"
+          },
+          "prompt_version": {
+            "enum": ["evidence-selection/v2", "response-drafting/v2"]
+          },
+          "policy_version": {
+            "const": "bounded-adaptive-investigation/v1"
+          },
+          "policy_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "tool_inventory_version": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Digest"
+              }
+            ]
+          },
+          "normalized_input_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "input_evidence_ids": {
+            "type": "array",
+            "maxItems": 256,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          },
+          "output_sha256": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Digest"
+              }
+            ]
+          },
+          "latency_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 120000
+          },
+          "usage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["input_tokens", "output_tokens", "model_calls", "unobserved_model_calls"],
+            "properties": {
+              "input_tokens": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                ]
+              },
+              "output_tokens": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                ]
+              },
+              "model_calls": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 6
+              },
+              "unobserved_model_calls": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 6
+              }
+            }
+          },
+          "result_class": {
+            "enum": ["accepted", "budget-rejected", "failed", "invalid"]
+          },
+          "error_code": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{1,63}$"
+              }
+            ]
+          },
+          "trace_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$"
+          },
+          "derivation_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          }
+        }
+      },
+      "ModelInvocation": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ModelInvocationV1"
+          },
+          {
+            "$ref": "#/components/schemas/ModelInvocationV2"
+          }
+        ]
+      },
       "ModelAdvisory": {
         "type": "object",
         "additionalProperties": false,
@@ -2302,7 +2825,7 @@
           }
         }
       },
-      "EvidenceEnvelope": {
+      "EvidenceEnvelopeV1": {
         "title": "ColorTrace evidence envelope",
         "type": "object",
         "additionalProperties": false,
@@ -2341,7 +2864,7 @@
             "$ref": "#/components/schemas/EvidenceSource"
           },
           "observation": {
-            "$ref": "#/components/schemas/EvidenceObservation"
+            "$ref": "#/components/schemas/EvidenceObservationV1"
           },
           "timing": {
             "type": "object",
@@ -2459,6 +2982,173 @@
           }
         }
       },
+      "EvidenceEnvelopeV2": {
+        "title": "ColorTrace evidence envelope",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "evidence_id",
+          "incident_id",
+          "request_id",
+          "source",
+          "observation",
+          "timing",
+          "content_sha256",
+          "content",
+          "display_excerpt",
+          "correlation_keys",
+          "collection",
+          "trust",
+          "producer_version",
+          "predecessor_event_sha256",
+          "event_sha256"
+        ],
+        "properties": {
+          "schema": {
+            "const": "evidence-envelope/v2"
+          },
+          "evidence_id": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "incident_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "request_id": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "source": {
+            "$ref": "#/components/schemas/EvidenceSource"
+          },
+          "observation": {
+            "$ref": "#/components/schemas/EvidenceObservationV2"
+          },
+          "timing": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source_time", "event_time", "retrieved_at", "freshness"],
+            "properties": {
+              "source_time": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                ]
+              },
+              "event_time": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                ]
+              },
+              "retrieved_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "freshness": {
+                "enum": ["current", "stale", "unresolved"]
+              }
+            }
+          },
+          "content_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "content": {},
+          "display_excerpt": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "correlation_keys": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 32,
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "collection": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["outcome", "attempts", "retries", "error"],
+            "properties": {
+              "outcome": {
+                "enum": ["collected", "error"]
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 8
+              },
+              "retries": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "error": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["code", "retryable"],
+                    "properties": {
+                      "code": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_]{1,63}$"
+                      },
+                      "retryable": {
+                        "const": false
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "trust": {
+            "enum": ["untrusted-provider-data", "deterministic-result"]
+          },
+          "producer_version": {
+            "$ref": "#/components/schemas/Identifier"
+          },
+          "predecessor_event_sha256": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Digest"
+              }
+            ]
+          },
+          "event_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          }
+        }
+      },
+      "EvidenceEnvelope": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/EvidenceEnvelopeV1"
+          },
+          {
+            "$ref": "#/components/schemas/EvidenceEnvelopeV2"
+          }
+        ]
+      },
       "EvidenceSource": {
         "title": "Registered ColorTrace evidence sources",
         "oneOf": [
@@ -2467,11 +3157,29 @@
           }
         ]
       },
-      "EvidenceObservation": {
+      "EvidenceObservationV1": {
         "title": "Registered ColorTrace evidence observations",
         "oneOf": [
           {
-            "$ref": "#/components/schemas/GrafanaQueryObservation"
+            "$ref": "#/components/schemas/GrafanaQueryObservationV1"
+          }
+        ]
+      },
+      "EvidenceObservationV2": {
+        "title": "Registered ColorTrace evidence observations",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/GrafanaQueryObservationV2"
+          }
+        ]
+      },
+      "EvidenceObservation": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/EvidenceObservationV1"
+          },
+          {
+            "$ref": "#/components/schemas/EvidenceObservationV2"
           }
         ]
       },
@@ -2536,7 +3244,7 @@
           }
         }
       },
-      "GrafanaQueryObservation": {
+      "GrafanaQueryObservationV1": {
         "title": "Typed Grafana MCP query observation",
         "type": "object",
         "additionalProperties": false,
@@ -2557,8 +3265,11 @@
             "enum": [
               "alert.rule",
               "log.correlated-events",
+              "log.simulator-action-events",
               "metric.correlated-observations",
-              "trace.by-id"
+              "metric.simulator-action-observations",
+              "trace.by-id",
+              "trace.simulator-action-command"
             ]
           },
           "catalog_version": {
@@ -2594,6 +3305,80 @@
             }
           }
         }
+      },
+      "GrafanaQueryObservationV2": {
+        "title": "Typed Grafana MCP query observation",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "query_key",
+          "catalog_version",
+          "catalog_sha256",
+          "normalized_arguments",
+          "model_visible_arguments",
+          "fixed_time_range"
+        ],
+        "properties": {
+          "kind": {
+            "const": "grafana-mcp-query"
+          },
+          "query_key": {
+            "enum": [
+              "alert.rule",
+              "log.correlated-events",
+              "log.simulator-action-events",
+              "metric.correlated-observations",
+              "metric.simulator-action-observations",
+              "trace.by-id",
+              "trace.simulator-action-command",
+              "metric.worker-cohort",
+              "log.config-cohort"
+            ]
+          },
+          "catalog_version": {
+            "const": "grafana-evidence-query-catalog/v2"
+          },
+          "catalog_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "normalized_arguments": {
+            "type": "object"
+          },
+          "model_visible_arguments": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "fixed_time_range": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["start", "end"],
+            "properties": {
+              "start": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "end": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      },
+      "GrafanaQueryObservation": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/GrafanaQueryObservationV1"
+          },
+          {
+            "$ref": "#/components/schemas/GrafanaQueryObservationV2"
+          }
+        ]
       },
       "ValidationReasonCode": {
         "enum": [
@@ -2938,7 +3723,7 @@
           }
         }
       },
-      "EvidenceAttempt": {
+      "EvidenceAttemptV1": {
         "type": "object",
         "additionalProperties": false,
         "required": [
@@ -3007,7 +3792,81 @@
           }
         }
       },
-      "EvidenceBatch": {
+      "EvidenceAttemptV2": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "query_key",
+          "tool",
+          "attempt",
+          "retry",
+          "normalized_arguments",
+          "arguments_sha256",
+          "started_at",
+          "completed_at",
+          "outcome"
+        ],
+        "properties": {
+          "query_key": {
+            "$ref": "#/components/schemas/AdaptiveQueryKey"
+          },
+          "tool": {
+            "enum": [
+              "alerting_manage_rules",
+              "query_loki_logs",
+              "query_prometheus",
+              "tempo_get-trace"
+            ]
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2
+          },
+          "retry": {
+            "type": "boolean"
+          },
+          "normalized_arguments": {
+            "type": "object"
+          },
+          "arguments_sha256": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "outcome": {
+            "enum": [
+              "collected",
+              "authentication",
+              "authorization",
+              "credential_exposure",
+              "incomplete_result",
+              "malformed_result",
+              "oversized_result",
+              "provider_error",
+              "timeout",
+              "transport"
+            ]
+          }
+        }
+      },
+      "EvidenceAttempt": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/EvidenceAttemptV1"
+          },
+          {
+            "$ref": "#/components/schemas/EvidenceAttemptV2"
+          }
+        ]
+      },
+      "EvidenceBatchV1": {
         "type": "object",
         "additionalProperties": false,
         "required": [
@@ -3039,17 +3898,71 @@
             "type": "array",
             "maxItems": 8,
             "items": {
-              "$ref": "#/components/schemas/EvidenceAttempt"
+              "$ref": "#/components/schemas/EvidenceAttemptV1"
             }
           },
           "envelopes": {
             "type": "array",
             "maxItems": 8,
             "items": {
-              "$ref": "#/components/schemas/EvidenceEnvelope"
+              "$ref": "#/components/schemas/EvidenceEnvelopeV1"
             }
           }
         }
+      },
+      "EvidenceBatchV2": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "inventory",
+          "tool_calls_used",
+          "maximum_calls_in_flight_observed",
+          "attempts",
+          "envelopes"
+        ],
+        "properties": {
+          "schema": {
+            "const": "grafana-evidence-batch-result/v2"
+          },
+          "inventory": {
+            "$ref": "#/components/schemas/GrafanaToolInventory"
+          },
+          "tool_calls_used": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8
+          },
+          "maximum_calls_in_flight_observed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "attempts": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/EvidenceAttemptV2"
+            }
+          },
+          "envelopes": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/EvidenceEnvelopeV2"
+            }
+          }
+        }
+      },
+      "EvidenceBatch": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/EvidenceBatchV1"
+          },
+          {
+            "$ref": "#/components/schemas/EvidenceBatchV2"
+          }
+        ]
       },
       "CompletedIncidentRecord": {
         "type": "object",

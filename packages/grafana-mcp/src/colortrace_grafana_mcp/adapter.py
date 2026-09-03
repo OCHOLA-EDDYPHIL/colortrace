@@ -42,8 +42,14 @@ MCP_SDK_VERSION = "1.29.0"
 MCP_SDK_WHEEL_SHA256 = "f5a075bb611f23d6f4d080c6a1699fa62772eebc562ba9e66b306ddde1c755f7"
 MCP_PROTOCOL_VERSION = "2025-06-18"
 PRODUCER_VERSION = "grafana-mcp-evidence-adapter/v1"
-QUERY_CATALOG_VERSION = "grafana-evidence-query-catalog/v1"
-EVIDENCE_ENVELOPE_VERSION = "evidence-envelope/v1"
+LEGACY_QUERY_CATALOG_VERSION = "grafana-evidence-query-catalog/v1"
+QUERY_CATALOG_VERSION = "grafana-evidence-query-catalog/v2"
+LEGACY_EVIDENCE_REQUEST_VERSION = "grafana-evidence-request/v1"
+EVIDENCE_REQUEST_VERSION = "grafana-evidence-request/v2"
+LEGACY_EVIDENCE_ENVELOPE_VERSION = "evidence-envelope/v1"
+EVIDENCE_ENVELOPE_VERSION = "evidence-envelope/v2"
+LEGACY_EVIDENCE_BATCH_RESULT_VERSION = "grafana-evidence-batch-result/v1"
+EVIDENCE_BATCH_RESULT_VERSION = "grafana-evidence-batch-result/v2"
 
 BUILTIN_ANNOTATIONS_SHA256 = "ae78503371695cf7d7b89784165a967b2135219ecf6527f06a2c1c73d05c6ae6"
 TEMPO_REMOTE_INPUT_SCHEMA_SHA256 = (
@@ -68,6 +74,12 @@ QUERY_KEYS = (
     "metric.correlated-observations",
     "trace.by-id",
 )
+OPTIONAL_QUERY_KEYS = (
+    "metric.worker-cohort",
+    "log.config-cohort",
+)
+ADAPTIVE_QUERY_KEYS = QUERY_KEYS + OPTIONAL_QUERY_KEYS
+ALLOWED_QUERY_KEYS = ADAPTIVE_QUERY_KEYS
 SIMULATOR_ACTION_QUERY_KEYS = (
     "metric.simulator-action-observations",
     "log.simulator-action-events",
@@ -662,7 +674,7 @@ class QuerySpec:
     retry_policy: str
 
 
-_EXPECTED_SPECS = {
+_EXPECTED_SPECS_V1 = {
     "alert.rule": {
         "tool": "alerting_manage_rules",
         "result_kind": "alert",
@@ -690,6 +702,23 @@ _EXPECTED_SPECS = {
         "maximum_bytes": 2_097_152,
         "maximum_items": 1,
         "retry_policy": "never",
+    },
+}
+_EXPECTED_SPECS = {
+    **_EXPECTED_SPECS_V1,
+    "metric.worker-cohort": {
+        "tool": "query_prometheus",
+        "result_kind": "metric",
+        "maximum_bytes": 262_144,
+        "maximum_items": 500,
+        "retry_policy": "one-trusted-transient",
+    },
+    "log.config-cohort": {
+        "tool": "query_loki_logs",
+        "result_kind": "log",
+        "maximum_bytes": 262_144,
+        "maximum_items": 200,
+        "retry_policy": "one-trusted-transient",
     },
 }
 _EXPECTED_SIMULATOR_ACTION_SPECS = {
@@ -768,9 +797,15 @@ class QueryCatalog:
             "redacted_label_prefixes",
         }:
             raise AdapterError("query_catalog_drift")
+        version = document.get("schema")
+        if version == LEGACY_QUERY_CATALOG_VERSION:
+            expected_specs = _EXPECTED_SPECS_V1
+        elif version == QUERY_CATALOG_VERSION:
+            expected_specs = _EXPECTED_SPECS
+        else:
+            raise AdapterError("query_catalog_drift")
         if (
-            document.get("schema") != QUERY_CATALOG_VERSION
-            or document.get("templates") != _EXPECTED_SPECS
+            document.get("templates") != expected_specs
             or document.get("simulator_action_templates") != _EXPECTED_SIMULATOR_ACTION_SPECS
             or document.get("limits") != _EXPECTED_LIMITS
             or document.get("redacted_keys") != list(_EXPECTED_REDACTED_KEYS)
@@ -790,14 +825,14 @@ class QueryCatalog:
             raise AdapterError("query_catalog_drift")
         specs = {
             key: QuerySpec(key=key, **cast(dict[str, Any], value))
-            for key, value in _EXPECTED_SPECS.items()
+            for key, value in expected_specs.items()
         }
         simulator_action_specs = {
             key: QuerySpec(key=key, **cast(dict[str, Any], value))
             for key, value in _EXPECTED_SIMULATOR_ACTION_SPECS.items()
         }
         return cls(
-            QUERY_CATALOG_VERSION,
+            cast(str, version),
             _prefixed_sha256(canonical_json_bytes(document)),
             MappingProxyType(specs),
             MappingProxyType(simulator_action_specs),
@@ -816,6 +851,7 @@ class EvidenceBatch:
     binding: Mapping[str, str]
     correlation_keys: Mapping[str, str]
     predecessor_event_sha256: str | None
+    schema: str = EVIDENCE_REQUEST_VERSION
 
     def __post_init__(self) -> None:
         try:
@@ -831,7 +867,14 @@ class EvidenceBatch:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> EvidenceBatch:
-        _validate_schema("evidence-request-v1.schema.json", value)
+        schema = value.get("schema")
+        if schema == LEGACY_EVIDENCE_REQUEST_VERSION:
+            schema_name = "evidence-request-v1.schema.json"
+        elif schema == EVIDENCE_REQUEST_VERSION:
+            schema_name = "evidence-request-v2.schema.json"
+        else:
+            raise AdapterError("schema_validation")
+        _validate_schema(schema_name, value)
         window = cast(Mapping[str, str], value["window"])
         start = _parse_timestamp(window["start"])
         end = _parse_timestamp(window["end"])
@@ -855,6 +898,7 @@ class EvidenceBatch:
                 _freeze_json({name: correlation[name] for name in CORRELATION_FIELDS}),
             ),
             predecessor_event_sha256=cast(str | None, value["predecessor_event_sha256"]),
+            schema=cast(str, schema),
         )
 
     @classmethod
@@ -1088,6 +1132,7 @@ def _snapshot_batch(batch: EvidenceBatch) -> EvidenceBatch:
             binding=cast(Mapping[str, str], _plain_json(batch.binding)),
             correlation_keys=cast(Mapping[str, str], _plain_json(batch.correlation_keys)),
             predecessor_event_sha256=batch.predecessor_event_sha256,
+            schema=batch.schema,
         )
     except AdapterError:
         raise
@@ -1168,11 +1213,18 @@ def _validate_batch(batch: EvidenceBatch) -> None:
         or not _IDENTIFIER.fullmatch(batch.incident_id)
     ):
         raise AdapterError("request_invalid")
+    allowed_query_keys: tuple[str, ...]
+    if batch.schema == LEGACY_EVIDENCE_REQUEST_VERSION:
+        allowed_query_keys = QUERY_KEYS
+    elif batch.schema == EVIDENCE_REQUEST_VERSION:
+        allowed_query_keys = ALLOWED_QUERY_KEYS
+    else:
+        raise AdapterError("request_invalid")
     if (
         not 1 <= len(batch.query_keys) <= 8
         or any(not isinstance(key, str) for key in batch.query_keys)
         or len(set(batch.query_keys)) != len(batch.query_keys)
-        or any(key not in QUERY_KEYS for key in batch.query_keys)
+        or any(key not in allowed_query_keys for key in batch.query_keys)
     ):
         raise AdapterError("query_not_allowed")
     if (
@@ -1314,9 +1366,12 @@ def _validate_simulator_action_batch(batch: SimulatorActionEvidenceBatch) -> Non
 
 
 def _label_selector(correlation: Mapping[str, str]) -> str:
+    return _label_selector_for({name: correlation[name] for name in CORRELATION_FIELDS})
+
+
+def _label_selector_for(correlation: Mapping[str, str]) -> str:
     values: list[str] = []
-    for name in CORRELATION_FIELDS:
-        value = correlation[name]
+    for name, value in correlation.items():
         if not _IDENTIFIER.fullmatch(value):
             raise AdapterError("correlation_invalid")
         values.append(f'{name}="{value}"')
@@ -1348,6 +1403,21 @@ def _bind_call(catalog: QueryCatalog, batch: EvidenceBatch, key: str) -> BoundCa
             "queryType": "instant",
             "endTime": end,
         }
+    elif key == "metric.worker-cohort":
+        cohort = {name: correlation[name] for name in ("fixture_id", "run_id", "worker_id")}
+        arguments = {
+            "datasourceUid": binding["prometheus_datasource_uid"],
+            "expr": (
+                f"colortrace_declared_reference_observations_total{{{_label_selector_for(cohort)}}}"
+            ),
+            "queryType": "instant",
+            "endTime": end,
+        }
+        return BoundCall(
+            spec,
+            cast(Mapping[str, Any], _freeze_json(arguments)),
+            correlation_keys=cast(Mapping[str, str], _freeze_json(cohort)),
+        )
     elif key == "log.correlated-events":
         arguments = {
             "datasourceUid": binding["loki_datasource_uid"],
@@ -1363,6 +1433,27 @@ def _bind_call(catalog: QueryCatalog, batch: EvidenceBatch, key: str) -> BoundCa
             "direction": "forward",
             "limit": 200,
         }
+    elif key == "log.config-cohort":
+        cohort = {name: correlation[name] for name in ("fixture_id", "run_id", "config_sha256")}
+        arguments = {
+            "datasourceUid": binding["loki_datasource_uid"],
+            "logql": (
+                '{service_name="colortrace-simulator"} '
+                f'| fixture_id="{cohort["fixture_id"]}" '
+                f'| run_id="{cohort["run_id"]}" '
+                f'| config_sha256="{cohort["config_sha256"]}"'
+            ),
+            "queryType": "range",
+            "startRfc3339": start,
+            "endRfc3339": end,
+            "direction": "forward",
+            "limit": 200,
+        }
+        return BoundCall(
+            spec,
+            cast(Mapping[str, Any], _freeze_json(arguments)),
+            correlation_keys=cast(Mapping[str, str], _freeze_json(cohort)),
+        )
     elif key == "trace.by-id":
         arguments = {
             "trace_id": correlation["trace_id"],
@@ -2311,8 +2402,14 @@ def _build_envelope(
     if content is not None:
         display = content_bytes.decode("utf-8")[:4096]
     pin = inventory.tools[raw.bound.spec.tool]
+    if catalog.version == LEGACY_QUERY_CATALOG_VERSION:
+        envelope_version = LEGACY_EVIDENCE_ENVELOPE_VERSION
+    elif catalog.version == QUERY_CATALOG_VERSION:
+        envelope_version = EVIDENCE_ENVELOPE_VERSION
+    else:  # pragma: no cover - catalog construction rejects other versions
+        raise AdapterError("query_catalog_drift")
     body: dict[str, Any] = {
-        "schema": EVIDENCE_ENVELOPE_VERSION,
+        "schema": envelope_version,
         "incident_id": batch.incident_id,
         "request_id": batch.request_id,
         "source": {
@@ -2373,7 +2470,14 @@ def _build_envelope(
 
 
 def validate_evidence_envelope(value: Mapping[str, Any]) -> None:
-    _validate_schema("evidence-envelope-v1.schema.json", value)
+    schema = value.get("schema")
+    if schema == LEGACY_EVIDENCE_ENVELOPE_VERSION:
+        schema_name = "evidence-envelope-v1.schema.json"
+    elif schema == EVIDENCE_ENVELOPE_VERSION:
+        schema_name = "evidence-envelope-v2.schema.json"
+    else:
+        raise AdapterError("schema_validation")
+    _validate_schema(schema_name, value)
     content_digest = _prefixed_sha256(canonical_json_bytes(value.get("content")))
     if value.get("content_sha256") != content_digest:
         raise AdapterError("envelope_digest")
@@ -2383,6 +2487,15 @@ def validate_evidence_envelope(value: Mapping[str, Any]) -> None:
     event_digest = _prefixed_sha256(canonical_json_bytes(body))
     if value.get("evidence_id") != event_digest or value.get("event_sha256") != event_digest:
         raise AdapterError("envelope_digest")
+
+
+def evidence_batch_result_schema(envelopes: Sequence[Mapping[str, Any]]) -> str:
+    schemas = {envelope.get("schema") for envelope in envelopes}
+    if schemas == {LEGACY_EVIDENCE_ENVELOPE_VERSION}:
+        return LEGACY_EVIDENCE_BATCH_RESULT_VERSION
+    if schemas == {EVIDENCE_ENVELOPE_VERSION}:
+        return EVIDENCE_BATCH_RESULT_VERSION
+    raise AdapterError("batch_schema_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2395,7 +2508,7 @@ class BatchResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema": "grafana-evidence-batch-result/v1",
+            "schema": evidence_batch_result_schema(self.envelopes),
             "inventory": self.inventory.to_dict(),
             "tool_calls_used": self.tool_calls_used,
             "maximum_calls_in_flight_observed": self.maximum_calls_in_flight_observed,
@@ -2446,7 +2559,8 @@ class EvidenceCollectionSession:
         if (
             not isinstance(query_key, str)
             or query_key not in self._batch.query_keys
-            or query_key not in QUERY_KEYS
+            or query_key not in ALLOWED_QUERY_KEYS
+            or query_key not in self._catalog.specs
         ):
             raise AdapterError("query_not_allowed")
         if query_key in self._seen:

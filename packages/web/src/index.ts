@@ -8,6 +8,7 @@ export {
   type DemoApprovalRequest,
   type DemoClosureRequest,
   type DemoInvestigationProofV3,
+  type DemoInvestigationProofV4,
   type DemoPhase,
   type DemoPreviewVisualKind,
   type DemoReceipt,

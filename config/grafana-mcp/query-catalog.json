@@ -1,5 +1,5 @@
 {
-  "schema": "grafana-evidence-query-catalog/v1",
+  "schema": "grafana-evidence-query-catalog/v2",
   "templates": {
     "alert.rule": {
       "tool": "alerting_manage_rules",
@@ -20,6 +20,20 @@
       "result_kind": "metric",
       "maximum_bytes": 262144,
       "maximum_items": 500,
+      "retry_policy": "one-trusted-transient"
+    },
+    "metric.worker-cohort": {
+      "tool": "query_prometheus",
+      "result_kind": "metric",
+      "maximum_bytes": 262144,
+      "maximum_items": 500,
+      "retry_policy": "one-trusted-transient"
+    },
+    "log.config-cohort": {
+      "tool": "query_loki_logs",
+      "result_kind": "log",
+      "maximum_bytes": 262144,
+      "maximum_items": 200,
       "retry_policy": "one-trusted-transient"
     },
     "trace.by-id": {

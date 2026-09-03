@@ -10,7 +10,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, cast
 
-from colortrace_grafana_mcp import EvidenceBatch
+from colortrace_grafana_mcp import ADAPTIVE_QUERY_KEYS, EvidenceBatch
 from jsonschema import (  # type: ignore[import-untyped]
     Draft202012Validator,
     FormatChecker,
@@ -19,19 +19,30 @@ from jsonschema import (  # type: ignore[import-untyped]
 from referencing import Registry, Resource
 
 POLICY_VERSION = "bounded-investigation/v1"
+ADAPTIVE_POLICY_VERSION = "bounded-adaptive-investigation/v1"
 MODEL_PROFILE_VERSION = "bounded-gemini-investigator/v1"
+ADAPTIVE_MODEL_PROFILE_VERSION = "bounded-adaptive-gemini-investigator/v1"
 MODEL_ID = "gemini-3.5-flash"
 MODEL_LOCATION = "global"
 ADK_VERSION = "2.6.3"
 GENAI_VERSION = "2.17.0"
 RESPONSE_PACKET_VERSION = "response-packet/v1"
 INVOCATION_VERSION = "model-tool-invocation/v1"
+ADAPTIVE_RESPONSE_PACKET_VERSION = "response-packet/v2"
+ADAPTIVE_INVOCATION_VERSION = "model-tool-invocation/v2"
 QUERY_KEYS = (
     "alert.rule",
     "log.correlated-events",
     "metric.correlated-observations",
     "trace.by-id",
 )
+EXACT_QUERY_KEYS = QUERY_KEYS[1:]
+COHORT_QUERY_KEYS = (
+    "metric.worker-cohort",
+    "log.config-cohort",
+)
+if tuple(ADAPTIVE_QUERY_KEYS) != QUERY_KEYS + COHORT_QUERY_KEYS:
+    raise RuntimeError("adaptive query catalogue drift")
 HYPOTHESIS_KEYS = (
     "color-resource-drift",
     "nominal-config-drift",
@@ -44,10 +55,18 @@ TOOL_BY_QUERY = MappingProxyType(
         "log.correlated-events": "query_loki_logs",
         "metric.correlated-observations": "query_prometheus",
         "trace.by-id": "tempo_get-trace",
+        "metric.worker-cohort": "query_prometheus",
+        "log.config-cohort": "query_loki_logs",
     }
 )
 POLICY_CANONICAL_SHA256 = "215622df9dc7b3628a4256d10ef4dc672b7f70324d17347fbdfaa35d7892d080"
 MODEL_PROFILE_CANONICAL_SHA256 = "0381b53d866478ade184abdceafed2af160c93c5d5eaa33b5168286e5aa2ed49"
+ADAPTIVE_POLICY_CANONICAL_SHA256 = (
+    "8126979fe5a9b054a67747debf3401bfd0d8f3deb82f4ffcb759ef0f046ef131"
+)
+ADAPTIVE_MODEL_PROFILE_CANONICAL_SHA256 = (
+    "37f1d97404bcf38ce1da3b3b83485cf7f202c6fcc5645b5084d325e4c149fed8"
+)
 SCHEMA_ROOT = Path(__file__).parent / "schemas"
 
 
@@ -154,8 +173,11 @@ def _schema_documents() -> Mapping[str, Mapping[str, Any]]:
         "alert-intake-v1.schema.json",
         "model-advisory-v1.schema.json",
         "model-selection-v1.schema.json",
+        "model-selection-v2.schema.json",
         "model-tool-invocation-v1.schema.json",
+        "model-tool-invocation-v2.schema.json",
         "response-packet-v1.schema.json",
+        "response-packet-v2.schema.json",
     )
     documents: dict[str, Mapping[str, Any]] = {}
     for name in names:
@@ -215,6 +237,40 @@ class InvestigationPolicy:
     hypothesis_keys: tuple[str, ...]
     trusted_transient_errors: frozenset[str]
     no_action_reasons: frozenset[str]
+    baseline_query_key: str = "alert.rule"
+    exact_query_keys: tuple[str, ...] = EXACT_QUERY_KEYS
+    cohort_query_keys: tuple[str, ...] = ()
+    maximum_post_baseline_calls: int = 3
+
+    @property
+    def adaptive(self) -> bool:
+        return self.version == ADAPTIVE_POLICY_VERSION
+
+    @classmethod
+    def fixed_v1(cls) -> InvestigationPolicy:
+        return cls(
+            version=POLICY_VERSION,
+            digest=f"sha256:{POLICY_CANONICAL_SHA256}",
+            model_profile_digest=f"sha256:{MODEL_PROFILE_CANONICAL_SHA256}",
+            budgets=Budgets(),
+            required_query_keys=QUERY_KEYS,
+            hypothesis_keys=HYPOTHESIS_KEYS,
+            trusted_transient_errors=frozenset({"rate_limit", "service", "timeout", "transport"}),
+            no_action_reasons=frozenset(
+                {
+                    "budget-exhausted",
+                    "contradictory-evidence",
+                    "evidence-unavailable",
+                    "incomplete-evidence",
+                    "invalid-intake",
+                    "model-unavailable",
+                    "no-affected-targets",
+                    "policy-drift",
+                    "stale-evidence",
+                    "validator-unresolved",
+                }
+            ),
+        )
 
     @classmethod
     def load(cls, policy_path: Path, model_profile_path: Path) -> InvestigationPolicy:
@@ -222,9 +278,15 @@ class InvestigationPolicy:
         profile = strict_json_file(model_profile_path)
         policy_digest = sha256(canonical_json_bytes(policy))
         profile_digest = sha256(canonical_json_bytes(profile))
-        if policy_digest != POLICY_CANONICAL_SHA256 or profile_digest != (
-            MODEL_PROFILE_CANONICAL_SHA256
-        ):
+        legacy = (
+            policy_digest == POLICY_CANONICAL_SHA256
+            and profile_digest == MODEL_PROFILE_CANONICAL_SHA256
+        )
+        adaptive = (
+            policy_digest == ADAPTIVE_POLICY_CANONICAL_SHA256
+            and profile_digest == ADAPTIVE_MODEL_PROFILE_CANONICAL_SHA256
+        )
+        if not (legacy or adaptive):
             raise ContractError("policy-drift")
         raw_budgets = policy.get("budgets")
         if not isinstance(raw_budgets, dict):
@@ -235,15 +297,28 @@ class InvestigationPolicy:
             raise ContractError("policy-drift") from error
         if budgets != Budgets():
             raise ContractError("policy-drift")
+        expected_policy_version = ADAPTIVE_POLICY_VERSION if adaptive else POLICY_VERSION
+        expected_profile_version = (
+            ADAPTIVE_MODEL_PROFILE_VERSION if adaptive else MODEL_PROFILE_VERSION
+        )
+        policy_shape_valid = (
+            policy.get("schema") == "investigation-policy/v2"
+            and policy.get("baseline_query_key") == "alert.rule"
+            and tuple(policy.get("exact_query_keys", ())) == EXACT_QUERY_KEYS
+            and tuple(policy.get("cohort_query_keys", ())) == COHORT_QUERY_KEYS
+            and policy.get("maximum_post_baseline_calls") == 3
+            if adaptive
+            else policy.get("schema") == "investigation-policy/v1"
+            and tuple(policy.get("required_query_keys", ())) == QUERY_KEYS
+        )
         if (
-            policy.get("schema") != "investigation-policy/v1"
-            or policy.get("policy_version") != POLICY_VERSION
+            not policy_shape_valid
+            or policy.get("policy_version") != expected_policy_version
             or policy.get("claim_policy") != "deterministic-claim/v1"
             or policy.get("scope_policy") != "single-causal-resource-scope/v1"
-            or tuple(policy.get("required_query_keys", ())) != QUERY_KEYS
             or tuple(policy.get("hypothesis_keys", ())) != HYPOTHESIS_KEYS
             or profile.get("schema") != "vertex-model-profile/v1"
-            or profile.get("profile_version") != MODEL_PROFILE_VERSION
+            or profile.get("profile_version") != expected_profile_version
             or profile.get("provider") != "vertex-ai"
             or profile.get("framework") != "google-adk"
             or profile.get("model") != MODEL_ID
@@ -259,14 +334,18 @@ class InvestigationPolicy:
         if not isinstance(transient, list) or not isinstance(no_action, list):
             raise ContractError("policy-drift")
         return cls(
-            POLICY_VERSION,
+            expected_policy_version,
             prefixed_sha256(canonical_json_bytes(policy)),
             prefixed_sha256(canonical_json_bytes(profile)),
             budgets,
-            QUERY_KEYS,
+            tuple(ADAPTIVE_QUERY_KEYS) if adaptive else QUERY_KEYS,
             HYPOTHESIS_KEYS,
             frozenset(cast(list[str], transient)),
             frozenset(cast(list[str], no_action)),
+            "alert.rule",
+            EXACT_QUERY_KEYS,
+            COHORT_QUERY_KEYS if adaptive else (),
+            3,
         )
 
 
@@ -335,6 +414,22 @@ class AlertIntake:
         }
         return EvidenceBatch.from_mapping(request)
 
+    def adaptive_evidence_batch(self, query_keys: Sequence[str]) -> EvidenceBatch:
+        request = {
+            "schema": "grafana-evidence-request/v2",
+            "request_id": f"evidence-{sha256(self.incident_id.encode('utf-8'))[:24]}",
+            "incident_id": self.incident_id,
+            "query_keys": list(query_keys),
+            "window": {
+                "start": timestamp(self.window.start),
+                "end": timestamp(self.window.end),
+            },
+            "binding": dict(self.binding),
+            "correlation_keys": dict(self.correlation_keys),
+            "predecessor_event_sha256": self.predecessor_event_sha256,
+        }
+        return EvidenceBatch.from_mapping(request)
+
     def model_view(self) -> dict[str, Any]:
         return {
             "schema": "quoted-alert-view/v1",
@@ -347,6 +442,15 @@ class AlertIntake:
             "available_hypothesis_keys": list(HYPOTHESIS_KEYS),
             "trust": "untrusted-alert-data",
         }
+
+    def adaptive_model_view(self) -> dict[str, Any]:
+        view = self.model_view()
+        view["schema"] = "quoted-alert-view/v2"
+        view["available_query_keys"] = list(ADAPTIVE_QUERY_KEYS)
+        view["exact_query_keys"] = list(EXACT_QUERY_KEYS)
+        view["cohort_query_keys"] = list(COHORT_QUERY_KEYS)
+        view["maximum_post_baseline_calls"] = 3
+        return view
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,6 +471,58 @@ class ModelSelection:
             tuple(cast(list[str], value["hypothesis_keys"])),
             tuple(cast(list[str], value["query_keys"])),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptiveModelSelection:
+    hypotheses: tuple[Mapping[str, Any], ...]
+    query_keys: tuple[str, ...]
+    stop_reason: str
+
+    @classmethod
+    def from_bytes(
+        cls, raw: bytes, *, allowed_evidence_ids: frozenset[str]
+    ) -> AdaptiveModelSelection:
+        value = strict_json_bytes(raw)
+        if not isinstance(value, dict):
+            raise ContractError("model-output-invalid")
+        try:
+            validate_contract("model-selection-v2.schema.json", value)
+        except ContractError as error:
+            raise ContractError("model-output-invalid") from error
+        raw_hypotheses = cast(Sequence[Mapping[str, Any]], value["hypotheses"])
+        if [item["ordinal"] for item in raw_hypotheses] != list(range(1, len(raw_hypotheses) + 1)):
+            raise ContractError("model-output-invalid")
+        if len({item["hypothesis_key"] for item in raw_hypotheses}) != len(raw_hypotheses):
+            raise ContractError("model-output-invalid")
+        for item in raw_hypotheses:
+            if not set(cast(Sequence[str], item["evidence_ids"])).issubset(allowed_evidence_ids):
+                raise ContractError("model-citation-invalid")
+        hypotheses = tuple(
+            MappingProxyType(
+                {
+                    "ordinal": cast(int, item["ordinal"]),
+                    "hypothesis_key": cast(str, item["hypothesis_key"]),
+                    "evidence_ids": tuple(cast(Sequence[str], item["evidence_ids"])),
+                }
+            )
+            for item in raw_hypotheses
+        )
+        return cls(
+            hypotheses,
+            tuple(cast(Sequence[str], value["query_keys"])),
+            cast(str, value["stop_reason"]),
+        )
+
+    def hypotheses_to_dict(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "ordinal": item["ordinal"],
+                "hypothesis_key": item["hypothesis_key"],
+                "evidence_ids": list(cast(Sequence[str], item["evidence_ids"])),
+            }
+            for item in self.hypotheses
+        ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -415,8 +571,13 @@ def finalize_response_packet(body: Mapping[str, Any]) -> dict[str, Any]:
     return packet
 
 
-def validate_response_packet(value: Mapping[str, Any]) -> None:
-    validate_contract("response-packet-v1.schema.json", value)
+def finalize_adaptive_response_packet(body: Mapping[str, Any]) -> dict[str, Any]:
+    packet = finalize_derived_record(body, id_field="packet_id", id_prefix="response-packet")
+    validate_adaptive_response_packet(packet)
+    return packet
+
+
+def _validate_packet_digest(value: Mapping[str, Any]) -> None:
     derivation_input = {
         key: child for key, child in value.items() if key not in {"packet_id", "derivation_sha256"}
     }
@@ -425,6 +586,80 @@ def validate_response_packet(value: Mapping[str, Any]) -> None:
         f"response-packet:{expected.removeprefix('sha256:')}"
     ):
         raise ContractError("packet-digest")
+
+
+def _validate_adaptive_invocations(
+    invocations: Sequence[Mapping[str, Any]],
+    *,
+    incident_id: str,
+    evidence_ids: set[str],
+    policy_sha256: str,
+) -> dict[str, Mapping[str, Any]]:
+    invocation_by_id: dict[str, Mapping[str, Any]] = {}
+    attempts: dict[str, int] = {}
+    drafting_started = False
+    for invocation in invocations:
+        body = {
+            key: child
+            for key, child in invocation.items()
+            if key not in {"invocation_id", "derivation_sha256"}
+        }
+        derivation = prefixed_sha256(canonical_json_bytes(body))
+        invocation_id = cast(str, invocation["invocation_id"])
+        turn_kind = cast(str, invocation["turn_kind"])
+        attempt = cast(int, invocation["attempt"])
+        usage = cast(Mapping[str, Any], invocation["usage"])
+        result_class = invocation["result_class"]
+        error_code = invocation["error_code"]
+        output_sha256 = invocation["output_sha256"]
+        observed_usage = usage["input_tokens"] is not None and usage["output_tokens"] is not None
+        if (
+            invocation.get("derivation_sha256") != derivation
+            or invocation_id != f"model-invocation:{derivation.removeprefix('sha256:')}"
+            or invocation_id in invocation_by_id
+            or invocation.get("incident_id") != incident_id
+            or invocation.get("policy_version") != ADAPTIVE_POLICY_VERSION
+            or invocation.get("policy_sha256") != policy_sha256
+            or invocation.get("prompt_version") != f"{turn_kind}/v2"
+            or attempt != attempts.get(turn_kind, 0) + 1
+            or list(cast(Sequence[str], invocation["input_evidence_ids"]))
+            != sorted(cast(Sequence[str], invocation["input_evidence_ids"]))
+            or not set(cast(Sequence[str], invocation["input_evidence_ids"])).issubset(evidence_ids)
+            or usage["unobserved_model_calls"] > usage["model_calls"]
+            or (drafting_started and turn_kind == "evidence-selection")
+        ):
+            raise ContractError("invocation-binding")
+        if turn_kind == "response-drafting":
+            drafting_started = True
+        if result_class == "accepted":
+            valid_result = (
+                error_code is None
+                and output_sha256 is not None
+                and observed_usage
+                and usage["unobserved_model_calls"] == 0
+            )
+        elif result_class in {"budget-rejected", "invalid"}:
+            valid_result = (
+                error_code is not None
+                and output_sha256 is not None
+                and observed_usage
+                and usage["unobserved_model_calls"] == 0
+            )
+        else:
+            valid_result = error_code is not None and output_sha256 is None
+        if not valid_result:
+            raise ContractError("invocation-result-binding")
+        invocation_by_id[invocation_id] = invocation
+        attempts[turn_kind] = attempt
+    return invocation_by_id
+
+
+def validate_response_packet(value: Mapping[str, Any]) -> None:
+    if value.get("schema") == ADAPTIVE_RESPONSE_PACKET_VERSION:
+        validate_adaptive_response_packet(value)
+        return
+    validate_contract("response-packet-v1.schema.json", value)
+    _validate_packet_digest(value)
     status = value.get("status")
     claims = cast(Sequence[Mapping[str, Any]], value.get("claims", ()))
     unresolved = cast(Sequence[Mapping[str, Any]], value.get("unresolved_items", ()))
@@ -542,3 +777,142 @@ def validate_response_packet(value: Mapping[str, Any]) -> None:
             or advisory is not None
         ):
             raise ContractError("packet-state")
+
+
+def validate_adaptive_response_packet(value: Mapping[str, Any]) -> None:
+    validate_contract("response-packet-v2.schema.json", value)
+    _validate_packet_digest(value)
+    policy = cast(Mapping[str, Any], value["policy_binding"])
+    if policy != {
+        "version": ADAPTIVE_POLICY_VERSION,
+        "sha256": f"sha256:{ADAPTIVE_POLICY_CANONICAL_SHA256}",
+    }:
+        raise ContractError("packet-policy-binding")
+
+    evidence_ids = set(cast(Sequence[str], value["evidence_ids"]))
+    invocations = cast(Sequence[Mapping[str, Any]], value["invocation_records"])
+    invocation_by_id = _validate_adaptive_invocations(
+        invocations,
+        incident_id=cast(str, value["incident_id"]),
+        evidence_ids=evidence_ids,
+        policy_sha256=cast(str, policy["sha256"]),
+    )
+    deterministic_result_ids = {
+        item["result_id"]
+        for item in cast(Sequence[Mapping[str, Any]], value["deterministic_results"])
+    }
+
+    trace = cast(Sequence[Mapping[str, Any]], value["adaptive_trace"])
+    if [item["sequence"] for item in trace] != list(range(len(trace))):
+        raise ContractError("adaptive-trace-sequence")
+    baseline = trace[0]
+    if (
+        baseline.get("selected_by") != "policy"
+        or baseline.get("query_key") != "alert.rule"
+        or baseline.get("selection_request_sha256")
+        != prefixed_sha256(canonical_json_bytes({"query_key": "alert.rule"}))
+        or baseline.get("selection_invocation_id") is not None
+        or baseline.get("selection_output_sha256") is not None
+    ):
+        raise ContractError("adaptive-trace-baseline")
+    evidence_queries: set[str] = set()
+    for entry in trace:
+        evidence_id = entry.get("evidence_id")
+        query_key = entry.get("query_key")
+        if evidence_id is not None and evidence_id not in evidence_ids:
+            raise ContractError("adaptive-trace-evidence")
+        if query_key is not None and entry.get("selection_request_sha256") != prefixed_sha256(
+            canonical_json_bytes({"query_key": query_key})
+        ):
+            raise ContractError("adaptive-trace-request")
+        if evidence_id is not None:
+            if not isinstance(query_key, str) or query_key in evidence_queries:
+                raise ContractError("adaptive-trace-evidence")
+            evidence_queries.add(query_key)
+        if entry.get("selected_by") == "model":
+            invocation = invocation_by_id.get(cast(str, entry.get("selection_invocation_id")))
+            if (
+                invocation is None
+                or invocation.get("turn_kind") != "evidence-selection"
+                or invocation.get("output_sha256") != entry.get("selection_output_sha256")
+            ):
+                raise ContractError("adaptive-trace-invocation")
+        if (entry.get("disposition") == "resolved") != (
+            entry.get("validator_result_id") is not None
+        ):
+            raise ContractError("adaptive-trace-disposition")
+        if (
+            entry.get("validator_result_id") is not None
+            and entry.get("validator_result_id") not in deterministic_result_ids
+        ):
+            raise ContractError("adaptive-trace-disposition")
+    if trace[-1].get("disposition") == "continue" or value["stop_reason"] != trace[-1].get(
+        "reason_code"
+    ):
+        raise ContractError("adaptive-trace-terminal")
+
+    hypotheses = cast(Sequence[Mapping[str, Any]], value["hypotheses"])
+    if [item["ordinal"] for item in hypotheses] != list(range(1, len(hypotheses) + 1)):
+        raise ContractError("hypothesis-order")
+    if len({item["hypothesis_key"] for item in hypotheses}) != len(hypotheses) or any(
+        not set(cast(Sequence[str], item["evidence_ids"])).issubset(evidence_ids)
+        for item in hypotheses
+    ):
+        raise ContractError("hypothesis-binding")
+
+    selected = [
+        cast(str, item["query_key"])
+        for item in trace[1:]
+        if item.get("query_key") is not None and item.get("evidence_id") is not None
+    ]
+    if value["status"] == "resolved":
+        result_ids = {
+            item["result_id"]
+            for item in cast(Sequence[Mapping[str, Any]], value["deterministic_results"])
+            if item.get("status") == "resolved"
+        }
+        if (
+            value["stop_reason"] != "sufficient-evidence"
+            or not hypotheses
+            or not set(selected).intersection(EXACT_QUERY_KEYS)
+            or not set(selected).intersection(COHORT_QUERY_KEYS)
+            or trace[-1].get("disposition") != "resolved"
+            or trace[-1].get("reason_code") != "sufficient-evidence"
+            or trace[-1].get("validator_result_id") not in result_ids
+            or any(
+                item.get("result_class") != "accepted"
+                for item in invocations
+                if item.get("turn_kind") == "evidence-selection"
+            )
+        ):
+            raise ContractError("adaptive-sufficiency")
+
+    advisory = value.get("model_advisory")
+    if isinstance(advisory, Mapping) and not any(
+        item.get("turn_kind") == "response-drafting"
+        and item.get("result_class") == "accepted"
+        and item.get("output_sha256") == advisory.get("output_sha256")
+        for item in invocations
+    ):
+        raise ContractError("model-advisory-binding")
+
+    legacy_body = {
+        "schema": RESPONSE_PACKET_VERSION,
+        "incident_id": value["incident_id"],
+        "version": 1,
+        "status": value["status"],
+        "fixed_window": value["fixed_window"],
+        "evidence_ids": value["evidence_ids"],
+        "deterministic_results": value["deterministic_results"],
+        "claims": value["claims"],
+        "scope": value["scope"],
+        "invocation_records": [],
+        "budget_use": value["budget_use"],
+        "unresolved_items": value["unresolved_items"],
+        "candidate_plan": value["candidate_plan"],
+        "no_action_reason": value["no_action_reason"],
+        "model_advisory": value["model_advisory"],
+        "state_history": value["state_history"],
+        "finalized_at": value["finalized_at"],
+    }
+    finalize_response_packet(legacy_body)

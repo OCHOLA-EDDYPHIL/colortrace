@@ -845,6 +845,7 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
                 "client_version": item["client_version"],
                 "prompt_version": item["prompt_version"],
                 "policy_version": item["policy_version"],
+                "policy_sha256": item["policy_sha256"],
                 "result_class": item["result_class"],
                 "inventory_sha256": item["tool_inventory_version"],
                 "normalized_input_sha256": item["normalized_input_sha256"],
@@ -877,6 +878,9 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
             evidence.append(
                 {
                     "evidence_id": item["evidence_id"],
+                    "envelope_schema": item["schema"],
+                    "incident_id": item["incident_id"],
+                    "request_id": item["request_id"],
                     "query_key": observation["query_key"],
                     "tool": source["tool"],
                     "inventory_sha256": source["inventory_version"],
@@ -900,9 +904,16 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
                             "inventory_version",
                         )
                     },
+                    "observation": dict(observation),
                     "timing": {
                         key: timing[key] for key in ("source_time", "event_time", "retrieved_at")
                     },
+                    "correlation_keys": dict(cast(Mapping[str, str], item["correlation_keys"])),
+                    "collection": dict(cast(Mapping[str, Any], item["collection"])),
+                    "trust": item["trust"],
+                    "producer_version": item["producer_version"],
+                    "predecessor_event_sha256": item["predecessor_event_sha256"],
+                    "event_sha256": item["event_sha256"],
                 }
             )
         validators = [
@@ -937,9 +948,27 @@ class CanonicalDemoWorkflow(DemoWorkflowPort):
         advisory = cast(Mapping[str, Any] | None, packet.get("model_advisory"))
         return {
             "schema": INVESTIGATION_PROOF_SCHEMA,
+            "packet_schema": packet["schema"],
+            "packet_version": packet["version"],
             "packet_id": packet["packet_id"],
             "packet_sha256": packet["derivation_sha256"],
+            "packet_evidence_ids": list(cast(Sequence[str], packet["evidence_ids"])),
+            "incident_id": packet["incident_id"],
             "status": packet["status"],
+            "fixed_window": dict(cast(Mapping[str, str], packet["fixed_window"])),
+            "policy_binding": dict(cast(Mapping[str, Any], packet["policy_binding"])),
+            "adaptive_trace": [
+                dict(item) for item in cast(Sequence[Mapping[str, Any]], packet["adaptive_trace"])
+            ],
+            "hypotheses": [
+                {
+                    "ordinal": item["ordinal"],
+                    "hypothesis_key": item["hypothesis_key"],
+                    "evidence_ids": list(cast(Sequence[str], item["evidence_ids"])),
+                }
+                for item in cast(Sequence[Mapping[str, Any]], packet["hypotheses"])
+            ],
+            "stop_reason": packet["stop_reason"],
             "adjudication": {
                 "model_role": "evidence-selection-and-advisory-drafting",
                 "model_authority": "advisory-only",

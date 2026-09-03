@@ -9,7 +9,11 @@ from time import monotonic as system_monotonic
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
-from colortrace_grafana_mcp import EvidenceBatch, ExecutionControls
+from colortrace_grafana_mcp import (
+    EvidenceBatch,
+    ExecutionControls,
+    evidence_batch_result_schema,
+)
 from colortrace_investigation import (
     AlertIntake,
     InvestigationPolicy,
@@ -21,8 +25,10 @@ from colortrace_investigation import (
     WorkflowProgress,
 )
 from colortrace_investigation.contracts import (
+    ADAPTIVE_RESPONSE_PACKET_VERSION,
     RESPONSE_PACKET_VERSION,
     canonical_json_bytes,
+    finalize_adaptive_response_packet,
     finalize_response_packet,
     sha256,
     timestamp,
@@ -79,7 +85,7 @@ class RecordingEvidenceCollector:
             Mapping[str, Any],
             plain_json(
                 {
-                    "schema": "grafana-evidence-batch-result/v1",
+                    "schema": evidence_batch_result_schema(envelopes),
                     "inventory": inventory,
                     "tool_calls_used": result.tool_calls_used,
                     "maximum_calls_in_flight_observed": (result.maximum_calls_in_flight_observed),
@@ -137,13 +143,24 @@ class VerticalSliceApi:
         self,
         store: SqliteIncidentStore,
         *,
+        policy: InvestigationPolicy | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = store
+        self._policy = policy
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def accept_alert(self, alert: Mapping[str, Any]) -> dict[str, Any]:
-        accepted = self._store.accept_alert(alert, now=timestamp(self._clock().astimezone(UTC)))
+        now = timestamp(self._clock().astimezone(UTC))
+        if self._policy is None:
+            accepted = self._store.accept_alert(alert, now=now)
+        else:
+            accepted = self._store.accept_alert(
+                alert,
+                now=now,
+                policy_version=self._policy.version,
+                policy_sha256=self._policy.digest,
+            )
         return accepted.to_dict()
 
     def get_incident(self, incident_id: str) -> dict[str, Any]:
@@ -207,10 +224,15 @@ class VerticalSliceWorker:
         *,
         code: str,
         timed_out: bool,
-        evidence_ids: Sequence[str],
+        evidence: Sequence[Mapping[str, Any]],
         progress: WorkflowProgress,
     ) -> dict[str, Any]:
         intake = progress.intake or AlertIntake.from_mapping(work.alert)
+        evidence_ids = [
+            cast(str, item["evidence_id"])
+            for item in evidence
+            if isinstance(item.get("evidence_id"), str)
+        ]
         cited = sorted(set(evidence_ids) | progress.evidence_ids)
         deterministic_results = cast(
             list[dict[str, Any]], plain_json(progress.deterministic_results)
@@ -255,10 +277,14 @@ class VerticalSliceWorker:
             "claim_id": f"claim:{derivation}",
             "derivation_sha256": derivation,
         }
-        packet_body = {
-            "schema": RESPONSE_PACKET_VERSION,
+        packet_body: dict[str, Any] = {
+            "schema": (
+                ADAPTIVE_RESPONSE_PACKET_VERSION
+                if self._policy.adaptive
+                else RESPONSE_PACKET_VERSION
+            ),
             "incident_id": work.incident_id,
-            "version": 1,
+            "version": 2 if self._policy.adaptive else 1,
             "status": "unresolved",
             "fixed_window": intake.window.to_dict(),
             "evidence_ids": cited,
@@ -281,6 +307,103 @@ class VerticalSliceWorker:
             "state_history": state_history,
             "finalized_at": timestamp(self._clock().astimezone(UTC)),
         }
+        if self._policy.adaptive:
+            trace = cast(list[dict[str, Any]], plain_json(progress.adaptive_trace))
+            if not trace:
+                selection_invocation = next(
+                    (
+                        item
+                        for item in reversed(invocations)
+                        if item.get("turn_kind") == "evidence-selection"
+                    ),
+                    None,
+                )
+                resolved_result = next(
+                    (item for item in deterministic_results if item.get("status") == "resolved"),
+                    None,
+                )
+                trace = []
+                for sequence, envelope in enumerate(evidence):
+                    observation = envelope.get("observation")
+                    query_key = (
+                        observation.get("query_key") if isinstance(observation, Mapping) else None
+                    )
+                    if not isinstance(query_key, str):
+                        continue
+                    terminal = sequence == len(evidence) - 1
+                    sufficient = terminal and resolved_result is not None
+                    trace.append(
+                        {
+                            "sequence": sequence,
+                            "selected_by": "policy" if sequence == 0 else "model",
+                            "query_key": query_key,
+                            "selection_request_sha256": (
+                                f"sha256:{sha256(canonical_json_bytes({'query_key': query_key}))}"
+                            ),
+                            "selection_invocation_id": (
+                                None
+                                if sequence == 0 or selection_invocation is None
+                                else selection_invocation["invocation_id"]
+                            ),
+                            "selection_output_sha256": (
+                                None
+                                if sequence == 0 or selection_invocation is None
+                                else selection_invocation["output_sha256"]
+                            ),
+                            "evidence_id": envelope["evidence_id"],
+                            "disposition": (
+                                "resolved"
+                                if sufficient
+                                else "unresolved"
+                                if terminal
+                                else "continue"
+                            ),
+                            "reason_code": (
+                                "sufficient-evidence"
+                                if sufficient
+                                else code
+                                if terminal
+                                else "baseline-valid"
+                                if sequence == 0
+                                else "additional-evidence-required"
+                            ),
+                            "validator_result_id": (
+                                resolved_result["result_id"]
+                                if sufficient and resolved_result is not None
+                                else None
+                            ),
+                        }
+                    )
+                if not trace:
+                    trace = [
+                        {
+                            "sequence": 0,
+                            "selected_by": "policy",
+                            "query_key": "alert.rule",
+                            "selection_request_sha256": (
+                                "sha256:"
+                                + sha256(canonical_json_bytes({"query_key": "alert.rule"}))
+                            ),
+                            "selection_invocation_id": None,
+                            "selection_output_sha256": None,
+                            "evidence_id": None,
+                            "disposition": "unresolved",
+                            "reason_code": code,
+                            "validator_result_id": None,
+                        }
+                    ]
+            packet_body.update(
+                {
+                    "policy_binding": {
+                        "version": self._policy.version,
+                        "sha256": self._policy.digest,
+                    },
+                    "adaptive_trace": trace,
+                    "hypotheses": cast(list[dict[str, Any]], plain_json(progress.hypotheses)),
+                    "stop_reason": trace[-1]["reason_code"],
+                }
+            )
+            return finalize_adaptive_response_packet(packet_body)
         return finalize_response_packet(packet_body)
 
     async def execute(self, task_id: str, *, bundle_root: Path) -> dict[str, Any]:
@@ -288,7 +411,13 @@ class VerticalSliceWorker:
         if completed is not None:
             return completed
         try:
-            work = self._store.claim_task(task_id, owner=self._owner_id, now=self._now())
+            work = self._store.claim_task(
+                task_id,
+                owner=self._owner_id,
+                now=self._now(),
+                policy_version=self._policy.version,
+                policy_sha256=self._policy.digest,
+            )
         except SliceContractError as error:
             if error.code != "task-complete":
                 raise
@@ -321,7 +450,7 @@ class VerticalSliceWorker:
                     work,
                     code="service-timeout",
                     timed_out=True,
-                    evidence_ids=[cast(str, item["evidence_id"]) for item in evidence.envelopes],
+                    evidence=evidence.envelopes,
                     progress=progress,
                 )
             except asyncio.CancelledError:
@@ -331,7 +460,7 @@ class VerticalSliceWorker:
                     work,
                     code="worker-service-failure",
                     timed_out=False,
-                    evidence_ids=[cast(str, item["evidence_id"]) for item in evidence.envelopes],
+                    evidence=evidence.envelopes,
                     progress=progress,
                 )
             if heartbeat.done():

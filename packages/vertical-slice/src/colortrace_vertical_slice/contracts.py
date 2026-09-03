@@ -34,7 +34,7 @@ TASK_SCHEMA = "incident-task/v1"
 REPLAY_SCHEMA = "incident-replay/v1"
 CLAIM_EVENT_SCHEMA = "incident-claim-event/v1"
 HUMAN_AUDIT_EVENT_SCHEMA = "incident-human-audit-event/v1"
-STORE_SCHEMA_VERSION = 4
+STORE_SCHEMA_VERSION = 5
 CLAIM_LEASE_SECONDS = 30
 CLAIM_HEARTBEAT_SECONDS = 10
 INCIDENT_STATUSES = frozenset({"queued", "running", "resolved", "unresolved"})
@@ -59,6 +59,10 @@ _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
 _TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
 _SPAN_ID = re.compile(r"^[0-9a-f]{16}$")
 _PREFIXED_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_COHORT_CORRELATION_FIELDS = {
+    "metric.worker-cohort": ("fixture_id", "run_id", "worker_id"),
+    "log.config-cohort": ("fixture_id", "run_id", "config_sha256"),
+}
 
 
 class SliceContractError(RuntimeError):
@@ -490,6 +494,31 @@ def _validator_evidence_ids(result: Mapping[str, Any]) -> set[str]:
     return identifiers
 
 
+def _validate_adaptive_trace_evidence(
+    packet: Mapping[str, Any], evidence: Sequence[Mapping[str, Any]]
+) -> None:
+    if packet.get("schema") != "response-packet/v2":
+        return
+    evidence_order = [cast(str, envelope["evidence_id"]) for envelope in evidence]
+    evidence_by_id = {cast(str, envelope["evidence_id"]): envelope for envelope in evidence}
+    traced_evidence: list[str] = []
+    for entry in cast(Sequence[Mapping[str, Any]], packet.get("adaptive_trace", ())):
+        evidence_id = entry.get("evidence_id")
+        if evidence_id is None:
+            continue
+        envelope = evidence_by_id.get(cast(str, evidence_id))
+        observation = None if envelope is None else envelope.get("observation")
+        if (
+            envelope is None
+            or not isinstance(observation, Mapping)
+            or entry.get("query_key") != observation.get("query_key")
+        ):
+            raise SliceContractError("adaptive-trace-evidence-binding")
+        traced_evidence.append(cast(str, evidence_id))
+    if traced_evidence != evidence_order:
+        raise SliceContractError("adaptive-trace-evidence-binding")
+
+
 def _validate_replay_bindings(value: Mapping[str, Any]) -> None:
     incident = cast(Mapping[str, Any], value["incident"])
     task = cast(Mapping[str, Any], value["task"])
@@ -527,6 +556,7 @@ def _validate_replay_bindings(value: Mapping[str, Any]) -> None:
         raise SliceContractError("replay-binding")
 
     operational_ids: set[str] = set()
+    evidence_predecessor: str | None = None
     for envelope in evidence:
         try:
             validate_evidence_envelope(envelope)
@@ -534,10 +564,26 @@ def _validate_replay_bindings(value: Mapping[str, Any]) -> None:
             raise SliceContractError("evidence-invalid") from error
         if envelope.get("incident_id") != intake.incident_id:
             raise SliceContractError("evidence-binding")
-        correlation = envelope.get("correlation_keys")
-        if not isinstance(correlation, Mapping) or correlation.get("trace_id") != trace_id:
+        observation = envelope.get("observation")
+        if not isinstance(observation, Mapping):
             raise SliceContractError("evidence-binding")
-        operational_ids.add(require_prefixed_digest(envelope.get("evidence_id")))
+        query_key = observation.get("query_key")
+        if not isinstance(query_key, str):
+            raise SliceContractError("evidence-binding")
+        fields = _COHORT_CORRELATION_FIELDS.get(query_key, tuple(intake.correlation_keys))
+        expected_correlation = {
+            field: intake.correlation_keys[field]
+            for field in fields
+            if field in intake.correlation_keys
+        }
+        correlation = envelope.get("correlation_keys")
+        if not isinstance(correlation, Mapping) or dict(correlation) != expected_correlation:
+            raise SliceContractError("evidence-binding")
+        evidence_id = require_prefixed_digest(envelope.get("evidence_id"))
+        if envelope.get("predecessor_event_sha256") != evidence_predecessor:
+            raise SliceContractError("evidence-binding")
+        operational_ids.add(evidence_id)
+        evidence_predecessor = evidence_id
     if len(operational_ids) != len(evidence):
         raise SliceContractError("evidence-duplicate")
     if len(batches) > 1:
@@ -546,8 +592,20 @@ def _validate_replay_bindings(value: Mapping[str, Any]) -> None:
         batch = batches[0]
         batch_envelopes = batch.get("envelopes")
         attempts = batch.get("attempts")
+        envelope_schemas = {
+            envelope.get("schema") for envelope in evidence if isinstance(envelope, Mapping)
+        }
+        expected_batch_schema = (
+            "grafana-evidence-batch-result/v1"
+            if envelope_schemas == {"evidence-envelope/v1"}
+            else (
+                "grafana-evidence-batch-result/v2"
+                if envelope_schemas == {"evidence-envelope/v2"}
+                else None
+            )
+        )
         if (
-            batch.get("schema") != "grafana-evidence-batch-result/v1"
+            batch.get("schema") != expected_batch_schema
             or not isinstance(batch_envelopes, Sequence)
             or isinstance(batch_envelopes, (str, bytes, bytearray))
             or list(batch_envelopes) != list(evidence)
@@ -559,6 +617,8 @@ def _validate_replay_bindings(value: Mapping[str, Any]) -> None:
             raise SliceContractError("evidence-batch-binding")
     elif evidence:
         raise SliceContractError("evidence-batch-missing")
+
+    _validate_adaptive_trace_evidence(packet, evidence)
 
     validator_ids: set[str] = set()
     validator_evidence: set[str] = set()

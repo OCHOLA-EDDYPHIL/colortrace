@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/recovery-evidence-request-v2.schema.json",
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"},
+    "nullableDigest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]}
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "request_id", "request_sha256", "incident_id", "snapshot_id", "snapshot_sha256", "state_equivalence_sha256", "outcome_id", "outcome_sha256", "evaluation_started_at", "evaluation_deadline_at", "catalog_version", "catalog_sha256", "binding", "queries", "predecessor_event_sha256"],
+  "properties": {
+    "schema": {"const": "recovery-evidence-request/v2"},
+    "request_id": {"type": "string", "pattern": "^recovery-evidence-request:[0-9a-f]{64}$"},
+    "request_sha256": {"$ref": "#/$defs/digest"},
+    "incident_id": {"$ref": "#/$defs/id"},
+    "snapshot_id": {"type": "string", "pattern": "^recovery-snapshot:[0-9a-f]{64}$"},
+    "snapshot_sha256": {"$ref": "#/$defs/digest"},
+    "state_equivalence_sha256": {"$ref": "#/$defs/digest"},
+    "outcome_id": {"$ref": "#/$defs/id"},
+    "outcome_sha256": {"$ref": "#/$defs/digest"},
+    "evaluation_started_at": {"type": "string", "format": "date-time"},
+    "evaluation_deadline_at": {"type": "string", "format": "date-time"},
+    "catalog_version": {"const": "grafana-evidence-query-catalog/v2"},
+    "catalog_sha256": {"$ref": "#/$defs/digest"},
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prometheus_datasource_uid", "loki_datasource_uid", "tempo_datasource_uid"],
+      "properties": {
+        "prometheus_datasource_uid": {"$ref": "#/$defs/id"},
+        "loki_datasource_uid": {"$ref": "#/$defs/id"},
+        "tempo_datasource_uid": {"$ref": "#/$defs/id"}
+      }
+    },
+    "queries": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["catalog_key", "trace_id", "query_id"],
+        "properties": {
+          "catalog_key": {"enum": ["metric.simulator-action-observations", "log.simulator-action-events", "trace.simulator-action-command"]},
+          "trace_id": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^(?!0{32}$)[0-9a-f]{32}$"}]},
+          "query_id": {"type": "string", "pattern": "^recovery-query:[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "predecessor_event_sha256": {"$ref": "#/$defs/nullableDigest"}
+  }
+}

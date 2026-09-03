@@ -11,9 +11,12 @@ from typing import Any, cast
 import pytest
 from colortrace_api.demo_facade import INVESTIGATION_PROOF_SCHEMA, DemoFacadeError
 from colortrace_api.demo_workflow import CanonicalDemoWorkflow, GrafanaMcpAlertProbe
+from colortrace_investigation.contracts import ADAPTIVE_POLICY_CANONICAL_SHA256
 from colortrace_recovery import CHECK_NAMES, RecoveryError, canonical_json_bytes
 from colortrace_response_plans import ResponsePlanError
 from colortrace_vertical_slice import SliceContractError
+
+ADAPTIVE_POLICY_SHA256 = f"sha256:{ADAPTIVE_POLICY_CANONICAL_SHA256}"
 
 
 def _digest(value: Any) -> str:
@@ -119,8 +122,20 @@ def _plan_inputs() -> dict[str, Any]:
 
 def _packet(incident_id: str) -> dict[str, Any]:
     return {
+        "schema": "response-packet/v2",
         "packet_id": f"response-packet:{'1' * 64}",
         "derivation_sha256": f"sha256:{'1' * 64}",
+        "version": 2,
+        "policy_binding": {
+            "version": "bounded-adaptive-investigation/v1",
+            "sha256": ADAPTIVE_POLICY_SHA256,
+        },
+        "fixed_window": {
+            "start": "2026-08-23T11:50:00.000Z",
+            "end": "2026-08-23T12:00:00.000Z",
+            "frozen_at": "2026-08-23T12:00:00.000Z",
+        },
+        "evidence_ids": [f"sha256:{digit * 64}" for digit in "abc"],
         "status": "resolved",
         "candidate_plan": {"targets": []},
         "invocation_records": [
@@ -133,15 +148,16 @@ def _packet(incident_id: str) -> dict[str, Any]:
                 "framework": "google-adk",
                 "framework_version": "2.6.3",
                 "client_version": "2.17.0",
-                "prompt_version": f"{turn}/v1",
-                "policy_version": "bounded-investigation/v1",
+                "prompt_version": f"{turn}/v2",
+                "policy_version": "bounded-adaptive-investigation/v1",
+                "policy_sha256": ADAPTIVE_POLICY_SHA256,
                 "result_class": "accepted",
                 "tool_inventory_version": f"sha256:{'3' * 64}",
                 "normalized_input_sha256": f"sha256:{digit * 64}",
                 "input_evidence_ids": (
-                    []
+                    [f"sha256:{'a' * 64}"]
                     if turn == "evidence-selection"
-                    else [f"sha256:{evidence_digit * 64}" for evidence_digit in "abcd"]
+                    else [f"sha256:{evidence_digit * 64}" for evidence_digit in "abc"]
                 ),
                 "output_sha256": f"sha256:{digit * 64}",
                 "latency_ms": 25,
@@ -157,6 +173,39 @@ def _packet(incident_id: str) -> dict[str, Any]:
             }
             for digit, turn in (("4", "evidence-selection"), ("5", "response-drafting"))
         ],
+        "adaptive_trace": [
+            {
+                "sequence": index,
+                "selected_by": "policy" if index == 0 else "model",
+                "query_key": query_key,
+                "selection_request_sha256": _digest({"query_key": query_key}),
+                "selection_invocation_id": (None if index == 0 else f"model-invocation:{'4' * 64}"),
+                "selection_output_sha256": None if index == 0 else f"sha256:{'4' * 64}",
+                "evidence_id": f"sha256:{evidence_digit * 64}",
+                "disposition": "resolved" if index == 2 else "continue",
+                "reason_code": (
+                    "baseline-valid"
+                    if index == 0
+                    else ("sufficient-evidence" if index == 2 else "additional-evidence-required")
+                ),
+                "validator_result_id": (f"validation-result:{'6' * 64}" if index == 2 else None),
+            }
+            for index, (evidence_digit, query_key) in enumerate(
+                (
+                    ("a", "alert.rule"),
+                    ("b", "log.correlated-events"),
+                    ("c", "metric.worker-cohort"),
+                )
+            )
+        ],
+        "hypotheses": [
+            {
+                "ordinal": 1,
+                "hypothesis_key": "color-resource-drift",
+                "evidence_ids": [f"sha256:{'a' * 64}", f"sha256:{'b' * 64}"],
+            }
+        ],
+        "stop_reason": "sufficient-evidence",
         "deterministic_results": [
             {
                 "result_id": f"validation-result:{'6' * 64}",
@@ -200,7 +249,7 @@ def _packet(incident_id: str) -> dict[str, Any]:
             "model_turns": 2,
             "input_tokens": 200,
             "output_tokens": 30,
-            "mcp_attempts": 4,
+            "mcp_attempts": 3,
             "validator_calls": 6,
         },
         "unresolved_items": [],
@@ -219,13 +268,14 @@ def _evidence(incident_id: str) -> list[dict[str, Any]]:
     query_tools = (
         ("alert.rule", "alerting_manage_rules"),
         ("log.correlated-events", "query_loki_logs"),
-        ("metric.correlated-observations", "query_prometheus"),
-        ("trace.by-id", "tempo_get-trace"),
+        ("metric.worker-cohort", "query_prometheus"),
     )
     return [
         {
+            "schema": "evidence-envelope/v2",
             "evidence_id": f"sha256:{digit * 64}",
             "incident_id": incident_id,
+            "request_id": f"evidence-request:{'9' * 64}",
             "source": {
                 "kind": "grafana-mcp",
                 "server": "mcp-grafana",
@@ -241,7 +291,18 @@ def _evidence(incident_id: str) -> list[dict[str, Any]]:
                 "tool_annotations_sha256": "7" * 64,
                 "inventory_version": f"sha256:{'3' * 64}",
             },
-            "observation": {"query_key": query},
+            "observation": {
+                "kind": "grafana-mcp-query",
+                "query_key": query,
+                "catalog_version": "grafana-evidence-query-catalog/v2",
+                "catalog_sha256": f"sha256:{'8' * 64}",
+                "normalized_arguments": {"query": query},
+                "model_visible_arguments": ["query"],
+                "fixed_time_range": {
+                    "start": "2026-08-23T11:50:00.000Z",
+                    "end": "2026-08-23T12:00:00.000Z",
+                },
+            },
             "timing": {
                 "source_time": None,
                 "event_time": None,
@@ -250,8 +311,38 @@ def _evidence(incident_id: str) -> list[dict[str, Any]]:
             },
             "content_sha256": f"sha256:{digit * 64}",
             "display_excerpt": f"Current {query} evidence.",
+            "correlation_keys": (
+                {
+                    "fixture_id": "fixture-1",
+                    "run_id": "run-1",
+                    "worker_id": "B",
+                }
+                if query == "metric.worker-cohort"
+                else {
+                    "fixture_id": "fixture-1",
+                    "run_id": "run-1",
+                    "job_id": "job-b-02",
+                    "worker_id": "B",
+                    "artifact_id": "output-job-b-02",
+                    "trace_id": "1" * 32,
+                    "config_sha256": "2" * 64,
+                    "transform_id": "look/main/v1",
+                }
+            ),
+            "collection": {
+                "outcome": "collected",
+                "attempts": 1,
+                "retries": 0,
+                "error": None,
+            },
+            "trust": "untrusted-provider-data",
+            "producer_version": "grafana-mcp-evidence-adapter/v1",
+            "predecessor_event_sha256": (
+                None if digit == "a" else f"sha256:{chr(ord(digit) - 1) * 64}"
+            ),
+            "event_sha256": f"sha256:{digit * 64}",
         }
-        for digit, (query, tool) in zip("abcd", query_tools, strict=True)
+        for digit, (query, tool) in zip("abc", query_tools, strict=True)
     ]
 
 
@@ -810,6 +901,16 @@ def test_prepare_emits_once_and_projects_bounded_live_proof(tmp_path: Path) -> N
     assert len(incidents.alerts) == 1
     assert investigation.calls == [("task-demo", tmp_path / "fixture")]
     assert result["investigation"]["schema"] == INVESTIGATION_PROOF_SCHEMA
+    assert result["investigation"]["packet_schema"] == "response-packet/v2"
+    assert result["investigation"]["policy_binding"] == {
+        "version": "bounded-adaptive-investigation/v1",
+        "sha256": ADAPTIVE_POLICY_SHA256,
+    }
+    assert [item["query_key"] for item in result["investigation"]["adaptive_trace"]] == [
+        "alert.rule",
+        "log.correlated-events",
+        "metric.worker-cohort",
+    ]
     assert result["investigation"]["scope"] == {
         "state": "resolved",
         "affected_count": 4,
@@ -818,6 +919,11 @@ def test_prepare_emits_once_and_projects_bounded_live_proof(tmp_path: Path) -> N
     }
     assert {item["freshness"] for item in result["investigation"]["evidence"]} == {"current"}
     assert result["investigation"]["evidence"][0]["source"]["server"] == "mcp-grafana"
+    assert result["investigation"]["evidence"][0]["envelope_schema"] == ("evidence-envelope/v2")
+    assert (
+        result["investigation"]["evidence"][1]["predecessor_event_sha256"]
+        == (result["investigation"]["evidence"][0]["event_sha256"])
+    )
     assert result["investigation"]["evidence"][0]["timing"] == {
         "source_time": None,
         "event_time": None,

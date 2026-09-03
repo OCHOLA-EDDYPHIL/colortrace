@@ -97,7 +97,15 @@ describe("canonical API contract", () => {
       "#/components/schemas/HumanAuditEvent",
     );
     expect(canonicalContract.components.schemas.HumanAuditEvent.additionalProperties).toBe(false);
-    expect(canonicalContract.components.schemas.ResponsePacket.properties.status.enum).toEqual([
+    expect(canonicalContract.components.schemas.ResponsePacket.oneOf).toEqual([
+      { $ref: "#/components/schemas/ResponsePacketV1" },
+      { $ref: "#/components/schemas/ResponsePacketV2" },
+    ]);
+    expect(canonicalContract.components.schemas.ResponsePacketV1.properties.status.enum).toEqual([
+      "resolved",
+      "unresolved",
+    ]);
+    expect(canonicalContract.components.schemas.ResponsePacketV2.properties.status.enum).toEqual([
       "resolved",
       "unresolved",
     ]);
@@ -107,15 +115,17 @@ describe("canonical API contract", () => {
       "rejected",
       "unresolved",
     ]);
-    const packet = canonicalContract.components.schemas.ResponsePacket.properties;
-    expect(packet.deterministic_results.items.$ref).toBe(
+    const legacyPacket = canonicalContract.components.schemas.ResponsePacketV1.properties;
+    expect(legacyPacket.deterministic_results.items.$ref).toBe(
       "#/components/schemas/DeterministicResult",
     );
-    expect(packet.invocation_records.items.$ref).toBe("#/components/schemas/ModelInvocation");
-    expect(packet.unresolved_items.items.$ref).toBe("#/components/schemas/UnresolvedItem");
-    expect(packet.candidate_plan.oneOf[1]?.$ref).toBe("#/components/schemas/CandidatePlan");
-    expect(packet.model_advisory.oneOf[1]?.$ref).toBe("#/components/schemas/ModelAdvisory");
-    expect(packet.no_action_reason.oneOf[1]?.enum).toEqual([
+    expect(legacyPacket.invocation_records.items.$ref).toBe(
+      "#/components/schemas/ModelInvocationV1",
+    );
+    expect(legacyPacket.unresolved_items.items.$ref).toBe("#/components/schemas/UnresolvedItem");
+    expect(legacyPacket.candidate_plan.oneOf[1]?.$ref).toBe("#/components/schemas/CandidatePlan");
+    expect(legacyPacket.model_advisory.oneOf[1]?.$ref).toBe("#/components/schemas/ModelAdvisory");
+    expect(legacyPacket.no_action_reason.oneOf[1]?.enum).toEqual([
       "budget-exhausted",
       "contradictory-evidence",
       "evidence-unavailable",
@@ -128,11 +138,47 @@ describe("canonical API contract", () => {
       "validator-unresolved",
     ]);
 
+    const adaptivePacket = canonicalContract.components.schemas.ResponsePacketV2.properties;
+    expect(adaptivePacket.schema.const).toBe("response-packet/v2");
+    expect(adaptivePacket.policy_binding.$ref).toBe(
+      "#/components/schemas/InvestigationPolicyBinding",
+    );
+    expect(adaptivePacket.invocation_records.items.$ref).toBe(
+      "#/components/schemas/ModelInvocationV2",
+    );
+    expect(adaptivePacket.adaptive_trace.items.$ref).toBe(
+      "#/components/schemas/AdaptiveTraceEntry",
+    );
+    expect(adaptivePacket.hypotheses.items.$ref).toBe("#/components/schemas/AdaptiveHypothesis");
+    expect(adaptivePacket.stop_reason.pattern).toBe("^[a-z][a-z0-9-]{1,63}$");
+
     const replay = canonicalContract.components.schemas.IncidentReplay.properties;
     expect(replay.evidence.items.$ref).toBe("#/components/schemas/EvidenceEnvelope");
     expect(replay.evidence_batches.items.$ref).toBe("#/components/schemas/EvidenceBatch");
     expect(replay.validator_results.items.$ref).toBe("#/components/schemas/ValidatorResult");
     expect(replay.invocations.items.$ref).toBe("#/components/schemas/ModelInvocation");
+    expect(canonicalContract.components.schemas.ModelInvocation.oneOf).toEqual([
+      { $ref: "#/components/schemas/ModelInvocationV1" },
+      { $ref: "#/components/schemas/ModelInvocationV2" },
+    ]);
+    expect(canonicalContract.components.schemas.EvidenceEnvelope.oneOf).toEqual([
+      { $ref: "#/components/schemas/EvidenceEnvelopeV1" },
+      { $ref: "#/components/schemas/EvidenceEnvelopeV2" },
+    ]);
+    expect(canonicalContract.components.schemas.GrafanaQueryObservation.oneOf).toEqual([
+      { $ref: "#/components/schemas/GrafanaQueryObservationV1" },
+      { $ref: "#/components/schemas/GrafanaQueryObservationV2" },
+    ]);
+    expect(canonicalContract.components.schemas.EvidenceBatch.oneOf).toEqual([
+      { $ref: "#/components/schemas/EvidenceBatchV1" },
+      { $ref: "#/components/schemas/EvidenceBatchV2" },
+    ]);
+    expect(canonicalContract.components.schemas.EvidenceBatchV2.properties.schema.const).toBe(
+      "grafana-evidence-batch-result/v2",
+    );
+    expect(
+      canonicalContract.components.schemas.GrafanaQueryObservationV2.properties.query_key.enum,
+    ).toEqual(expect.arrayContaining(["metric.worker-cohort", "log.config-cohort"]));
     expect(canonicalContract.components.schemas.TraceEvent.properties.event_type.enum).toEqual([
       "api.intake.accepted",
       "task.queued",

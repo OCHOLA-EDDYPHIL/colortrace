@@ -12,8 +12,11 @@ the color pipeline.
 
 ## Decision
 
-ColorTrace collects a fixed alert baseline. Gemini may order the three remaining read-only queries
-from the Grafana MCP catalog and explain the returned observations. Its output remains advisory.
+ColorTrace first collects a required alert baseline. Gemini may then select one read-only query at
+a time from a fixed Grafana MCP catalog whose arguments remain server-owned. Each selection is
+bound to the returned observation and its deterministic disposition. The investigation stops when
+the evidence includes an exact signal and a cohort signal, or when its three-query budget is
+exhausted. Gemini may explain the accepted observations, but its output remains advisory.
 
 Deterministic validators establish the color-state facts, affected and protected scope, and
 inputs to the proposed plan. The response-plan service creates the exact action proposal. A human
@@ -27,7 +30,8 @@ no new action. Recovery still requires fresh deterministic verification and huma
 
 Gemini makes the investigation easier to understand while deterministic code and human intent
 remain in control. The model cannot authorize, dispatch, or close a recovery. Invalid or
-incomplete analysis stops safely before mutation.
+incomplete analysis stops safely before mutation. Persisting the bounded selection trace makes the
+adaptive path reviewable without exposing private model reasoning.
 
 The authority boundary is shown in
 [`docs/architecture/system-boundary.svg`](../architecture/system-boundary.svg).

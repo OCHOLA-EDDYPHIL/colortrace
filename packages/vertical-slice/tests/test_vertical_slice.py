@@ -8,6 +8,7 @@ import sqlite3
 import threading
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -32,6 +33,7 @@ from colortrace_vertical_slice import (
     validate_claim_events,
     validate_replay,
 )
+from colortrace_vertical_slice import contracts as slice_contracts
 from mcp import types
 
 NOW = datetime(2026, 8, 13, 12, 5, tzinfo=UTC)
@@ -53,6 +55,8 @@ HUMAN_AUDIT_TRIGGER_NAMES = (
     "incident_admissions_no_update",
     "incident_admissions_no_delete",
 )
+LEGACY_POLICY_VERSION = "bounded-investigation/v1"
+LEGACY_POLICY_SHA256 = "sha256:215622df9dc7b3628a4256d10ef4dc672b7f70324d17347fbdfaa35d7892d080"
 
 
 def instant(value: datetime) -> str:
@@ -125,26 +129,66 @@ def missing_resource_bundle(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 class FakeModel:
-    def __init__(self, *, delay: float = 0) -> None:
+    def __init__(
+        self,
+        *,
+        delay: float = 0,
+        adaptive_query_path: tuple[str, ...] = (
+            "log.correlated-events",
+            "metric.worker-cohort",
+        ),
+    ) -> None:
         self.delay = delay
+        self.adaptive_query_path = adaptive_query_path
 
     async def generate(self, call: ModelCall) -> ModelOutput:
         if self.delay:
             await asyncio.sleep(self.delay)
         if call.turn_kind == "evidence-selection":
-            if call.evidence_tool is not None:
-                for query_key in mcp_subject.QUERY_KEYS[1:]:
-                    await call.evidence_tool(cast(Any, query_key))
-            value = {
-                "schema": "model-selection/v1",
-                "hypothesis_keys": [
-                    "color-resource-drift",
-                    "nominal-config-drift",
-                    "unrelated-event",
-                    "worker-only-failure",
-                ],
-                "query_keys": list(mcp_subject.QUERY_KEYS),
-            }
+            schema_property = cast(
+                Mapping[str, Any],
+                cast(Mapping[str, Any], call.response_schema["properties"])["schema"],
+            )
+            if schema_property.get("const") == "model-selection/v2":
+                assert call.evidence_tool is not None
+                evidence_ids = [call.payload["alert_baseline"]["evidence_id"]]
+                query_keys = ["alert.rule"]
+                stop_reason = "incomplete-evidence"
+                for query_key in self.adaptive_query_path:
+                    result = await call.evidence_tool(cast(Any, query_key))
+                    query_keys.append(query_key)
+                    evidence_id = result.get("evidence_id")
+                    if isinstance(evidence_id, str):
+                        evidence_ids.append(evidence_id)
+                    stop_reason = cast(str, result["stop_reason"])
+                    if result["deterministic_disposition"] != "continue":
+                        break
+                value = {
+                    "schema": "model-selection/v2",
+                    "hypotheses": [
+                        {
+                            "ordinal": 1,
+                            "hypothesis_key": "color-resource-drift",
+                            "evidence_ids": evidence_ids,
+                        }
+                    ],
+                    "query_keys": query_keys,
+                    "stop_reason": stop_reason,
+                }
+            else:
+                if call.evidence_tool is not None:
+                    for query_key in mcp_subject.QUERY_KEYS[1:]:
+                        await call.evidence_tool(cast(Any, query_key))
+                value = {
+                    "schema": "model-selection/v1",
+                    "hypothesis_keys": [
+                        "color-resource-drift",
+                        "nominal-config-drift",
+                        "unrelated-event",
+                        "worker-only-failure",
+                    ],
+                    "query_keys": list(mcp_subject.QUERY_KEYS),
+                }
         else:
             value = {
                 "schema": "model-advisory/v1",
@@ -383,7 +427,14 @@ def worker(
     return VerticalSliceWorker(
         store,
         policy=policy,
-        model=FakeModel(delay=model_delay),
+        model=FakeModel(
+            delay=model_delay,
+            adaptive_query_path=(
+                ("trace.by-id", "metric.worker-cohort")
+                if missing_trace
+                else ("log.correlated-events", "metric.worker-cohort")
+            ),
+        ),
         evidence=FakeEvidence(correlation, missing_trace=missing_trace),
         validator=ColorStateValidatorGateway(),
         clock=lambda: NOW,
@@ -398,6 +449,11 @@ def drop_human_audit_v4(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE human_audit_heads")
 
 
+def drop_task_policy_v5(connection: sqlite3.Connection) -> None:
+    connection.execute("ALTER TABLE tasks DROP COLUMN policy_sha256")
+    connection.execute("ALTER TABLE tasks DROP COLUMN policy_version")
+
+
 def suspended_trigger(connection: sqlite3.Connection, name: str) -> str:
     row = connection.execute(
         "SELECT sql FROM sqlite_schema WHERE type = 'trigger' AND name = ?",
@@ -410,6 +466,7 @@ def suspended_trigger(connection: sqlite3.Connection, name: str) -> str:
 
 def downgrade_store_to_v1(database: Path) -> None:
     with sqlite3.connect(database) as connection:
+        drop_task_policy_v5(connection)
         drop_human_audit_v4(connection)
         connection.execute("DROP TABLE human_audit_events")
         connection.execute("DROP TABLE claim_events")
@@ -421,6 +478,7 @@ def downgrade_store_to_v1(database: Path) -> None:
 
 def downgrade_store_to_v2(database: Path) -> None:
     with sqlite3.connect(database) as connection:
+        drop_task_policy_v5(connection)
         drop_human_audit_v4(connection)
         connection.execute("DROP TABLE human_audit_events")
         connection.execute("UPDATE store_metadata SET schema_version = 2 WHERE singleton = 1")
@@ -428,8 +486,15 @@ def downgrade_store_to_v2(database: Path) -> None:
 
 def downgrade_store_to_v3(database: Path) -> None:
     with sqlite3.connect(database) as connection:
+        drop_task_policy_v5(connection)
         drop_human_audit_v4(connection)
         connection.execute("UPDATE store_metadata SET schema_version = 3 WHERE singleton = 1")
+
+
+def downgrade_store_to_v4(database: Path) -> None:
+    with sqlite3.connect(database) as connection:
+        drop_task_policy_v5(connection)
+        connection.execute("UPDATE store_metadata SET schema_version = 4 WHERE singleton = 1")
 
 
 def human_actor(*, subject: str = "operator@example.test") -> dict[str, str]:
@@ -454,7 +519,7 @@ def test_canonical_slice_persists_exact_replay_and_idempotent_duplicate(
 ) -> None:
     correlation = bundle_correlation(canonical_bundle)
     store = SqliteIncidentStore(tmp_path / "incidents.sqlite3")
-    api = VerticalSliceApi(store, clock=lambda: NOW)
+    api = VerticalSliceApi(store, policy=policy, clock=lambda: NOW)
     selected_worker = worker(store, policy, correlation)
     intake = alert(correlation)
 
@@ -472,7 +537,7 @@ def test_canonical_slice_persists_exact_replay_and_idempotent_duplicate(
     assert replay["packet"] == packet
     assert replay["alert"] == intake
     assert len(replay["evidence_batches"]) == 1
-    assert len(replay["evidence"]) == 4
+    assert len(replay["evidence"]) == 3
     assert (
         replay["validator_results"][0]["result_id"]
         == packet["deterministic_results"][0]["result_id"]
@@ -487,6 +552,16 @@ def test_canonical_slice_persists_exact_replay_and_idempotent_duplicate(
     ]
     assert {event["trace_id"] for event in replay["trace_events"]} == {correlation["trace_id"]}
     validate_replay(replay)
+    tampered_packet = json.loads(json.dumps(packet))
+    (
+        tampered_packet["adaptive_trace"][1]["evidence_id"],
+        tampered_packet["adaptive_trace"][2]["evidence_id"],
+    ) = (
+        tampered_packet["adaptive_trace"][2]["evidence_id"],
+        tampered_packet["adaptive_trace"][1]["evidence_id"],
+    )
+    with pytest.raises(SliceContractError, match="adaptive-trace-evidence-binding"):
+        slice_contracts._validate_adaptive_trace_evidence(tampered_packet, replay["evidence"])
     workspace = store.incident_workspace("incident-001")
     assert workspace == {
         "schema": "incident-workspace-source/v1",
@@ -529,7 +604,7 @@ def test_missing_trace_finishes_unresolved_and_replays_provenance(
 ) -> None:
     correlation = bundle_correlation(canonical_bundle)
     store = SqliteIncidentStore(tmp_path / "missing-trace.sqlite3")
-    api = VerticalSliceApi(store, clock=lambda: NOW)
+    api = VerticalSliceApi(store, policy=policy, clock=lambda: NOW)
     packet = asyncio.run(
         run_vertical_slice(
             api=api,
@@ -546,13 +621,13 @@ def test_missing_trace_finishes_unresolved_and_replays_provenance(
     assert "evidence-unavailable" in {item["code"] for item in packet["unresolved_items"]}
     replay = api.replay("incident-missing-trace")
     assert replay["packet"] == packet
-    assert len(replay["evidence"]) == 4
+    assert len(replay["evidence"]) == 2
     assert replay["validator_results"] == []
     validate_replay(replay)
     summary = store.list_incidents(limit=1, cursor=None, now=instant(NOW))["items"][0]
     assert summary["status"] == "unresolved"
     assert summary["delayed"] is False
-    assert summary["missing"] == ["evidence-unavailable"]
+    assert summary["missing"] == ["evidence-unavailable", "incomplete-capability-set"]
 
 
 def test_incident_list_uses_stable_cursor_and_explicit_pending_states(
@@ -619,7 +694,7 @@ def test_unresolved_validator_claims_remain_bound_in_persisted_replay(
 ) -> None:
     correlation = bundle_correlation(missing_resource_bundle)
     store = SqliteIncidentStore(tmp_path / "unresolved-validator.sqlite3")
-    api = VerticalSliceApi(store, clock=lambda: NOW)
+    api = VerticalSliceApi(store, policy=policy, clock=lambda: NOW)
 
     packet = asyncio.run(
         run_vertical_slice(
@@ -652,7 +727,7 @@ def test_service_timeout_is_durable_and_clean_reset_is_exact(
 ) -> None:
     correlation = bundle_correlation(canonical_bundle)
     store = SqliteIncidentStore(tmp_path / "timeout.sqlite3")
-    api = VerticalSliceApi(store, clock=lambda: NOW)
+    api = VerticalSliceApi(store, policy=policy, clock=lambda: NOW)
     packet = asyncio.run(
         run_vertical_slice(
             api=api,
@@ -677,6 +752,9 @@ def test_service_timeout_is_durable_and_clean_reset_is_exact(
             "evidence_ids": packet["evidence_ids"],
         }
     ]
+    assert packet["stop_reason"] == "service-timeout"
+    assert packet["adaptive_trace"][-1]["disposition"] == "unresolved"
+    assert packet["adaptive_trace"][-1]["reason_code"] == packet["stop_reason"]
     validate_replay(api.replay("incident-timeout"))
 
     reset = api.reset()
@@ -698,7 +776,7 @@ def test_late_drafting_timeout_preserves_completed_provenance(
 ) -> None:
     correlation = bundle_correlation(canonical_bundle)
     store = SqliteIncidentStore(tmp_path / "late-timeout.sqlite3")
-    api = VerticalSliceApi(store, clock=lambda: NOW)
+    api = VerticalSliceApi(store, policy=policy, clock=lambda: NOW)
     model = LateDraftingTimeoutModel()
     validator_result = ColorStateValidatorGateway().validate(
         canonical_bundle, incident_id="incident-late-timeout"
@@ -725,6 +803,9 @@ def test_late_drafting_timeout_preserves_completed_provenance(
 
     assert model.turns == ["evidence-selection", "response-drafting"]
     assert packet["status"] == "unresolved"
+    assert packet["stop_reason"] == "sufficient-evidence"
+    assert packet["adaptive_trace"][-1]["disposition"] == "resolved"
+    assert packet["adaptive_trace"][-1]["reason_code"] == packet["stop_reason"]
     assert len(packet["evidence_ids"]) >= 4
     assert len(packet["deterministic_results"]) == 1
     assert len(replay["validator_results"]) == 1
@@ -739,7 +820,7 @@ def test_late_drafting_timeout_preserves_completed_provenance(
     assert packet["budget_use"]["output_tokens"] == 100
     assert packet["budget_use"]["unavailable_input_tokens_reserved"] > 0
     assert packet["budget_use"]["unavailable_output_tokens_reserved"] == 1792
-    assert packet["budget_use"]["mcp_attempts"] == 4
+    assert packet["budget_use"]["mcp_attempts"] == 3
     assert packet["budget_use"]["validator_calls"] == 5
     assert packet["budget_use"]["elapsed_ms"] >= 900
     assert "drafting" in packet["state_history"]
@@ -754,7 +835,7 @@ def test_duplicate_identity_conflict_and_oracle_path_fail_closed(
 ) -> None:
     correlation = bundle_correlation(canonical_bundle)
     store = SqliteIncidentStore(tmp_path / "conflict.sqlite3")
-    api = VerticalSliceApi(store, clock=lambda: NOW)
+    api = VerticalSliceApi(store, policy=policy, clock=lambda: NOW)
     first = alert(correlation, incident_id="incident-conflict")
     api.accept_alert(first)
     changed = {**first, "alert_id": "different-alert"}
@@ -762,7 +843,7 @@ def test_duplicate_identity_conflict_and_oracle_path_fail_closed(
         api.accept_alert(changed)
 
     oracle_store = SqliteIncidentStore(tmp_path / "oracle.sqlite3")
-    oracle_api = VerticalSliceApi(oracle_store, clock=lambda: NOW)
+    oracle_api = VerticalSliceApi(oracle_store, policy=policy, clock=lambda: NOW)
     oracle_packet = asyncio.run(
         run_vertical_slice(
             api=oracle_api,
@@ -784,7 +865,7 @@ def test_replay_detects_persisted_packet_tampering(
     correlation = bundle_correlation(canonical_bundle)
     database = tmp_path / "tamper.sqlite3"
     store = SqliteIncidentStore(database)
-    api = VerticalSliceApi(store, clock=lambda: NOW)
+    api = VerticalSliceApi(store, policy=policy, clock=lambda: NOW)
     asyncio.run(
         run_vertical_slice(
             api=api,
@@ -851,6 +932,134 @@ def test_claim_heartbeat_extends_lease_and_exact_expiry_reclaims(
         store.renew_claim(first, now=instant(NOW + timedelta(seconds=41)))
 
 
+def test_task_policy_is_bound_at_creation_and_exact_claim(tmp_path: Path) -> None:
+    database = tmp_path / "policy-bound-task.sqlite3"
+    store = SqliteIncidentStore(database)
+    policy_version = "bounded-adaptive-investigation/v1"
+    policy_sha256 = "sha256:" + "a" * 64
+    task_id = store.accept_alert(
+        alert(
+            {
+                "fixture_id": "fixture-policy-bound",
+                "run_id": "run-policy-bound",
+                "job_id": "job-policy-bound",
+                "worker_id": "worker-policy-bound",
+                "artifact_id": "artifact-policy-bound",
+                "trace_id": "a" * 32,
+                "config_sha256": "b" * 64,
+                "transform_id": "transform-policy-bound",
+            },
+            incident_id="incident-policy-bound",
+        ),
+        now=instant(NOW),
+        policy_version=policy_version,
+        policy_sha256=policy_sha256,
+    ).task_id
+
+    with sqlite3.connect(database) as connection:
+        stored = connection.execute(
+            "SELECT policy_version, policy_sha256 FROM tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+    assert stored == (policy_version, policy_sha256)
+
+    claimed = store.claim_task(
+        task_id,
+        owner="worker:policy-bound",
+        now=instant(NOW),
+        policy_version=policy_version,
+        policy_sha256=policy_sha256,
+    )
+    assert claimed.policy_version == policy_version
+    assert claimed.policy_sha256 == policy_sha256
+
+
+@pytest.mark.parametrize(
+    ("claim_version", "claim_sha256", "error_code"),
+    [
+        (
+            "unknown-investigation/v99",
+            "sha256:" + "a" * 64,
+            "task-policy-generation-reset-required",
+        ),
+        (
+            "bounded-investigation/v1",
+            "sha256:" + "b" * 64,
+            "task-policy-digest-reset-required",
+        ),
+    ],
+)
+def test_task_policy_mismatch_fails_before_claim_mutation(
+    claim_version: str,
+    claim_sha256: str,
+    error_code: str,
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / f"{error_code}.sqlite3"
+    store = SqliteIncidentStore(database)
+    intake = alert(correlation, incident_id=f"incident-{error_code}")
+    task_id = store.accept_alert(
+        intake,
+        now=instant(NOW),
+    ).task_id
+
+    with pytest.raises(SliceContractError, match=error_code):
+        store.accept_alert(
+            intake,
+            now=instant(NOW + timedelta(seconds=1)),
+            policy_version=claim_version,
+            policy_sha256=claim_sha256,
+        )
+    with pytest.raises(SliceContractError, match=error_code):
+        store.claim_task(
+            task_id,
+            owner="worker:wrong-policy",
+            now=instant(NOW),
+            policy_version=claim_version,
+            policy_sha256=claim_sha256,
+        )
+
+    view = store.incident_view(f"incident-{error_code}")
+    assert view["incident"]["status"] == "queued"
+    assert view["task"]["status"] == "queued"
+    assert store.claim_history(task_id) == []
+
+
+def test_worker_policy_generation_mismatch_makes_no_downstream_call(
+    policy: InvestigationPolicy,
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    store = SqliteIncidentStore(tmp_path / "worker-policy-mismatch.sqlite3")
+    task_id = store.accept_alert(
+        alert(correlation, incident_id="incident-worker-policy-mismatch"),
+        now=instant(NOW),
+    ).task_id
+    mismatched = replace(
+        policy,
+        version="unknown-investigation/v99",
+        digest="sha256:" + "a" * 64,
+    )
+
+    with patch("colortrace_vertical_slice.service.InvestigationWorkflow") as workflow:
+        with pytest.raises(
+            SliceContractError,
+            match="task-policy-generation-reset-required",
+        ):
+            asyncio.run(
+                worker(store, mismatched, correlation).execute(
+                    task_id, bundle_root=canonical_bundle
+                )
+            )
+        workflow.assert_not_called()
+
+    assert store.incident_view("incident-worker-policy-mismatch")["incident"]["status"] == "queued"
+    assert store.claim_history(task_id) == []
+
+
 def test_expired_claim_has_one_atomic_concurrent_reclaimer(
     canonical_bundle: Path,
     tmp_path: Path,
@@ -900,7 +1109,7 @@ def test_concurrent_duplicate_returns_packet_when_completion_wins_claim_race(
     database = tmp_path / "completion-duplicate-race.sqlite3"
     primary_store = SqliteIncidentStore(database)
     duplicate_store = SqliteIncidentStore(database)
-    api = VerticalSliceApi(primary_store, clock=lambda: NOW)
+    api = VerticalSliceApi(primary_store, policy=policy, clock=lambda: NOW)
     task_id = api.accept_alert(
         alert(correlation, incident_id="incident-completion-duplicate-race")
     )["task_id"]
@@ -943,7 +1152,7 @@ def test_graceful_cancellation_expires_claim_for_immediate_reclaim(
 ) -> None:
     correlation = bundle_correlation(canonical_bundle)
     store = SqliteIncidentStore(tmp_path / "cancelled-claim.sqlite3")
-    api = VerticalSliceApi(store, clock=lambda: NOW)
+    api = VerticalSliceApi(store, policy=policy, clock=lambda: NOW)
     task_id = api.accept_alert(alert(correlation, incident_id="incident-cancelled-claim"))[
         "task_id"
     ]
@@ -975,7 +1184,13 @@ def test_graceful_cancellation_expires_claim_for_immediate_reclaim(
         "claim.cancelled",
     ]
     assert history[-1]["lease_expires_at"] == instant(NOW)
-    reclaimed = store.claim_task(task_id, owner="worker:replacement", now=instant(NOW))
+    reclaimed = store.claim_task(
+        task_id,
+        owner="worker:replacement",
+        now=instant(NOW),
+        policy_version=policy.version,
+        policy_sha256=policy.digest,
+    )
     assert reclaimed.claim_generation == 2
 
 
@@ -987,7 +1202,7 @@ def test_stale_completion_is_fenced_without_partial_persistence(
     correlation = bundle_correlation(canonical_bundle)
     intake = alert(correlation, incident_id="incident-stale-completion")
     source = SqliteIncidentStore(tmp_path / "stale-source.sqlite3")
-    source_api = VerticalSliceApi(source, clock=lambda: NOW)
+    source_api = VerticalSliceApi(source, policy=policy, clock=lambda: NOW)
     packet = asyncio.run(
         run_vertical_slice(
             api=source_api,
@@ -1110,7 +1325,7 @@ def test_running_v1_claim_migrates_and_reclaims_at_exact_expiry(
             "SELECT principal_kind, actor_sha256 FROM incident_admissions "
             "WHERE incident_id = 'incident-running-v1'"
         ).fetchone()
-    assert version == 4
+    assert version == 5
     assert trace_count == 3
     assert admission == ("service", None)
 
@@ -1120,7 +1335,7 @@ def test_v2_migration_adds_zero_human_head_without_changing_incident(
     tmp_path: Path,
 ) -> None:
     correlation = bundle_correlation(canonical_bundle)
-    database = tmp_path / "v2-to-v4.sqlite3"
+    database = tmp_path / "v2-to-v5.sqlite3"
     store = SqliteIncidentStore(database)
     store.accept_alert(
         alert(correlation, incident_id="incident-v2-migration"),
@@ -1148,7 +1363,7 @@ def test_v2_migration_adds_zero_human_head_without_changing_incident(
             "SELECT principal_kind, actor_sha256 FROM incident_admissions "
             "WHERE incident_id = 'incident-v2-migration'"
         ).fetchone()
-    assert version == 4
+    assert version == 5
     assert table == (1,)
     assert head == (0, None)
     assert admission == ("service", None)
@@ -1159,7 +1374,7 @@ def test_v3_migration_derives_existing_human_chain_head(
     tmp_path: Path,
 ) -> None:
     correlation = bundle_correlation(canonical_bundle)
-    database = tmp_path / "v3-to-v4.sqlite3"
+    database = tmp_path / "v3-to-v5.sqlite3"
     store = SqliteIncidentStore(database)
     store.accept_alert(
         alert(correlation, incident_id="incident-v3-migration"),
@@ -1184,9 +1399,44 @@ def test_v3_migration_derives_existing_human_chain_head(
             "SELECT principal_kind, actor_sha256 FROM incident_admissions "
             "WHERE incident_id = 'incident-v3-migration'"
         ).fetchone()
-    assert version == 4
+    assert version == 5
     assert head == (1, event["event_sha256"])
     assert admission == ("human", canonical_digest(human_actor()))
+
+
+def test_v4_migration_binds_existing_tasks_to_exact_legacy_policy(
+    canonical_bundle: Path,
+    tmp_path: Path,
+) -> None:
+    correlation = bundle_correlation(canonical_bundle)
+    database = tmp_path / "v4-to-v5.sqlite3"
+    store = SqliteIncidentStore(database)
+    task_id = store.accept_alert(
+        alert(correlation, incident_id="incident-v4-migration"),
+        now=instant(NOW),
+        policy_version="discarded-newer-policy/v1",
+        policy_sha256="sha256:" + "f" * 64,
+    ).task_id
+    downgrade_store_to_v4(database)
+
+    migrated = SqliteIncidentStore(database)
+
+    with sqlite3.connect(database) as connection:
+        version = connection.execute(
+            "SELECT schema_version FROM store_metadata WHERE singleton = 1"
+        ).fetchone()[0]
+        binding = connection.execute(
+            "SELECT policy_version, policy_sha256 FROM tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+    assert version == 5
+    assert binding == (LEGACY_POLICY_VERSION, LEGACY_POLICY_SHA256)
+    claimed = migrated.claim_task(
+        task_id,
+        owner="worker:legacy-after-migration",
+        now=instant(NOW),
+    )
+    assert (claimed.policy_version, claimed.policy_sha256) == binding
 
 
 def test_human_admission_event_is_atomic_bound_and_duplicate_idempotent(
@@ -1719,7 +1969,16 @@ def test_v1_migration_rolls_back_schema_and_version_on_failure(
             "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'claim_events'"
         ).fetchone()
     assert version == 1
-    assert not {"claim_owner", "claim_generation", "claim_expires_at"} & columns
+    assert (
+        not {
+            "claim_owner",
+            "claim_generation",
+            "claim_expires_at",
+            "policy_version",
+            "policy_sha256",
+        }
+        & columns
+    )
     assert claim_table is None
 
 
@@ -1731,7 +1990,7 @@ def test_completed_v1_migration_preserves_replay_bytes_and_duplicate_idempotency
     correlation = bundle_correlation(canonical_bundle)
     database = tmp_path / "completed-v1.sqlite3"
     store = SqliteIncidentStore(database)
-    api = VerticalSliceApi(store, clock=lambda: NOW)
+    api = VerticalSliceApi(store, policy=policy, clock=lambda: NOW)
     intake = alert(correlation, incident_id="incident-completed-v1")
     packet = asyncio.run(
         run_vertical_slice(
@@ -1747,7 +2006,7 @@ def test_completed_v1_migration_preserves_replay_bytes_and_duplicate_idempotency
     downgrade_store_to_v1(database)
 
     migrated = SqliteIncidentStore(database)
-    migrated_api = VerticalSliceApi(migrated, clock=lambda: NOW)
+    migrated_api = VerticalSliceApi(migrated, policy=policy, clock=lambda: NOW)
     after = json.dumps(
         migrated_api.replay("incident-completed-v1"), sort_keys=True, separators=(",", ":")
     ).encode()
@@ -1776,20 +2035,26 @@ def test_openapi_preserves_intake_and_packet_contract_surfaces() -> None:
 
     assert schemas["AlertIntake"]["required"] == alert_schema["required"]
     assert set(schemas["AlertIntake"]["properties"]) == set(alert_schema["properties"])
-    assert schemas["ResponsePacket"]["required"] == packet_schema["required"]
-    assert set(schemas["ResponsePacket"]["properties"]) == set(packet_schema["properties"])
+    assert schemas["ResponsePacket"] == {
+        "oneOf": [
+            {"$ref": "#/components/schemas/ResponsePacketV1"},
+            {"$ref": "#/components/schemas/ResponsePacketV2"},
+        ]
+    }
+    assert schemas["ResponsePacketV1"]["required"] == packet_schema["required"]
+    assert set(schemas["ResponsePacketV1"]["properties"]) == set(packet_schema["properties"])
     assert (
-        schemas["ResponsePacket"]["properties"]["status"] == packet_schema["properties"]["status"]
+        schemas["ResponsePacketV1"]["properties"]["status"] == packet_schema["properties"]["status"]
     )
     assert (
         schemas["Claim"]["properties"]["state"]
         == packet_schema["$defs"]["claim"]["properties"]["state"]
     )
-    packet_properties = schemas["ResponsePacket"]["properties"]
+    packet_properties = schemas["ResponsePacketV1"]["properties"]
     assert packet_properties["deterministic_results"]["items"]["$ref"].endswith(
         "/DeterministicResult"
     )
-    assert packet_properties["invocation_records"]["items"]["$ref"].endswith("/ModelInvocation")
+    assert packet_properties["invocation_records"]["items"]["$ref"].endswith("/ModelInvocationV1")
     assert packet_properties["unresolved_items"]["items"]["$ref"].endswith("/UnresolvedItem")
     replay_properties = schemas["IncidentReplay"]["properties"]
     assert replay_properties["evidence"]["items"]["$ref"].endswith("/EvidenceEnvelope")

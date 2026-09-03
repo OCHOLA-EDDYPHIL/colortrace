@@ -5,6 +5,7 @@ import {
   DemoApiError,
   type DemoInvestigationProof,
   type DemoInvestigationProofV3,
+  type DemoInvestigationProofV4,
   type DemoPlanCommand,
   type DemoPlanTarget,
   type DemoPhase,
@@ -669,11 +670,30 @@ function CommandSummary({
 }
 
 const EVIDENCE_PRESENTATION = {
-  "metric.correlated-observations": { label: "Metrics", order: 0 },
-  "log.correlated-events": { label: "Logs", order: 1 },
-  "trace.by-id": { label: "Traces", order: 2 },
-  "alert.rule": { label: "Alert", order: 3 },
+  "alert.rule": { label: "Alert baseline", order: 0 },
+  "metric.correlated-observations": { label: "Exact metrics", order: 1 },
+  "log.correlated-events": { label: "Exact logs", order: 2 },
+  "trace.by-id": { label: "Exact trace", order: 3 },
+  "metric.worker-cohort": { label: "Worker cohort", order: 4 },
+  "log.config-cohort": { label: "Configuration cohort", order: 5 },
 } as const;
+
+const HYPOTHESIS_LABELS: Readonly<
+  Record<DemoInvestigationProofV4["hypotheses"][number]["hypothesis_key"], string>
+> = {
+  "color-resource-drift": "Color resource drift",
+  "nominal-config-drift": "Declared configuration drift",
+  "unrelated-event": "Unrelated event",
+  "worker-only-failure": "Worker-only failure",
+};
+
+function evidenceAnchor(evidenceId: string): string {
+  return `shot-evidence-${evidenceId.replace("sha256:", "")}`;
+}
+
+function shortEvidenceId(evidenceId: string): string {
+  return `…${evidenceId.slice(-10)}`;
+}
 
 function EvidenceRecord({
   evidence,
@@ -683,7 +703,10 @@ function EvidenceRecord({
   const presentation =
     EVIDENCE_PRESENTATION[evidence.query_key as keyof typeof EVIDENCE_PRESENTATION];
   return (
-    <article data-evidence-source={presentation.label.toLowerCase()}>
+    <article
+      data-evidence-source={presentation.label.toLowerCase()}
+      id={evidenceAnchor(evidence.evidence_id)}
+    >
       <div className="shot-evidence-heading">
         <h3>{presentation.label}</h3>
         <span>Current</span>
@@ -713,13 +736,22 @@ function EvidenceRecord({
 function EvidenceAuthorityReview({
   investigation,
 }: {
-  readonly investigation: DemoInvestigationProofV3;
+  readonly investigation: DemoInvestigationProofV3 | DemoInvestigationProofV4;
 }) {
-  const evidence = [...investigation.evidence].sort(
-    (left, right) =>
-      EVIDENCE_PRESENTATION[left.query_key as keyof typeof EVIDENCE_PRESENTATION].order -
-      EVIDENCE_PRESENTATION[right.query_key as keyof typeof EVIDENCE_PRESENTATION].order,
+  const adaptive =
+    investigation.schema === "colortrace-demo-investigation-proof/v4" ? investigation : null;
+  const adaptiveOrder = new Map(
+    adaptive?.adaptive_trace.map((entry) => [entry.evidence_id, entry.sequence]) ?? [],
   );
+  const evidence = [...investigation.evidence].sort((left, right) => {
+    const leftOrder = adaptiveOrder.get(left.evidence_id);
+    const rightOrder = adaptiveOrder.get(right.evidence_id);
+    if (leftOrder !== undefined && rightOrder !== undefined) return leftOrder - rightOrder;
+    return (
+      EVIDENCE_PRESENTATION[left.query_key as keyof typeof EVIDENCE_PRESENTATION].order -
+      EVIDENCE_PRESENTATION[right.query_key as keyof typeof EVIDENCE_PRESENTATION].order
+    );
+  });
   const acceptedInvocations = investigation.model_invocations.filter(
     (invocation) => invocation.result_class === "accepted",
   );
@@ -730,7 +762,9 @@ function EvidenceAuthorityReview({
     (invocation) => invocation.turn_kind === "response-drafting",
   );
   const highlightedEvidence =
-    evidence.find((item) => item.query_key === "metric.correlated-observations") ?? evidence[0];
+    evidence.find((item) => item.query_key === "metric.correlated-observations") ??
+    evidence.find((item) => item.query_key !== "alert.rule") ??
+    evidence[0];
   const boundedReadCount = evidence.filter((item) => item.query_key !== "alert.rule").length;
   return (
     <div className="shot-authority-review">
@@ -738,46 +772,122 @@ function EvidenceAuthorityReview({
         <div className="shot-section-heading">
           <div>
             <p className="shot-eyebrow">Bounded agent investigation</p>
-            <h2 id="shot-live-evidence-title">Gemini gathered evidence; validators decided</h2>
+            <h2 id="shot-live-evidence-title">
+              {adaptive === null
+                ? "Gemini gathered evidence; validators decided"
+                : "Gemini selected evidence; validators decided"}
+            </h2>
           </div>
           <span className="shot-authority shot-authority--source">
             {evidenceSelection?.model ?? "Gemini"} · Google ADK
           </span>
         </div>
         <p className="shot-section-copy">
-          The Gemini agent drove {boundedReadCount} bounded, read-only Grafana queries and drafted
-          the cited advisory. Deterministic code—not model prose—established the cause and scope.
+          {adaptive === null
+            ? `The Gemini agent drove ${boundedReadCount} bounded, read-only Grafana queries and drafted the cited advisory.`
+            : `Gemini chose ${boundedReadCount} permitted, read-only Grafana queries from the fixed catalogue.`}{" "}
+          Deterministic code—not model prose—established the cause and scope.
         </p>
         <ol aria-label="Decision authority chain" className="shot-authority-chain">
           <li>
             <span>1</span>
             <div>
-              <strong>{evidenceSelection?.model ?? "Gemini"}</strong>
+              <strong>
+                {adaptive === null ? (evidenceSelection?.model ?? "Gemini") : "Gemini selected"}
+              </strong>
               <small>{boundedReadCount} bounded Grafana reads</small>
             </div>
           </li>
           <li>
             <span>2</span>
             <div>
-              <strong>Official Grafana MCP</strong>
+              <strong>{adaptive === null ? "Official Grafana MCP" : "Grafana returned"}</strong>
               <small>{evidence.length} current evidence views</small>
             </div>
           </li>
           <li>
             <span>3</span>
             <div>
-              <strong>Deterministic validators</strong>
-              <small>Cause and scope authority</small>
+              <strong>
+                {adaptive === null ? "Deterministic validators" : "Validators decided"}
+              </strong>
+              <small>
+                {adaptive === null ? "Cause and scope authority" : "Sufficient evidence"}
+              </small>
             </div>
           </li>
           <li>
             <span>4</span>
             <div>
-              <strong>Human review</strong>
+              <strong>{adaptive === null ? "Human review" : "Human authorizes"}</strong>
               <small>Approve or reject the exact plan</small>
             </div>
           </li>
         </ol>
+
+        {adaptive === null ? null : (
+          <div className="shot-adaptive-summary">
+            <div className="shot-adaptive-outcome">
+              <span className="shot-adaptive-copy">Bounded adaptive policy</span>
+              <strong>{adaptive.stop_reason.replaceAll("-", " ")}</strong>
+            </div>
+            <ol aria-label="Adaptive evidence path" className="shot-adaptive-path">
+              {adaptive.adaptive_trace.map((entry) => {
+                const item =
+                  entry.evidence_id === null
+                    ? undefined
+                    : evidence.find((candidate) => candidate.evidence_id === entry.evidence_id);
+                const label =
+                  item === undefined
+                    ? "No evidence returned"
+                    : EVIDENCE_PRESENTATION[item.query_key as keyof typeof EVIDENCE_PRESENTATION]
+                        .label;
+                return (
+                  <li data-disposition={entry.disposition} key={entry.sequence}>
+                    <span aria-hidden="true">{entry.sequence + 1}</span>
+                    <div>
+                      <strong>
+                        {entry.selected_by === "model" ? "Gemini selected" : "Policy baseline"}:{" "}
+                        {label}
+                      </strong>
+                      <small className="shot-adaptive-copy">
+                        Grafana returned{" "}
+                        {entry.evidence_id === null ? (
+                          "no evidence"
+                        ) : (
+                          <a href={`#${evidenceAnchor(entry.evidence_id)}`}>
+                            <code>{shortEvidenceId(entry.evidence_id)}</code>
+                          </a>
+                        )}
+                        {" · "}Validators {entry.disposition}
+                      </small>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+            <ol aria-label="Bounded hypotheses" className="shot-hypothesis-list">
+              {adaptive.hypotheses.map((hypothesis) => (
+                <li key={hypothesis.ordinal}>
+                  <strong>
+                    {hypothesis.ordinal}. {HYPOTHESIS_LABELS[hypothesis.hypothesis_key]}
+                  </strong>
+                  <span className="shot-adaptive-copy">
+                    Evidence{" "}
+                    {hypothesis.evidence_ids.map((evidenceId, index) => (
+                      <span key={evidenceId}>
+                        {index === 0 ? "" : ", "}
+                        <a href={`#${evidenceAnchor(evidenceId)}`}>
+                          <code>{shortEvidenceId(evidenceId)}</code>
+                        </a>
+                      </span>
+                    ))}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
 
         <div className="shot-agent-evidence">
           {highlightedEvidence === undefined ? null : (
@@ -2779,7 +2889,8 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
               </div>
             </section>
 
-            {run.investigation?.schema === "colortrace-demo-investigation-proof/v3" ? (
+            {run.investigation?.schema === "colortrace-demo-investigation-proof/v3" ||
+            run.investigation?.schema === "colortrace-demo-investigation-proof/v4" ? (
               <EvidenceAuthorityReview investigation={run.investigation} />
             ) : null}
 
