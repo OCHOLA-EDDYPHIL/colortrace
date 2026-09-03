@@ -144,21 +144,22 @@ RUN test "$(go version)" = "go version go1.26.6 linux/amd64" \
     && tar --extract --gzip --file /tmp/grafana-source.tar.gz --directory /build
 WORKDIR /build/grafana-56cd3e9288d8255fecebe5d05b48d191f50674b5
 RUN go mod edit -require=google.golang.org/grpc@v1.83.1 \
+        -require=github.com/apache/thrift@v0.24.0 \
     && GODEBUG=http2client=0 go mod download all \
-    && test "$(sha256sum go.mod | cut -d ' ' -f 1)" = "24668ba208a38fc20b9730e301a8d5707fc9e06e3e44ea0b8adf07150eaeb22e" \
+    && test "$(sha256sum go.mod | cut -d ' ' -f 1)" = "bea427ff01a6296224cb6d1073ad90048b539b000b03000ee8c0fe632346dfe9" \
     && test "$(sha256sum go.sum | cut -d ' ' -f 1)" = "427145a729468448c575f9be2dff937eea6e06c864356bc01e0ef240a2defc0a" \
     && go mod verify \
     && GODEBUG=http2client=0 go list -mod=readonly -m all > /tmp/grafana.modules \
-    && test "$(sha256sum /tmp/grafana.modules | cut -d ' ' -f 1)" = "bbee7e757e480f28ce7dd89bd2437fe2a68a405285118fb25237c365f7a0a5d5"
+    && test "$(sha256sum /tmp/grafana.modules | cut -d ' ' -f 1)" = "5737a66ef2d66446df9e1f36594dfdaf27e195a772b81819d27d9fab470044aa"
 RUN --network=none go build -p=2 -trimpath -buildvcs=false -mod=readonly -tags=oss \
         -ldflags="-s -w -buildid= -X main.version=13.2.1 -X main.commit=56cd3e9288d8255fecebe5d05b48d191f50674b5 -X main.buildBranch=HEAD -X main.buildstamp=1787934994" \
         -o /usr/local/bin/grafana ./pkg/cmd/grafana \
     && test "$(/usr/local/bin/grafana --version)" = "grafana version 13.2.1" \
-    && echo "2e858933132cd272de5af08e15fab6fac8d43fb154802fd438705768b60af301  /usr/local/bin/grafana" | sha256sum -c -
+    && echo "14d6ce1cec4e5c2c4acfb4771e8987824a289c35f43dab91ebd6bfa875ff74b1  /usr/local/bin/grafana" | sha256sum -c -
 
 FROM grafana-core-build AS grafana-core-verified
 COPY config/observability/images.lock.json /tmp/observability-images.lock.json
-RUN grep -F '"binary_sha256": "2e858933132cd272de5af08e15fab6fac8d43fb154802fd438705768b60af301"' /tmp/observability-images.lock.json
+RUN grep -F '"binary_sha256": "14d6ce1cec4e5c2c4acfb4771e8987824a289c35f43dab91ebd6bfa875ff74b1"' /tmp/observability-images.lock.json
 
 FROM grafana/grafana@sha256:5e655f9a271aadf00d1db513f64c927af9319b0ce673359bba5072413c0da5fd AS grafana-upstream-plugins
 
