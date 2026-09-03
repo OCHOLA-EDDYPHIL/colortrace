@@ -1,6 +1,6 @@
 {
-  "schema": "investigation-policy/v1",
-  "policy_version": "bounded-investigation/v1",
+  "schema": "investigation-policy/v2",
+  "policy_version": "bounded-adaptive-investigation/v1",
   "claim_policy": "deterministic-claim/v1",
   "scope_policy": "single-causal-resource-scope/v1",
   "budgets": {
@@ -24,12 +24,17 @@
     "maximum_clock_skew_seconds": 5,
     "operational_freshness_seconds": 300
   },
-  "required_query_keys": [
-    "alert.rule",
+  "baseline_query_key": "alert.rule",
+  "exact_query_keys": [
     "log.correlated-events",
     "metric.correlated-observations",
     "trace.by-id"
   ],
+  "cohort_query_keys": [
+    "metric.worker-cohort",
+    "log.config-cohort"
+  ],
+  "maximum_post_baseline_calls": 3,
   "hypothesis_keys": [
     "color-resource-drift",
     "nominal-config-drift",

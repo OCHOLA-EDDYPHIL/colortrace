@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/model-selection-v2.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "hypotheses", "query_keys", "stop_reason"],
+  "properties": {
+    "schema": {"const": "model-selection/v2"},
+    "hypotheses": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ordinal", "hypothesis_key", "evidence_ids"],
+        "properties": {
+          "ordinal": {"type": "integer", "minimum": 1, "maximum": 4},
+          "hypothesis_key": {
+            "enum": [
+              "color-resource-drift",
+              "nominal-config-drift",
+              "unrelated-event",
+              "worker-only-failure"
+            ]
+          },
+          "evidence_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          }
+        }
+      }
+    },
+    "query_keys": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "alert.rule",
+          "log.correlated-events",
+          "metric.correlated-observations",
+          "trace.by-id",
+          "metric.worker-cohort",
+          "log.config-cohort"
+        ]
+      }
+    },
+    "stop_reason": {
+      "enum": [
+        "sufficient-evidence",
+        "incomplete-evidence",
+        "invalid-evidence",
+        "contradictory-evidence",
+        "stale-evidence",
+        "evidence-unavailable",
+        "evidence-budget-exhausted",
+        "validator-unresolved",
+        "invalid-model-request",
+        "extra-after-terminal"
+      ]
+    }
+  }
+}

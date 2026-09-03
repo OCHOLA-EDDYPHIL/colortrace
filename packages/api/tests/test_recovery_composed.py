@@ -914,18 +914,26 @@ class DeterministicCanonicalAlertSource:
 class DeterministicInvestigationModel:
     async def generate(self, call: ModelCall) -> ModelOutput:
         if call.turn_kind == "evidence-selection":
+            evidence_ids = [cast(str, call.payload["alert_baseline"]["evidence_id"])]
             if call.evidence_tool is not None:
-                for query_key in grafana_adapter.QUERY_KEYS[1:]:
-                    await call.evidence_tool(cast(Any, query_key))
+                for query_key in ("log.correlated-events", "metric.worker-cohort"):
+                    evidence = await call.evidence_tool(cast(Any, query_key))
+                    evidence_ids.append(cast(str, evidence["evidence_id"]))
             body = {
-                "schema": "model-selection/v1",
-                "hypothesis_keys": [
-                    "color-resource-drift",
-                    "nominal-config-drift",
-                    "unrelated-event",
-                    "worker-only-failure",
+                "schema": "model-selection/v2",
+                "hypotheses": [
+                    {
+                        "ordinal": 1,
+                        "hypothesis_key": "color-resource-drift",
+                        "evidence_ids": evidence_ids,
+                    }
                 ],
-                "query_keys": list(grafana_adapter.QUERY_KEYS),
+                "query_keys": [
+                    "alert.rule",
+                    "log.correlated-events",
+                    "metric.worker-cohort",
+                ],
+                "stop_reason": "sufficient-evidence",
             }
         else:
             body = {
@@ -1196,11 +1204,11 @@ def test_demo_facade_composes_alert_through_immutable_closure_receipt(tmp_path: 
     )
     incident_database = tmp_path / "incidents.sqlite3"
     incident_store = SqliteIncidentStore(incident_database)
-    incidents = VerticalSliceApi(incident_store, clock=clock)
     policy = InvestigationPolicy.load(
         CATALOG_PATH.parents[1] / "investigation" / "investigation-policy.json",
         CATALOG_PATH.parents[1] / "investigation" / "model-profile.json",
     )
+    incidents = VerticalSliceApi(incident_store, policy=policy, clock=clock)
     investigation = VerticalSliceWorker(
         incident_store,
         policy=policy,
@@ -1362,7 +1370,7 @@ def test_demo_facade_composes_alert_through_immutable_closure_receipt(tmp_path: 
         assert started["incident_id"] == incident_id
         assert started["phase"] == "awaiting-approval"
         assert alert_source.emitted[-1] == incidents.replay(incident_id)["alert"]
-        assert len(started["investigation"]["evidence"]) == 4
+        assert len(started["investigation"]["evidence"]) == 3
         assert len(started["investigation"]["model_invocations"]) == 2
         assert Counter(
             name for name, _arguments in investigation_session.calls[investigation_offset:]
@@ -1370,7 +1378,6 @@ def test_demo_facade_composes_alert_through_immutable_closure_receipt(tmp_path: 
             "alerting_manage_rules": 1,
             "query_loki_logs": 1,
             "query_prometheus": 1,
-            "tempo_get-trace": 1,
         }
         plan_review = response_plans.review(incident_id)
         assert plan_review["state"] == "pending"
@@ -1446,7 +1453,7 @@ def test_demo_facade_composes_alert_through_immutable_closure_receipt(tmp_path: 
         assert len(alert_source.emitted) == 2
         assert recovery_factory.opened == 2
         assert recovery_factory.closed == 2
-        assert len(investigation_session.calls) == 8
+        assert len(investigation_session.calls) == 6
         assert len(recovery_session.calls) == 14
         assert facade.receipt(DEMO_RUN_IDS[0]) == first_receipt
         with sqlite3.connect(simulator_database) as connection:

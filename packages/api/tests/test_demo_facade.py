@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import sqlite3
 import threading
@@ -19,6 +20,7 @@ from colortrace_api import (
     INVESTIGATION_PROOF_SCHEMA,
     INVESTIGATION_PROOF_SCHEMA_V1,
     INVESTIGATION_PROOF_SCHEMA_V2,
+    INVESTIGATION_PROOF_SCHEMA_V3,
     PREPARATION_SCHEMA,
     RESET_REQUEST_SCHEMA,
     RUN_REQUEST_SCHEMA,
@@ -34,6 +36,7 @@ from colortrace_api import (
 )
 from colortrace_api.runtime import _runtime_lifespan
 from colortrace_api.simulator_runtime import LocalSimulatorRuntime
+from colortrace_investigation.contracts import ADAPTIVE_POLICY_CANONICAL_SHA256
 from colortrace_recovery import CHECK_NAMES, RecoveryError, canonical_json_bytes, document_sha256
 from colortrace_response_plans import ResponsePlanError
 from colortrace_simulator import DispatchIdentity
@@ -81,6 +84,7 @@ WORKFLOW_ID = f"recovery-workflow:{'4' * 64}"
 WORKFLOW_VERSION = 2
 PACKET_ID = f"recovery-packet:{'5' * 64}"
 PACKET_SHA256 = f"sha256:{'5' * 64}"
+ADAPTIVE_POLICY_SHA256 = f"sha256:{ADAPTIVE_POLICY_CANONICAL_SHA256}"
 
 
 class ManualClock:
@@ -347,60 +351,131 @@ class ProofWorkflow(FakeWorkflow):
         query_tools = (
             ("alert.rule", "alerting_manage_rules"),
             ("log.correlated-events", "query_loki_logs"),
-            ("metric.correlated-observations", "query_prometheus"),
-            ("trace.by-id", "tempo_get-trace"),
+            ("metric.worker-cohort", "query_prometheus"),
         )
+        model_invocations: list[dict[str, Any]] = []
+        for digit, turn in (
+            ("8", "evidence-selection"),
+            ("9", "response-drafting"),
+        ):
+            body = {
+                "schema": "model-tool-invocation/v2",
+                "incident_id": request["incident_id"],
+                "turn_kind": turn,
+                "attempt": 1,
+                "model": "gemini-3.5-flash",
+                "location": "global",
+                "framework": "google-adk",
+                "framework_version": "2.6.3",
+                "client_version": "2.17.0",
+                "prompt_version": f"{turn}/v2",
+                "policy_version": "bounded-adaptive-investigation/v1",
+                "policy_sha256": ADAPTIVE_POLICY_SHA256,
+                "tool_inventory_version": f"sha256:{'7' * 64}",
+                "normalized_input_sha256": f"sha256:{digit * 64}",
+                "input_evidence_ids": (
+                    [f"sha256:{'a' * 64}"]
+                    if turn == "evidence-selection"
+                    else [f"sha256:{index * 64}" for index in "abc"]
+                ),
+                "output_sha256": f"sha256:{digit * 64}",
+                "latency_ms": 25,
+                "usage": {
+                    "input_tokens": 50,
+                    "output_tokens": 10,
+                    "model_calls": 1,
+                    "unobserved_model_calls": 0,
+                },
+                "result_class": "accepted",
+                "error_code": None,
+                "trace_id": digit * 32,
+            }
+            derivation = document_sha256(body)
+            model_invocations.append(
+                {
+                    **{
+                        key: value
+                        for key, value in body.items()
+                        if key not in {"schema", "incident_id", "tool_inventory_version"}
+                    },
+                    "inventory_sha256": body["tool_inventory_version"],
+                    "invocation_id": (f"model-invocation:{derivation.removeprefix('sha256:')}"),
+                    "derivation_sha256": derivation,
+                }
+            )
         result["investigation"] = {
             "schema": INVESTIGATION_PROOF_SCHEMA,
+            "packet_schema": "response-packet/v2",
+            "packet_version": 2,
             "packet_id": f"response-packet:{'6' * 64}",
             "packet_sha256": f"sha256:{'6' * 64}",
+            "packet_evidence_ids": [f"sha256:{index * 64}" for index in "abcd"],
+            "incident_id": request["incident_id"],
             "status": "resolved",
+            "fixed_window": {
+                "start": "2026-08-23T11:50:00.000Z",
+                "end": "2026-08-23T12:00:00.000Z",
+                "frozen_at": "2026-08-23T12:00:00.000Z",
+            },
+            "policy_binding": {
+                "version": "bounded-adaptive-investigation/v1",
+                "sha256": ADAPTIVE_POLICY_SHA256,
+            },
+            "adaptive_trace": [
+                {
+                    "sequence": index,
+                    "selected_by": "policy" if index == 0 else "model",
+                    "query_key": query,
+                    "selection_request_sha256": document_sha256({"query_key": query}),
+                    "selection_invocation_id": (
+                        None if index == 0 else model_invocations[0]["invocation_id"]
+                    ),
+                    "selection_output_sha256": (
+                        None if index == 0 else model_invocations[0]["output_sha256"]
+                    ),
+                    "evidence_id": f"sha256:{evidence_digit * 64}",
+                    "disposition": "resolved" if index == 2 else "continue",
+                    "reason_code": (
+                        "baseline-valid"
+                        if index == 0
+                        else (
+                            "sufficient-evidence" if index == 2 else "additional-evidence-required"
+                        )
+                    ),
+                    "validator_result_id": (
+                        f"validation-result:{'e' * 64}" if index == 2 else None
+                    ),
+                }
+                for index, (evidence_digit, (query, _tool)) in enumerate(
+                    zip("abc", query_tools, strict=True)
+                )
+            ],
+            "hypotheses": [
+                {
+                    "ordinal": 1,
+                    "hypothesis_key": "color-resource-drift",
+                    "evidence_ids": [f"sha256:{'a' * 64}", f"sha256:{'b' * 64}"],
+                },
+                {
+                    "ordinal": 2,
+                    "hypothesis_key": "worker-only-failure",
+                    "evidence_ids": [f"sha256:{'c' * 64}"],
+                },
+            ],
+            "stop_reason": "sufficient-evidence",
             "adjudication": {
                 "model_role": "evidence-selection-and-advisory-drafting",
                 "model_authority": "advisory-only",
                 "validator_role": "deterministic-claim-adjudication",
                 "decision_mode": "deterministic-validation",
             },
-            "model_invocations": [
-                {
-                    "invocation_id": f"model-invocation:{digit * 64}",
-                    "turn_kind": turn,
-                    "attempt": 1,
-                    "model": "gemini-3.5-flash",
-                    "location": "global",
-                    "framework": "google-adk",
-                    "framework_version": "2.6.3",
-                    "client_version": "2.17.0",
-                    "prompt_version": f"{turn}/v1",
-                    "policy_version": "bounded-investigation/v1",
-                    "result_class": "accepted",
-                    "inventory_sha256": f"sha256:{'7' * 64}",
-                    "normalized_input_sha256": f"sha256:{digit * 64}",
-                    "input_evidence_ids": (
-                        []
-                        if turn == "evidence-selection"
-                        else [f"sha256:{index * 64}" for index in "abcd"]
-                    ),
-                    "output_sha256": f"sha256:{digit * 64}",
-                    "latency_ms": 25,
-                    "usage": {
-                        "input_tokens": 50,
-                        "output_tokens": 10,
-                        "model_calls": 1,
-                        "unobserved_model_calls": 0,
-                    },
-                    "error_code": None,
-                    "trace_id": digit * 32,
-                    "derivation_sha256": f"sha256:{digit * 64}",
-                }
-                for digit, turn in (
-                    ("8", "evidence-selection"),
-                    ("9", "response-drafting"),
-                )
-            ],
+            "model_invocations": model_invocations,
             "evidence": [
                 {
                     "evidence_id": f"sha256:{index * 64}",
+                    "envelope_schema": "evidence-envelope/v2",
+                    "incident_id": request["incident_id"],
+                    "request_id": f"evidence-request:{'5' * 64}",
                     "query_key": query,
                     "tool": tool,
                     "inventory_sha256": f"sha256:{'7' * 64}",
@@ -423,13 +498,55 @@ class ProofWorkflow(FakeWorkflow):
                         "tool_annotations_sha256": "7" * 64,
                         "inventory_version": f"sha256:{'7' * 64}",
                     },
+                    "observation": {
+                        "kind": "grafana-mcp-query",
+                        "query_key": query,
+                        "catalog_version": "grafana-evidence-query-catalog/v2",
+                        "catalog_sha256": f"sha256:{'5' * 64}",
+                        "normalized_arguments": {"query": query},
+                        "model_visible_arguments": ["query"],
+                        "fixed_time_range": {
+                            "start": "2026-08-23T11:50:00.000Z",
+                            "end": "2026-08-23T12:00:00.000Z",
+                        },
+                    },
                     "timing": {
                         "source_time": None,
                         "event_time": None,
                         "retrieved_at": "2026-08-23T12:00:00.000Z",
                     },
+                    "correlation_keys": (
+                        {
+                            "fixture_id": "fixture-1",
+                            "run_id": "run-1",
+                            "worker_id": "B",
+                        }
+                        if query == "metric.worker-cohort"
+                        else {
+                            "fixture_id": "fixture-1",
+                            "run_id": "run-1",
+                            "job_id": "job-b-02",
+                            "worker_id": "B",
+                            "artifact_id": "output-job-b-02",
+                            "trace_id": "1" * 32,
+                            "config_sha256": "b" * 64,
+                            "transform_id": "look/main/v1",
+                        }
+                    ),
+                    "collection": {
+                        "outcome": "collected",
+                        "attempts": 1,
+                        "retries": 0,
+                        "error": None,
+                    },
+                    "trust": "untrusted-provider-data",
+                    "producer_version": "grafana-mcp-evidence-adapter/v1",
+                    "predecessor_event_sha256": (
+                        None if index == "a" else f"sha256:{chr(ord(index) - 1) * 64}"
+                    ),
+                    "event_sha256": f"sha256:{index * 64}",
                 }
-                for index, (query, tool) in zip("abcd", query_tools, strict=True)
+                for index, (query, tool) in zip("abc", query_tools, strict=True)
             ],
             "comparison": {
                 "renders": [
@@ -509,7 +626,7 @@ class ProofWorkflow(FakeWorkflow):
                 "model_turns": 2,
                 "input_tokens": 100,
                 "output_tokens": 20,
-                "mcp_attempts": 4,
+                "mcp_attempts": 3,
                 "validator_calls": 6,
             },
             "model_advisory": {
@@ -584,6 +701,29 @@ class NonCurrentEvidenceWorkflow(ProofWorkflow):
         return result
 
 
+class AlternateAdaptivePathWorkflow(ProofWorkflow):
+    def preparation(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        result = super().preparation(request)
+        investigation = cast(dict[str, Any], result["investigation"])
+        evidence = cast(list[dict[str, Any]], investigation["evidence"])
+        selected = evidence[-1]
+        selected["query_key"] = "log.config-cohort"
+        selected["tool"] = "query_loki_logs"
+        cast(dict[str, Any], selected["source"])["tool"] = "query_loki_logs"
+        observation = cast(dict[str, Any], selected["observation"])
+        observation["query_key"] = "log.config-cohort"
+        observation["normalized_arguments"] = {"query": "log.config-cohort"}
+        selected["correlation_keys"] = {
+            "fixture_id": "fixture-1",
+            "run_id": "run-1",
+            "config_sha256": "b" * 64,
+        }
+        trace = cast(list[dict[str, Any]], investigation["adaptive_trace"])
+        trace[-1]["query_key"] = "log.config-cohort"
+        trace[-1]["selection_request_sha256"] = document_sha256({"query_key": "log.config-cohort"})
+        return result
+
+
 class MalformedReviewWorkflow(ProofWorkflow):
     def __init__(self, visuals: Mapping[str, Mapping[str, str]], *, mutation: str) -> None:
         super().__init__(visuals)
@@ -604,7 +744,7 @@ class MalformedReviewWorkflow(ProofWorkflow):
         return result
 
 
-class MalformedV3Workflow(ProofWorkflow):
+class MalformedV4Workflow(ProofWorkflow):
     def __init__(self, visuals: Mapping[str, Mapping[str, str]], *, mutation: str) -> None:
         super().__init__(visuals)
         self.mutation = mutation
@@ -630,6 +770,8 @@ class MalformedV3Workflow(ProofWorkflow):
         elif self.mutation == "invocation-id":
             invocations[1]["invocation_id"] = invocations[0]["invocation_id"]
             invocations[1]["derivation_sha256"] = invocations[0]["derivation_sha256"]
+        elif self.mutation == "invocation-latency":
+            invocations[0]["latency_ms"] += 1
         elif self.mutation == "attempt-sequence":
             invocations[1]["attempt"] = 2
         elif self.mutation == "invocation-order":
@@ -641,8 +783,36 @@ class MalformedV3Workflow(ProofWorkflow):
             invocations[1]["input_evidence_ids"] = [f"sha256:{'f' * 64}"]
         elif self.mutation == "future-source-time":
             cast(dict[str, Any], evidence[0]["timing"])["source_time"] = "2026-08-23T12:00:01.000Z"
-        else:
+        elif self.mutation == "missing-inventory":
             invocations[0]["inventory_sha256"] = None
+        elif self.mutation == "policy-binding":
+            cast(dict[str, Any], investigation["policy_binding"])["sha256"] = f"sha256:{'f' * 64}"
+        elif self.mutation == "invocation-policy":
+            invocations[0]["policy_sha256"] = f"sha256:{'f' * 64}"
+        elif self.mutation == "trace-evidence":
+            cast(list[dict[str, Any]], investigation["adaptive_trace"])[1]["evidence_id"] = (
+                f"sha256:{'f' * 64}"
+            )
+        elif self.mutation == "trace-disposition":
+            cast(list[dict[str, Any]], investigation["adaptive_trace"])[-1]["disposition"] = (
+                "continue"
+            )
+        elif self.mutation == "envelope-chain":
+            evidence[1]["predecessor_event_sha256"] = f"sha256:{'f' * 64}"
+        elif self.mutation == "envelope-event":
+            evidence[1]["event_sha256"] = f"sha256:{'f' * 64}"
+        elif self.mutation == "packet-binding":
+            investigation["packet_sha256"] = f"sha256:{'f' * 64}"
+        elif self.mutation == "packet-evidence":
+            cast(list[str], investigation["packet_evidence_ids"]).remove(
+                cast(str, evidence[1]["evidence_id"])
+            )
+        elif self.mutation == "missing-plan":
+            del investigation["plan"]
+        elif self.mutation == "legacy-schema":
+            investigation["schema"] = INVESTIGATION_PROOF_SCHEMA_V3
+        else:  # pragma: no cover - the parameter list is exhaustive
+            raise AssertionError(f"unsupported mutation: {self.mutation}")
         return result
 
 
@@ -1293,7 +1463,11 @@ def test_approve_and_reject_race_has_one_decision_winner(tmp_path: Path) -> None
 
 @pytest.mark.parametrize(
     "proof_schema",
-    [INVESTIGATION_PROOF_SCHEMA_V1, INVESTIGATION_PROOF_SCHEMA_V2],
+    [
+        INVESTIGATION_PROOF_SCHEMA_V1,
+        INVESTIGATION_PROOF_SCHEMA_V2,
+        INVESTIGATION_PROOF_SCHEMA_V3,
+    ],
 )
 def test_persisted_legacy_investigation_remains_byte_readable_and_rejectable(
     tmp_path: Path,
@@ -1315,7 +1489,7 @@ def test_persisted_legacy_investigation_remains_byte_readable_and_rejectable(
     }
     preparation = workflow.preparation(preparation_request)
     current = preparation["investigation"]
-    shared_fields = (
+    shared_fields: tuple[str, ...] = (
         "packet_id",
         "packet_sha256",
         "status",
@@ -1323,47 +1497,93 @@ def test_persisted_legacy_investigation_remains_byte_readable_and_rejectable(
         "scope",
         "budget_use",
     )
-    if proof_schema == INVESTIGATION_PROOF_SCHEMA_V2:
+    if proof_schema in {INVESTIGATION_PROOF_SCHEMA_V2, INVESTIGATION_PROOF_SCHEMA_V3}:
         shared_fields += ("adjudication", "comparison", "claims")
+    if proof_schema == INVESTIGATION_PROOF_SCHEMA_V3:
+        shared_fields += ("model_advisory", "finalized_at")
     legacy = {key: current[key] for key in shared_fields}
-    legacy["model_invocations"] = [
-        {
-            key: item[key]
-            for key in (
-                "invocation_id",
-                "turn_kind",
-                "model",
-                "framework",
-                "result_class",
-                "inventory_sha256",
-                "output_sha256",
-                "trace_id",
-            )
-        }
-        for item in current["model_invocations"]
-    ]
+    v3_invocations = []
+    for item in current["model_invocations"]:
+        selected = {key: value for key, value in item.items() if key != "policy_sha256"}
+        selected["prompt_version"] = f"{item['turn_kind']}/v1"
+        selected["policy_version"] = "bounded-investigation/v1"
+        v3_invocations.append(selected)
+    legacy["model_invocations"] = (
+        v3_invocations
+        if proof_schema == INVESTIGATION_PROOF_SCHEMA_V3
+        else [
+            {
+                key: item[key]
+                for key in (
+                    "invocation_id",
+                    "turn_kind",
+                    "model",
+                    "framework",
+                    "result_class",
+                    "inventory_sha256",
+                    "output_sha256",
+                    "trace_id",
+                )
+            }
+            for item in v3_invocations
+        ]
+    )
     legacy["schema"] = proof_schema
-    legacy["evidence"] = [
+    v3_evidence = [
         {
             key: value
             for key, value in item.items()
             if key
-            not in (
-                {"source", "timing"}
-                if proof_schema == INVESTIGATION_PROOF_SCHEMA_V2
-                else {
-                    "display_excerpt",
-                    "display_excerpt_truncated",
-                    "source",
-                    "timing",
-                }
-            )
+            in {
+                "evidence_id",
+                "query_key",
+                "tool",
+                "inventory_sha256",
+                "content_sha256",
+                "freshness",
+                "display_excerpt",
+                "display_excerpt_truncated",
+                "source",
+                "timing",
+            }
         }
         for item in current["evidence"]
     ]
+    v3_evidence[2]["query_key"] = "metric.correlated-observations"
+    trace_evidence = copy.deepcopy(v3_evidence[2])
+    trace_evidence.update(
+        evidence_id=f"sha256:{'d' * 64}",
+        query_key="trace.by-id",
+        tool="tempo_get-trace",
+        content_sha256=f"sha256:{'d' * 64}",
+    )
+    trace_evidence["source"]["tool"] = "tempo_get-trace"
+    v3_evidence.append(trace_evidence)
+    legacy["evidence"] = (
+        v3_evidence
+        if proof_schema == INVESTIGATION_PROOF_SCHEMA_V3
+        else [
+            {
+                key: value
+                for key, value in item.items()
+                if key
+                not in (
+                    {"source", "timing"}
+                    if proof_schema == INVESTIGATION_PROOF_SCHEMA_V2
+                    else {
+                        "display_excerpt",
+                        "display_excerpt_truncated",
+                        "source",
+                        "timing",
+                    }
+                )
+            }
+            for item in v3_evidence
+        ]
+    )
     legacy["plan"] = (
         current["plan"]
-        if proof_schema == INVESTIGATION_PROOF_SCHEMA_V2
+        if proof_schema in {INVESTIGATION_PROOF_SCHEMA_V2, INVESTIGATION_PROOF_SCHEMA_V3}
         else {
             key: current["plan"][key]
             for key in ("status", "version", "plan_sha256", "target_sha256")
@@ -1406,15 +1626,18 @@ def test_persisted_legacy_investigation_remains_byte_readable_and_rejectable(
     )
     stored = facade.get(RUN_IDS[0])
 
-    assert stored["schema"] == RUN_SCHEMA_V1
-    assert "timeline" not in stored
+    expected_run_schema = (
+        RUN_SCHEMA if proof_schema == INVESTIGATION_PROOF_SCHEMA_V3 else RUN_SCHEMA_V1
+    )
+    assert stored["schema"] == expected_run_schema
+    assert ("timeline" in stored) is (expected_run_schema == RUN_SCHEMA)
     assert stored["investigation"]["schema"] == proof_schema
     rejected = facade.reject(
         RUN_IDS[0],
         _rejection({**stored, "approval_nonce": NONCE}),
     )
-    assert rejected["schema"] == RUN_SCHEMA_V1
-    assert "timeline" not in rejected
+    assert rejected["schema"] == expected_run_schema
+    assert ("timeline" in rejected) is (expected_run_schema == RUN_SCHEMA)
     assert rejected["phase"] == "unresolved"
     assert workflow.execute_calls == []
     with sqlite3.connect(tmp_path / "demo.sqlite3") as connection:
@@ -1520,11 +1743,20 @@ def test_bounded_proofs_are_persisted_projected_and_receipted(tmp_path: Path) ->
         "safe_count": 3,
         "unknown_count": 0,
     }
+    assert started["investigation"]["policy_binding"] == {
+        "version": "bounded-adaptive-investigation/v1",
+        "sha256": ADAPTIVE_POLICY_SHA256,
+    }
+    assert started["investigation"]["stop_reason"] == "sufficient-evidence"
+    assert [item["disposition"] for item in started["investigation"]["adaptive_trace"]] == [
+        "continue",
+        "continue",
+        "resolved",
+    ]
     assert [item["query_key"] for item in started["investigation"]["evidence"]] == [
         "alert.rule",
         "log.correlated-events",
-        "metric.correlated-observations",
-        "trace.by-id",
+        "metric.worker-cohort",
     ]
     assert started["investigation"]["comparison"] == {
         "renders": [
@@ -1569,6 +1801,10 @@ def test_bounded_proofs_are_persisted_projected_and_receipted(tmp_path: Path) ->
         "investigation",
     ]
     assert all(item["sha256"].startswith("sha256:") for item in receipt["proofs"])
+    investigation_receipt = next(
+        item for item in receipt["proofs"] if item["stage"] == "investigation"
+    )
+    assert investigation_receipt["sha256"] == document_sha256(started["investigation"])
 
     with sqlite3.connect(tmp_path / "demo.sqlite3") as connection:
         with pytest.raises(sqlite3.IntegrityError, match="demo-proofs-immutable"):
@@ -1576,6 +1812,51 @@ def test_bounded_proofs_are_persisted_projected_and_receipted(tmp_path: Path) ->
                 "UPDATE demo_proofs SET proof_sha256 = ? WHERE run_id = ?",
                 (f"sha256:{'f' * 64}", RUN_IDS[0]),
             )
+
+
+def test_v4_accepts_the_alternate_permitted_cohort_path(tmp_path: Path) -> None:
+    visual_root = tmp_path / "visuals"
+    visual_root.mkdir()
+    workflow = AlternateAdaptivePathWorkflow(_write_visuals(visual_root))
+    facade, _workflow, _recovery, _clock, _root = _facade(tmp_path, workflow=workflow)
+
+    started = _start(facade)
+
+    assert [item["query_key"] for item in started["investigation"]["evidence"]] == [
+        "alert.rule",
+        "log.correlated-events",
+        "log.config-cohort",
+    ]
+    assert started["phase"] == "awaiting-approval"
+
+
+def test_stored_v4_proof_digest_tampering_fails_closed(tmp_path: Path) -> None:
+    visual_root = tmp_path / "visuals"
+    visual_root.mkdir()
+    workflow = ProofWorkflow(_write_visuals(visual_root))
+    facade, _workflow, _recovery, clock, _root = _facade(tmp_path, workflow=workflow)
+    started = _start(facade)
+    tampered = copy.deepcopy(started["investigation"])
+    tampered["evidence"][0]["display_excerpt"] += " tampered"
+
+    database = tmp_path / "demo.sqlite3"
+    with sqlite3.connect(database) as connection:
+        trigger = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+            "AND name = 'demo_proofs_immutable'"
+        ).fetchone()
+        assert trigger is not None
+        connection.execute("DROP TRIGGER demo_proofs_immutable")
+        connection.execute(
+            "UPDATE demo_proofs SET proof_document = ? "
+            "WHERE run_id = ? AND stage = 'investigation'",
+            (canonical_json_bytes(tampered), RUN_IDS[0]),
+        )
+        connection.execute(cast(str, trigger[0]))
+
+    with pytest.raises(DemoFacadeError, match="stored-demo-proof-invalid"):
+        facade.get(RUN_IDS[0])
+    assert clock.value == datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
 
 
 def test_proofless_preparation_is_rejected_and_terminalized(tmp_path: Path) -> None:
@@ -1648,21 +1929,32 @@ def test_preparation_rejects_unsafe_or_unbound_review_content(
         "advisory-citation",
         "advisory-digest",
         "invocation-id",
+        "invocation-latency",
         "attempt-sequence",
         "invocation-order",
         "narrated-claim",
         "invocation-citation",
         "future-source-time",
         "missing-inventory",
+        "policy-binding",
+        "invocation-policy",
+        "trace-evidence",
+        "trace-disposition",
+        "envelope-chain",
+        "envelope-event",
+        "packet-binding",
+        "packet-evidence",
+        "missing-plan",
+        "legacy-schema",
     ],
 )
-def test_preparation_rejects_malformed_v3_provenance_and_usage(
+def test_preparation_rejects_malformed_v4_provenance_trace_and_bindings(
     tmp_path: Path,
     mutation: str,
 ) -> None:
     visual_root = tmp_path / "visuals"
     visual_root.mkdir()
-    workflow = MalformedV3Workflow(_write_visuals(visual_root), mutation=mutation)
+    workflow = MalformedV4Workflow(_write_visuals(visual_root), mutation=mutation)
     facade, _workflow, _recovery, _clock, _root = _facade(tmp_path, workflow=workflow)
 
     with pytest.raises(DemoFacadeError, match="demo-investigation-proof-invalid"):

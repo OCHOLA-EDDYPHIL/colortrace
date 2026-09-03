@@ -121,7 +121,11 @@ class FakeModel:
     def __init__(
         self,
         *,
-        selected: tuple[str, ...] = mcp_subject.QUERY_KEYS,
+        selected: tuple[str, ...] = (
+            "alert.rule",
+            "log.correlated-events",
+            "metric.worker-cohort",
+        ),
         hypotheses: tuple[str, ...] = (
             "color-resource-drift",
             "nominal-config-drift",
@@ -161,24 +165,57 @@ class FakeModel:
             if self.failures:
                 raise self.failures.pop(0)
             if call.turn_kind == "evidence-selection":
+                response_schema = cast(Mapping[str, Any], call.response_schema["properties"])
+                selection_schema = cast(Mapping[str, Any], response_schema["schema"])["const"]
+                tool_results: list[Mapping[str, Any]] = []
                 if call.evidence_tool is not None and self.invalid_selection is None:
                     query_keys = self.tool_calls or tuple(
                         query_key for query_key in self.selected if query_key != "alert.rule"
                     )
                     if self.parallel_tool_calls:
-                        await asyncio.gather(
-                            *(call.evidence_tool(cast(Any, key)) for key in query_keys[:2])
+                        tool_results.extend(
+                            await asyncio.gather(
+                                *(call.evidence_tool(cast(Any, key)) for key in query_keys[:2])
+                            )
                         )
                         if len(query_keys) > 1:
-                            await call.evidence_tool(cast(Any, query_keys[1]))
+                            tool_results.append(await call.evidence_tool(cast(Any, query_keys[1])))
                         query_keys = query_keys[2:]
                     for query_key in query_keys:
-                        await call.evidence_tool(cast(Any, query_key))
-                value = self.invalid_selection or {
-                    "schema": "model-selection/v1",
-                    "hypothesis_keys": list(self.hypotheses),
-                    "query_keys": list(self.selected),
-                }
+                        tool_results.append(await call.evidence_tool(cast(Any, query_key)))
+                evidence_ids = [call.payload["alert_baseline"]["evidence_id"]]
+                evidence_ids.extend(
+                    cast(str, item["evidence_id"])
+                    for item in tool_results
+                    if isinstance(item.get("evidence_id"), str)
+                )
+                stop_reason = (
+                    cast(str, tool_results[-1].get("stop_reason", "incomplete-evidence"))
+                    if tool_results
+                    else "incomplete-evidence"
+                )
+                if tool_results and tool_results[-1].get("deterministic_disposition") == "continue":
+                    stop_reason = "incomplete-evidence"
+                if selection_schema == "model-selection/v1":
+                    value = self.invalid_selection or {
+                        "schema": "model-selection/v1",
+                        "hypothesis_keys": list(self.hypotheses),
+                        "query_keys": list(self.selected),
+                    }
+                else:
+                    value = self.invalid_selection or {
+                        "schema": "model-selection/v2",
+                        "hypotheses": [
+                            {
+                                "ordinal": index,
+                                "hypothesis_key": key,
+                                "evidence_ids": evidence_ids[:4],
+                            }
+                            for index, key in enumerate(self.hypotheses, 1)
+                        ],
+                        "query_keys": list(self.selected),
+                        "stop_reason": stop_reason,
+                    }
             else:
                 allowed = call.payload["allowed_evidence_ids"]
                 value = {
@@ -710,7 +747,7 @@ def test_four_large_excerpts_are_projected_without_changing_authority_or_facts(
     source_by_id = {
         envelope["evidence_id"]: envelope for envelope in evidence.last_result.envelopes
     }
-    assert len(source_by_id) == 4
+    assert len(source_by_id) == 3
     for envelope in source_by_id.values():
         mcp_subject.validate_evidence_envelope(envelope)
         assert len(envelope["display_excerpt"]) == 4096
@@ -723,7 +760,7 @@ def test_four_large_excerpts_are_projected_without_changing_authority_or_facts(
     draft_call = model.calls[1]
     draft_payload = draft_call.payload
     model_views = draft_payload["quoted_evidence_excerpts"]
-    assert len(model_views) == 4
+    assert len(model_views) == 3
     assert draft_payload["authority"] == "advisory-only"
     assert draft_payload["deterministic_facts"] == {
         "claims": packet["claims"],
@@ -796,7 +833,7 @@ def test_canonical_packet_is_resolved_cited_and_bounded(
         "output_tokens": 200,
         "unavailable_input_tokens_reserved": 0,
         "unavailable_output_tokens_reserved": 0,
-        "mcp_attempts": 4,
+        "mcp_attempts": 3,
         "validator_calls": 6,
         "trusted_transient_retries": 0,
         "model_visible_bytes": packet["budget_use"]["model_visible_bytes"],
@@ -822,11 +859,10 @@ def test_canonical_packet_is_resolved_cited_and_bounded(
         "alerting_manage_rules",
         "query_loki_logs",
         "query_prometheus",
-        "tempo_get-trace",
     ]
     assert evidence.last_result is not None
     assert [attempt.query_key for attempt in evidence.last_result.attempts] == list(
-        mcp_subject.QUERY_KEYS
+        ("alert.rule", "log.correlated-events", "metric.worker-cohort")
     )
     assert b"unit-test-viewer-token" not in investigation_contracts.canonical_json_bytes(
         evidence.last_result.to_dict()
@@ -834,6 +870,200 @@ def test_canonical_packet_is_resolved_cited_and_bounded(
     assert packet["invocation_records"][0]["input_evidence_ids"] == [
         evidence.last_result.envelopes[0]["evidence_id"]
     ]
+
+
+def test_two_adaptive_paths_produce_the_same_deterministic_result(
+    policy: InvestigationPolicy, bundles: dict[str, Path]
+) -> None:
+    first, _, _ = asyncio.run(execute(policy, bundles["canonical"]))
+    second, _, _ = asyncio.run(
+        execute(
+            policy,
+            bundles["canonical"],
+            model=FakeModel(selected=("alert.rule", "trace.by-id", "log.config-cohort")),
+        )
+    )
+
+    assert first["status"] == second["status"] == "resolved"
+    assert [item["query_key"] for item in first["adaptive_trace"]] == [
+        "alert.rule",
+        "log.correlated-events",
+        "metric.worker-cohort",
+    ]
+    assert [item["query_key"] for item in second["adaptive_trace"]] == [
+        "alert.rule",
+        "trace.by-id",
+        "log.config-cohort",
+    ]
+    for packet in (first, second):
+        assert packet["schema"] == "response-packet/v2"
+        assert packet["policy_binding"] == {
+            "version": policy.version,
+            "sha256": policy.digest,
+        }
+        assert packet["stop_reason"] == "sufficient-evidence"
+        assert 1 <= len(packet["hypotheses"]) <= 4
+        assert packet["adaptive_trace"][-1]["disposition"] == "resolved"
+        assert all(
+            item["selection_invocation_id"] == packet["invocation_records"][0]["invocation_id"]
+            for item in packet["adaptive_trace"][1:]
+        )
+    for key in ("claims", "scope", "deterministic_results", "candidate_plan"):
+        assert first[key] == second[key]
+
+
+@pytest.mark.parametrize(
+    ("tool_calls", "expected_code"),
+    [
+        (("dashboard.delete",), "invalid-model-request"),
+        (("log.correlated-events", "log.correlated-events"), "invalid-model-request"),
+        (
+            (
+                "log.correlated-events",
+                "metric.correlated-observations",
+                "trace.by-id",
+            ),
+            "evidence-budget-exhausted",
+        ),
+        (
+            ("log.correlated-events", "metric.worker-cohort", "trace.by-id"),
+            "extra-after-terminal",
+        ),
+        (
+            (cast(Any, {"query_key": "log.correlated-events", "expr": "up"}),),
+            "invalid-model-request",
+        ),
+    ],
+)
+def test_adaptive_bad_requests_are_recorded_and_fail_closed(
+    policy: InvestigationPolicy,
+    bundles: dict[str, Path],
+    tool_calls: tuple[Any, ...],
+    expected_code: str,
+) -> None:
+    packet, _, _ = asyncio.run(
+        execute(
+            policy,
+            bundles["canonical"],
+            model=FakeModel(tool_calls=cast(tuple[str, ...], tool_calls)),
+        )
+    )
+
+    assert packet["status"] == "unresolved"
+    assert packet["candidate_plan"] is None
+    assert expected_code in {item["code"] for item in packet["unresolved_items"]}
+    assert expected_code in {item["reason_code"] for item in packet["adaptive_trace"]}
+
+
+def test_adaptive_packet_tamper_and_legacy_packet_reader(
+    policy: InvestigationPolicy, bundles: dict[str, Path]
+) -> None:
+    packet, _, _ = asyncio.run(execute(policy, bundles["canonical"]))
+    tampered_body = json.loads(
+        json.dumps(
+            {
+                key: value
+                for key, value in packet.items()
+                if key not in {"packet_id", "derivation_sha256"}
+            }
+        )
+    )
+    tampered_body["adaptive_trace"][1]["selection_output_sha256"] = "sha256:" + "f" * 64
+    tampered = investigation_contracts.finalize_derived_record(
+        tampered_body, id_field="packet_id", id_prefix="response-packet"
+    )
+    with pytest.raises(ContractError, match="adaptive-trace-invocation"):
+        validate_response_packet(tampered)
+
+    invocation_body = json.loads(
+        json.dumps(
+            {
+                key: value
+                for key, value in packet.items()
+                if key not in {"packet_id", "derivation_sha256"}
+            }
+        )
+    )
+    invocation_body["invocation_records"][0].update(result_class="invalid", error_code="forged")
+    invocation_tamper = investigation_contracts.finalize_derived_record(
+        invocation_body, id_field="packet_id", id_prefix="response-packet"
+    )
+    with pytest.raises(ContractError, match="invocation-binding"):
+        validate_response_packet(invocation_tamper)
+
+    request_body = json.loads(
+        json.dumps(
+            {
+                key: value
+                for key, value in packet.items()
+                if key not in {"packet_id", "derivation_sha256"}
+            }
+        )
+    )
+    request_body["adaptive_trace"][1]["selection_request_sha256"] = "sha256:" + "e" * 64
+    request_tamper = investigation_contracts.finalize_derived_record(
+        request_body, id_field="packet_id", id_prefix="response-packet"
+    )
+    with pytest.raises(ContractError, match="adaptive-trace-request"):
+        validate_response_packet(request_tamper)
+
+    invalid_alert = alert()
+    invalid_alert["measured_clock_skew_seconds"] = 6
+    unresolved, _, _ = asyncio.run(execute(policy, bundles["canonical"], alert_value=invalid_alert))
+    legacy_body = {
+        key: value
+        for key, value in unresolved.items()
+        if key
+        not in {
+            "packet_id",
+            "derivation_sha256",
+            "policy_binding",
+            "adaptive_trace",
+            "hypotheses",
+            "stop_reason",
+        }
+    }
+    legacy_body.update(schema="response-packet/v1", version=1, invocation_records=[])
+    legacy = investigation_contracts.finalize_response_packet(legacy_body)
+    validate_response_packet(legacy)
+
+
+def test_adaptive_incomplete_path_has_a_terminal_trace(
+    policy: InvestigationPolicy, bundles: dict[str, Path]
+) -> None:
+    packet, _, _ = asyncio.run(
+        execute(
+            policy,
+            bundles["canonical"],
+            model=FakeModel(selected=("alert.rule", "log.correlated-events")),
+        )
+    )
+
+    assert packet["status"] == "unresolved"
+    assert packet["stop_reason"] == "incomplete-evidence"
+    assert packet["adaptive_trace"][-1]["disposition"] == "unresolved"
+    assert packet["adaptive_trace"][-1]["reason_code"] == packet["stop_reason"]
+
+
+def test_fixed_v1_workflow_remains_an_internal_rollback_path(
+    bundles: dict[str, Path],
+) -> None:
+    fixed_policy = InvestigationPolicy.fixed_v1()
+    packet, model, evidence = asyncio.run(
+        execute(
+            fixed_policy,
+            bundles["canonical"],
+            model=FakeModel(selected=mcp_subject.QUERY_KEYS),
+        )
+    )
+
+    assert packet["schema"] == "response-packet/v1"
+    assert packet["status"] == "resolved"
+    assert model.calls[0].response_schema["properties"]["schema"]["const"] == ("model-selection/v1")
+    assert evidence.last_result is not None
+    assert [item["observation"]["query_key"] for item in evidence.last_result.envelopes] == list(
+        mcp_subject.QUERY_KEYS
+    )
 
 
 def test_hidden_fixture_and_repeated_structured_facts_are_stable(
@@ -850,7 +1080,12 @@ def test_live_provider_records_are_assessed_per_exact_correlation(
     policy: InvestigationPolicy, bundles: dict[str, Path]
 ) -> None:
     packet, _, evidence = asyncio.run(
-        execute(policy, bundles["canonical"], evidence=FakeEvidence(record_case="live-shapes"))
+        execute(
+            policy,
+            bundles["canonical"],
+            model=FakeModel(selected=("alert.rule", "trace.by-id", "metric.worker-cohort")),
+            evidence=FakeEvidence(record_case="live-shapes"),
+        )
     )
     assert packet["status"] == "resolved"
     assert evidence.last_result is not None
@@ -861,8 +1096,6 @@ def test_live_provider_records_are_assessed_per_exact_correlation(
     assert len(by_query["alert.rule"]["content"]["alerts"]) == 3
     trace = by_query["trace.by-id"]["content"]["trace"]
     assert len(trace["services"][0]["scopes"][0]["spans"]) == 2
-    log_timestamp = by_query["log.correlated-events"]["content"]["data"][0]["timestamp"]
-    assert log_timestamp.startswith('"')
 
 
 def test_non_authoritative_correlation_spoofs_are_ignored(
@@ -885,8 +1118,18 @@ def test_non_authoritative_correlation_spoofs_are_ignored(
 def test_equal_authoritative_correlation_duplicates_are_accepted(
     policy: InvestigationPolicy, bundles: dict[str, Path], record_case: str
 ) -> None:
+    selected = (
+        ("alert.rule", "trace.by-id", "metric.worker-cohort")
+        if "trace" in record_case
+        else ("alert.rule", "log.correlated-events", "metric.worker-cohort")
+    )
     packet, _, _ = asyncio.run(
-        execute(policy, bundles["canonical"], evidence=FakeEvidence(record_case=record_case))
+        execute(
+            policy,
+            bundles["canonical"],
+            model=FakeModel(selected=selected),
+            evidence=FakeEvidence(record_case=record_case),
+        )
     )
     assert packet["status"] == "resolved"
 
@@ -920,8 +1163,18 @@ def test_record_level_ambiguity_fails_closed(
     record_case: str,
     expected_codes: set[str],
 ) -> None:
+    selected = (
+        ("alert.rule", "trace.by-id", "metric.worker-cohort")
+        if "trace" in record_case
+        else ("alert.rule", "log.correlated-events", "metric.worker-cohort")
+    )
     packet, _, _ = asyncio.run(
-        execute(policy, bundles["canonical"], evidence=FakeEvidence(record_case=record_case))
+        execute(
+            policy,
+            bundles["canonical"],
+            model=FakeModel(selected=selected),
+            evidence=FakeEvidence(record_case=record_case),
+        )
     )
     assert packet["status"] == "unresolved"
     assert packet["candidate_plan"] is None
@@ -990,7 +1243,7 @@ def test_validator_bundle_must_match_alert_correlation(
 def test_incomplete_model_batch_fails_unresolved_without_dropping_admitted_calls(
     policy: InvestigationPolicy, bundles: dict[str, Path]
 ) -> None:
-    selected = mcp_subject.QUERY_KEYS[:-1]
+    selected = ("alert.rule", "log.correlated-events", "trace.by-id")
     evidence = FakeEvidence()
     packet, _, _ = asyncio.run(
         execute(
@@ -1004,7 +1257,7 @@ def test_incomplete_model_batch_fails_unresolved_without_dropping_admitted_calls
     assert packet["budget_use"]["mcp_attempts"] == len(selected)
     assert evidence.maximum_active == 1
     codes = {item["code"] for item in packet["unresolved_items"]}
-    assert {"incomplete-evidence", "model-tool-sequence"} <= codes
+    assert {"incomplete-evidence", "incomplete-capability-set"} <= codes
 
 
 @pytest.mark.parametrize(
@@ -1019,7 +1272,7 @@ def test_incomplete_model_batch_fails_unresolved_without_dropping_admitted_calls
                     "trace.by-id",
                 )
             ),
-            "query-not-allowed",
+            "invalid-model-request",
         ),
         (
             FakeModel(
@@ -1030,9 +1283,9 @@ def test_incomplete_model_batch_fails_unresolved_without_dropping_admitted_calls
                     "trace.by-id",
                 )
             ),
-            "duplicate-tool-call",
+            "invalid-model-request",
         ),
-        (FakeModel(parallel_tool_calls=True), "parallel-tool-call"),
+        (FakeModel(parallel_tool_calls=True), "invalid-model-request"),
     ],
 )
 def test_unknown_duplicate_and_parallel_model_tool_calls_fail_closed(
@@ -1082,12 +1335,12 @@ def test_injection_remains_quoted_and_cannot_change_facts_or_tools(
     assert injected["scope"] == clean["scope"]
     assert all(call.response_schema.get("properties") is not None for call in model.calls)
     assert [call.payload["input_contract"] for call in model.calls] == [
-        "evidence-selection-input/v1",
-        "response-drafting-input/v1",
+        "evidence-selection-input/v2",
+        "response-drafting-input/v2",
     ]
     assert all("schema" not in call.payload for call in model.calls)
     assert [call.response_schema["properties"]["schema"]["const"] for call in model.calls] == [
-        "model-selection/v1",
+        "model-selection/v2",
         "model-advisory/v1",
     ]
     draft_payload = model.calls[1].payload
@@ -1098,7 +1351,7 @@ def test_injection_remains_quoted_and_cannot_change_facts_or_tools(
     )
     assert set(injected["model_advisory"]["evidence_ids"]) <= excerpt_ids
     assert set(model.calls[0].payload["alert"]["available_query_keys"]) == set(
-        mcp_subject.QUERY_KEYS
+        mcp_subject.ADAPTIVE_QUERY_KEYS
     )
 
 
@@ -1123,7 +1376,7 @@ def test_invalid_model_tool_arguments_stop_after_alert_baseline(
     assert [item["observation"]["query_key"] for item in evidence.last_result.envelopes] == [
         "alert.rule"
     ]
-    assert "assessment" not in packet["state_history"]
+    assert "assessment" in packet["state_history"]
     assert "model-output-invalid" in {item["code"] for item in packet["unresolved_items"]}
     assert "incomplete-evidence" in {item["code"] for item in packet["unresolved_items"]}
     assert len(model.calls) == 1
@@ -1144,7 +1397,7 @@ def test_invalid_first_draft_retries_once_with_compact_bounded_input(
     assert first_draft.response_schema == retry.response_schema
     assert first_draft.maximum_output_tokens == retry.maximum_output_tokens == 1792
     assert retry.payload["input_contract"] == first_draft.payload["input_contract"]
-    assert retry.payload["policy_version"] == first_draft.payload["policy_version"]
+    assert retry.payload["policy_binding"] == first_draft.payload["policy_binding"]
     assert (
         retry.payload["quoted_evidence_excerpts"] == first_draft.payload["quoted_evidence_excerpts"]
     )
@@ -1161,7 +1414,7 @@ def test_invalid_first_draft_retries_once_with_compact_bounded_input(
         "claims": packet["claims"],
         "scope": packet["scope"],
     }
-    assert len(retry.payload["allowed_evidence_ids"]) == 4
+    assert len(retry.payload["allowed_evidence_ids"]) == 3
     first_upper_bound = (
         len(investigation_contracts.canonical_json_bytes(first_draft.payload))
         + len(investigation_contracts.canonical_json_bytes(first_draft.response_schema))
@@ -1240,7 +1493,7 @@ def test_invalid_draft_repair_does_not_retry_transient_provider_failure(
 def test_invalid_draft_retry_respects_remaining_input_budget(
     policy: InvestigationPolicy, bundles: dict[str, Path]
 ) -> None:
-    model = DraftSequenceModel([b"{}"], input_tokens=11_000, output_tokens=100)
+    model = DraftSequenceModel([b"{}"], input_tokens=12_250, output_tokens=100)
     packet, _, _ = asyncio.run(execute(policy, bundles["canonical"], model=model))
 
     assert packet["status"] == "unresolved"
@@ -1248,7 +1501,7 @@ def test_invalid_draft_retry_respects_remaining_input_budget(
     assert packet["model_advisory"] is None
     assert len(model.calls) == 2
     assert packet["budget_use"]["model_turns"] == 5
-    assert packet["budget_use"]["input_tokens"] == 22_000
+    assert packet["budget_use"]["input_tokens"] == 24_500
     assert "token-budget" in {item["code"] for item in packet["unresolved_items"]}
 
 
@@ -1279,7 +1532,7 @@ def test_drafting_rejects_citation_outside_quoted_evidence(
     assert draft_invocation["error_code"] == "model_citation_invalid"
 
 
-def test_one_trusted_model_retry_then_second_timeout_is_terminal(
+def test_adaptive_selection_provider_timeout_is_terminal_without_replay(
     policy: InvestigationPolicy, bundles: dict[str, Path]
 ) -> None:
     model = FakeModel(
@@ -1290,15 +1543,12 @@ def test_one_trusted_model_retry_then_second_timeout_is_terminal(
     )
     packet, _, evidence = asyncio.run(execute(policy, bundles["canonical"], model=model))
     assert packet["status"] == "unresolved"
-    assert packet["budget_use"]["model_turns"] == 2
-    assert packet["budget_use"]["input_tokens"] == 20
-    assert packet["budget_use"]["output_tokens"] == 4
-    assert packet["budget_use"]["trusted_transient_retries"] == 1
+    assert packet["budget_use"]["model_turns"] == 1
+    assert packet["budget_use"]["input_tokens"] == 10
+    assert packet["budget_use"]["output_tokens"] == 2
+    assert packet["budget_use"]["trusted_transient_retries"] == 0
     assert evidence.collections == 1
-    assert [item["result_class"] for item in packet["invocation_records"]] == [
-        "failed",
-        "failed",
-    ]
+    assert [item["result_class"] for item in packet["invocation_records"]] == ["failed"]
 
 
 def test_aggregate_token_overage_is_recorded_and_rejected(
@@ -1330,7 +1580,7 @@ def test_multi_turn_token_bound_is_admitted_before_provider_execution(
     assert model.calls == []
     assert packet["status"] == "unresolved"
     assert "token-budget" in {item["code"] for item in packet["unresolved_items"]}
-    assert "assessment" not in packet["state_history"]
+    assert "assessment" in packet["state_history"]
     assert evidence.last_result is not None
     assert [item["observation"]["query_key"] for item in evidence.last_result.envelopes] == [
         "alert.rule"
@@ -1460,8 +1710,11 @@ def test_vertex_gateway_registers_typed_bounded_grafana_function_tool() -> None:
 
     call = ModelCall(
         "evidence-selection",
-        {"input_contract": "evidence-selection-input/v1"},
-        {"type": "object"},
+        {"input_contract": "evidence-selection-input/v2"},
+        {
+            "type": "object",
+            "properties": {"schema": {"const": "model-selection/v2"}},
+        },
         512,
         lambda _query_key: asyncio.sleep(
             0,
@@ -1475,7 +1728,10 @@ def test_vertex_gateway_registers_typed_bounded_grafana_function_tool() -> None:
         "mode": "chat",
         "output_schema": None,
         "response_schema": None,
-        "response_json_schema": {"type": "object"},
+        "response_json_schema": {
+            "type": "object",
+            "properties": {"schema": {"const": "model-selection/v2"}},
+        },
         "tool_count": 1,
         "tool_name": "get_grafana_evidence",
         "tool_schema": {
@@ -1485,6 +1741,8 @@ def test_vertex_gateway_registers_typed_bounded_grafana_function_tool() -> None:
                         "log.correlated-events",
                         "metric.correlated-observations",
                         "trace.by-id",
+                        "metric.worker-cohort",
+                        "log.config-cohort",
                     ],
                     "title": "Query Key",
                     "type": "string",
@@ -1649,10 +1907,15 @@ def test_model_instructions_pin_each_output_contract() -> None:
     from colortrace_investigation.model import _SYSTEM_INSTRUCTIONS
 
     assert (
-        "schema field exactly to model-selection/v1" in _SYSTEM_INSTRUCTIONS["evidence-selection"]
+        "schema field exactly to model-selection/v1"
+        in _SYSTEM_INSTRUCTIONS["evidence-selection/v1"]
     )
-    drafting = _SYSTEM_INSTRUCTIONS["response-drafting"]
-    assert "schema field exactly to model-advisory/v1" in drafting
+    adaptive = _SYSTEM_INSTRUCTIONS["evidence-selection/v2"]
+    assert "model-selection/v2" in adaptive
+    assert "Never pass provider arguments" in adaptive
+    assert "Do not reveal reasoning or chain-of-thought" in adaptive
+    drafting = _SYSTEM_INSTRUCTIONS["response-drafting/v2"]
+    assert "Set schema to model-advisory/v1" in drafting
     assert "Cite 1-4 unique evidence_ids copied exactly from allowed_evidence_ids" in drafting
     assert "summary at most 1024 characters" in drafting
 

@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/evidence-request-v2.schema.json",
+  "title": "Bounded Grafana evidence batch request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "request_id",
+    "incident_id",
+    "query_keys",
+    "window",
+    "binding",
+    "correlation_keys",
+    "predecessor_event_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "grafana-evidence-request/v2"},
+    "request_id": {"$ref": "#/$defs/identifier"},
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "query_keys": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "alert.rule",
+          "log.correlated-events",
+          "metric.correlated-observations",
+          "trace.by-id",
+          "metric.worker-cohort",
+          "log.config-cohort"
+        ]
+      }
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": {"type": "string", "format": "date-time"},
+        "end": {"type": "string", "format": "date-time"}
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prometheus_datasource_uid",
+        "loki_datasource_uid",
+        "tempo_datasource_uid",
+        "alert_rule_uid"
+      ],
+      "properties": {
+        "prometheus_datasource_uid": {"$ref": "#/$defs/uid"},
+        "loki_datasource_uid": {"$ref": "#/$defs/uid"},
+        "tempo_datasource_uid": {"$ref": "#/$defs/uid"},
+        "alert_rule_uid": {"$ref": "#/$defs/uid"}
+      }
+    },
+    "correlation_keys": {"$ref": "#/$defs/correlation"},
+    "predecessor_event_sha256": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      ]
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+    },
+    "uid": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    },
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "correlation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixture_id",
+        "run_id",
+        "job_id",
+        "worker_id",
+        "artifact_id",
+        "trace_id",
+        "config_sha256",
+        "transform_id"
+      ],
+      "properties": {
+        "fixture_id": {"$ref": "#/$defs/identifier"},
+        "run_id": {"$ref": "#/$defs/identifier"},
+        "job_id": {"$ref": "#/$defs/identifier"},
+        "worker_id": {"$ref": "#/$defs/identifier"},
+        "artifact_id": {"$ref": "#/$defs/identifier"},
+        "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "config_sha256": {"$ref": "#/$defs/digest"},
+        "transform_id": {"$ref": "#/$defs/identifier"}
+      }
+    }
+  }
+}

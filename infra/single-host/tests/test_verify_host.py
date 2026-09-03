@@ -55,6 +55,147 @@ def _json_digest(path: Path) -> str:
     return _digest(json.loads(path.read_text(encoding="utf-8")))
 
 
+def _adaptive_arguments(
+    query_key: str,
+    *,
+    correlation: dict[str, str],
+    window: dict[str, str],
+) -> dict[str, Any]:
+    if query_key == "alert.rule":
+        return {
+            "operation": "get",
+            "rule_uid": "ct-declared-reference-divergence-v1",
+            "limit_alerts": 100,
+        }
+    if query_key in {"metric.correlated-observations", "metric.worker-cohort"}:
+        fields = (
+            ("fixture_id", "run_id", "worker_id")
+            if query_key == "metric.worker-cohort"
+            else (
+                "fixture_id",
+                "run_id",
+                "job_id",
+                "worker_id",
+                "artifact_id",
+                "trace_id",
+                "config_sha256",
+                "transform_id",
+            )
+        )
+        selector = ",".join(f'{name}="{correlation[name]}"' for name in fields)
+        return {
+            "datasourceUid": "prometheus",
+            "expr": f"colortrace_declared_reference_observations_total{{{selector}}}",
+            "queryType": "instant",
+            "endTime": window["end"],
+        }
+    if query_key in {"log.correlated-events", "log.config-cohort"}:
+        fields = (
+            ("fixture_id", "run_id", "config_sha256")
+            if query_key == "log.config-cohort"
+            else ("fixture_id", "run_id", "job_id")
+        )
+        filters = " ".join(f'| {name}="{correlation[name]}"' for name in fields)
+        return {
+            "datasourceUid": "loki",
+            "logql": f'{{service_name="colortrace-simulator"}} {filters}',
+            "queryType": "range",
+            "startRfc3339": window["start"],
+            "endRfc3339": window["end"],
+            "direction": "forward",
+            "limit": 200,
+        }
+    if query_key == "trace.by-id":
+        return {"trace_id": correlation["trace_id"], "datasourceUid": "tempo"}
+    raise ValueError("unsupported adaptive query")
+
+
+def _rebind_v4_evidence(investigation: dict[str, Any]) -> None:
+    evidence = investigation["evidence"]
+    old_ids = [item["evidence_id"] for item in evidence]
+    replacements: dict[str, str] = {}
+    predecessor: str | None = None
+    for item in evidence:
+        content = {"query_key": item["query_key"], "outcome": "collected"}
+        item["content_sha256"] = _digest(content)
+        item["display_excerpt"] = _canonical(content).decode("utf-8")
+        item["predecessor_event_sha256"] = predecessor
+        envelope_body = {
+            "schema": item["envelope_schema"],
+            "incident_id": item["incident_id"],
+            "request_id": item["request_id"],
+            "source": item["source"],
+            "observation": item["observation"],
+            "timing": {**item["timing"], "freshness": "unresolved"},
+            "content_sha256": item["content_sha256"],
+            "content": content,
+            "display_excerpt": item["display_excerpt"],
+            "correlation_keys": item["correlation_keys"],
+            "collection": item["collection"],
+            "trust": item["trust"],
+            "producer_version": item["producer_version"],
+            "predecessor_event_sha256": predecessor,
+        }
+        event_sha256 = _digest(envelope_body)
+        replacements[item["evidence_id"]] = event_sha256
+        item["evidence_id"] = event_sha256
+        item["event_sha256"] = event_sha256
+        predecessor = event_sha256
+
+    def replace_ids(values: list[str]) -> list[str]:
+        return [replacements.get(value, value) for value in values]
+
+    investigation["packet_evidence_ids"] = sorted(replace_ids(investigation["packet_evidence_ids"]))
+    for invocation in investigation["model_invocations"]:
+        invocation["input_evidence_ids"] = replace_ids(invocation["input_evidence_ids"])
+        invocation["normalized_input_sha256"] = _digest(
+            {
+                "turn_kind": invocation["turn_kind"],
+                "input_evidence_ids": invocation["input_evidence_ids"],
+            }
+        )
+        body = {
+            key: value
+            for key, value in invocation.items()
+            if key not in {"invocation_id", "derivation_sha256"}
+        }
+        invocation["derivation_sha256"] = _digest(body)
+        invocation["invocation_id"] = "model-invocation:" + invocation[
+            "derivation_sha256"
+        ].removeprefix("sha256:")
+    selection = next(
+        item
+        for item in investigation["model_invocations"]
+        if item["turn_kind"] == "evidence-selection" and item["result_class"] == "accepted"
+    )
+    for trace, item in zip(investigation["adaptive_trace"], evidence, strict=True):
+        trace["evidence_id"] = item["evidence_id"]
+        if trace["selected_by"] == "model":
+            trace["selection_invocation_id"] = selection["invocation_id"]
+            trace["selection_output_sha256"] = selection["output_sha256"]
+    for claim in investigation["claims"]:
+        claim["evidence_ids"] = replace_ids(claim["evidence_ids"])
+    investigation["model_advisory"]["evidence_ids"] = replace_ids(
+        investigation["model_advisory"]["evidence_ids"]
+    )
+    for hypothesis in investigation["hypotheses"]:
+        hypothesis["evidence_ids"] = replace_ids(hypothesis["evidence_ids"])
+    packet_body = {
+        "schema": investigation["packet_schema"],
+        "incident_id": investigation["incident_id"],
+        "evidence_ids": investigation["packet_evidence_ids"],
+        "adaptive_trace": investigation["adaptive_trace"],
+        "hypotheses": investigation["hypotheses"],
+        "stop_reason": investigation["stop_reason"],
+    }
+    investigation["packet_sha256"] = _digest(packet_body)
+    investigation["packet_id"] = "response-packet:" + investigation["packet_sha256"].removeprefix(
+        "sha256:"
+    )
+    if old_ids == [item["evidence_id"] for item in evidence]:
+        raise AssertionError("adaptive evidence identities were not refreshed")
+
+
 def _write_visuals(path: Path) -> None:
     path.mkdir()
     for kind, contents in VISUAL_BYTES.items():
@@ -343,6 +484,146 @@ def _v3_investigation(investigation: dict[str, Any], approval: dict[str, Any]) -
     investigation["finalized_at"] = "2026-08-23T12:00:05.000Z"
 
 
+def _v4_investigation(
+    investigation: dict[str, Any],
+    approval: dict[str, Any],
+    *,
+    incident_id: str,
+) -> None:
+    _v3_investigation(investigation, approval)
+    evidence = investigation["evidence"][:3]
+    evidence[-1]["query_key"] = "metric.worker-cohort"
+    evidence_ids = [item["evidence_id"] for item in evidence]
+    internal_evidence_id = "sha256:" + "f" * 64
+    policy_sha256 = _json_digest(ROOT / "config/investigation/investigation-policy.json")
+    catalog_sha256 = _json_digest(ROOT / "config/grafana-mcp/query-catalog.json")
+    window = {
+        "start": "2026-08-23T11:50:00.000Z",
+        "end": "2026-08-23T12:00:00.000Z",
+        "frozen_at": "2026-08-23T12:00:00.000Z",
+    }
+    request_id = "evidence-" + hashlib.sha256(incident_id.encode("utf-8")).hexdigest()[:24]
+    for invocation in investigation["model_invocations"]:
+        invocation["prompt_version"] = f"{invocation['turn_kind']}/v2"
+        invocation["policy_version"] = "bounded-adaptive-investigation/v1"
+        invocation["policy_sha256"] = policy_sha256
+        if invocation["turn_kind"] == "response-drafting":
+            invocation["input_evidence_ids"] = evidence_ids
+    for index, item in enumerate(evidence):
+        query_key = item["query_key"]
+        correlation = (
+            {
+                "fixture_id": "fixture-1",
+                "run_id": "run-1",
+                "worker_id": "B",
+            }
+            if query_key == "metric.worker-cohort"
+            else {
+                "fixture_id": "fixture-1",
+                "run_id": "run-1",
+                "job_id": "job-b-02",
+                "worker_id": "B",
+                "artifact_id": "output-job-b-02",
+                "trace_id": "1" * 32,
+                "config_sha256": "5" * 64,
+                "transform_id": "look/main/v1",
+            }
+        )
+        item.update(
+            {
+                "envelope_schema": "evidence-envelope/v2",
+                "incident_id": incident_id,
+                "request_id": request_id,
+                "observation": {
+                    "kind": "grafana-mcp-query",
+                    "query_key": query_key,
+                    "catalog_version": "grafana-evidence-query-catalog/v2",
+                    "catalog_sha256": catalog_sha256,
+                    "normalized_arguments": _adaptive_arguments(
+                        query_key,
+                        correlation=correlation,
+                        window=window,
+                    ),
+                    "model_visible_arguments": [],
+                    "fixed_time_range": {
+                        "start": window["start"],
+                        "end": window["end"],
+                    },
+                },
+                "correlation_keys": correlation,
+                "collection": {
+                    "outcome": "collected",
+                    "attempts": 1,
+                    "retries": 0,
+                    "error": None,
+                },
+                "trust": "untrusted-provider-data",
+                "producer_version": "grafana-mcp-evidence-adapter/v1",
+                "predecessor_event_sha256": (
+                    None if index == 0 else evidence[index - 1]["evidence_id"]
+                ),
+                "event_sha256": item["evidence_id"],
+            }
+        )
+    investigation["schema"] = "colortrace-demo-investigation-proof/v4"
+    investigation["packet_schema"] = "response-packet/v2"
+    investigation["packet_version"] = 2
+    investigation["packet_evidence_ids"] = sorted([*evidence_ids, internal_evidence_id])
+    investigation["incident_id"] = incident_id
+    investigation["fixed_window"] = window
+    investigation["policy_binding"] = {
+        "version": "bounded-adaptive-investigation/v1",
+        "sha256": policy_sha256,
+    }
+    selection = next(
+        item
+        for item in investigation["model_invocations"]
+        if item["turn_kind"] == "evidence-selection"
+    )
+    validator_result_id = investigation["validators"][0]["result_id"]
+    investigation["adaptive_trace"] = [
+        {
+            "sequence": index,
+            "selected_by": "policy" if index == 0 else "model",
+            "query_key": item["query_key"],
+            "selection_request_sha256": _digest({"query_key": item["query_key"]}),
+            "selection_invocation_id": None if index == 0 else selection["invocation_id"],
+            "selection_output_sha256": None if index == 0 else selection["output_sha256"],
+            "evidence_id": item["evidence_id"],
+            "disposition": "resolved" if index == len(evidence) - 1 else "continue",
+            "reason_code": (
+                "baseline-valid"
+                if index == 0
+                else (
+                    "sufficient-evidence"
+                    if index == len(evidence) - 1
+                    else "additional-evidence-required"
+                )
+            ),
+            "validator_result_id": validator_result_id if index == len(evidence) - 1 else None,
+        }
+        for index, item in enumerate(evidence)
+    ]
+    investigation["hypotheses"] = [
+        {
+            "ordinal": 1,
+            "hypothesis_key": "color-resource-drift",
+            "evidence_ids": evidence_ids[:2],
+        },
+        {
+            "ordinal": 2,
+            "hypothesis_key": "worker-only-failure",
+            "evidence_ids": evidence_ids[2:],
+        },
+    ]
+    investigation["stop_reason"] = "sufficient-evidence"
+    investigation["evidence"] = evidence
+    investigation["claims"][-1]["evidence_ids"] = evidence_ids[-1:]
+    investigation["model_advisory"]["evidence_ids"] = evidence_ids
+    investigation["budget_use"]["mcp_attempts"] = len(evidence)
+    _rebind_v4_evidence(investigation)
+
+
 def _timeline(phase: str) -> list[dict[str, Any]]:
     events = [
         ("run-created", "preparing"),
@@ -442,7 +723,7 @@ def _workflow(
     artifact: dict[str, Any],
     *,
     run_digit: str = "a",
-    proof_version: int = 3,
+    proof_version: int = 4,
 ) -> tuple[
     dict[str, Any],
     dict[str, Any],
@@ -545,7 +826,9 @@ def _workflow(
         "plan_sha256": approval["plan_sha256"],
         "target_sha256": approval["target_sha256"],
     }
-    if proof_version == 3:
+    if proof_version == 4:
+        _v4_investigation(investigation, approval, incident_id="incident-demo-" + run_digit * 32)
+    elif proof_version == 3:
         _v3_investigation(investigation, approval)
     elif proof_version == 2:
         _v2_investigation(investigation, approval)
@@ -755,7 +1038,7 @@ def _rejected_workflow(
     started, _approved, closed, approved_receipt, reset = _workflow(
         artifact,
         run_digit=run_digit,
-        proof_version=3,
+        proof_version=4,
     )
     build_sha256 = closed["build_sha256"]
     started["build_sha256"] = build_sha256
@@ -1344,6 +1627,10 @@ raise SystemExit(0)
             )
             self.assertEqual(report["preview"]["first_run_start"]["http_status"], 201)
             self.assertEqual(report["workflows"]["approved"]["run_id"], started["run_id"])
+            self.assertNotEqual(
+                report["workflows"]["approved"]["run_id"],
+                report["workflows"]["rejected"]["run_id"],
+            )
             self.assertEqual(report["workflows"]["approved"]["recovery_check_count"], 7)
             self.assertEqual(report["workflows"]["approved"]["recovery_evidence_count"], 21)
             self.assertEqual(
@@ -1352,7 +1639,6 @@ raise SystemExit(0)
                     "alerting_manage_rules",
                     "query_loki_logs",
                     "query_prometheus",
-                    "tempo_get-trace",
                 },
             )
             self.assertEqual(report["workflows"]["rejected"]["run_id"], rejection_started["run_id"])
@@ -1425,6 +1711,31 @@ raise SystemExit(0)
                 and call[-1].endswith("/v1/demo/runs")
             ]
             self.assertEqual(len(start_calls), 2)
+            workflow_url = "https://203-0-113-42.sslip.io/v1/demo/runs"
+            workflow_mutation_urls = [
+                call[-1]
+                for call in calls
+                if call[0] == "curl"
+                and "--data-binary" in call
+                and (
+                    call[-1] == workflow_url
+                    or call[-1].startswith(f"{workflow_url}/{rejection_started['run_id']}/")
+                    or call[-1].startswith(f"{workflow_url}/{started['run_id']}/")
+                )
+            ]
+            self.assertEqual(
+                workflow_mutation_urls,
+                [
+                    workflow_url,
+                    f"{workflow_url}/{rejection_started['run_id']}/reject",
+                    f"{workflow_url}/{rejection_started['run_id']}/reject",
+                    f"{workflow_url}/{rejection_started['run_id']}/reset",
+                    workflow_url,
+                    f"{workflow_url}/{started['run_id']}/approve",
+                    f"{workflow_url}/{started['run_id']}/close",
+                    f"{workflow_url}/{started['run_id']}/reset",
+                ],
+            )
             api_readiness_indices = [
                 index
                 for index, call in enumerate(calls)
@@ -1576,6 +1887,18 @@ raise SystemExit(0)
             )
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
+            proof = started["investigation"]
+            self.assertEqual(proof["schema"], "colortrace-demo-investigation-proof/v4")
+            self.assertEqual(proof["packet_schema"], "response-packet/v2")
+            self.assertEqual(
+                {item["query_key"] for item in proof["evidence"]},
+                {"alert.rule", "log.correlated-events", "metric.worker-cohort"},
+            )
+            self.assertEqual(
+                [item["sequence"] for item in proof["adaptive_trace"]],
+                list(range(len(proof["adaptive_trace"]))),
+            )
+            self.assertEqual(proof["stop_reason"], "sufficient-evidence")
             exposed_evidence_ids = {
                 item["evidence_id"] for item in started["investigation"]["evidence"]
             }
@@ -1602,7 +1925,7 @@ raise SystemExit(0)
                 },
             )
 
-    def test_v2_investigation_rejects_unknown_projection_field(self) -> None:
+    def test_current_investigation_rejects_unknown_projection_field(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             started, _rejected, _receipt, _reset = _rejected_workflow(_artifact())
@@ -1625,7 +1948,49 @@ raise SystemExit(0)
             self.assertEqual(completed.returncode, 65)
             self.assertIn("investigation-proof-invalid", completed.stderr)
 
-    def test_v2_claim_requires_an_existing_source_validator_result(self) -> None:
+    def test_current_investigation_accepts_an_alternate_exact_and_cohort_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            started, _rejected, _receipt, _reset = _rejected_workflow(_artifact())
+            proof = started["investigation"]
+            evidence = proof["evidence"][-1]
+            evidence["query_key"] = "log.config-cohort"
+            evidence["tool"] = "query_loki_logs"
+            evidence["source"]["tool"] = "query_loki_logs"
+            evidence["source"]["tool_input_schema_sha256"] = proof["evidence"][1]["source"][
+                "tool_input_schema_sha256"
+            ]
+            evidence["source"]["tool_annotations_sha256"] = proof["evidence"][1]["source"][
+                "tool_annotations_sha256"
+            ]
+            evidence["observation"]["query_key"] = "log.config-cohort"
+            evidence["correlation_keys"] = {
+                "fixture_id": "fixture-1",
+                "run_id": "run-1",
+                "config_sha256": "5" * 64,
+            }
+            evidence["observation"]["normalized_arguments"] = _adaptive_arguments(
+                "log.config-cohort",
+                correlation=evidence["correlation_keys"],
+                window=proof["fixed_window"],
+            )
+            trace = proof["adaptive_trace"][-1]
+            trace["query_key"] = "log.config-cohort"
+            trace["selection_request_sha256"] = _digest({"query_key": "log.config-cohort"})
+            _rebind_v4_evidence(proof)
+            run_path = root / "run.json"
+            run_path.write_text(json.dumps(started), encoding="utf-8")
+
+            completed = subprocess.run(
+                [CONTRACT_HELPER, "prepare-rejection", run_path, root / "request.json"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_current_claim_requires_an_existing_source_validator_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             started, _rejected, _receipt, _reset = _rejected_workflow(_artifact())
@@ -1650,7 +2015,7 @@ raise SystemExit(0)
             self.assertEqual(completed.returncode, 65)
             self.assertIn("investigation-proof-invalid", completed.stderr)
 
-    def test_v2_investigation_rejects_noncanonical_derived_bindings(self) -> None:
+    def test_current_investigation_rejects_noncanonical_derived_bindings(self) -> None:
         for case in ("packet", "validator", "commands"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary_directory:
                 root = Path(temporary_directory)
@@ -1795,42 +2160,48 @@ raise SystemExit(0)
 
                 self.assertEqual(completed.returncode, 65)
 
-    def test_fresh_contract_rejects_legacy_v1_investigation_proof(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            artifact = _artifact()
-            _started, _approved, closed, receipt, _reset = _workflow(artifact, proof_version=1)
-            visuals = root / "visuals"
-            _write_visuals(visuals)
-            paths = {}
-            for name, value in (
-                ("artifact", artifact),
-                ("run", closed),
-                ("receipt", receipt),
+    def test_fresh_contract_rejects_legacy_investigation_proofs(self) -> None:
+        for proof_version in (1, 3):
+            with (
+                self.subTest(proof_version=proof_version),
+                tempfile.TemporaryDirectory() as directory,
             ):
-                paths[name] = root / f"{name}.json"
-                paths[name].write_text(json.dumps(value), encoding="utf-8")
+                root = Path(directory)
+                artifact = _artifact()
+                _started, _approved, closed, receipt, _reset = _workflow(
+                    artifact, proof_version=proof_version
+                )
+                visuals = root / "visuals"
+                _write_visuals(visuals)
+                paths = {}
+                for name, value in (
+                    ("artifact", artifact),
+                    ("run", closed),
+                    ("receipt", receipt),
+                ):
+                    paths[name] = root / f"{name}.json"
+                    paths[name].write_text(json.dumps(value), encoding="utf-8")
 
-            completed = subprocess.run(
-                [
-                    CONTRACT_HELPER,
-                    "verify-contract",
-                    paths["run"],
-                    paths["receipt"],
-                    paths["artifact"],
-                    "https://203-0-113-42.sslip.io",
-                    "stage-0001",
-                    "1000",
-                    visuals,
-                    root / "summary.json",
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
+                completed = subprocess.run(
+                    [
+                        CONTRACT_HELPER,
+                        "verify-contract",
+                        paths["run"],
+                        paths["receipt"],
+                        paths["artifact"],
+                        "https://203-0-113-42.sslip.io",
+                        "stage-0001",
+                        "1000",
+                        visuals,
+                        root / "summary.json",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
 
-            self.assertEqual(completed.returncode, 65)
-            self.assertIn("closed-run-invalid", completed.stderr)
+                self.assertEqual(completed.returncode, 65)
+                self.assertIn("closed-run-invalid", completed.stderr)
 
     def test_contract_rejects_rehashed_receipt_with_wrong_proof_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -2089,7 +2460,7 @@ raise SystemExit(0)
             self.assertEqual(completed.returncode, 65)
             self.assertIn("scenario-preview-invalid", completed.stderr)
 
-    def test_v3_investigation_rejects_provenance_timing_usage_and_advisory_drift(self) -> None:
+    def test_v4_investigation_rejects_adaptive_binding_and_proof_tampering(self) -> None:
         for case in (
             "source",
             "timing",
@@ -2101,6 +2472,26 @@ raise SystemExit(0)
             "claim-type",
             "claim-state",
             "claim-reason",
+            "packet-schema",
+            "packet-evidence",
+            "incident-binding",
+            "policy-binding",
+            "invocation-policy",
+            "envelope-schema",
+            "observation-catalog",
+            "model-arguments",
+            "provider-arguments",
+            "provider-binding",
+            "batch-request",
+            "batch-request-all",
+            "envelope-chain",
+            "missing-exact-path",
+            "missing-cohort-path",
+            "trace-order",
+            "trace-selection",
+            "hypothesis-citation",
+            "stop-reason",
+            "mcp-attempts",
             "finalized-at",
         ):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary_directory:
@@ -2127,8 +2518,91 @@ raise SystemExit(0)
                     proof["claims"][0]["state"] = "rejected"
                 elif case == "claim-reason":
                     proof["claims"][0]["reason_codes"] = ["causal-resource-rejected"]
-                else:
+                elif case == "packet-schema":
+                    proof["packet_schema"] = "response-packet/v1"
+                elif case == "packet-evidence":
+                    proof["packet_evidence_ids"].remove(proof["evidence"][1]["evidence_id"])
+                elif case == "incident-binding":
+                    proof["incident_id"] = "incident-demo-" + "f" * 32
+                elif case == "policy-binding":
+                    proof["policy_binding"]["sha256"] = "sha256:" + "f" * 64
+                elif case == "invocation-policy":
+                    proof["model_invocations"][0]["policy_sha256"] = "sha256:" + "f" * 64
+                elif case == "envelope-schema":
+                    proof["evidence"][0]["envelope_schema"] = "evidence-envelope/v1"
+                elif case == "observation-catalog":
+                    proof["evidence"][0]["observation"]["catalog_version"] = (
+                        "grafana-evidence-query-catalog/v1"
+                    )
+                elif case == "model-arguments":
+                    proof["evidence"][1]["observation"]["model_visible_arguments"] = ["query"]
+                elif case == "provider-arguments":
+                    proof["evidence"][1]["observation"]["normalized_arguments"]["query"] = (
+                        "operator-supplied"
+                    )
+                elif case == "provider-binding":
+                    proof["evidence"][1]["observation"]["normalized_arguments"]["datasourceUid"] = (
+                        "loki-lookalike"
+                    )
+                elif case == "batch-request":
+                    proof["evidence"][1]["request_id"] = "evidence-" + "f" * 24
+                elif case == "batch-request-all":
+                    for evidence in proof["evidence"]:
+                        evidence["request_id"] = "evidence-" + "f" * 24
+                    _rebind_v4_evidence(proof)
+                elif case == "envelope-chain":
+                    proof["evidence"][1]["predecessor_event_sha256"] = "sha256:" + "f" * 64
+                elif case == "missing-exact-path":
+                    evidence = proof["evidence"][1]
+                    evidence["query_key"] = "log.config-cohort"
+                    evidence["observation"]["query_key"] = "log.config-cohort"
+                    evidence["correlation_keys"] = {
+                        "fixture_id": "fixture-1",
+                        "run_id": "run-1",
+                        "config_sha256": "5" * 64,
+                    }
+                    evidence["observation"]["normalized_arguments"] = _adaptive_arguments(
+                        "log.config-cohort",
+                        correlation=evidence["correlation_keys"],
+                        window=proof["fixed_window"],
+                    )
+                    trace = proof["adaptive_trace"][1]
+                    trace["query_key"] = "log.config-cohort"
+                    trace["selection_request_sha256"] = _digest({"query_key": "log.config-cohort"})
+                    _rebind_v4_evidence(proof)
+                elif case == "missing-cohort-path":
+                    evidence = proof["evidence"][2]
+                    evidence["query_key"] = "metric.correlated-observations"
+                    evidence["observation"]["query_key"] = "metric.correlated-observations"
+                    evidence["correlation_keys"] = dict(proof["evidence"][0]["correlation_keys"])
+                    evidence["observation"]["normalized_arguments"] = _adaptive_arguments(
+                        "metric.correlated-observations",
+                        correlation=evidence["correlation_keys"],
+                        window=proof["fixed_window"],
+                    )
+                    trace = proof["adaptive_trace"][2]
+                    trace["query_key"] = "metric.correlated-observations"
+                    trace["selection_request_sha256"] = _digest(
+                        {"query_key": "metric.correlated-observations"}
+                    )
+                    _rebind_v4_evidence(proof)
+                elif case == "trace-order":
+                    proof["adaptive_trace"][1], proof["adaptive_trace"][2] = (
+                        proof["adaptive_trace"][2],
+                        proof["adaptive_trace"][1],
+                    )
+                elif case == "trace-selection":
+                    proof["adaptive_trace"][1]["selection_output_sha256"] = "sha256:" + "f" * 64
+                elif case == "hypothesis-citation":
+                    proof["hypotheses"][0]["evidence_ids"] = ["sha256:" + "f" * 64]
+                elif case == "stop-reason":
+                    proof["stop_reason"] = "budget-exhausted"
+                elif case == "mcp-attempts":
+                    proof["budget_use"]["mcp_attempts"] += 1
+                elif case == "finalized-at":
                     proof["finalized_at"] = "2026-08-23T12:00:00.000Z"
+                else:  # pragma: no cover - the parameter list is exhaustive
+                    self.fail(f"unsupported mutation: {case}")
                 run_path = root / "run.json"
                 run_path.write_text(json.dumps(started), encoding="utf-8")
                 completed = subprocess.run(
@@ -2274,6 +2748,7 @@ raise SystemExit(0)
             "start-status",
             "start-preview",
             "missing-first-start",
+            "same-run-id",
         )
         for case in cases:
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
@@ -2290,7 +2765,10 @@ raise SystemExit(0)
                 elif case == "start-preview":
                     selected_start["preview_sha256"] = "sha256:" + "f" * 64
                 values = {
-                    "summary": {"build_sha256": closed["build_sha256"]},
+                    "summary": {
+                        "run_id": "demo-run-" + "b" * 32,
+                        "build_sha256": closed["build_sha256"],
+                    },
                     "rejection": {"run_id": started["run_id"]},
                     "artifact": artifact,
                     "initial": preview_summary,
@@ -2298,6 +2776,8 @@ raise SystemExit(0)
                     "approval-preview": approval_preview,
                     "first-start": selected_start,
                 }
+                if case == "same-run-id":
+                    values["summary"]["run_id"] = started["run_id"]
                 paths: dict[str, Path] = {}
                 for name, value in values.items():
                     paths[name] = root / f"{name}.json"
@@ -2334,23 +2814,29 @@ raise SystemExit(0)
                 self.assertEqual(completed.returncode, 65)
                 self.assertFalse((root / "report.json").exists())
 
-    def test_legacy_v1_terminal_projection_remains_resettable(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            _started, _approved, closed, _receipt, _reset = _workflow(_artifact(), proof_version=1)
-            closed["schema"] = "colortrace-demo-run/v1"
-            del closed["timeline"]
-            run_path = root / "run.json"
-            request_path = root / "request.json"
-            run_path.write_text(json.dumps(closed), encoding="utf-8")
-            completed = subprocess.run(
-                [CONTRACT_HELPER, "prepare-reset", run_path, request_path],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertEqual(completed.stdout.strip(), closed["run_id"])
+    def test_legacy_terminal_projections_remain_resettable(self) -> None:
+        for proof_version in (1, 3):
+            with (
+                self.subTest(proof_version=proof_version),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                _started, _approved, closed, _receipt, _reset = _workflow(
+                    _artifact(), proof_version=proof_version
+                )
+                closed["schema"] = "colortrace-demo-run/v1"
+                del closed["timeline"]
+                run_path = root / "run.json"
+                request_path = root / "request.json"
+                run_path.write_text(json.dumps(closed), encoding="utf-8")
+                completed = subprocess.run(
+                    [CONTRACT_HELPER, "prepare-reset", run_path, request_path],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(completed.stdout.strip(), closed["run_id"])
 
     def test_reset_rejects_wrong_fixture_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

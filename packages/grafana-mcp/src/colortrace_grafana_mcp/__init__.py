@@ -1,6 +1,10 @@
 """Read-only, typed Grafana MCP evidence collection."""
 
 from .adapter import (
+    ADAPTIVE_QUERY_KEYS,
+    ALLOWED_QUERY_KEYS,
+    OPTIONAL_QUERY_KEYS,
+    QUERY_KEYS,
     AdapterError,
     AttemptRecord,
     AttemptRequest,
@@ -13,11 +17,14 @@ from .adapter import (
     QueryCatalog,
     SimulatorActionEvidenceBatch,
     SimulatorActionEvidenceProjection,
+    evidence_batch_result_schema,
     normalize_simulator_action_observations,
     validate_evidence_envelope,
 )
 
 __all__ = [
+    "ADAPTIVE_QUERY_KEYS",
+    "ALLOWED_QUERY_KEYS",
     "AdapterError",
     "AttemptRecord",
     "AttemptRequest",
@@ -26,10 +33,13 @@ __all__ = [
     "EvidenceCollectionSession",
     "ExecutionControls",
     "NormalizedActionObservation",
+    "OPTIONAL_QUERY_KEYS",
     "OfficialMcpRuntime",
     "QueryCatalog",
+    "QUERY_KEYS",
     "SimulatorActionEvidenceBatch",
     "SimulatorActionEvidenceProjection",
+    "evidence_batch_result_schema",
     "normalize_simulator_action_observations",
     "validate_evidence_envelope",
 ]

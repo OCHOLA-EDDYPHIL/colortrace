@@ -28,6 +28,19 @@ APPROVAL_PHRASE = "APPROVE_COLORTRACE_SIMULATOR_ACTION"
 INVESTIGATION_PROOF_SCHEMA_V1 = "colortrace-demo-investigation-proof/v1"
 INVESTIGATION_PROOF_SCHEMA_V2 = "colortrace-demo-investigation-proof/v2"
 INVESTIGATION_PROOF_SCHEMA_V3 = "colortrace-demo-investigation-proof/v3"
+INVESTIGATION_PROOF_SCHEMA_V4 = "colortrace-demo-investigation-proof/v4"
+ADAPTIVE_RESPONSE_PACKET_SCHEMA = "response-packet/v2"
+ADAPTIVE_POLICY_VERSION = "bounded-adaptive-investigation/v1"
+ADAPTIVE_EVIDENCE_SCHEMA = "evidence-envelope/v2"
+ADAPTIVE_CATALOG_VERSION = "grafana-evidence-query-catalog/v2"
+ADAPTIVE_PROVIDER_BINDING = {
+    "alert.rule": "ct-declared-reference-divergence-v1",
+    "metric.correlated-observations": "prometheus",
+    "metric.worker-cohort": "prometheus",
+    "log.correlated-events": "loki",
+    "log.config-cohort": "loki",
+    "trace.by-id": "tempo",
+}
 SCENARIO_PREVIEW_SCHEMA = "colortrace-demo-scenario-preview/v1"
 PREVIEW_VERIFICATION_SCHEMA = "colortrace-demo-preview-verification/v1"
 FIRST_START_VERIFICATION_SCHEMA = "colortrace-demo-first-start-verification/v1"
@@ -111,6 +124,23 @@ MCP_SELECTED_TOOLS = {
     "query_prometheus",
     "tempo_get-trace",
 }
+LEGACY_INVESTIGATION_TOOLS = {
+    "alert.rule": "alerting_manage_rules",
+    "log.correlated-events": "query_loki_logs",
+    "metric.correlated-observations": "query_prometheus",
+    "trace.by-id": "tempo_get-trace",
+}
+INVESTIGATION_TOOLS = {
+    **LEGACY_INVESTIGATION_TOOLS,
+    "metric.worker-cohort": "query_prometheus",
+    "log.config-cohort": "query_loki_logs",
+}
+EXACT_INVESTIGATION_QUERIES = {
+    "log.correlated-events",
+    "metric.correlated-observations",
+    "trace.by-id",
+}
+COHORT_INVESTIGATION_QUERIES = {"metric.worker-cohort", "log.config-cohort"}
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEMO_CONFIG = REPOSITORY_ROOT / "config/demo/local-demo.json"
 PROVENANCE_CANONICAL_FILES = {
@@ -561,7 +591,10 @@ def verify_first_start(arguments: argparse.Namespace) -> None:
         required_kinds={"diff", "expected", "observed"},
     )
     investigation = _validate_investigation(run.get("investigation"))
-    if investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V3:
+    if (
+        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V4
+        or investigation.get("incident_id") != run["incident_id"]
+    ):
         raise VerificationError("first-start-projection-invalid")
     preview = _validate_preview_summary_binding(
         preview_summary_path,
@@ -634,7 +667,8 @@ def prepare_approval(arguments: argparse.Namespace) -> None:
     investigation = _validate_investigation(run.get("investigation"))
     plan = investigation["plan"]
     if (
-        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V3
+        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V4
+        or investigation.get("incident_id") != run["incident_id"]
         or plan.get("version") != approval["plan_version"]
         or plan.get("plan_sha256") != approval["plan_sha256"]
         or plan.get("target_sha256") != approval["target_sha256"]
@@ -700,7 +734,8 @@ def prepare_rejection(arguments: argparse.Namespace) -> None:
     investigation = _validate_investigation(run.get("investigation"))
     plan = investigation["plan"]
     if (
-        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V3
+        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V4
+        or investigation.get("incident_id") != run["incident_id"]
         or plan.get("version") != approval["plan_version"]
         or plan.get("plan_sha256") != approval["plan_sha256"]
         or plan.get("target_sha256") != approval["target_sha256"]
@@ -768,9 +803,10 @@ def prepare_closure(arguments: argparse.Namespace) -> None:
         run_id=run["run_id"],
         required_kinds=set(VISUAL_KINDS),
     )
+    investigation = _validate_investigation(run.get("investigation"))
     if (
-        _validate_investigation(run.get("investigation")).get("schema")
-        != INVESTIGATION_PROOF_SCHEMA_V3
+        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V4
+        or investigation.get("incident_id") != run["incident_id"]
     ):
         raise VerificationError("closure-projection-invalid")
     _validate_execution(run.get("execution"))
@@ -1032,7 +1068,12 @@ def _validate_provenance(
     return selected
 
 
-def _validate_investigation_v1(value: Any) -> dict[str, Any]:
+def _validate_investigation_v1(
+    value: Any,
+    *,
+    expected_tools: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    expected_tools = LEGACY_INVESTIGATION_TOOLS if expected_tools is None else expected_tools
     investigation = _require_fields(
         value,
         {
@@ -1092,12 +1133,6 @@ def _validate_investigation_v1(value: Any) -> dict[str, Any]:
         "content_sha256",
         "freshness",
     }
-    expected_tools = {
-        "alert.rule": "alerting_manage_rules",
-        "log.correlated-events": "query_loki_logs",
-        "metric.correlated-observations": "query_prometheus",
-        "trace.by-id": "tempo_get-trace",
-    }
     if (
         investigation["schema"] != INVESTIGATION_PROOF_SCHEMA_V1
         or not _is_identifier(investigation.get("packet_id"))
@@ -1120,7 +1155,7 @@ def _validate_investigation_v1(value: Any) -> dict[str, Any]:
             for item in invocations
         )
         or not isinstance(evidence, list)
-        or len(evidence) != 4
+        or len(evidence) != len(expected_tools)
         or {item.get("query_key") for item in evidence if isinstance(item, dict)}
         != set(expected_tools)
         or any(
@@ -1308,7 +1343,12 @@ def _validate_command_summaries(
     return summaries
 
 
-def _validate_investigation_v2(value: Any) -> dict[str, Any]:
+def _validate_investigation_v2(
+    value: Any,
+    *,
+    expected_tools: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    expected_tools = LEGACY_INVESTIGATION_TOOLS if expected_tools is None else expected_tools
     investigation = _require_fields(
         value,
         {
@@ -1387,7 +1427,8 @@ def _validate_investigation_v2(value: Any) -> dict[str, Any]:
             "plan": {
                 key: plan.get(key) for key in ("status", "version", "plan_sha256", "target_sha256")
             },
-        }
+        },
+        expected_tools=expected_tools,
     )
     validators = investigation["validators"]
     if (
@@ -1596,7 +1637,12 @@ def _nullable_timestamp(value: Any, *, code: str) -> str | None:
     return _require_timestamp(value, code)
 
 
-def _validate_investigation_v3(value: Any) -> dict[str, Any]:
+def _validate_investigation_v3(
+    value: Any,
+    *,
+    expected_tools: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    expected_tools = LEGACY_INVESTIGATION_TOOLS if expected_tools is None else expected_tools
     fields = {
         "schema",
         "packet_id",
@@ -1622,7 +1668,7 @@ def _validate_investigation_v3(value: Any) -> dict[str, Any]:
         or not isinstance(raw_invocations, list)
         or not 2 <= len(raw_invocations) <= 6
         or not isinstance(raw_evidence, list)
-        or len(raw_evidence) != 4
+        or len(raw_evidence) != len(expected_tools)
     ):
         raise VerificationError("investigation-proof-invalid")
 
@@ -1917,7 +1963,547 @@ def _validate_investigation_v3(value: Any) -> dict[str, Any]:
         {key: child for key, child in item.items() if key not in {"source", "timing"}}
         for item in raw_evidence
     ]
-    _validate_investigation_v2(legacy)
+    _validate_investigation_v2(legacy, expected_tools=expected_tools)
+    return investigation
+
+
+def _validate_adaptive_observation(
+    value: Any,
+    *,
+    query_key: str,
+    fixed_window: dict[str, str],
+    correlation_keys: dict[str, str],
+    catalog_sha256: str,
+) -> None:
+    observation = _require_fields(
+        value,
+        {
+            "kind",
+            "query_key",
+            "catalog_version",
+            "catalog_sha256",
+            "normalized_arguments",
+            "model_visible_arguments",
+            "fixed_time_range",
+        },
+        "investigation-proof-invalid",
+    )
+    normalized_arguments = observation.get("normalized_arguments")
+    fixed_time_range = _require_fields(
+        observation.get("fixed_time_range"),
+        {"start", "end"},
+        "investigation-proof-invalid",
+    )
+    if not isinstance(normalized_arguments, dict) or not normalized_arguments:
+        raise VerificationError("investigation-proof-invalid")
+    if query_key == "alert.rule":
+        expected_arguments: dict[str, Any] = {
+            "operation": "get",
+            "rule_uid": ADAPTIVE_PROVIDER_BINDING[query_key],
+            "limit_alerts": 100,
+        }
+    elif query_key in {"metric.correlated-observations", "metric.worker-cohort"}:
+        correlation_order = (
+            ("fixture_id", "run_id", "worker_id")
+            if query_key == "metric.worker-cohort"
+            else (
+                "fixture_id",
+                "run_id",
+                "job_id",
+                "worker_id",
+                "artifact_id",
+                "trace_id",
+                "config_sha256",
+                "transform_id",
+            )
+        )
+        selector = ",".join(f'{name}="{correlation_keys[name]}"' for name in correlation_order)
+        expected_arguments = {
+            "datasourceUid": ADAPTIVE_PROVIDER_BINDING[query_key],
+            "expr": f"colortrace_declared_reference_observations_total{{{selector}}}",
+            "queryType": "instant",
+            "endTime": fixed_window["end"],
+        }
+    elif query_key in {"log.correlated-events", "log.config-cohort"}:
+        selector_fields = (
+            ("fixture_id", "run_id", "config_sha256")
+            if query_key == "log.config-cohort"
+            else ("fixture_id", "run_id", "job_id")
+        )
+        filters = " ".join(f'| {name}="{correlation_keys[name]}"' for name in selector_fields)
+        expected_arguments = {
+            "datasourceUid": ADAPTIVE_PROVIDER_BINDING[query_key],
+            "logql": f'{{service_name="colortrace-simulator"}} {filters}',
+            "queryType": "range",
+            "startRfc3339": fixed_window["start"],
+            "endRfc3339": fixed_window["end"],
+            "direction": "forward",
+            "limit": 200,
+        }
+    elif query_key == "trace.by-id":
+        expected_arguments = {
+            "trace_id": correlation_keys["trace_id"],
+            "datasourceUid": ADAPTIVE_PROVIDER_BINDING[query_key],
+        }
+    else:  # pragma: no cover - the caller rejects unknown query keys
+        raise VerificationError("investigation-proof-invalid")
+    if (
+        observation.get("kind") != "grafana-mcp-query"
+        or observation.get("query_key") != query_key
+        or observation.get("catalog_version") != ADAPTIVE_CATALOG_VERSION
+        or observation.get("catalog_sha256") != catalog_sha256
+        or normalized_arguments != expected_arguments
+        or len(_canonical(normalized_arguments)) > 64 * 1024
+        or observation.get("model_visible_arguments") != []
+        or fixed_time_range != {"start": fixed_window["start"], "end": fixed_window["end"]}
+    ):
+        raise VerificationError("investigation-proof-invalid")
+
+
+def _validate_investigation_v4(value: Any) -> dict[str, Any]:
+    investigation = _require_fields(
+        value,
+        {
+            "schema",
+            "packet_schema",
+            "packet_version",
+            "packet_id",
+            "packet_sha256",
+            "packet_evidence_ids",
+            "incident_id",
+            "status",
+            "policy_binding",
+            "adaptive_trace",
+            "hypotheses",
+            "stop_reason",
+            "adjudication",
+            "model_invocations",
+            "comparison",
+            "claims",
+            "evidence",
+            "validators",
+            "scope",
+            "budget_use",
+            "model_advisory",
+            "finalized_at",
+            "fixed_window",
+            "plan",
+        },
+        "investigation-proof-invalid",
+    )
+    packet_sha256 = _require_digest(
+        investigation.get("packet_sha256"), "investigation-proof-invalid"
+    )
+    incident_id = _require_identifier(
+        investigation.get("incident_id"), "investigation-proof-invalid"
+    )
+    policy_sha256 = _document_sha256(
+        _load(PROVENANCE_CANONICAL_FILES["investigation_policy_sha256"])
+    )
+    catalog_sha256 = _document_sha256(_load(PROVENANCE_CANONICAL_FILES["query_catalog_sha256"]))
+    if (
+        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V4
+        or investigation.get("packet_schema") != ADAPTIVE_RESPONSE_PACKET_SCHEMA
+        or investigation.get("packet_version") != 2
+        or investigation.get("packet_id")
+        != f"response-packet:{packet_sha256.removeprefix('sha256:')}"
+        or investigation.get("status") != "resolved"
+        or investigation.get("policy_binding")
+        != {"version": ADAPTIVE_POLICY_VERSION, "sha256": policy_sha256}
+    ):
+        raise VerificationError("investigation-proof-invalid")
+
+    fixed_window = _require_fields(
+        investigation.get("fixed_window"),
+        {"start", "end", "frozen_at"},
+        "investigation-proof-invalid",
+    )
+    window_start = _require_timestamp(fixed_window.get("start"), "investigation-proof-invalid")
+    window_end = _require_timestamp(fixed_window.get("end"), "investigation-proof-invalid")
+    frozen_at = _require_timestamp(fixed_window.get("frozen_at"), "investigation-proof-invalid")
+    parsed_start = datetime.fromisoformat(window_start.removesuffix("Z") + "+00:00")
+    parsed_end = datetime.fromisoformat(window_end.removesuffix("Z") + "+00:00")
+    if parsed_end < parsed_start or (parsed_end - parsed_start).total_seconds() > 600:
+        raise VerificationError("investigation-proof-invalid")
+    if datetime.fromisoformat(frozen_at.removesuffix("Z") + "+00:00") < parsed_end:
+        raise VerificationError("investigation-proof-invalid")
+    selected_window = {
+        "start": window_start,
+        "end": window_end,
+        "frozen_at": frozen_at,
+    }
+
+    raw_packet_evidence_ids = investigation.get("packet_evidence_ids")
+    if (
+        not isinstance(raw_packet_evidence_ids, list)
+        or not 1 <= len(raw_packet_evidence_ids) <= 512
+        or any(not _is_identifier(item) for item in raw_packet_evidence_ids)
+        or len(set(cast(list[str], raw_packet_evidence_ids))) != len(raw_packet_evidence_ids)
+        or raw_packet_evidence_ids != sorted(raw_packet_evidence_ids)
+    ):
+        raise VerificationError("investigation-proof-invalid")
+    packet_evidence_ids = set(cast(list[str], raw_packet_evidence_ids))
+
+    v3_invocation_fields = {
+        "invocation_id",
+        "turn_kind",
+        "attempt",
+        "model",
+        "location",
+        "framework",
+        "framework_version",
+        "client_version",
+        "prompt_version",
+        "policy_version",
+        "result_class",
+        "inventory_sha256",
+        "normalized_input_sha256",
+        "input_evidence_ids",
+        "output_sha256",
+        "latency_ms",
+        "usage",
+        "error_code",
+        "trace_id",
+        "derivation_sha256",
+    }
+    raw_invocations = investigation.get("model_invocations")
+    if not isinstance(raw_invocations, list):
+        raise VerificationError("investigation-proof-invalid")
+    legacy_invocations: list[dict[str, Any]] = []
+    for raw in raw_invocations:
+        if not isinstance(raw, dict):
+            raise VerificationError("investigation-proof-invalid")
+        turn = raw.get("turn_kind")
+        if (
+            set(raw) != v3_invocation_fields | {"policy_sha256"}
+            or raw.get("policy_version") != ADAPTIVE_POLICY_VERSION
+            or raw.get("policy_sha256") != policy_sha256
+            or raw.get("prompt_version")
+            != {
+                "evidence-selection": "evidence-selection/v2",
+                "response-drafting": "response-drafting/v2",
+            }.get(cast(str, turn))
+        ):
+            raise VerificationError("investigation-proof-invalid")
+        legacy_invocations.append(
+            {
+                key: (
+                    "bounded-investigation/v1"
+                    if key == "policy_version"
+                    else f"{turn}/v1"
+                    if key == "prompt_version"
+                    else raw[key]
+                )
+                for key in v3_invocation_fields
+            }
+        )
+
+    v3_evidence_fields = {
+        "evidence_id",
+        "query_key",
+        "tool",
+        "inventory_sha256",
+        "content_sha256",
+        "freshness",
+        "display_excerpt",
+        "display_excerpt_truncated",
+        "source",
+        "timing",
+    }
+    envelope_fields = {
+        "envelope_schema",
+        "incident_id",
+        "request_id",
+        "observation",
+        "correlation_keys",
+        "collection",
+        "trust",
+        "producer_version",
+        "predecessor_event_sha256",
+        "event_sha256",
+    }
+    raw_evidence = investigation.get("evidence")
+    if not isinstance(raw_evidence, list) or not 3 <= len(raw_evidence) <= 4:
+        raise VerificationError("investigation-proof-invalid")
+    legacy_evidence: list[dict[str, Any]] = []
+    query_keys: list[str] = []
+    request_ids: set[str] = set()
+    evidence_ids: set[str] = set()
+    previous_event_sha256: str | None = None
+    baseline_correlation: dict[str, str] | None = None
+    observed_attempts = 0
+    for index, raw in enumerate(raw_evidence):
+        evidence = _require_fields(
+            raw,
+            v3_evidence_fields | envelope_fields,
+            "investigation-proof-invalid",
+        )
+        query_key = evidence.get("query_key")
+        evidence_id = _require_digest(evidence.get("evidence_id"), "investigation-proof-invalid")
+        event_sha256 = _require_digest(evidence.get("event_sha256"), "investigation-proof-invalid")
+        predecessor = evidence.get("predecessor_event_sha256")
+        if predecessor is not None:
+            predecessor = _require_digest(predecessor, "investigation-proof-invalid")
+        if (
+            not isinstance(query_key, str)
+            or query_key not in INVESTIGATION_TOOLS
+            or query_key in query_keys
+            or evidence.get("tool") != INVESTIGATION_TOOLS[query_key]
+            or evidence.get("envelope_schema") != ADAPTIVE_EVIDENCE_SCHEMA
+            or evidence.get("incident_id") != incident_id
+            or evidence_id != event_sha256
+            or evidence_id not in packet_evidence_ids
+            or (index == 0 and predecessor is not None)
+            or (index > 0 and predecessor != previous_event_sha256)
+        ):
+            raise VerificationError("investigation-proof-invalid")
+        request_id = _require_identifier(evidence.get("request_id"), "investigation-proof-invalid")
+        correlation = evidence.get("correlation_keys")
+        expected_correlation_fields = (
+            {"fixture_id", "run_id", "worker_id"}
+            if query_key == "metric.worker-cohort"
+            else {"fixture_id", "run_id", "config_sha256"}
+            if query_key == "log.config-cohort"
+            else {
+                "fixture_id",
+                "run_id",
+                "job_id",
+                "worker_id",
+                "artifact_id",
+                "trace_id",
+                "config_sha256",
+                "transform_id",
+            }
+        )
+        if (
+            not isinstance(correlation, dict)
+            or set(correlation) != expected_correlation_fields
+            or any(
+                not _is_identifier(key) or not _is_identifier(child)
+                for key, child in correlation.items()
+            )
+        ):
+            raise VerificationError("investigation-proof-invalid")
+        selected_correlation = {key: cast(str, correlation[key]) for key in sorted(correlation)}
+        _validate_adaptive_observation(
+            evidence.get("observation"),
+            query_key=query_key,
+            fixed_window=selected_window,
+            correlation_keys=selected_correlation,
+            catalog_sha256=catalog_sha256,
+        )
+        if baseline_correlation is None:
+            baseline_correlation = selected_correlation
+        elif any(
+            selected_correlation.get(key) != baseline_correlation.get(key)
+            for key in expected_correlation_fields
+        ):
+            raise VerificationError("investigation-proof-invalid")
+        collection = _require_fields(
+            evidence.get("collection"),
+            {"outcome", "attempts", "retries", "error"},
+            "investigation-proof-invalid",
+        )
+        attempts = collection.get("attempts")
+        retries = collection.get("retries")
+        if (
+            collection.get("outcome") != "collected"
+            or collection.get("error") is not None
+            or not _bounded_integer(attempts, maximum=8)
+            or cast(int, attempts) < 1
+            or not _bounded_integer(retries, maximum=1)
+            or retries != cast(int, attempts) - 1
+            or evidence.get("trust") != "untrusted-provider-data"
+            or evidence.get("producer_version") != "grafana-mcp-evidence-adapter/v1"
+        ):
+            raise VerificationError("investigation-proof-invalid")
+        request_ids.add(request_id)
+        evidence_ids.add(evidence_id)
+        query_keys.append(query_key)
+        previous_event_sha256 = event_sha256
+        observed_attempts += cast(int, attempts)
+        legacy_evidence.append({key: evidence[key] for key in v3_evidence_fields})
+
+    selected_queries = set(query_keys)
+    expected_request_id = "evidence-" + hashlib.sha256(incident_id.encode("utf-8")).hexdigest()[:24]
+    if (
+        query_keys[0] != "alert.rule"
+        or request_ids != {expected_request_id}
+        or not selected_queries.intersection(EXACT_INVESTIGATION_QUERIES)
+        or not selected_queries.intersection(COHORT_INVESTIGATION_QUERIES)
+    ):
+        raise VerificationError("investigation-proof-invalid")
+    expected_tools = {query_key: INVESTIGATION_TOOLS[query_key] for query_key in query_keys}
+    legacy = {
+        key: child
+        for key, child in investigation.items()
+        if key
+        not in {
+            "packet_schema",
+            "packet_version",
+            "packet_evidence_ids",
+            "incident_id",
+            "policy_binding",
+            "adaptive_trace",
+            "hypotheses",
+            "stop_reason",
+            "fixed_window",
+        }
+    }
+    legacy["schema"] = INVESTIGATION_PROOF_SCHEMA_V3
+    legacy["model_invocations"] = legacy_invocations
+    legacy["evidence"] = legacy_evidence
+    _validate_investigation_v3(legacy, expected_tools=expected_tools)
+
+    accepted_selection = [
+        item
+        for item in raw_invocations
+        if item.get("turn_kind") == "evidence-selection" and item.get("result_class") == "accepted"
+    ]
+    accepted_drafting = [
+        item
+        for item in raw_invocations
+        if item.get("turn_kind") == "response-drafting" and item.get("result_class") == "accepted"
+    ]
+    if (
+        len(accepted_selection) != 1
+        or len(accepted_drafting) != 1
+        or accepted_selection[0].get("input_evidence_ids") != [raw_evidence[0]["evidence_id"]]
+        or set(cast(list[str], accepted_drafting[0].get("input_evidence_ids"))) != evidence_ids
+    ):
+        raise VerificationError("investigation-proof-invalid")
+
+    raw_trace = investigation.get("adaptive_trace")
+    trace_fields = {
+        "sequence",
+        "selected_by",
+        "query_key",
+        "selection_request_sha256",
+        "selection_invocation_id",
+        "selection_output_sha256",
+        "evidence_id",
+        "disposition",
+        "reason_code",
+        "validator_result_id",
+    }
+    if not isinstance(raw_trace, list) or len(raw_trace) != len(raw_evidence):
+        raise VerificationError("investigation-proof-invalid")
+    resolved_validator_ids = {
+        item["result_id"]
+        for item in cast(list[dict[str, Any]], investigation["validators"])
+        if item.get("status") == "resolved"
+    }
+    for sequence, raw in enumerate(raw_trace):
+        trace = _require_fields(raw, trace_fields, "investigation-proof-invalid")
+        query_key = trace.get("query_key")
+        if (
+            not isinstance(trace.get("sequence"), int)
+            or isinstance(trace.get("sequence"), bool)
+            or trace.get("sequence") != sequence
+            or query_key != query_keys[sequence]
+            or trace.get("selection_request_sha256") != _document_sha256({"query_key": query_key})
+            or trace.get("evidence_id") != raw_evidence[sequence]["evidence_id"]
+        ):
+            raise VerificationError("investigation-proof-invalid")
+        if sequence == 0:
+            if trace != {
+                "sequence": 0,
+                "selected_by": "policy",
+                "query_key": "alert.rule",
+                "selection_request_sha256": _document_sha256({"query_key": "alert.rule"}),
+                "selection_invocation_id": None,
+                "selection_output_sha256": None,
+                "evidence_id": raw_evidence[0]["evidence_id"],
+                "disposition": "continue",
+                "reason_code": "baseline-valid",
+                "validator_result_id": None,
+            }:
+                raise VerificationError("investigation-proof-invalid")
+            continue
+        terminal = sequence == len(raw_trace) - 1
+        if (
+            trace.get("selected_by") != "model"
+            or trace.get("selection_invocation_id") != accepted_selection[0]["invocation_id"]
+            or trace.get("selection_output_sha256") != accepted_selection[0]["output_sha256"]
+            or trace.get("disposition") != ("resolved" if terminal else "continue")
+            or trace.get("reason_code")
+            != ("sufficient-evidence" if terminal else "additional-evidence-required")
+            or (
+                trace.get("validator_result_id") not in resolved_validator_ids
+                if terminal
+                else trace.get("validator_result_id") is not None
+            )
+        ):
+            raise VerificationError("investigation-proof-invalid")
+
+    raw_hypotheses = investigation.get("hypotheses")
+    if not isinstance(raw_hypotheses, list) or not 1 <= len(raw_hypotheses) <= 4:
+        raise VerificationError("investigation-proof-invalid")
+    hypothesis_keys: set[str] = set()
+    for ordinal, raw in enumerate(raw_hypotheses, start=1):
+        hypothesis = _require_fields(
+            raw,
+            {"ordinal", "hypothesis_key", "evidence_ids"},
+            "investigation-proof-invalid",
+        )
+        links = hypothesis.get("evidence_ids")
+        hypothesis_key = hypothesis.get("hypothesis_key")
+        if (
+            not isinstance(hypothesis.get("ordinal"), int)
+            or isinstance(hypothesis.get("ordinal"), bool)
+            or hypothesis.get("ordinal") != ordinal
+            or hypothesis_key
+            not in {
+                "color-resource-drift",
+                "nominal-config-drift",
+                "unrelated-event",
+                "worker-only-failure",
+            }
+            or cast(str, hypothesis_key) in hypothesis_keys
+            or not isinstance(links, list)
+            or not 1 <= len(links) <= 4
+            or len(set(cast(list[str], links))) != len(links)
+            or any(not isinstance(link, str) or link not in evidence_ids for link in links)
+        ):
+            raise VerificationError("investigation-proof-invalid")
+        hypothesis_keys.add(cast(str, hypothesis_key))
+    if investigation.get("stop_reason") != "sufficient-evidence":
+        raise VerificationError("investigation-proof-invalid")
+
+    claims = cast(list[dict[str, Any]], investigation["claims"])
+    if any(
+        not set(cast(list[str], claim.get("evidence_ids"))).issubset(packet_evidence_ids)
+        for claim in claims
+    ) or any(
+        not set(cast(list[str], invocation.get("input_evidence_ids"))).issubset(packet_evidence_ids)
+        for invocation in raw_invocations
+    ):
+        raise VerificationError("investigation-proof-invalid")
+    renders = cast(
+        list[dict[str, Any]], cast(dict[str, Any], investigation["comparison"])["renders"]
+    )
+    renders_by_job = {item["job_id"]: item for item in renders}
+    claims_by_type = {item["claim_type"]: item for item in claims}
+    if (
+        set(renders_by_job) != {"job-a-02", "job-b-02"}
+        or renders_by_job["job-a-02"]["worker_id"] != "A"
+        or renders_by_job["job-b-02"]["worker_id"] != "B"
+        or claims_by_type["causal-resource"]["subject"]
+        != {
+            "kind": "resource-sha256",
+            "value": renders_by_job["job-b-02"]["resolved_lut_sha256"].removeprefix("sha256:"),
+        }
+        or claims_by_type["nominal-config"]["subject"]
+        != {
+            "kind": "config-sha256",
+            "value": renders_by_job["job-a-02"]["nominal_config_sha256"].removeprefix("sha256:"),
+        }
+        or claims_by_type["worker-alone"]["subject"] != {"kind": "worker-id", "value": "B"}
+        or claims_by_type["distractor"]["subject"] != {"kind": "event-id", "value": "distractor-01"}
+        or cast(dict[str, Any], investigation["budget_use"]).get("mcp_attempts")
+        != observed_attempts
+    ):
+        raise VerificationError("investigation-proof-invalid")
     return investigation
 
 
@@ -1929,6 +2515,8 @@ def _validate_investigation(value: Any) -> dict[str, Any]:
         return _validate_investigation_v2(value)
     if schema == INVESTIGATION_PROOF_SCHEMA_V3:
         return _validate_investigation_v3(value)
+    if schema == INVESTIGATION_PROOF_SCHEMA_V4:
+        return _validate_investigation_v4(value)
     raise VerificationError("investigation-proof-invalid")
 
 
@@ -2107,7 +2695,10 @@ def verify_contract(arguments: argparse.Namespace) -> None:
         visual_root=visual_root,
     )
     investigation = _validate_investigation(run.get("investigation"))
-    if investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V3:
+    if (
+        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V4
+        or investigation.get("incident_id") != run["incident_id"]
+    ):
         raise VerificationError("closed-run-invalid")
     _validate_preview_summary_binding(
         arguments.preview_summary,
@@ -2326,7 +2917,10 @@ def verify_rejection_contract(arguments: argparse.Namespace) -> None:
         required_kinds={"diff", "expected", "observed"},
     )
     investigation = _validate_investigation(run.get("investigation"))
-    if investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V3:
+    if (
+        investigation.get("schema") != INVESTIGATION_PROOF_SCHEMA_V4
+        or investigation.get("incident_id") != run["incident_id"]
+    ):
         raise VerificationError("rejected-run-invalid")
     _validate_preview_summary_binding(
         arguments.preview_summary,
@@ -2644,7 +3238,9 @@ def mcp_script(arguments: argparse.Namespace) -> None:
     tool_bindings = summary.get("mcp_tool_bindings")
     if (
         not isinstance(tool_bindings, dict)
-        or set(tool_bindings) != MCP_SELECTED_TOOLS
+        or not 2 <= len(tool_bindings) <= len(MCP_SELECTED_TOOLS)
+        or not set(tool_bindings) <= MCP_SELECTED_TOOLS
+        or "alerting_manage_rules" not in tool_bindings
         or any(
             not isinstance(binding, dict)
             or set(binding) != {"input_schema_sha256", "annotations_sha256"}
@@ -2768,6 +3364,17 @@ def write_report(arguments: argparse.Namespace) -> None:
         else _load(arguments.first_start_summary.resolve(strict=True))
     )
     _validate_artifact(binding)
+    if rejection_summary is not None:
+        approved_run_id = summary.get("run_id")
+        rejected_run_id = rejection_summary.get("run_id")
+        if (
+            not isinstance(approved_run_id, str)
+            or RUN_ID.fullmatch(approved_run_id) is None
+            or not isinstance(rejected_run_id, str)
+            or RUN_ID.fullmatch(rejected_run_id) is None
+            or approved_run_id == rejected_run_id
+        ):
+            raise VerificationError("workflow-run-identity-invalid")
     checks = {
         "tls": "pass",
         "access_gate": "pass",

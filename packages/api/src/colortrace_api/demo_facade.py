@@ -21,6 +21,7 @@ from colortrace_fixture import CANONICAL_SEED
 from colortrace_grafana_mcp import AdapterError
 from colortrace_investigation import ContractError as InvestigationContractError
 from colortrace_investigation import ModelFailure, WorkflowError
+from colortrace_investigation.contracts import ADAPTIVE_POLICY_CANONICAL_SHA256
 from colortrace_recovery import (
     CHECK_NAMES,
     RecoveryError,
@@ -74,12 +75,26 @@ _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _REASON_CODE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 _NONCE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 _MAX_VISUAL_BYTES = 8 * 1024 * 1024
-_INVESTIGATION_TOOLS = {
+_LEGACY_INVESTIGATION_TOOLS = {
     "alert.rule": "alerting_manage_rules",
     "log.correlated-events": "query_loki_logs",
     "metric.correlated-observations": "query_prometheus",
     "trace.by-id": "tempo_get-trace",
 }
+_INVESTIGATION_TOOLS = {
+    **_LEGACY_INVESTIGATION_TOOLS,
+    "metric.worker-cohort": "query_prometheus",
+    "log.config-cohort": "query_loki_logs",
+}
+_EXACT_INVESTIGATION_QUERIES = frozenset(
+    {"log.correlated-events", "metric.correlated-observations", "trace.by-id"}
+)
+_COHORT_INVESTIGATION_QUERIES = frozenset({"metric.worker-cohort", "log.config-cohort"})
+_ADAPTIVE_POLICY_VERSION = "bounded-adaptive-investigation/v1"
+_ADAPTIVE_POLICY_SHA256 = f"sha256:{ADAPTIVE_POLICY_CANONICAL_SHA256}"
+_ADAPTIVE_PACKET_SCHEMA = "response-packet/v2"
+_ADAPTIVE_EVIDENCE_SCHEMA = "evidence-envelope/v2"
+_ADAPTIVE_CATALOG_VERSION = "grafana-evidence-query-catalog/v2"
 _MCP_SOURCE_IDENTITY = {
     "kind": "grafana-mcp",
     "server": "mcp-grafana",
@@ -93,7 +108,8 @@ BUILD_PROVENANCE_SCHEMA = "colortrace-demo-build-provenance/v1"
 INVESTIGATION_PROOF_SCHEMA_V1 = "colortrace-demo-investigation-proof/v1"
 INVESTIGATION_PROOF_SCHEMA_V2 = "colortrace-demo-investigation-proof/v2"
 INVESTIGATION_PROOF_SCHEMA_V3 = "colortrace-demo-investigation-proof/v3"
-INVESTIGATION_PROOF_SCHEMA = INVESTIGATION_PROOF_SCHEMA_V3
+INVESTIGATION_PROOF_SCHEMA_V4 = "colortrace-demo-investigation-proof/v4"
+INVESTIGATION_PROOF_SCHEMA = INVESTIGATION_PROOF_SCHEMA_V4
 EXECUTION_PROOF_SCHEMA = "colortrace-demo-execution-proof/v1"
 _REJECTION_RESULT_SCHEMA = "colortrace-demo-rejection-result/v1"
 _SCENARIO_RESET_RESULT_SCHEMA = "simulator-authored-scenario-reset/v1"
@@ -1166,7 +1182,11 @@ def _validate_investigation_proof_v2(value: Any) -> dict[str, Any]:
     }
 
 
-def _validate_investigation_proof_v3(value: Any) -> dict[str, Any]:
+def _validate_investigation_proof_v3(
+    value: Any,
+    *,
+    expected_query_keys: frozenset[str] = frozenset(_LEGACY_INVESTIGATION_TOOLS),
+) -> dict[str, Any]:
     fields = {
         "schema",
         "packet_id",
@@ -1425,7 +1445,7 @@ def _validate_investigation_proof_v3(value: Any) -> dict[str, Any]:
             not isinstance(source, Mapping)
             or set(source) != source_fields
             or any(source.get(key) != expected for key, expected in _MCP_SOURCE_IDENTITY.items())
-            or query_key not in _INVESTIGATION_TOOLS
+            or query_key not in expected_query_keys
             or source.get("tool") != raw.get("tool")
             or source.get("tool") != _INVESTIGATION_TOOLS[cast(str, query_key)]
             or source.get("inventory_version") != raw.get("inventory_sha256")
@@ -1542,7 +1562,7 @@ def _validate_investigation_proof_v3(value: Any) -> dict[str, Any]:
         for turn in ("evidence-selection", "response-drafting")
     ):
         raise DemoFacadeError("demo-investigation-proof-invalid")
-    if {item["query_key"] for item in evidence} != set(_INVESTIGATION_TOOLS):
+    if {item["query_key"] for item in evidence} != set(expected_query_keys):
         raise DemoFacadeError("demo-investigation-proof-invalid")
     if any(not set(item["input_evidence_ids"]).issubset(evidence_ids) for item in invocations):
         raise DemoFacadeError("demo-investigation-proof-invalid")
@@ -1658,14 +1678,612 @@ def _validate_investigation_proof_v3(value: Any) -> dict[str, Any]:
     }
 
 
+def _validate_adaptive_observation(value: Any, *, query_key: str) -> dict[str, Any]:
+    fields = {
+        "kind",
+        "query_key",
+        "catalog_version",
+        "catalog_sha256",
+        "normalized_arguments",
+        "model_visible_arguments",
+        "fixed_time_range",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or value.get("kind") != "grafana-mcp-query"
+        or value.get("query_key") != query_key
+        or value.get("catalog_version") != _ADAPTIVE_CATALOG_VERSION
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    normalized_arguments = value.get("normalized_arguments")
+    model_visible_arguments = value.get("model_visible_arguments")
+    fixed_time_range = value.get("fixed_time_range")
+    if (
+        not isinstance(normalized_arguments, Mapping)
+        or not isinstance(model_visible_arguments, list)
+        or len(model_visible_arguments) > 32
+        or any(
+            not isinstance(item, str) or _IDENTIFIER.fullmatch(item) is None
+            for item in model_visible_arguments
+        )
+        or len(set(cast(list[str], model_visible_arguments))) != len(model_visible_arguments)
+        or not isinstance(fixed_time_range, Mapping)
+        or set(fixed_time_range) != {"start", "end"}
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    try:
+        normalized_bytes = canonical_json_bytes(normalized_arguments)
+        normalized = json.loads(normalized_bytes)
+    except (TypeError, ValueError):
+        raise DemoFacadeError("demo-investigation-proof-invalid") from None
+    if not isinstance(normalized, dict) or len(normalized_bytes) > 64 * 1024:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    start = _parse_timestamp(fixed_time_range.get("start"), code="demo-investigation-proof-invalid")
+    end = _parse_timestamp(fixed_time_range.get("end"), code="demo-investigation-proof-invalid")
+    if end < start or end - start > timedelta(minutes=10):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    return {
+        "kind": "grafana-mcp-query",
+        "query_key": query_key,
+        "catalog_version": _ADAPTIVE_CATALOG_VERSION,
+        "catalog_sha256": _require_digest(
+            value.get("catalog_sha256"), code="demo-investigation-proof-invalid"
+        ),
+        "normalized_arguments": normalized,
+        "model_visible_arguments": list(model_visible_arguments),
+        "fixed_time_range": {
+            "start": cast(str, fixed_time_range["start"]),
+            "end": cast(str, fixed_time_range["end"]),
+        },
+    }
+
+
+def _validate_investigation_proof_v4(value: Any) -> dict[str, Any]:
+    fields = {
+        "schema",
+        "packet_schema",
+        "packet_version",
+        "packet_id",
+        "packet_sha256",
+        "packet_evidence_ids",
+        "incident_id",
+        "status",
+        "policy_binding",
+        "adaptive_trace",
+        "hypotheses",
+        "stop_reason",
+        "adjudication",
+        "model_invocations",
+        "comparison",
+        "claims",
+        "evidence",
+        "validators",
+        "scope",
+        "budget_use",
+        "model_advisory",
+        "finalized_at",
+        "fixed_window",
+        "plan",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or value.get("schema") != INVESTIGATION_PROOF_SCHEMA_V4
+        or value.get("packet_schema") != _ADAPTIVE_PACKET_SCHEMA
+        or value.get("packet_version") != 2
+        or value.get("status") != "resolved"
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    incident_id = _require_identifier(
+        value.get("incident_id"), code="demo-investigation-proof-invalid"
+    )
+    packet_sha256 = _require_digest(
+        value.get("packet_sha256"), code="demo-investigation-proof-invalid"
+    )
+    if value.get("packet_id") != f"response-packet:{packet_sha256.removeprefix('sha256:')}":
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    policy = value.get("policy_binding")
+    if policy != {
+        "version": _ADAPTIVE_POLICY_VERSION,
+        "sha256": _ADAPTIVE_POLICY_SHA256,
+    }:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    fixed_window = value.get("fixed_window")
+    if not isinstance(fixed_window, Mapping) or set(fixed_window) != {
+        "start",
+        "end",
+        "frozen_at",
+    }:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    window_start = _parse_timestamp(
+        fixed_window.get("start"), code="demo-investigation-proof-invalid"
+    )
+    window_end = _parse_timestamp(fixed_window.get("end"), code="demo-investigation-proof-invalid")
+    frozen_at = _parse_timestamp(
+        fixed_window.get("frozen_at"), code="demo-investigation-proof-invalid"
+    )
+    if (
+        window_end < window_start
+        or window_end - window_start > timedelta(minutes=10)
+        or (frozen_at < window_end)
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    selected_window = {
+        "start": cast(str, fixed_window["start"]),
+        "end": cast(str, fixed_window["end"]),
+        "frozen_at": cast(str, fixed_window["frozen_at"]),
+    }
+    raw_packet_evidence_ids = value.get("packet_evidence_ids")
+    if (
+        not isinstance(raw_packet_evidence_ids, list)
+        or not 1 <= len(raw_packet_evidence_ids) <= 512
+        or any(not isinstance(item, str) for item in raw_packet_evidence_ids)
+        or len(set(cast(list[str], raw_packet_evidence_ids))) != len(raw_packet_evidence_ids)
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    packet_evidence_ids = [
+        _require_identifier(item, code="demo-investigation-proof-invalid")
+        for item in raw_packet_evidence_ids
+    ]
+    if packet_evidence_ids != sorted(packet_evidence_ids):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+
+    v3_invocation_fields = {
+        "invocation_id",
+        "turn_kind",
+        "attempt",
+        "model",
+        "location",
+        "framework",
+        "framework_version",
+        "client_version",
+        "prompt_version",
+        "policy_version",
+        "inventory_sha256",
+        "normalized_input_sha256",
+        "input_evidence_ids",
+        "output_sha256",
+        "latency_ms",
+        "usage",
+        "result_class",
+        "error_code",
+        "trace_id",
+        "derivation_sha256",
+    }
+    raw_invocations = value.get("model_invocations")
+    if not isinstance(raw_invocations, list):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    legacy_invocations: list[dict[str, Any]] = []
+    for raw in raw_invocations:
+        if (
+            not isinstance(raw, Mapping)
+            or set(raw) != v3_invocation_fields | {"policy_sha256"}
+            or raw.get("policy_version") != _ADAPTIVE_POLICY_VERSION
+            or raw.get("policy_sha256") != _ADAPTIVE_POLICY_SHA256
+            or raw.get("prompt_version")
+            != {
+                "evidence-selection": "evidence-selection/v2",
+                "response-drafting": "response-drafting/v2",
+            }.get(cast(str, raw.get("turn_kind")))
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        legacy_invocations.append(
+            {
+                key: (
+                    "bounded-investigation/v1"
+                    if key == "policy_version"
+                    else (f"{raw['turn_kind']}/v1" if key == "prompt_version" else raw[key])
+                )
+                for key in v3_invocation_fields
+            }
+        )
+
+    v3_evidence_fields = {
+        "evidence_id",
+        "query_key",
+        "tool",
+        "inventory_sha256",
+        "content_sha256",
+        "freshness",
+        "display_excerpt",
+        "display_excerpt_truncated",
+        "source",
+        "timing",
+    }
+    envelope_fields = {
+        "envelope_schema",
+        "incident_id",
+        "request_id",
+        "observation",
+        "correlation_keys",
+        "collection",
+        "trust",
+        "producer_version",
+        "predecessor_event_sha256",
+        "event_sha256",
+    }
+    raw_evidence = value.get("evidence")
+    if not isinstance(raw_evidence, list) or not 3 <= len(raw_evidence) <= 4:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    legacy_evidence: list[dict[str, Any]] = []
+    envelope_metadata: list[dict[str, Any]] = []
+    query_keys: list[str] = []
+    request_ids: set[str] = set()
+    catalog_digests: set[str] = set()
+    preceding_event: str | None = None
+    baseline_correlation: dict[str, str] | None = None
+    packet_evidence = set(packet_evidence_ids)
+    for index, raw in enumerate(raw_evidence):
+        if not isinstance(raw, Mapping) or set(raw) != v3_evidence_fields | envelope_fields:
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        query_key = raw.get("query_key")
+        evidence_id = _require_digest(
+            raw.get("evidence_id"), code="demo-investigation-proof-invalid"
+        )
+        event_sha256 = _require_digest(
+            raw.get("event_sha256"), code="demo-investigation-proof-invalid"
+        )
+        predecessor = _optional_digest(
+            raw.get("predecessor_event_sha256"), code="demo-investigation-proof-invalid"
+        )
+        if (
+            not isinstance(query_key, str)
+            or query_key not in _INVESTIGATION_TOOLS
+            or query_key in query_keys
+            or raw.get("envelope_schema") != _ADAPTIVE_EVIDENCE_SCHEMA
+            or raw.get("incident_id") != incident_id
+            or evidence_id != event_sha256
+            or evidence_id not in packet_evidence
+            or (index == 0 and predecessor is not None)
+            or (index > 0 and predecessor != preceding_event)
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        request_id = _require_identifier(
+            raw.get("request_id"), code="demo-investigation-proof-invalid"
+        )
+        observation = _validate_adaptive_observation(raw.get("observation"), query_key=query_key)
+        if observation["fixed_time_range"] != {
+            "start": selected_window["start"],
+            "end": selected_window["end"],
+        }:
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        correlation = raw.get("correlation_keys")
+        if (
+            not isinstance(correlation, Mapping)
+            or not 1 <= len(correlation) <= 32
+            or any(
+                not isinstance(key, str)
+                or _IDENTIFIER.fullmatch(key) is None
+                or not isinstance(child, str)
+                or _IDENTIFIER.fullmatch(child) is None
+                for key, child in correlation.items()
+            )
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        expected_correlation_fields = (
+            {"fixture_id", "run_id", "worker_id"}
+            if query_key == "metric.worker-cohort"
+            else (
+                {"fixture_id", "run_id", "config_sha256"}
+                if query_key == "log.config-cohort"
+                else {
+                    "fixture_id",
+                    "run_id",
+                    "job_id",
+                    "worker_id",
+                    "artifact_id",
+                    "trace_id",
+                    "config_sha256",
+                    "transform_id",
+                }
+            )
+        )
+        collection = raw.get("collection")
+        if (
+            set(correlation) != expected_correlation_fields
+            or not isinstance(collection, Mapping)
+            or set(collection) != {"outcome", "attempts", "retries", "error"}
+            or collection.get("outcome") != "collected"
+            or collection.get("error") is not None
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        selected_correlation = {key: cast(str, correlation[key]) for key in sorted(correlation)}
+        if baseline_correlation is None:
+            baseline_correlation = selected_correlation
+        elif any(
+            selected_correlation.get(key) != baseline_correlation.get(key)
+            for key in expected_correlation_fields
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        attempts = _bounded_count(
+            collection.get("attempts"), maximum=8, code="demo-investigation-proof-invalid"
+        )
+        retries = _bounded_count(
+            collection.get("retries"), maximum=1, code="demo-investigation-proof-invalid"
+        )
+        if attempts < 1 or retries != attempts - 1:
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        if (
+            raw.get("trust") != "untrusted-provider-data"
+            or raw.get("producer_version") != "grafana-mcp-evidence-adapter/v1"
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        request_ids.add(request_id)
+        catalog_digests.add(cast(str, observation["catalog_sha256"]))
+        query_keys.append(query_key)
+        preceding_event = event_sha256
+        legacy_evidence.append({key: raw[key] for key in v3_evidence_fields})
+        envelope_metadata.append(
+            {
+                "envelope_schema": _ADAPTIVE_EVIDENCE_SCHEMA,
+                "incident_id": incident_id,
+                "request_id": request_id,
+                "observation": observation,
+                "correlation_keys": selected_correlation,
+                "collection": {
+                    "outcome": "collected",
+                    "attempts": attempts,
+                    "retries": retries,
+                    "error": None,
+                },
+                "trust": "untrusted-provider-data",
+                "producer_version": "grafana-mcp-evidence-adapter/v1",
+                "predecessor_event_sha256": predecessor,
+                "event_sha256": event_sha256,
+            }
+        )
+    selected_queries = frozenset(query_keys)
+    if (
+        query_keys[0] != "alert.rule"
+        or len(request_ids) != 1
+        or len(catalog_digests) != 1
+        or not selected_queries.intersection(_EXACT_INVESTIGATION_QUERIES)
+        or not selected_queries.intersection(_COHORT_INVESTIGATION_QUERIES)
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+
+    legacy = _validate_investigation_proof_v3(
+        {
+            "schema": INVESTIGATION_PROOF_SCHEMA_V3,
+            "packet_id": value.get("packet_id"),
+            "packet_sha256": value.get("packet_sha256"),
+            "status": value.get("status"),
+            "adjudication": value.get("adjudication"),
+            "model_invocations": legacy_invocations,
+            "comparison": value.get("comparison"),
+            "claims": value.get("claims"),
+            "evidence": legacy_evidence,
+            "validators": value.get("validators"),
+            "scope": value.get("scope"),
+            "budget_use": value.get("budget_use"),
+            "model_advisory": value.get("model_advisory"),
+            "finalized_at": value.get("finalized_at"),
+            "plan": value.get("plan"),
+        },
+        expected_query_keys=selected_queries,
+    )
+    invocations = [
+        {
+            **selected,
+            "prompt_version": raw["prompt_version"],
+            "policy_version": _ADAPTIVE_POLICY_VERSION,
+            "policy_sha256": _ADAPTIVE_POLICY_SHA256,
+        }
+        for raw, selected in zip(
+            raw_invocations,
+            cast(Sequence[dict[str, Any]], legacy["model_invocations"]),
+            strict=True,
+        )
+    ]
+    for invocation_record in invocations:
+        derivation_body = {
+            "schema": "model-tool-invocation/v2",
+            "incident_id": incident_id,
+            "turn_kind": invocation_record["turn_kind"],
+            "attempt": invocation_record["attempt"],
+            "model": invocation_record["model"],
+            "location": invocation_record["location"],
+            "framework": invocation_record["framework"],
+            "framework_version": invocation_record["framework_version"],
+            "client_version": invocation_record["client_version"],
+            "prompt_version": invocation_record["prompt_version"],
+            "policy_version": invocation_record["policy_version"],
+            "tool_inventory_version": invocation_record["inventory_sha256"],
+            "normalized_input_sha256": invocation_record["normalized_input_sha256"],
+            "input_evidence_ids": invocation_record["input_evidence_ids"],
+            "output_sha256": invocation_record["output_sha256"],
+            "latency_ms": invocation_record["latency_ms"],
+            "usage": invocation_record["usage"],
+            "result_class": invocation_record["result_class"],
+            "error_code": invocation_record["error_code"],
+            "trace_id": invocation_record["trace_id"],
+            "policy_sha256": invocation_record["policy_sha256"],
+        }
+        expected_derivation = _canonical_digest(derivation_body)
+        if (
+            invocation_record["derivation_sha256"] != expected_derivation
+            or invocation_record["invocation_id"]
+            != f"model-invocation:{expected_derivation.removeprefix('sha256:')}"
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+    evidence = [
+        {**selected, **metadata}
+        for selected, metadata in zip(
+            cast(Sequence[dict[str, Any]], legacy["evidence"]),
+            envelope_metadata,
+            strict=True,
+        )
+    ]
+    evidence_by_query = {item["query_key"]: item for item in evidence}
+    invocation_by_id = {item["invocation_id"]: item for item in invocations}
+
+    raw_trace = value.get("adaptive_trace")
+    trace_fields = {
+        "sequence",
+        "selected_by",
+        "query_key",
+        "selection_request_sha256",
+        "selection_invocation_id",
+        "selection_output_sha256",
+        "evidence_id",
+        "disposition",
+        "reason_code",
+        "validator_result_id",
+    }
+    if not isinstance(raw_trace, list) or len(raw_trace) != len(evidence):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    validators = cast(Sequence[Mapping[str, Any]], legacy["validators"])
+    resolved_validator_ids = {
+        item["result_id"] for item in validators if item.get("status") == "resolved"
+    }
+    trace: list[dict[str, Any]] = []
+    for sequence, raw in enumerate(raw_trace):
+        if not isinstance(raw, Mapping) or set(raw) != trace_fields:
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        query_key = raw.get("query_key")
+        if not isinstance(query_key, str):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        evidence_item = evidence_by_query.get(query_key)
+        selection_request_sha256 = _require_digest(
+            raw.get("selection_request_sha256"), code="demo-investigation-proof-invalid"
+        )
+        expected_request_sha256 = _canonical_digest({"query_key": query_key})
+        if (
+            raw.get("sequence") != sequence
+            or query_key != query_keys[sequence]
+            or evidence_item is None
+            or raw.get("evidence_id") != evidence_item["evidence_id"]
+            or selection_request_sha256 != expected_request_sha256
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        invocation_id = raw.get("selection_invocation_id")
+        selection_output_sha256 = raw.get("selection_output_sha256")
+        validator_result_id = raw.get("validator_result_id")
+        if sequence == 0:
+            if (
+                raw.get("selected_by") != "policy"
+                or invocation_id is not None
+                or selection_output_sha256 is not None
+                or raw.get("disposition") != "continue"
+                or raw.get("reason_code") != "baseline-valid"
+                or validator_result_id is not None
+            ):
+                raise DemoFacadeError("demo-investigation-proof-invalid")
+        else:
+            invocation = invocation_by_id.get(invocation_id)
+            terminal = sequence == len(raw_trace) - 1
+            if (
+                raw.get("selected_by") != "model"
+                or invocation is None
+                or invocation.get("turn_kind") != "evidence-selection"
+                or invocation.get("result_class") != "accepted"
+                or invocation.get("output_sha256") != selection_output_sha256
+                or raw.get("disposition") != ("resolved" if terminal else "continue")
+                or raw.get("reason_code")
+                != ("sufficient-evidence" if terminal else "additional-evidence-required")
+                or (
+                    validator_result_id not in resolved_validator_ids
+                    if terminal
+                    else validator_result_id is not None
+                )
+            ):
+                raise DemoFacadeError("demo-investigation-proof-invalid")
+        trace.append(
+            {
+                "sequence": sequence,
+                "selected_by": raw["selected_by"],
+                "query_key": query_key,
+                "selection_request_sha256": selection_request_sha256,
+                "selection_invocation_id": invocation_id,
+                "selection_output_sha256": selection_output_sha256,
+                "evidence_id": raw["evidence_id"],
+                "disposition": raw["disposition"],
+                "reason_code": raw["reason_code"],
+                "validator_result_id": validator_result_id,
+            }
+        )
+
+    raw_hypotheses = value.get("hypotheses")
+    if not isinstance(raw_hypotheses, list) or not 1 <= len(raw_hypotheses) <= 4:
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    hypotheses: list[dict[str, Any]] = []
+    hypothesis_keys: set[str] = set()
+    evidence_ids = {item["evidence_id"] for item in evidence}
+    for ordinal, raw in enumerate(raw_hypotheses, start=1):
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "ordinal",
+            "hypothesis_key",
+            "evidence_ids",
+        }:
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        hypothesis_key = raw.get("hypothesis_key")
+        links = raw.get("evidence_ids")
+        if (
+            raw.get("ordinal") != ordinal
+            or hypothesis_key
+            not in {
+                "color-resource-drift",
+                "nominal-config-drift",
+                "unrelated-event",
+                "worker-only-failure",
+            }
+            or hypothesis_key in hypothesis_keys
+            or not isinstance(links, list)
+            or not 1 <= len(links) <= 4
+            or any(not isinstance(link, str) for link in links)
+            or len(set(cast(list[str], links))) != len(links)
+            or any(link not in evidence_ids for link in links)
+        ):
+            raise DemoFacadeError("demo-investigation-proof-invalid")
+        hypothesis_keys.add(cast(str, hypothesis_key))
+        hypotheses.append(
+            {
+                "ordinal": ordinal,
+                "hypothesis_key": hypothesis_key,
+                "evidence_ids": list(links),
+            }
+        )
+    if value.get("stop_reason") != "sufficient-evidence":
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    claims = cast(Sequence[Mapping[str, Any]], legacy["claims"])
+    if any(
+        not set(cast(Sequence[str], item["evidence_ids"])).issubset(packet_evidence)
+        for item in claims
+    ) or any(
+        not set(cast(Sequence[str], item["input_evidence_ids"])).issubset(packet_evidence)
+        for item in invocations
+    ):
+        raise DemoFacadeError("demo-investigation-proof-invalid")
+    return {
+        **legacy,
+        "schema": INVESTIGATION_PROOF_SCHEMA_V4,
+        "packet_schema": _ADAPTIVE_PACKET_SCHEMA,
+        "packet_version": 2,
+        "packet_evidence_ids": packet_evidence_ids,
+        "incident_id": incident_id,
+        "policy_binding": dict(cast(Mapping[str, Any], policy)),
+        "adaptive_trace": trace,
+        "hypotheses": hypotheses,
+        "stop_reason": "sufficient-evidence",
+        "model_invocations": invocations,
+        "evidence": evidence,
+        "fixed_window": selected_window,
+    }
+
+
 def _validate_investigation_proof(
     value: Any,
     *,
     stored: bool = False,
 ) -> dict[str, Any]:
     schema = value.get("schema") if isinstance(value, Mapping) else None
+    if schema == INVESTIGATION_PROOF_SCHEMA_V4:
+        return _validate_investigation_proof_v4(value)
     if schema == INVESTIGATION_PROOF_SCHEMA_V3:
-        return _validate_investigation_proof_v3(value)
+        if stored:
+            return _validate_investigation_proof_v3(value)
+        raise DemoFacadeError("demo-investigation-proof-invalid")
     if stored and schema == INVESTIGATION_PROOF_SCHEMA_V2:
         return _validate_investigation_proof_v2(value)
     if stored and schema == INVESTIGATION_PROOF_SCHEMA_V1:
@@ -1941,14 +2559,19 @@ def _validate_preparation(
     invocations = cast(Sequence[Mapping[str, Any]], proof["model_invocations"])
     accepted_invocations = [item for item in invocations if item["result_class"] == "accepted"]
     inventory_versions = {item["inventory_sha256"] for item in evidence}
+    selected_query_keys = {cast(str, item["query_key"]) for item in evidence}
     if (
         proof["status"] != "resolved"
+        or proof.get("incident_id") != incident_id
         or (scope["affected_count"], scope["safe_count"], scope["unknown_count"]) != (4, 3, 0)
         or plan["status"] != "pending"
         or plan["version"] != result["plan_version"]
         or plan["plan_sha256"] != result["plan_sha256"]
         or plan["target_sha256"] != result["target_sha256"]
-        or {item["query_key"] for item in evidence} != set(_INVESTIGATION_TOOLS)
+        or "alert.rule" not in selected_query_keys
+        or not selected_query_keys.intersection(_EXACT_INVESTIGATION_QUERIES)
+        or not selected_query_keys.intersection(_COHORT_INVESTIGATION_QUERIES)
+        or not selected_query_keys.issubset(_INVESTIGATION_TOOLS)
         or any(item["tool"] != _INVESTIGATION_TOOLS[item["query_key"]] for item in evidence)
         or any(item["freshness"] != "current" for item in evidence)
         or len(inventory_versions) != 1
@@ -2661,7 +3284,8 @@ class SQLiteDemoRunStore:
         run_schema = (
             RUN_SCHEMA_V1
             if investigation is not None
-            and investigation["schema"] != INVESTIGATION_PROOF_SCHEMA_V3
+            and investigation["schema"]
+            not in {INVESTIGATION_PROOF_SCHEMA_V3, INVESTIGATION_PROOF_SCHEMA_V4}
             else RUN_SCHEMA_V2
         )
         approval = None
@@ -4567,6 +5191,7 @@ __all__ = [
     "INVESTIGATION_PROOF_SCHEMA_V1",
     "INVESTIGATION_PROOF_SCHEMA_V2",
     "INVESTIGATION_PROOF_SCHEMA_V3",
+    "INVESTIGATION_PROOF_SCHEMA_V4",
     "LEASE_SECONDS",
     "PREPARATION_SCHEMA",
     "RECEIPT_SCHEMA",

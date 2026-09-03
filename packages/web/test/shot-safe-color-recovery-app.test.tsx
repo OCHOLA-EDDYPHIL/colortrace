@@ -18,6 +18,7 @@ import {
   investigationProof,
   investigationProofV1,
   investigationProofV2,
+  investigationProofV3,
   NONCE,
   OUTCOME_DIGEST,
   PACKET_DIGEST,
@@ -200,7 +201,7 @@ describe("shot-safe color recovery", () => {
     expect(adapter.approve).not.toHaveBeenCalled();
   });
 
-  it("shows the concise authority chain and keeps complete evidence inspectable", async () => {
+  it("shows the adaptive path and keeps complete evidence inspectable", async () => {
     const adapter = adapterFixture();
     const hostileInvestigation = investigationProof();
     vi.mocked(adapter.start).mockImplementation(async (request) =>
@@ -224,7 +225,7 @@ describe("shot-safe color recovery", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
     const evidenceRegion = await screen.findByRole("region", {
-      name: "Gemini gathered evidence; validators decided",
+      name: "Gemini selected evidence; validators decided",
     });
 
     const facts = screen.getByLabelText("Investigation facts");
@@ -241,33 +242,48 @@ describe("shot-safe color recovery", () => {
     );
     expect(impact).toHaveTextContent(/Synthetic fixture comparison—not a production benchmark/u);
     expect(impact).toHaveTextContent(/Time, compute, and cost savings were not measured/u);
-    expect(within(evidenceRegion).getByText("3 bounded Grafana reads")).toBeVisible();
-    expect(within(evidenceRegion).getByText("4 current evidence views")).toBeVisible();
-    expect(within(evidenceRegion).getByText("Cause and scope authority")).toBeVisible();
+    expect(within(evidenceRegion).getByText("2 bounded Grafana reads")).toBeVisible();
+    expect(within(evidenceRegion).getByText("3 current evidence views")).toBeVisible();
+    expect(within(evidenceRegion).getByText("Sufficient evidence")).toBeVisible();
     expect(within(evidenceRegion).getByText("Approve or reject the exact plan")).toBeVisible();
+    expect(within(evidenceRegion).getByText("Gemini selected")).toBeVisible();
+    expect(within(evidenceRegion).getByText("Grafana returned")).toBeVisible();
+    expect(within(evidenceRegion).getByText("Validators decided")).toBeVisible();
+    expect(within(evidenceRegion).getByText("Human authorizes")).toBeVisible();
+    const adaptivePath = within(evidenceRegion).getByRole("list", {
+      name: "Adaptive evidence path",
+    });
+    expect(within(adaptivePath).getByText(/Policy baseline: Alert baseline/u)).toBeVisible();
+    expect(within(adaptivePath).getByText(/Gemini selected: Exact logs/u)).toBeVisible();
+    expect(within(adaptivePath).getByText(/Gemini selected: Worker cohort/u)).toBeVisible();
+    expect(within(adaptivePath).getByText(/Validators resolved/u)).toBeVisible();
+    const hypotheses = within(evidenceRegion).getByRole("list", { name: "Bounded hypotheses" });
+    expect(within(hypotheses).getByText(/1\. Color resource drift/u)).toBeVisible();
+    expect(within(hypotheses).getByText(/2\. Worker-only failure/u)).toBeVisible();
+    expect(within(hypotheses).getAllByRole("link").length).toBeGreaterThan(1);
     const decisiveSignal = evidenceRegion.querySelector(".shot-evidence-highlight");
     expect(decisiveSignal).not.toBeNull();
     expect(
       within(decisiveSignal as HTMLElement).getByText(
-        "Resolved LUT digests differ across the compared successful renders.",
+        "Worker A and worker B completed with the same nominal configuration.",
       ),
     ).toBeVisible();
     expect(within(evidenceRegion).getByText("Untrusted")).toBeVisible();
     expect(
       within(evidenceRegion).getByText("Deterministic code—not model prose—", { exact: false }),
     ).toBeVisible();
-    const disclosure = within(evidenceRegion).getByText("Inspect all 4 Grafana evidence views");
+    const disclosure = within(evidenceRegion).getByText("Inspect all 3 Grafana evidence views");
     fireEvent.click(disclosure);
     const evidenceGrid = evidenceRegion.querySelector(
       '[data-proof-section="live-grafana-evidence"]',
     );
     expect(evidenceGrid).not.toBeNull();
-    expect(evidenceGrid?.querySelectorAll("article")).toHaveLength(4);
-    for (const name of ["Metrics", "Logs", "Traces", "Alert"]) {
+    expect(evidenceGrid?.querySelectorAll("article")).toHaveLength(3);
+    for (const name of ["Alert baseline", "Exact logs", "Worker cohort"]) {
       expect(within(evidenceGrid as HTMLElement).getByRole("heading", { name })).toBeVisible();
     }
-    expect(within(evidenceGrid as HTMLElement).getAllByText("Grafana MCP")).toHaveLength(4);
-    expect(within(evidenceGrid as HTMLElement).getAllByText("12:00:01 UTC")).toHaveLength(4);
+    expect(within(evidenceGrid as HTMLElement).getAllByText("Grafana MCP")).toHaveLength(3);
+    expect(within(evidenceGrid as HTMLElement).getAllByText("12:00:01 UTC")).toHaveLength(3);
     expect(screen.getByText("Deterministic validator · decision authority")).toBeVisible();
     expect(
       within(evidenceGrid as HTMLElement).getByText(
@@ -295,6 +311,27 @@ describe("shot-safe color recovery", () => {
     expect(within(activity).getByText("Investigation completed")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Decide the exact plan" })).toBeVisible();
     expect(screen.getByText("Technical proof and provenance")).toBeVisible();
+  });
+
+  it("keeps stored v3 evidence presentation reviewable without an adaptive trace", async () => {
+    const adapter = adapterFixture();
+    vi.mocked(adapter.start).mockImplementation(async (request) =>
+      demoRun("awaiting-approval", {
+        approval_nonce: request.approval_nonce,
+        investigation: investigationProofV3(),
+      }),
+    );
+    render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Investigate the color fault" }));
+
+    expect(
+      await screen.findByRole("region", {
+        name: "Gemini gathered evidence; validators decided",
+      }),
+    ).toBeVisible();
+    expect(screen.queryByRole("list", { name: "Adaptive evidence path" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Bounded hypotheses" })).not.toBeInTheDocument();
   });
 
   it("keeps legacy investigation proof reviewable without inventing an agent summary", async () => {
@@ -447,7 +484,11 @@ describe("shot-safe color recovery", () => {
     fireEvent.click(screen.getByRole("button", { name: "Verify and close recovery" }));
 
     expect(
-      await screen.findByRole("heading", { name: "Recovery closed with a verified receipt" }),
+      await screen.findByRole(
+        "heading",
+        { name: "Recovery closed with a verified receipt" },
+        { timeout: 3_000 },
+      ),
     ).toBeVisible();
     expect(await screen.findByText("Recorded and verified")).toBeVisible();
     expect(storage.values.get("colortrace.demo.run-id")).toBe(RUN_ID);

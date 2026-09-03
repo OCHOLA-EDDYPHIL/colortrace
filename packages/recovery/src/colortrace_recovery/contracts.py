@@ -19,7 +19,8 @@ SCHEMA_ROOT = Path(__file__).parent / "schemas"
 SNAPSHOT_SCHEMA = "recovery-verification-snapshot/v1"
 ACTIVE_PUBLICATION_SCHEMA = "recovery-active-publication/v1"
 ARTIFACT_SCHEMA = "recovery-verification-artifact/v1"
-EVIDENCE_REQUEST_SCHEMA = "recovery-evidence-request/v1"
+LEGACY_EVIDENCE_REQUEST_SCHEMA = "recovery-evidence-request/v1"
+EVIDENCE_REQUEST_SCHEMA = "recovery-evidence-request/v2"
 EVIDENCE_RECORD_SCHEMA = "recovery-evidence-record/v1"
 CHECK_RESULT_SCHEMA = "recovery-check-result/v1"
 PACKET_SCHEMA = "recovery-packet/v1"
@@ -73,6 +74,7 @@ AUDIT_EVENT_TYPES = (
 _SCHEMA_FILES = (
     "recovery-verification-snapshot-v1.schema.json",
     "recovery-evidence-request-v1.schema.json",
+    "recovery-evidence-request-v2.schema.json",
     "recovery-evidence-record-v1.schema.json",
     "recovery-check-result-v1.schema.json",
     "recovery-packet-v1.schema.json",
@@ -724,7 +726,7 @@ def build_evidence_request(
         "outcome_sha256": outcome["outcome_sha256"],
         "evaluation_started_at": started,
         "evaluation_deadline_at": deadline,
-        "catalog_version": "grafana-evidence-query-catalog/v1",
+        "catalog_version": "grafana-evidence-query-catalog/v2",
         "catalog_sha256": catalog_sha256,
         "binding": dict(binding),
         "queries": queries,
@@ -745,7 +747,14 @@ def validate_evidence_request(
     snapshot: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     request = _mapping(value, code="evidence-request-invalid")
-    validate_schema("recovery-evidence-request-v1.schema.json", request)
+    schema = request.get("schema")
+    if schema == LEGACY_EVIDENCE_REQUEST_SCHEMA:
+        schema_name = "recovery-evidence-request-v1.schema.json"
+    elif schema == EVIDENCE_REQUEST_SCHEMA:
+        schema_name = "recovery-evidence-request-v2.schema.json"
+    else:
+        raise RecoveryError("evidence-request-invalid")
+    validate_schema(schema_name, request)
     started = parse_timestamp(request["evaluation_started_at"])
     deadline = parse_timestamp(request["evaluation_deadline_at"])
     if deadline - started != timedelta(seconds=60):

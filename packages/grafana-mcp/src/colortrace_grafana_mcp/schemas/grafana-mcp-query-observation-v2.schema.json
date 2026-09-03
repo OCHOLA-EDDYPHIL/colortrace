@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/grafana-mcp-query-observation-v2.schema.json",
+  "title": "Typed Grafana MCP query observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "query_key",
+    "catalog_version",
+    "catalog_sha256",
+    "normalized_arguments",
+    "model_visible_arguments",
+    "fixed_time_range"
+  ],
+  "properties": {
+    "kind": {"const": "grafana-mcp-query"},
+    "query_key": {
+      "enum": [
+        "alert.rule",
+        "log.correlated-events",
+        "log.simulator-action-events",
+        "metric.correlated-observations",
+        "metric.simulator-action-observations",
+        "trace.by-id",
+        "trace.simulator-action-command",
+        "metric.worker-cohort",
+        "log.config-cohort"
+      ]
+    },
+    "catalog_version": {"const": "grafana-evidence-query-catalog/v2"},
+    "catalog_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "normalized_arguments": {"type": "object"},
+    "model_visible_arguments": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string"}
+    },
+    "fixed_time_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": {"type": "string", "format": "date-time"},
+        "end": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
 {
   "schema": "vertex-model-profile/v1",
-  "profile_version": "bounded-gemini-investigator/v1",
+  "profile_version": "bounded-adaptive-gemini-investigator/v1",
   "provider": "vertex-ai",
   "framework": "google-adk",
   "model": "gemini-3.5-flash",

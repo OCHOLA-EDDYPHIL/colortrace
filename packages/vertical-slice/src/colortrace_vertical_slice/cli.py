@@ -114,8 +114,12 @@ def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
 
 
 async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
+    policy = InvestigationPolicy.load(
+        arguments.investigation_policy.resolve(strict=True),
+        arguments.model_profile.resolve(strict=True),
+    )
     store = SqliteIncidentStore(arguments.database)
-    api = VerticalSliceApi(store)
+    api = VerticalSliceApi(store, policy=policy)
     alert = strict_json_file(arguments.alert.resolve(strict=True))
     accepted = api.accept_alert(alert)
     completed = store.completed_packet(cast(str, accepted["task_id"]))
@@ -133,10 +137,6 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
     evidence = EvidenceAdapter(
         runtime=runtime,
         catalog=QueryCatalog.load(arguments.query_catalog.resolve(strict=True)),
-    )
-    policy = InvestigationPolicy.load(
-        arguments.investigation_policy.resolve(strict=True),
-        arguments.model_profile.resolve(strict=True),
     )
     worker = VerticalSliceWorker(
         store,

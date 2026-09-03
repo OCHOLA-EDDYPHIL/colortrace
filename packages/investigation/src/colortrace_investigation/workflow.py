@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
@@ -13,6 +13,7 @@ from time import monotonic as system_monotonic
 from typing import Any, Literal, Protocol, TypeVar, cast
 
 from colortrace_grafana_mcp import (
+    ADAPTIVE_QUERY_KEYS,
     AdapterError,
     AttemptRecord,
     AttemptRequest,
@@ -27,16 +28,20 @@ from colortrace_validator import (
 )
 
 from .contracts import (
+    ADAPTIVE_INVOCATION_VERSION,
+    ADAPTIVE_RESPONSE_PACKET_VERSION,
     ADK_VERSION,
+    COHORT_QUERY_KEYS,
+    EXACT_QUERY_KEYS,
     GENAI_VERSION,
     INVOCATION_VERSION,
     MODEL_ID,
     MODEL_LOCATION,
-    POLICY_VERSION,
     QUERY_KEYS,
     RESPONSE_PACKET_VERSION,
     SCHEMA_ROOT,
     TOOL_BY_QUERY,
+    AdaptiveModelSelection,
     AlertIntake,
     ContractError,
     FrozenWindow,
@@ -44,6 +49,7 @@ from .contracts import (
     ModelAdvisory,
     ModelSelection,
     canonical_json_bytes,
+    finalize_adaptive_response_packet,
     finalize_derived_record,
     finalize_response_packet,
     parse_timestamp,
@@ -256,8 +262,10 @@ class BudgetLedger:
 
     async def authorize_attempt(self, request: AttemptRequest) -> bool:
         async with self._attempt_lock:
-            if request.query_key not in QUERY_KEYS or TOOL_BY_QUERY.get(request.query_key) != (
-                request.tool
+            allowed_query_keys = tuple(ADAPTIVE_QUERY_KEYS) if self.policy.adaptive else QUERY_KEYS
+            if (
+                request.query_key not in allowed_query_keys
+                or TOOL_BY_QUERY.get(request.query_key) != request.tool
             ):
                 return False
             try:
@@ -324,6 +332,9 @@ class WorkflowProgress:
     deterministic_results: list[dict[str, Any]] = field(default_factory=list)
     classified_claims: list[dict[str, Any]] = field(default_factory=list)
     classified_scope: dict[str, Any] | None = None
+    adaptive_trace: list[dict[str, Any]] = field(default_factory=list)
+    hypotheses: list[dict[str, Any]] = field(default_factory=list)
+    stop_reason: str | None = None
     state_history: list[str] = field(default_factory=list)
 
     def begin(self, ledger: BudgetLedger, shared_limiter: TrackedSemaphore) -> None:
@@ -381,7 +392,12 @@ def _invalid_model_invocation(record: Mapping[str, Any], *, error_code: str) -> 
     body["result_class"] = "invalid"
     body["error_code"] = _normalized_code(error_code).replace("-", "_")
     invalid = finalize_derived_record(body, id_field="invocation_id", id_prefix="model-invocation")
-    validate_contract("model-tool-invocation-v1.schema.json", invalid)
+    schema_name = (
+        "model-tool-invocation-v2.schema.json"
+        if record.get("schema") == ADAPTIVE_INVOCATION_VERSION
+        else "model-tool-invocation-v1.schema.json"
+    )
+    validate_contract(schema_name, invalid)
     return invalid
 
 
@@ -455,7 +471,7 @@ def _mapping_records(value: Any) -> tuple[Mapping[str, Any], ...]:
 
 def _content_records(query_key: str, content: Mapping[str, Any]) -> tuple[_EvidenceRecord, ...]:
     records: list[_EvidenceRecord] = []
-    if query_key == "metric.correlated-observations":
+    if query_key in {"metric.correlated-observations", "metric.worker-cohort"}:
         for row in _mapping_records(content.get("data")):
             metric = row.get("metric")
             sample = row.get("value")
@@ -466,7 +482,7 @@ def _content_records(query_key: str, content: Mapping[str, Any]) -> tuple[_Evide
             ):
                 raise ContractError("malformed-evidence")
             records.append(_EvidenceRecord((metric,), (sample[0],)))
-    elif query_key == "log.correlated-events":
+    elif query_key in {"log.correlated-events", "log.config-cohort"}:
         for row in _mapping_records(content.get("data")):
             labels = row.get("labels")
             structured_metadata = row.get("structuredMetadata")
@@ -513,7 +529,7 @@ def _content_records(query_key: str, content: Mapping[str, Any]) -> tuple[_Evide
 
 def _record_event_times(query_key: str, record: _EvidenceRecord) -> tuple[datetime, ...]:
     values = record.timestamp_values
-    if query_key == "log.correlated-events":
+    if query_key in {"log.correlated-events", "log.config-cohort"}:
         raw = values[0]
         if isinstance(raw, str) and raw.startswith('"'):
             if len(raw) > 128:
@@ -632,7 +648,7 @@ def _assess_content_records(
         blockers.append(Blocker("incomplete-correlation", "assessment", (evidence_id,)))
         if sibling_records:
             blockers.append(Blocker("contradictory-evidence", "assessment", (evidence_id,)))
-    elif exact_records > 1:
+    elif exact_records > 1 and query_key not in COHORT_QUERY_KEYS:
         blockers.append(Blocker("contradictory-evidence", "assessment", (evidence_id,)))
     elif sibling_records and not (
         exact_in_window == 1
@@ -644,11 +660,22 @@ def _assess_content_records(
     return _dedupe_blockers(blockers)
 
 
+def _expected_query_correlation(intake: AlertIntake, query_key: str) -> dict[str, str]:
+    fields = {
+        "metric.worker-cohort": ("fixture_id", "run_id", "worker_id"),
+        "log.config-cohort": ("fixture_id", "run_id", "config_sha256"),
+    }.get(query_key)
+    if fields is None:
+        return dict(intake.correlation_keys)
+    return {field: intake.correlation_keys[field] for field in fields}
+
+
 def _model_evidence_view(
     envelope: Mapping[str, Any],
     *,
     intake: AlertIntake,
     now: datetime,
+    adaptive: bool = False,
 ) -> tuple[dict[str, Any] | None, list[Blocker]]:
     evidence_id = envelope.get("evidence_id")
     evidence_ids = (evidence_id,) if isinstance(evidence_id, str) else ()
@@ -663,10 +690,15 @@ def _model_evidence_view(
         ):
             raise TypeError
         query_key = observation["query_key"]
-        expected_batch = intake.evidence_batch(QUERY_KEYS)
+        allowed_query_keys = tuple(ADAPTIVE_QUERY_KEYS) if adaptive else QUERY_KEYS
+        expected_batch = (
+            intake.adaptive_evidence_batch(allowed_query_keys)
+            if adaptive
+            else intake.evidence_batch(allowed_query_keys)
+        )
         if (
             not isinstance(query_key, str)
-            or query_key not in QUERY_KEYS
+            or query_key not in allowed_query_keys
             or envelope.get("incident_id") != intake.incident_id
             or envelope.get("request_id") != expected_batch.request_id
             or source.get("kind") != "grafana-mcp"
@@ -677,7 +709,7 @@ def _model_evidence_view(
                 "start": timestamp(expected_batch.window_start),
                 "end": timestamp(expected_batch.window_end),
             }
-            or envelope.get("correlation_keys") != dict(intake.correlation_keys)
+            or envelope.get("correlation_keys") != _expected_query_correlation(intake, query_key)
         ):
             raise ValueError
     except (AdapterError, KeyError, TypeError, ValueError):
@@ -712,7 +744,9 @@ def _model_evidence_view(
     content_blockers = _assess_content_records(
         cast(str, observation["query_key"]),
         content,
-        expected_correlation=intake.correlation_keys,
+        expected_correlation=_expected_query_correlation(
+            intake, cast(str, observation["query_key"])
+        ),
         window=intake.window,
         evidence_id=cast(str, evidence_id),
     )
@@ -822,6 +856,291 @@ class ModelEvidenceLedger:
         return view
 
 
+class AdaptiveEvidenceLedger:
+    _ALLOWED = frozenset((*EXACT_QUERY_KEYS, *COHORT_QUERY_KEYS))
+
+    def __init__(
+        self,
+        *,
+        collection: EvidenceCollection,
+        budget: BudgetLedger,
+        intake: AlertIntake,
+        clock: Callable[[], datetime],
+        baseline_view: Mapping[str, Any],
+        validate: Callable[[], Awaitable[dict[str, Any]]],
+        maximum_calls: int,
+    ) -> None:
+        self._collection = collection
+        self._budget = budget
+        self._intake = intake
+        self._clock = clock
+        self._validate = validate
+        self._maximum_calls = maximum_calls
+        self._active = False
+        self._seen: set[str] = set()
+        self._query_order: list[str] = []
+        self._blockers: list[Blocker] = []
+        self._model_views: list[Mapping[str, Any]] = [dict(baseline_view)]
+        self._evidence_ids: set[str] = {cast(str, baseline_view["evidence_id"])}
+        self._validator_result: dict[str, Any] | None = None
+        self._terminal = False
+        self._stop_reason: str | None = None
+        self._trace: list[dict[str, Any]] = [
+            {
+                "sequence": 0,
+                "selected_by": "policy",
+                "query_key": "alert.rule",
+                "selection_request_sha256": prefixed_sha256(
+                    canonical_json_bytes({"query_key": "alert.rule"})
+                ),
+                "selection_invocation_id": None,
+                "selection_output_sha256": None,
+                "evidence_id": baseline_view["evidence_id"],
+                "disposition": "continue",
+                "reason_code": "baseline-valid",
+                "validator_result_id": None,
+            }
+        ]
+
+    @property
+    def blockers(self) -> tuple[Blocker, ...]:
+        return tuple(_dedupe_blockers(self._blockers))
+
+    @property
+    def query_order(self) -> tuple[str, ...]:
+        return tuple(self._query_order)
+
+    @property
+    def evidence_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._evidence_ids))
+
+    @property
+    def model_views(self) -> tuple[Mapping[str, Any], ...]:
+        return tuple(self._model_views)
+
+    @property
+    def validator_result(self) -> dict[str, Any] | None:
+        return self._validator_result
+
+    @property
+    def stop_reason(self) -> str:
+        return self._stop_reason or "incomplete-evidence"
+
+    @property
+    def trace(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self._trace]
+
+    def _request_digest(self, query_key: Any) -> str:
+        try:
+            return prefixed_sha256(canonical_json_bytes({"query_key": query_key}))
+        except (TypeError, ValueError):
+            return prefixed_sha256(b"invalid-model-request")
+
+    def _new_trace(self, query_key: Any) -> dict[str, Any]:
+        entry = {
+            "sequence": len(self._trace),
+            "selected_by": "model",
+            "query_key": (
+                query_key if type(query_key) is str and query_key in self._ALLOWED else None
+            ),
+            "selection_request_sha256": self._request_digest(query_key),
+            "selection_invocation_id": None,
+            "selection_output_sha256": None,
+            "evidence_id": None,
+            "disposition": "continue",
+            "reason_code": "selection-accepted",
+            "validator_result_id": None,
+        }
+        self._trace.append(entry)
+        return entry
+
+    def _reject(self, code: str, query_key: Any) -> dict[str, Any]:
+        entry = self._new_trace(query_key)
+        entry["disposition"] = "unresolved"
+        entry["reason_code"] = code
+        self._blockers.append(Blocker(code, "model-tool"))
+        self._terminal = True
+        self._stop_reason = code
+        return {
+            "schema": "grafana-evidence-tool-result/v2",
+            "status": "rejected",
+            "error_code": code,
+            "deterministic_disposition": "unresolved",
+            "stop_reason": code,
+        }
+
+    @staticmethod
+    def _evidence_stop_reason(blockers: Sequence[Blocker]) -> str:
+        codes = {item.code for item in blockers}
+        if "contradictory-evidence" in codes:
+            return "contradictory-evidence"
+        if codes.intersection({"stale-evidence", "time-ambiguous"}):
+            return "stale-evidence"
+        if any("budget" in code for code in codes):
+            return "evidence-budget-exhausted"
+        if "evidence-unavailable" in codes:
+            return "evidence-unavailable"
+        return "invalid-evidence"
+
+    async def get_grafana_evidence(self, query_key: AllowedQueryKey) -> Mapping[str, Any]:
+        if self._terminal:
+            return self._reject("extra-after-terminal", query_key)
+        if self._active:
+            return self._reject("invalid-model-request", query_key)
+        if type(query_key) is not str or query_key not in self._ALLOWED:
+            return self._reject("invalid-model-request", query_key)
+        if query_key in self._seen:
+            return self._reject("invalid-model-request", query_key)
+        if len(self._seen) >= self._maximum_calls:
+            return self._reject("evidence-budget-exhausted", query_key)
+
+        self._active = True
+        self._seen.add(query_key)
+        self._query_order.append(query_key)
+        entry = self._new_trace(query_key)
+        try:
+            envelope = await self._collection.collect(query_key)
+        except asyncio.CancelledError:
+            raise
+        except AdapterError as error:
+            code = _normalized_code(error.code)
+            entry.update(disposition="unresolved", reason_code=code)
+            self._blockers.append(Blocker(code, "evidence"))
+            self._terminal = True
+            self._stop_reason = "evidence-unavailable"
+            return {
+                "schema": "grafana-evidence-tool-result/v2",
+                "status": "rejected",
+                "error_code": code,
+                "deterministic_disposition": "unresolved",
+                "stop_reason": self._stop_reason,
+            }
+        except Exception:
+            entry.update(disposition="unresolved", reason_code="evidence-unavailable")
+            self._blockers.append(Blocker("evidence-unavailable", "evidence"))
+            self._terminal = True
+            self._stop_reason = "evidence-unavailable"
+            return {
+                "schema": "grafana-evidence-tool-result/v2",
+                "status": "rejected",
+                "error_code": "evidence-unavailable",
+                "deterministic_disposition": "unresolved",
+                "stop_reason": self._stop_reason,
+            }
+        finally:
+            self._active = False
+
+        view, blockers = _model_evidence_view(
+            envelope,
+            intake=self._intake,
+            now=self._clock().astimezone(UTC),
+            adaptive=True,
+        )
+        evidence_id = envelope.get("evidence_id")
+        if isinstance(evidence_id, str):
+            entry["evidence_id"] = evidence_id
+            self._evidence_ids.add(evidence_id)
+        if blockers or view is None:
+            reason = self._evidence_stop_reason(blockers)
+            entry.update(disposition="unresolved", reason_code=reason)
+            self._blockers.extend(blockers or (Blocker("malformed-evidence", "evidence"),))
+            self._terminal = True
+            self._stop_reason = reason
+            return {
+                "schema": "grafana-evidence-tool-result/v2",
+                "status": "rejected",
+                "error_code": reason,
+                "deterministic_disposition": "unresolved",
+                "stop_reason": reason,
+            }
+        self._model_views.append(view)
+        try:
+            self._budget.reserve_model_visible(canonical_json_bytes(view))
+        except WorkflowError:
+            entry.update(disposition="unresolved", reason_code="evidence-budget-exhausted")
+            self._blockers.append(Blocker("evidence-budget-exhausted", "model-tool"))
+            self._terminal = True
+            self._stop_reason = "evidence-budget-exhausted"
+            return {
+                "schema": "grafana-evidence-tool-result/v2",
+                "status": "rejected",
+                "error_code": self._stop_reason,
+                "deterministic_disposition": "unresolved",
+                "stop_reason": self._stop_reason,
+            }
+
+        selected = set(self._query_order)
+        if selected.intersection(EXACT_QUERY_KEYS) and selected.intersection(COHORT_QUERY_KEYS):
+            try:
+                self._validator_result = await self._validate()
+            except WorkflowError as error:
+                self._blockers.append(Blocker(_normalized_code(error.code), "validation"))
+                entry.update(disposition="unresolved", reason_code="validator-unresolved")
+                self._terminal = True
+                self._stop_reason = "validator-unresolved"
+            except (ContractError, TypeError, ValueError):
+                self._blockers.append(Blocker("validator-unresolved", "validation"))
+                entry.update(disposition="unresolved", reason_code="validator-unresolved")
+                self._terminal = True
+                self._stop_reason = "validator-unresolved"
+            except Exception:
+                self._blockers.append(Blocker("validator-unresolved", "validation"))
+                entry.update(disposition="unresolved", reason_code="validator-unresolved")
+                self._terminal = True
+                self._stop_reason = "validator-unresolved"
+            else:
+                if self._validator_result.get("status") == "resolved":
+                    entry.update(
+                        disposition="resolved",
+                        reason_code="sufficient-evidence",
+                        validator_result_id=self._validator_result["result_id"],
+                    )
+                    self._terminal = True
+                    self._stop_reason = "sufficient-evidence"
+                else:
+                    self._blockers.append(Blocker("validator-unresolved", "validation"))
+                    entry.update(disposition="unresolved", reason_code="validator-unresolved")
+                    self._terminal = True
+                    self._stop_reason = "validator-unresolved"
+        elif len(self._seen) >= self._maximum_calls:
+            self._blockers.append(Blocker("evidence-budget-exhausted", "assessment"))
+            entry.update(disposition="unresolved", reason_code="evidence-budget-exhausted")
+            self._terminal = True
+            self._stop_reason = "evidence-budget-exhausted"
+        else:
+            entry.update(disposition="continue", reason_code="additional-evidence-required")
+
+        required_next_class: str | None = None
+        if entry["disposition"] == "continue":
+            required_next_class = "cohort" if selected.intersection(EXACT_QUERY_KEYS) else "exact"
+
+        return {
+            **view,
+            "schema": "grafana-evidence-tool-result/v2",
+            "deterministic_disposition": entry["disposition"],
+            "stop_reason": entry["reason_code"],
+            "required_next_class": required_next_class,
+            "validator_result_id": entry["validator_result_id"],
+        }
+
+    def finish(self) -> None:
+        if not self._terminal:
+            self._blockers.append(Blocker("incomplete-evidence", "assessment"))
+            self._terminal = True
+            self._stop_reason = "incomplete-evidence"
+            self._trace[-1].update(
+                disposition="unresolved",
+                reason_code="incomplete-evidence",
+                validator_result_id=None,
+            )
+
+    def bind_invocation(self, invocation: Mapping[str, Any]) -> None:
+        for entry in self._trace:
+            if entry["selected_by"] == "model":
+                entry["selection_invocation_id"] = invocation["invocation_id"]
+                entry["selection_output_sha256"] = invocation["output_sha256"]
+
+
 def _audit_attempts(result: EvidenceResult, ledger: BudgetLedger) -> list[Blocker]:
     blockers: list[Blocker] = []
     actual: list[tuple[str, str, int, bool, str]] = []
@@ -887,9 +1206,15 @@ def assess_evidence(
     selected_query_keys: Sequence[str],
     now: datetime,
     ledger: BudgetLedger,
+    adaptive: bool = False,
 ) -> EvidenceAssessment:
     blockers = _audit_attempts(result, ledger)
-    expected_request_id = intake.evidence_batch(selected_query_keys).request_id
+    allowed_query_keys = tuple(ADAPTIVE_QUERY_KEYS) if adaptive else QUERY_KEYS
+    expected_request_id = (
+        intake.adaptive_evidence_batch(selected_query_keys).request_id
+        if adaptive
+        else intake.evidence_batch(selected_query_keys).request_id
+    )
     authorized_digests: dict[str, set[str]] = defaultdict(set)
     authorized_counts: dict[str, int] = defaultdict(int)
     for (
@@ -908,11 +1233,23 @@ def assess_evidence(
                 query_key,
                 [attempt for attempt in result.attempts if attempt.query_key == query_key],
             )
-            for query_key in QUERY_KEYS
+            for query_key in selected_query_keys
         )
         if attempts
     }
-    if tuple(sorted(selected_query_keys)) != tuple(sorted(QUERY_KEYS)):
+    if adaptive:
+        selected_set = set(selected_query_keys)
+        if (
+            not selected_query_keys
+            or selected_query_keys[0] != "alert.rule"
+            or len(selected_query_keys) > 4
+            or len(selected_set) != len(selected_query_keys)
+            or not selected_set.issubset(allowed_query_keys)
+            or not selected_set.intersection(EXACT_QUERY_KEYS)
+            or not selected_set.intersection(COHORT_QUERY_KEYS)
+        ):
+            blockers.append(Blocker("incomplete-capability-set", "evidence"))
+    elif tuple(sorted(selected_query_keys)) != tuple(sorted(QUERY_KEYS)):
         blockers.append(Blocker("incomplete-capability-set", "evidence"))
     if result.maximum_calls_in_flight_observed > 1:
         blockers.append(Blocker("concurrency-budget", "evidence"))
@@ -942,7 +1279,12 @@ def assess_evidence(
             blockers.append(Blocker("malformed-evidence", "evidence"))
             continue
         query_key = observation.get("query_key")
-        if not isinstance(query_key, str) or query_key not in QUERY_KEYS or query_key in by_query:
+        if (
+            not isinstance(query_key, str)
+            or query_key not in allowed_query_keys
+            or query_key not in selected_query_keys
+            or query_key in by_query
+        ):
             blockers.append(Blocker("incomplete-evidence", "evidence", (evidence_id,)))
             continue
         by_query[query_key] = envelope
@@ -990,7 +1332,7 @@ def assess_evidence(
 
     if (
         set(by_query) != set(selected_query_keys)
-        or set(by_query) != set(QUERY_KEYS)
+        or (not adaptive and set(by_query) != set(QUERY_KEYS))
         or len(evidence_ids) != len(set(evidence_ids))
     ):
         blockers.append(Blocker("incomplete-evidence", "evidence", tuple(evidence_ids)))
@@ -998,7 +1340,6 @@ def assess_evidence(
         "start": timestamp(intake.window.start),
         "end": timestamp(intake.window.end),
     }
-    expected_correlation = dict(intake.correlation_keys)
     for query_key, envelope in by_query.items():
         evidence_id = cast(str, envelope["evidence_id"])
         collection = cast(Mapping[str, Any], envelope["collection"])
@@ -1009,6 +1350,7 @@ def assess_evidence(
             continue
         if observation.get("fixed_time_range") != expected_range:
             blockers.append(Blocker("window-drift", "evidence", (evidence_id,)))
+        expected_correlation = _expected_query_correlation(intake, query_key)
         if envelope.get("correlation_keys") != expected_correlation:
             blockers.append(Blocker("correlation-drift", "evidence", (evidence_id,)))
         try:
@@ -1380,8 +1722,9 @@ class InvestigationWorkflow:
     ) -> dict[str, Any]:
         output_sha = None if output is None else prefixed_sha256(output.content)
         usage = (output.input_tokens, output.output_tokens) if output is not None else failure_usage
+        adaptive = self._policy.adaptive
         body = {
-            "schema": INVOCATION_VERSION,
+            "schema": ADAPTIVE_INVOCATION_VERSION if adaptive else INVOCATION_VERSION,
             "incident_id": intake.incident_id,
             "turn_kind": turn_kind,
             "attempt": attempt,
@@ -1391,11 +1734,11 @@ class InvestigationWorkflow:
             "framework_version": ADK_VERSION,
             "client_version": GENAI_VERSION,
             "prompt_version": (
-                "evidence-selection/v1"
+                f"evidence-selection/v{2 if adaptive else 1}"
                 if turn_kind == "evidence-selection"
-                else "response-drafting/v1"
+                else f"response-drafting/v{2 if adaptive else 1}"
             ),
-            "policy_version": POLICY_VERSION,
+            "policy_version": self._policy.version,
             "tool_inventory_version": inventory_version,
             "normalized_input_sha256": prefixed_sha256(canonical_json_bytes(input_value)),
             "input_evidence_ids": sorted(set(input_evidence_ids)),
@@ -1411,10 +1754,19 @@ class InvestigationWorkflow:
             "error_code": error_code,
             "trace_id": intake.correlation_keys["trace_id"],
         }
+        if adaptive:
+            body["policy_sha256"] = self._policy.digest
         record = finalize_derived_record(
             body, id_field="invocation_id", id_prefix="model-invocation"
         )
-        validate_contract("model-tool-invocation-v1.schema.json", record)
+        validate_contract(
+            (
+                "model-tool-invocation-v2.schema.json"
+                if adaptive
+                else "model-tool-invocation-v1.schema.json"
+            ),
+            record,
+        )
         return record
 
     async def _model_call(
@@ -1647,6 +1999,11 @@ class InvestigationWorkflow:
             return output, records, None
 
     async def run(self, alert: Mapping[str, Any], *, bundle_root: Path) -> dict[str, Any]:
+        if self._policy.adaptive:
+            return await self._run_adaptive(alert, bundle_root=bundle_root)
+        return await self._run_fixed(alert, bundle_root=bundle_root)
+
+    async def _run_fixed(self, alert: Mapping[str, Any], *, bundle_root: Path) -> dict[str, Any]:
         ledger = BudgetLedger(self._policy, self._monotonic)
         blockers: list[Blocker] = []
         if self._progress is None:
@@ -1981,6 +2338,440 @@ class InvestigationWorkflow:
                 "finalized_at": timestamp(self._clock().astimezone(UTC)),
             }
             return finalize_response_packet(body)
+
+        try:
+            return await self._validator_call(ledger, build_packet, final=True)
+        except Exception as error:
+            raise WorkflowError("packet-finalization") from error
+
+    async def _run_adaptive(self, alert: Mapping[str, Any], *, bundle_root: Path) -> dict[str, Any]:
+        ledger = BudgetLedger(self._policy, self._monotonic)
+        blockers: list[Blocker] = []
+        invocations: list[dict[str, Any]] = []
+        evidence_ids: set[str] = set()
+        deterministic_results: list[dict[str, Any]] = []
+        classified_claims: list[dict[str, Any]] = []
+        classified_scope: dict[str, Any] | None = None
+        hypotheses: list[dict[str, Any]] = []
+        adaptive_trace: list[dict[str, Any]] = []
+        state_history = ["intake"]
+        advisory: ModelAdvisory | None = None
+        selection: AdaptiveModelSelection | None = None
+        assessment: EvidenceAssessment | None = None
+        validator_result: dict[str, Any] | None = None
+        tool_ledger: AdaptiveEvidenceLedger | None = None
+        result: EvidenceResult | None = None
+        now = self._clock().astimezone(UTC)
+
+        try:
+            intake = await self._validator_call(ledger, lambda: AlertIntake.from_mapping(alert))
+        except (ContractError, WorkflowError, TypeError, ValueError):
+            fallback_id = f"invalid-intake-{sha256(b'invalid-intake')[:16]}"
+            intake = AlertIntake(
+                fallback_id,
+                fallback_id,
+                now,
+                now,
+                0,
+                {},
+                {"trace_id": "0" * 32},
+                None,
+                FrozenWindow(now, now, now),
+            )
+            blockers.append(Blocker("invalid-intake", "intake"))
+            adaptive_trace = [
+                {
+                    "sequence": 0,
+                    "selected_by": "policy",
+                    "query_key": "alert.rule",
+                    "selection_request_sha256": prefixed_sha256(
+                        canonical_json_bytes({"query_key": "alert.rule"})
+                    ),
+                    "selection_invocation_id": None,
+                    "selection_output_sha256": None,
+                    "evidence_id": None,
+                    "disposition": "unresolved",
+                    "reason_code": "invalid-intake",
+                    "validator_result_id": None,
+                }
+            ]
+        if self._progress is not None:
+            self._progress.begin(ledger, self._shared)
+            self._progress.intake = intake
+            invocations = self._progress.invocations
+            evidence_ids = self._progress.evidence_ids
+            deterministic_results = self._progress.deterministic_results
+            classified_claims = self._progress.classified_claims
+            state_history = self._progress.state_history
+
+        if not blockers:
+            state_history.append("evidence")
+            try:
+                batch = intake.adaptive_evidence_batch(ADAPTIVE_QUERY_KEYS)
+                controls = ExecutionControls(
+                    shared_limiter=self._shared,
+                    attempt_authorizer=ledger.authorize_attempt,
+                )
+                async with self._evidence.open_collection(batch, controls=controls) as collection:
+                    timeout = min(
+                        float(self._policy.budgets.evidence_timeout_seconds),
+                        max(0.0, ledger.remaining_seconds() - 0.25),
+                    )
+                    if timeout <= 0:
+                        raise WorkflowError("wall-time-exhausted")
+                    baseline = await asyncio.wait_for(
+                        collection.collect("alert.rule"), timeout=timeout
+                    )
+                    baseline_view, baseline_blockers = _model_evidence_view(
+                        baseline,
+                        intake=intake,
+                        now=self._clock().astimezone(UTC),
+                        adaptive=True,
+                    )
+                    if isinstance(baseline.get("evidence_id"), str):
+                        evidence_ids.add(cast(str, baseline["evidence_id"]))
+                    blockers.extend(baseline_blockers)
+                    if baseline_view is None:
+                        reason = AdaptiveEvidenceLedger._evidence_stop_reason(baseline_blockers)
+                        adaptive_trace = [
+                            {
+                                "sequence": 0,
+                                "selected_by": "policy",
+                                "query_key": "alert.rule",
+                                "selection_request_sha256": prefixed_sha256(
+                                    canonical_json_bytes({"query_key": "alert.rule"})
+                                ),
+                                "selection_invocation_id": None,
+                                "selection_output_sha256": None,
+                                "evidence_id": baseline.get("evidence_id"),
+                                "disposition": "unresolved",
+                                "reason_code": reason,
+                                "validator_result_id": None,
+                            }
+                        ]
+                    else:
+
+                        async def validate_for_sufficiency() -> dict[str, Any]:
+                            validated = await self._validator_call(
+                                ledger,
+                                lambda: self._validator.validate(
+                                    bundle_root, incident_id=intake.incident_id
+                                ),
+                            )
+                            validate_result_contract(validated)
+                            _validate_validator_binding(validated, intake)
+                            return validated
+
+                        state_history.append("selection")
+                        tool_ledger = AdaptiveEvidenceLedger(
+                            collection=collection,
+                            budget=ledger,
+                            intake=intake,
+                            clock=self._clock,
+                            baseline_view=baseline_view,
+                            validate=validate_for_sufficiency,
+                            maximum_calls=self._policy.maximum_post_baseline_calls,
+                        )
+                        selection_payload = {
+                            "input_contract": "evidence-selection-input/v2",
+                            "policy_binding": {
+                                "version": self._policy.version,
+                                "sha256": self._policy.digest,
+                            },
+                            "alert": intake.adaptive_model_view(),
+                            "alert_baseline": baseline_view,
+                            "authority": (
+                                "query-selection-only-deterministic-stop-no-provider-arguments"
+                            ),
+                        }
+                        inventory_version = getattr(collection.result().inventory, "version", None)
+                        output, records, blocker = await self._model_call(
+                            ledger=ledger,
+                            intake=intake,
+                            turn_kind="evidence-selection",
+                            payload=selection_payload,
+                            response_schema_name="model-selection-v2.schema.json",
+                            input_evidence_ids=(cast(str, baseline["evidence_id"]),),
+                            inventory_version=(
+                                inventory_version if isinstance(inventory_version, str) else None
+                            ),
+                            evidence_tool=tool_ledger.get_grafana_evidence,
+                            allow_transient_retry=False,
+                        )
+                        invocations.extend(records)
+                        tool_ledger.finish()
+                        if records:
+                            tool_ledger.bind_invocation(records[-1])
+                        if self._progress is not None:
+                            self._progress.adaptive_trace = tool_ledger.trace
+                            self._progress.stop_reason = tool_ledger.stop_reason
+                        if blocker is not None:
+                            blockers.append(blocker)
+                        if output is not None:
+                            try:
+                                selection = AdaptiveModelSelection.from_bytes(
+                                    output.content,
+                                    allowed_evidence_ids=frozenset(tool_ledger.evidence_ids),
+                                )
+                                expected_order = ("alert.rule", *tool_ledger.query_order)
+                                if (
+                                    selection.query_keys != expected_order
+                                    or selection.stop_reason != tool_ledger.stop_reason
+                                ):
+                                    raise ContractError("model-output-invalid")
+                                hypotheses = selection.hypotheses_to_dict()
+                                if self._progress is not None:
+                                    self._progress.hypotheses = hypotheses
+                            except ContractError as error:
+                                blockers.append(Blocker(_normalized_code(error.code), "selection"))
+                                if records:
+                                    invalid = _invalid_model_invocation(
+                                        records[-1], error_code=error.code
+                                    )
+                                    records[-1] = invalid
+                                    invocations[-1] = invalid
+                                    tool_ledger.bind_invocation(invalid)
+                        blockers.extend(tool_ledger.blockers)
+                        validator_result = tool_ledger.validator_result
+                        adaptive_trace = tool_ledger.trace
+                    result = collection.result()
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError:
+                blockers.append(Blocker("evidence-timeout", "evidence"))
+            except AdapterError as error:
+                blockers.append(Blocker(_normalized_code(error.code), "evidence"))
+            except (ContractError, WorkflowError, TypeError, ValueError):
+                blockers.append(Blocker("evidence-unavailable", "evidence"))
+            except Exception:
+                blockers.append(Blocker("evidence-unavailable", "evidence"))
+
+            if tool_ledger is not None and result is not None:
+                selected_query_keys = ("alert.rule", *tool_ledger.query_order)
+                state_history.append("assessment")
+                try:
+                    assessment = await self._validator_call(
+                        ledger,
+                        lambda: assess_evidence(
+                            result,
+                            intake=intake,
+                            selected_query_keys=selected_query_keys,
+                            now=self._clock().astimezone(UTC),
+                            ledger=ledger,
+                            adaptive=True,
+                        ),
+                    )
+                except WorkflowError as error:
+                    blockers.append(Blocker(_normalized_code(error.code), "assessment"))
+                except Exception:
+                    blockers.append(Blocker("malformed-evidence", "assessment"))
+                if assessment is not None:
+                    evidence_ids.update(assessment.evidence_ids)
+                    blockers.extend(assessment.blockers)
+
+        if validator_result is not None:
+            state_history.append("validation")
+            deterministic_results.append(_deterministic_result(validator_result))
+            evidence_ids.update(deterministic_results[-1]["evidence_ids"])
+            evidence_ids.update(
+                cast(str, claim["deterministic_result_evidence_id"])
+                for claim in cast(Sequence[Mapping[str, Any]], validator_result.get("claims", ()))
+                if isinstance(claim.get("deterministic_result_evidence_id"), str)
+            )
+
+        if not blockers and validator_result is not None:
+            try:
+                classified_claims, claim_blockers, claim_evidence = await self._validator_call(
+                    ledger,
+                    lambda: classify_claims(
+                        validator_result,
+                        () if assessment is None else assessment.evidence_ids,
+                    ),
+                )
+                blockers.extend(claim_blockers)
+                evidence_ids.update(claim_evidence)
+            except WorkflowError as error:
+                blockers.append(Blocker(_normalized_code(error.code), "classification"))
+            except Exception:
+                blockers.append(Blocker("validator-unresolved", "classification"))
+
+        if not blockers and validator_result is not None:
+            try:
+                classified_scope, scope_blockers = await self._validator_call(
+                    ledger, lambda: classify_scope(validator_result)
+                )
+                blockers.extend(scope_blockers)
+            except WorkflowError as error:
+                blockers.append(Blocker(_normalized_code(error.code), "scope"))
+            except Exception:
+                blockers.append(Blocker("validator-unresolved", "scope"))
+
+        if not blockers and assessment is not None and classified_scope is not None:
+            state_history.append("drafting")
+            draft_payload = {
+                "input_contract": "response-drafting-input/v2",
+                "policy_binding": {
+                    "version": self._policy.version,
+                    "sha256": self._policy.digest,
+                },
+                "deterministic_facts": {
+                    "claims": classified_claims,
+                    "scope": classified_scope,
+                },
+                "quoted_evidence_excerpts": _project_advisory_evidence_views(
+                    assessment.model_views
+                ),
+                "allowed_evidence_ids": sorted(assessment.evidence_ids),
+                "authority": "advisory-only",
+            }
+            output, records, blocker = await self._model_call(
+                ledger=ledger,
+                intake=intake,
+                turn_kind="response-drafting",
+                payload=draft_payload,
+                response_schema_name="model-advisory-v1.schema.json",
+                input_evidence_ids=assessment.evidence_ids,
+                inventory_version=assessment.inventory_version,
+            )
+            invocations.extend(records)
+            if blocker is not None:
+                blockers.append(blocker)
+            elif output is not None:
+                try:
+                    advisory = ModelAdvisory.from_bytes(
+                        output.content, frozenset(assessment.evidence_ids)
+                    )
+                except ContractError as error:
+                    if records:
+                        invalid = _invalid_model_invocation(records[-1], error_code=error.code)
+                        records[-1] = invalid
+                        invocations[-1] = invalid
+                    if error.code != "model-output-invalid":
+                        blockers.append(Blocker(_normalized_code(error.code), "drafting"))
+                    else:
+                        compact_draft_payload = {
+                            **draft_payload,
+                            "deterministic_facts": {
+                                "claims": [
+                                    {
+                                        key: claim[key]
+                                        for key in (
+                                            "claim_type",
+                                            "subject",
+                                            "state",
+                                            "reason_codes",
+                                        )
+                                    }
+                                    for claim in classified_claims
+                                ],
+                                "scope": {
+                                    key: classified_scope[key]
+                                    for key in ("state", "affected", "safe", "unknown")
+                                },
+                            },
+                        }
+                        retry_output, retry_records, retry_blocker = await self._model_call(
+                            ledger=ledger,
+                            intake=intake,
+                            turn_kind="response-drafting",
+                            payload=compact_draft_payload,
+                            response_schema_name="model-advisory-v1.schema.json",
+                            input_evidence_ids=assessment.evidence_ids,
+                            inventory_version=assessment.inventory_version,
+                            attempt_offset=len(records),
+                            allow_transient_retry=False,
+                        )
+                        invocations.extend(retry_records)
+                        if retry_blocker is not None:
+                            blockers.append(retry_blocker)
+                        elif retry_output is not None:
+                            try:
+                                advisory = ModelAdvisory.from_bytes(
+                                    retry_output.content,
+                                    frozenset(assessment.evidence_ids),
+                                )
+                            except ContractError as retry_error:
+                                invalid_retry = _invalid_model_invocation(
+                                    retry_records[-1], error_code=retry_error.code
+                                )
+                                retry_records[-1] = invalid_retry
+                                invocations[-1] = invalid_retry
+                                blockers.append(
+                                    Blocker(_normalized_code(retry_error.code), "drafting")
+                                )
+
+        blockers = _dedupe_blockers(blockers)
+        if not adaptive_trace:
+            adaptive_trace = [
+                {
+                    "sequence": 0,
+                    "selected_by": "policy",
+                    "query_key": "alert.rule",
+                    "selection_request_sha256": prefixed_sha256(
+                        canonical_json_bytes({"query_key": "alert.rule"})
+                    ),
+                    "selection_invocation_id": None,
+                    "selection_output_sha256": None,
+                    "evidence_id": None,
+                    "disposition": "unresolved",
+                    "reason_code": blockers[0].code if blockers else "incomplete-evidence",
+                    "validator_result_id": None,
+                }
+            ]
+        state_history.extend(("finalization", "complete"))
+        if blockers:
+            claims = [
+                _unresolved_claim(
+                    incident_id=intake.incident_id,
+                    blockers=blockers,
+                    evidence_ids=sorted(evidence_ids),
+                )
+            ]
+            scope = _unknown_scope(classified_scope, blockers)
+            status = "unresolved"
+            candidate_plan = None
+            model_advisory = None
+        else:
+            claims = classified_claims
+            scope = classified_scope or _unknown_scope(
+                None, (Blocker("incomplete-evidence", "scope"),)
+            )
+            status = "resolved"
+            candidate_plan = _candidate_plan(scope, claims)
+            model_advisory = None if advisory is None else advisory.to_dict()
+        no_action_reason = _no_action_reason(
+            blockers, no_targets=not cast(Sequence[Any], scope["affected"])
+        )
+        stop_reason = cast(str, adaptive_trace[-1]["reason_code"])
+
+        def build_packet() -> dict[str, Any]:
+            body = {
+                "schema": ADAPTIVE_RESPONSE_PACKET_VERSION,
+                "incident_id": intake.incident_id,
+                "version": 2,
+                "status": status,
+                "policy_binding": {
+                    "version": self._policy.version,
+                    "sha256": self._policy.digest,
+                },
+                "fixed_window": intake.window.to_dict(),
+                "evidence_ids": sorted(evidence_ids),
+                "deterministic_results": deterministic_results,
+                "claims": claims,
+                "scope": scope,
+                "invocation_records": invocations,
+                "adaptive_trace": adaptive_trace,
+                "hypotheses": hypotheses,
+                "stop_reason": stop_reason,
+                "budget_use": ledger.snapshot(self._shared),
+                "unresolved_items": [item.to_dict() for item in blockers],
+                "candidate_plan": candidate_plan,
+                "no_action_reason": no_action_reason,
+                "model_advisory": model_advisory,
+                "state_history": state_history,
+                "finalized_at": timestamp(self._clock().astimezone(UTC)),
+            }
+            return finalize_adaptive_response_packet(body)
 
         try:
             return await self._validator_call(ledger, build_packet, final=True)
