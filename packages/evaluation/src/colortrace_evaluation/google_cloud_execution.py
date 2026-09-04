@@ -100,7 +100,6 @@ class GoogleBatchApiClient:
                 batch_module = importlib.import_module("google.cloud.batch_v1")
                 client = batch_module.BatchServiceClient(
                     credentials=credentials,
-                    client_options={"api_endpoint": f"{region}-batch.googleapis.com"},
                 )
             except (ImportError, AttributeError) as error:
                 raise ReferenceExecutionError("batch-sdk-unavailable") from error

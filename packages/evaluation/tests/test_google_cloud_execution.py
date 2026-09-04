@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -49,6 +51,36 @@ class FakeBatchSdkClient:
         result = {**request["job"], "name": name, "status": {"state": "QUEUED"}}
         self.jobs[name] = result
         return result
+
+
+def test_batch_adapter_uses_official_global_endpoint_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credentials = object()
+    calls: list[dict[str, Any]] = []
+
+    def create_client(**kwargs: Any) -> FakeBatchSdkClient:
+        calls.append(kwargs)
+        return FakeBatchSdkClient()
+
+    batch_module = SimpleNamespace(BatchServiceClient=create_client)
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        lambda name: batch_module,
+    )
+
+    client = GoogleBatchApiClient(
+        project_id=PROJECT_ID,
+        region=REGION,
+        principal=PRINCIPAL,
+        credentials=credentials,
+        not_found_type=FakeNotFound,
+        already_exists_type=FakeAlreadyExists,
+    )
+
+    assert client.principal == PRINCIPAL
+    assert calls == [{"credentials": credentials}]
 
 
 def test_batch_adapter_builds_requests_and_translates_sdk_conflicts() -> None:
