@@ -19,6 +19,11 @@ from starlette.types import Lifespan
 from .auth import Principal, TokenVerifier
 from .demo_facade import DemoApi, DemoFacadeError
 from .recovery import RecoveryApi, RecoveryVerificationAdmissionApi
+from .reference_demo import (
+    ReferenceDemoApi,
+    ReferenceDemoError,
+    ReferenceScenarioRunApi,
+)
 from .response_plans import ResponsePlanApi
 from .simulator_actions import SimulatorActionApi
 
@@ -179,6 +184,43 @@ def _status_for_demo_error(code: str) -> int:
     return 409
 
 
+def _status_for_reference_demo_error(code: str) -> int:
+    if code == "reference-run-overloaded":
+        return 429
+    if code in {
+        "reference-run-not-found",
+        "reference-scenario-not-found",
+        "reference-visual-not-found",
+    }:
+        return 404
+    if code in {
+        "reference-approval-authority-invalid",
+        "reference-approval-gesture-invalid",
+        "reference-approval-untrusted",
+        "reference-recovery-approval-phrase-invalid",
+    }:
+        return 403
+    if code in {
+        "reference-run-clock-invalid",
+        "reference-run-configuration-invalid",
+        "reference-run-deadline-exceeded",
+        "reference-run-output-unavailable",
+        "reference-run-recovery-state-invalid",
+        "reference-recovery-verification-failed",
+        "reference-benchmark-result-invalid",
+        "reference-preview-unavailable",
+        "reference-run-telemetry-unavailable",
+        "reference-run-unavailable",
+    }:
+        return 503
+    if code in {
+        "reference-recovery-decision-request-invalid",
+        "reference-run-request-invalid",
+    }:
+        return 400
+    return 409
+
+
 def _guard_demo_mutation(request: Request) -> None:
     media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if media_type != "application/json":
@@ -251,6 +293,8 @@ def create_app(
     recovery: RecoveryApi | None = None,
     recovery_verifications: RecoveryVerificationAdmissionApi | None = None,
     demo: DemoApi | None = None,
+    reference_demo: ReferenceDemoApi | None = None,
+    reference_runs: ReferenceScenarioRunApi | None = None,
     lifespan: Lifespan[FastAPI] | None = None,
 ) -> FastAPI:
     app = FastAPI(
@@ -336,6 +380,13 @@ def create_app(
             content=content,
         )
 
+    @app.exception_handler(ReferenceDemoError)
+    async def handle_reference_demo_error(_request: Any, error: ReferenceDemoError) -> JSONResponse:
+        return JSONResponse(
+            status_code=_status_for_reference_demo_error(error.code),
+            content={"code": error.code},
+        )
+
     @app.exception_handler(HTTPException)
     async def handle_http_error(_request: Any, error: HTTPException) -> JSONResponse:
         detail = error.detail
@@ -396,6 +447,16 @@ def create_app(
         if demo is None:
             raise _problem(404, "demo-unavailable")
         return demo
+
+    def reference_demo_api() -> ReferenceDemoApi:
+        if reference_demo is None:
+            raise _problem(404, "reference-demo-unavailable")
+        return reference_demo
+
+    def reference_run_api() -> ReferenceScenarioRunApi:
+        if reference_runs is None:
+            raise _problem(503, "reference-run-unavailable")
+        return reference_runs
 
     @app.post("/v1/incidents", status_code=202)
     def create_incident(
@@ -522,6 +583,56 @@ def create_app(
     @app.get("/v1/demo")
     def get_demo_preview() -> dict[str, Any]:
         return demo_api().preview()
+
+    @app.get("/v1/demo/scenarios")
+    def list_reference_demo_scenarios() -> dict[str, Any]:
+        return reference_demo_api().list_scenarios()
+
+    @app.get("/v1/demo/scenarios/{scenario_id}")
+    def get_reference_demo_scenario(scenario_id: str) -> dict[str, Any]:
+        return reference_demo_api().get_scenario(scenario_id)
+
+    @app.post("/v1/demo/scenarios/{scenario_id}/runs")
+    async def run_reference_demo_scenario(
+        scenario_id: str,
+        response: Response,
+        body: dict[str, Any] = demo_body_dependency,
+    ) -> dict[str, Any]:
+        packet = await reference_run_api().run_scenario(scenario_id, body)
+        response.headers["X-ColorTrace-Evidence-Scope"] = "representative"
+        response.headers["X-ColorTrace-Affected-Representatives"] = "1"
+        response.headers["X-ColorTrace-Protected-Representatives"] = "1"
+        return packet
+
+    @app.post("/v1/demo/scenarios/{scenario_id}/runs/{request_id}/decision")
+    async def decide_reference_demo_recovery(
+        scenario_id: str,
+        request_id: str,
+        response: Response,
+        body: dict[str, Any] = demo_body_dependency,
+    ) -> dict[str, Any]:
+        decision = await reference_run_api().decide_scenario(scenario_id, request_id, body)
+        response.headers["X-ColorTrace-Execution-Target"] = "colortrace-simulator"
+        response.headers["X-ColorTrace-Production-State-Changed"] = "false"
+        return decision
+
+    @app.get("/v1/demo/scenarios/{scenario_id}/visuals/{kind}")
+    def get_reference_demo_visual(scenario_id: str, kind: str) -> Response:
+        visual = reference_demo_api().scenario_visual(scenario_id, kind)
+        return Response(
+            content=visual.content,
+            media_type=visual.media_type,
+            headers={
+                "X-Content-SHA256": visual.sha256,
+                "X-ColorTrace-Scenario-SHA256": visual.scenario_sha256,
+                "X-ColorTrace-Representation": visual.representation,
+                "X-ColorTrace-Pixel-Evidence": str(visual.pixel_evidence).lower(),
+            },
+        )
+
+    @app.get("/v1/benchmarks/reference-suite")
+    def get_reference_benchmark_suite() -> dict[str, Any]:
+        return reference_demo_api().benchmark_suite()
 
     @app.get("/v1/demo/visuals/{kind}")
     def get_demo_preview_visual(kind: str) -> Response:

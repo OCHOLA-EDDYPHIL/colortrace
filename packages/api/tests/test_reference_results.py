@@ -1,0 +1,295 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+from colortrace_api.reference_results import (
+    ReferenceResultError,
+    load_reference_impact_result,
+)
+
+COLLECTION_ID = "tears-of-steel-linear-exr-240-v1"
+MANIFEST_SHA256 = "sha256:" + "a" * 64
+
+
+def _canonical(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+
+
+def _signed_savings(actual: int, baseline: int) -> int:
+    return (baseline - actual) * 10_000 // baseline
+
+
+def _resign(result: dict[str, Any]) -> None:
+    body = {key: value for key, value in result.items() if key != "report_sha256"}
+    result["report_sha256"] = f"sha256:{hashlib.sha256(_canonical(body)).hexdigest()}"
+
+
+def _result() -> dict[str, Any]:
+    scenario_classes = {
+        "tos-config-rollout-drift-v1": "configuration-rollout-drift/v1",
+        "tos-resource-resolution-drift-v1": "resource-resolution-drift/v1",
+        "tos-stale-derivative-cache-v1": "stale-derivative-cache/v1",
+    }
+    body: dict[str, Any] = {
+        "schema": "reference-impact-benchmark/v1",
+        "reference_collection_id": COLLECTION_ID,
+        "reference_manifest_sha256": MANIFEST_SHA256,
+        "campaign_report_sha256": "sha256:" + "b" * 64,
+        "evidence": {
+            "source": "recorded-worker-receipts",
+            "evidence_set_id": "sha256:" + "c" * 64,
+            "recorded_worker_evidence": True,
+            "observation_count": 720,
+        },
+        "thresholds": {
+            "minimum_classification_accuracy_basis_points": 9_500,
+            "minimum_median_compute_avoided_basis_points": 4_000,
+            "minimum_median_application_bytes_avoided_basis_points": 4_000,
+            "maximum_false_authorized_actions": 0,
+        },
+        "metrics": {
+            "classification_accuracy_basis_points": 10_000,
+            "false_authorized_actions": 0,
+            "adaptive_advantage_basis_points": 3_334,
+            "recorded_model_advantage_basis_points": 3_334,
+            "median_compute_avoided_basis_points": 7_000,
+            "median_application_bytes_avoided_basis_points": 4_500,
+        },
+        "timing": {
+            "informational_only": True,
+            "excluded_from_acceptance": True,
+            "baseline_cpu_nanoseconds": 4,
+            "baseline_wall_nanoseconds": 5,
+            "selective_cpu_nanoseconds": 2,
+            "selective_wall_nanoseconds": 3,
+        },
+        "scenario_results": [
+            {
+                "scenario_id": scenario_id,
+                "incident_class": incident_class,
+                "artifact_count": 240,
+                "affected_artifact_count": 72,
+                "protected_artifact_count": 168,
+                "baseline": {"pixel_work": 1_000, "application_bytes": 2_000},
+                "selective": {"pixel_work": 300, "application_bytes": 1_100},
+                "compute_avoided_basis_points": 7_000,
+                "application_bytes_avoided_basis_points": 4_500,
+                "output_equivalence": True,
+                "protected_output_integrity": True,
+            }
+            for scenario_id, incident_class in scenario_classes.items()
+        ],
+        "checks": {
+            "campaign_acceptance_passed": True,
+            "output_equivalence": True,
+            "protected_output_integrity": True,
+            "zero_false_authorized_actions": True,
+            "classification_at_least_95_percent": True,
+            "same_selection_budgets": True,
+            "measurable_adaptive_advantage": True,
+            "median_compute_avoided_at_least_40_percent": True,
+            "median_application_bytes_avoided_at_least_40_percent": True,
+        },
+        "passed": True,
+    }
+    stale = next(
+        item
+        for item in body["scenario_results"]
+        if item["scenario_id"] == "tos-stale-derivative-cache-v1"
+    )
+    stale["baseline"]["application_bytes"] = 2_001
+    stale["selective"]["application_bytes"] = 2_201
+    stale["application_bytes_avoided_basis_points"] = _signed_savings(2_201, 2_001)
+    result = dict(body)
+    _resign(result)
+    return result
+
+
+def _write(path: Path, result: dict[str, Any]) -> None:
+    path.write_bytes(_canonical(result) + b"\n")
+
+
+def test_recorded_impact_result_is_strictly_bound_and_defensively_copied(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "result.json"
+    _write(path, _result())
+
+    first = load_reference_impact_result(
+        expected_collection_id=COLLECTION_ID,
+        expected_manifest_sha256=MANIFEST_SHA256,
+        path=path,
+    )
+    first["passed"] = False
+    second = load_reference_impact_result(
+        expected_collection_id=COLLECTION_ID,
+        expected_manifest_sha256=MANIFEST_SHA256,
+        path=path,
+    )
+
+    assert second["passed"] is True
+    assert second["evidence"]["recorded_worker_evidence"] is True
+    assert second["metrics"]["recorded_model_advantage_basis_points"] == 3_334
+
+
+def test_recorded_result_accepts_signed_stale_cache_bytes_without_weakening_median_gate(
+    tmp_path: Path,
+) -> None:
+    result = _result()
+    stale = next(
+        item
+        for item in result["scenario_results"]
+        if item["scenario_id"] == "tos-stale-derivative-cache-v1"
+    )
+    path = tmp_path / "result.json"
+    _write(path, result)
+
+    loaded = load_reference_impact_result(
+        expected_collection_id=COLLECTION_ID,
+        expected_manifest_sha256=MANIFEST_SHA256,
+        path=path,
+    )
+
+    loaded_stale = next(
+        item
+        for item in loaded["scenario_results"]
+        if item["scenario_id"] == "tos-stale-derivative-cache-v1"
+    )
+    assert stale["selective"]["application_bytes"] > stale["baseline"]["application_bytes"]
+    assert stale["application_bytes_avoided_basis_points"] == -1_000
+    assert loaded_stale == stale
+    assert loaded["metrics"]["median_application_bytes_avoided_basis_points"] == 4_500
+    assert loaded["checks"]["median_application_bytes_avoided_at_least_40_percent"] is True
+
+
+def test_recorded_result_accepts_savings_below_negative_ten_thousand(
+    tmp_path: Path,
+) -> None:
+    result = _result()
+    stale = next(
+        item
+        for item in result["scenario_results"]
+        if item["scenario_id"] == "tos-stale-derivative-cache-v1"
+    )
+    stale["baseline"]["application_bytes"] = 2_000
+    stale["selective"]["application_bytes"] = 5_000
+    stale["application_bytes_avoided_basis_points"] = -15_000
+    _resign(result)
+    path = tmp_path / "result.json"
+    _write(path, result)
+
+    loaded = load_reference_impact_result(
+        expected_collection_id=COLLECTION_ID,
+        expected_manifest_sha256=MANIFEST_SHA256,
+        path=path,
+    )
+
+    loaded_stale = next(
+        item
+        for item in loaded["scenario_results"]
+        if item["scenario_id"] == "tos-stale-derivative-cache-v1"
+    )
+    assert loaded_stale["application_bytes_avoided_basis_points"] == -15_000
+
+
+def test_recorded_result_rejects_resigned_signed_savings_tamper(tmp_path: Path) -> None:
+    result = _result()
+    stale = next(
+        item
+        for item in result["scenario_results"]
+        if item["scenario_id"] == "tos-stale-derivative-cache-v1"
+    )
+    stale["application_bytes_avoided_basis_points"] += 1
+    _resign(result)
+    path = tmp_path / "result.json"
+    _write(path, result)
+
+    with pytest.raises(ReferenceResultError, match="reference-result-invalid"):
+        load_reference_impact_result(
+            expected_collection_id=COLLECTION_ID,
+            expected_manifest_sha256=MANIFEST_SHA256,
+            path=path,
+        )
+
+
+@pytest.mark.parametrize(
+    "metric",
+    (
+        "median_compute_avoided_basis_points",
+        "median_application_bytes_avoided_basis_points",
+    ),
+)
+def test_recorded_result_rejects_resigned_summary_median_tamper(
+    tmp_path: Path,
+    metric: str,
+) -> None:
+    result = _result()
+    result["metrics"][metric] += 1
+    _resign(result)
+    path = tmp_path / "result.json"
+    _write(path, result)
+
+    with pytest.raises(ReferenceResultError, match="reference-result-invalid"):
+        load_reference_impact_result(
+            expected_collection_id=COLLECTION_ID,
+            expected_manifest_sha256=MANIFEST_SHA256,
+            path=path,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda value: value["evidence"].update({"source": "controlled-receipt-set"}),
+        lambda value: value["metrics"].update({"recorded_model_advantage_basis_points": None}),
+        lambda value: value["checks"].update({"output_equivalence": False}),
+        lambda value: value["scenario_results"][0].update({"protected_output_integrity": False}),
+        lambda value: value.update({"report_sha256": "sha256:" + "0" * 64}),
+    ),
+)
+def test_result_rejects_unrecorded_failed_or_tampered_claims(
+    tmp_path: Path,
+    mutation: Any,
+) -> None:
+    result = _result()
+    mutation(result)
+    path = tmp_path / "result.json"
+    _write(path, result)
+
+    with pytest.raises(ReferenceResultError, match="reference-result-invalid"):
+        load_reference_impact_result(
+            expected_collection_id=COLLECTION_ID,
+            expected_manifest_sha256=MANIFEST_SHA256,
+            path=path,
+        )
+
+
+def test_result_rejects_symlink_and_noncanonical_json(tmp_path: Path) -> None:
+    target = tmp_path / "target.json"
+    _write(target, _result())
+    link = tmp_path / "result.json"
+    link.symlink_to(target)
+    with pytest.raises(ReferenceResultError, match="reference-result-invalid"):
+        load_reference_impact_result(
+            expected_collection_id=COLLECTION_ID,
+            expected_manifest_sha256=MANIFEST_SHA256,
+            path=link,
+        )
+
+    target.write_text(json.dumps(_result(), indent=2), encoding="utf-8")
+    with pytest.raises(ReferenceResultError, match="reference-result-invalid"):
+        load_reference_impact_result(
+            expected_collection_id=COLLECTION_ID,
+            expected_manifest_sha256=MANIFEST_SHA256,
+            path=target,
+        )

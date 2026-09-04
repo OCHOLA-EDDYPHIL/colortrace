@@ -21,6 +21,7 @@ from colortrace_investigation import (
     AdkVertexGateway,
     ColorStateValidatorGateway,
     InvestigationPolicy,
+    ReferenceInvestigationWorkflow,
 )
 from colortrace_recovery import (
     DeterministicRecoveryVerifier,
@@ -36,11 +37,15 @@ from colortrace_response_plans import (
     OIDCTrustBoundary,
     SQLiteResponsePlanRepository,
 )
-from colortrace_simulator import SimulatorActionService, StoredDispatchSource
+from colortrace_simulator import (
+    ReferenceHumanApprovalBoundary,
+    SimulatorActionService,
+    StoredDispatchSource,
+)
 from colortrace_simulator.authority import SimulatorAuthorityBoundary, SimulatorExecutorBoundary
 from colortrace_simulator.bundle import LocalPublicationPort
 from colortrace_simulator.repository import SQLiteSimulatorRepository
-from colortrace_telemetry import ActionOtelSink, emit_action_outcome
+from colortrace_telemetry import ActionOtelSink, ReferenceOtelSink, emit_action_outcome
 from colortrace_vertical_slice import SqliteIncidentStore, VerticalSliceApi, VerticalSliceWorker
 from fastapi import FastAPI
 from starlette.types import Lifespan
@@ -62,6 +67,11 @@ from .oidc import HttpsJwksResolver, JwksResolver, OidcTokenVerifier
 from .recovery import RecoveryCoordinator
 from .recovery_closure import LocalRecoveryClosureFence
 from .recovery_tasks import SQLiteRecoveryVerificationTaskStore
+from .reference_demo import (
+    GeneratedReferenceScenarioTelemetry,
+    ReferenceDemoCatalog,
+    ReferenceScenarioRunService,
+)
 from .response_plans import ResponsePlanCoordinator
 from .simulator_actions import SimulatorActionCoordinator
 from .simulator_runtime import LocalSimulatorRuntime
@@ -94,6 +104,7 @@ RUNTIME_IMAGE_ENV = "COLORTRACE_RUNTIME_IMAGE"
 PUBLIC_URL_ENV = "COLORTRACE_PUBLIC_URL"
 STAGING_GENERATION_ENV = "COLORTRACE_STAGING_GENERATION"
 _POST_ACTION_TELEMETRY_SETTLE_SECONDS = 10.0
+_REFERENCE_TELEMETRY_SETTLE_SECONDS = 12.0
 VERTEX_PROJECT_ID_ENV = "COLORTRACE_VERTEX_PROJECT_ID"
 VERTEX_LOCATION_ENV = "COLORTRACE_VERTEX_LOCATION"
 GRAFANA_URL_ENV = "COLORTRACE_GRAFANA_URL"
@@ -156,6 +167,7 @@ _EVIDENCE_BINDING = {
     "tempo_datasource_uid": "tempo",
 }
 _ALERT_RULE_UID = "ct-declared-reference-divergence-v1"
+_REFERENCE_ALERT_RULE_UID = "ct-reference-demo-divergence-v1"
 
 
 def _utc_now() -> datetime:
@@ -828,7 +840,7 @@ def _compose_canonical_demo(
     issuer: str,
     audience: str,
     clock: Callable[[], datetime],
-) -> tuple[DemoFacade, CanonicalDemoWorkflow]:
+) -> tuple[DemoFacade, CanonicalDemoWorkflow, ReferenceScenarioRunService]:
     _validate_demo_runtime_config(config, fixture_bundle=fixture_bundle)
     if (
         not isinstance(incident_store, SqliteIncidentStore)
@@ -854,6 +866,24 @@ def _compose_canonical_demo(
         evidence = EvidenceAdapter(runtime=runtime, catalog=catalog, clock=clock)
         inventory = asyncio.run(evidence.verify_inventory()).to_dict()
         model = AdkVertexGateway(project_id=config.vertex_project_id)
+        reference_runs = ReferenceScenarioRunService(
+            workflow=ReferenceInvestigationWorkflow(
+                model=model,
+                evidence=evidence,
+                clock=clock,
+            ),
+            telemetry=GeneratedReferenceScenarioTelemetry(
+                lambda: ReferenceOtelSink(config.otlp_endpoint)
+            ),
+            evidence_binding=_EVIDENCE_BINDING,
+            alert_rule_uid=_REFERENCE_ALERT_RULE_UID,
+            clock=clock,
+            telemetry_settle_seconds=_REFERENCE_TELEMETRY_SETTLE_SECONDS,
+            approval_boundary=ReferenceHumanApprovalBoundary(
+                audience="colortrace-simulator",
+                clock=clock,
+            ),
+        )
         incidents = VerticalSliceApi(incident_store, policy=policy, clock=clock)
         investigation = VerticalSliceWorker(
             incident_store,
@@ -927,7 +957,7 @@ def _compose_canonical_demo(
         raise
     except Exception:
         raise ApiRuntimeConfigurationError("demo-runtime-configuration-invalid") from None
-    return facade, workflow
+    return facade, workflow, reference_runs
 
 
 def _runtime_lifespan(
@@ -1092,10 +1122,12 @@ def create_runtime_app(
     )
     demo_facade: DemoFacade | None = None
     demo_workflow: CanonicalDemoWorkflow | None = None
+    reference_demo: ReferenceDemoCatalog | None = None
+    reference_runs: ReferenceScenarioRunService | None = None
     if config.demo is not None:
         if local_simulator_paths is None:
             raise ApiRuntimeConfigurationError("demo-runtime-incompatible")
-        demo_facade, demo_workflow = _compose_canonical_demo(
+        demo_facade, demo_workflow, reference_runs = _compose_canonical_demo(
             config.demo,
             incident_store=raw_store,
             response_plans=response_plans,
@@ -1109,6 +1141,10 @@ def create_runtime_app(
             audience=config.oidc_audience,
             clock=selected_clock,
         )
+        try:
+            reference_demo = ReferenceDemoCatalog()
+        except Exception:
+            raise ApiRuntimeConfigurationError("reference-demo-configuration-invalid") from None
     app = create_app(
         service,
         token_verifier=verifier,
@@ -1117,6 +1153,8 @@ def create_runtime_app(
         recovery=recovery,
         recovery_verifications=None if recovery_task_store is None else recovery,
         demo=demo_facade,
+        reference_demo=reference_demo,
+        reference_runs=reference_runs,
         lifespan=(
             None if local_simulator is None else _runtime_lifespan(local_simulator, demo_facade)
         ),
@@ -1126,6 +1164,8 @@ def create_runtime_app(
     app.state.recovery_verification_task_store = recovery_task_store
     app.state.demo_facade = demo_facade
     app.state.demo_workflow = demo_workflow
+    app.state.reference_demo = reference_demo
+    app.state.reference_scenario_runs = reference_runs
     return app
 
 

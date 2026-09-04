@@ -515,8 +515,9 @@ run "bounded_single_host_is_admitted" {
       && strcontains(local.caddyfile, "https://runtime.internal:8443")
       && !strcontains(local.caddyfile, "https://grafana.internal {")
       && !strcontains(local.caddyfile, "https://runtime.internal {")
-      && strcontains(local.caddyfile, "@demo path /v1/demo /v1/demo/*")
-      && strcontains(local.caddyfile, "reverse_proxy @demo runtime:8080")
+      && strcontains(local.caddyfile, "@public_api path /v1/demo /v1/demo/* /v1/benchmarks/reference-suite")
+      && strcontains(local.caddyfile, "reverse_proxy @public_api runtime:8080")
+      && !strcontains(local.caddyfile, "/v1/benchmarks/*")
       && strcontains(local.caddyfile, "@other_api path /v1/*")
       && strcontains(local.caddyfile, "respond @other_api 404")
       && length(regexall("header_up -Authorization", local.caddyfile)) == 2

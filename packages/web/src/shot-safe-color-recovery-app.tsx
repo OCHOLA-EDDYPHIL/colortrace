@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  DEMO_APPROVAL_PHRASE,
+  DEMO_REJECTION_REASONS,
   type DemoAdapter,
   DemoApiError,
   type DemoInvestigationProof,
   type DemoInvestigationProofV3,
   type DemoInvestigationProofV4,
+  type DemoPhase,
   type DemoPlanCommand,
   type DemoPlanTarget,
-  type DemoPhase,
   type DemoPreviewVisualKind,
   type DemoReceipt,
   type DemoRejectionReason,
@@ -17,11 +19,11 @@ import {
   type DemoScenarioPreview,
   type DemoTimelineItem,
   type DemoVisualKind,
-  DEMO_APPROVAL_PHRASE,
-  DEMO_REJECTION_REASONS,
   type VerifiedDemoVisual,
   verifyDemoReceiptIntegrity,
 } from "./demo-api.ts";
+import type { ReferenceDemoAdapter } from "./reference-demo-api.ts";
+import { ReferenceScenarioExperience } from "./reference-scenario-experience.tsx";
 
 const SESSION_RUN_KEY = "colortrace.demo.run-id";
 const SESSION_NONCE_KEY = "colortrace.demo.approval-nonce";
@@ -40,6 +42,7 @@ type VisualFailure = {
 
 export type ShotSafeColorRecoveryAppProps = {
   readonly adapter: DemoAdapter;
+  readonly referenceAdapter?: ReferenceDemoAdapter;
   readonly storage?: DemoSessionStorage;
 };
 
@@ -828,8 +831,20 @@ function EvidenceAuthorityReview({
         {adaptive === null ? null : (
           <div className="shot-adaptive-summary">
             <div className="shot-adaptive-outcome">
-              <span className="shot-adaptive-copy">Bounded adaptive policy</span>
-              <strong>{adaptive.stop_reason.replaceAll("-", " ")}</strong>
+              <div>
+                <span className="shot-adaptive-copy">Bounded adaptive policy</span>
+                <strong>{adaptive.stop_reason.replaceAll("-", " ")}</strong>
+              </div>
+              <dl aria-label="Adaptive investigation totals" className="shot-adaptive-totals">
+                <div>
+                  <dt>Total query path</dt>
+                  <dd>{adaptive.adaptive_trace.length} bounded Grafana reads</dd>
+                </div>
+                <div>
+                  <dt>Visible review surfaces</dt>
+                  <dd>{evidence.length + 1} current evidence views</dd>
+                </div>
+              </dl>
             </div>
             <ol aria-label="Adaptive evidence path" className="shot-adaptive-path">
               {adaptive.adaptive_trace.map((entry) => {
@@ -2002,7 +2017,11 @@ function TerminalPanel({
   );
 }
 
-export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorRecoveryAppProps) {
+export function ShotSafeColorRecoveryApp({
+  adapter,
+  referenceAdapter,
+  storage,
+}: ShotSafeColorRecoveryAppProps) {
   const sessionStorage = storage ?? window.sessionStorage;
   const resumed = useMemo(() => readSession(sessionStorage), [sessionStorage]);
   const [run, setRun] = useState<DemoRun | null>(null);
@@ -2682,7 +2701,13 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
           <span>ColorTrace</span>
         </a>
         {run === null ? (
-          <span className="shot-mode">Shot-safe recovery</span>
+          referenceAdapter === undefined ? (
+            <span className="shot-mode">Shot-safe recovery</span>
+          ) : (
+            <a className="shot-mode shot-mode--link" href="#reference-suite-title">
+              Open-film reference ↓
+            </a>
+          )
         ) : (
           <div className="shot-run-chip">
             <span data-phase={run.phase}>{currentPhaseLabel(run)}</span>
@@ -2696,13 +2721,15 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
           <section className="shot-landing">
             <div className="shot-landing__above-fold" data-first-fold="comparison-and-action">
               <div className="shot-landing__copy">
-                <p className="shot-eyebrow">Shot-Safe Color Recovery</p>
-                <h1>Both renders succeeded—why do they look different?</h1>
-                <p className="shot-lede">
-                  ColorTrace helps VFX pipeline technical directors trace successful renders with
-                  the wrong color, prove the affected outputs, and recover only that work while
-                  verified-safe outputs stay untouched.
-                </p>
+                <div className="shot-landing__primary-intro">
+                  <p className="shot-eyebrow">Shot-Safe Color Recovery</p>
+                  <h1>Both renders succeeded—why do they look different?</h1>
+                  <p className="shot-lede">
+                    ColorTrace helps VFX pipeline technical directors trace successful renders with
+                    the wrong color, prove the affected outputs, and recover only that work while
+                    verified-safe outputs stay untouched.
+                  </p>
+                </div>
                 <div className="shot-landing__outcome">
                   <span>Expected</span>
                   <strong>Cool teal</strong>
@@ -2740,7 +2767,7 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                 <div className="shot-preview-heading">
                   <div>
                     <p className="shot-eyebrow">Canonical scenario preview</p>
-                    <h2>Same frame. Different resolved color.</h2>
+                    <h3>Same frame. Different resolved color.</h3>
                   </div>
                   <span>{preview === null ? "Verifying fixture" : "2 renders · succeeded"}</span>
                 </div>
@@ -2784,30 +2811,43 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
                 </p>
               </div>
             </div>
-            <div className="shot-landing__explain">
-              <ol className="shot-flow" aria-label="ColorTrace recovery flow">
-                <li>
-                  <strong>Detect</strong>
-                  <span>Compare expected and observed output.</span>
-                </li>
-                <li>
-                  <strong>Explain</strong>
-                  <span>Read Grafana evidence; validate cause in deterministic code.</span>
-                </li>
-                <li>
-                  <strong>Approve</strong>
-                  <span>Review exact targets and protected work.</span>
-                </li>
-                <li>
-                  <strong>Verify</strong>
-                  <span>Confirm fresh recovery evidence and record the receipt.</span>
-                </li>
-              </ol>
-              <p className="shot-landing__integration">
-                Grafana supplies read-only evidence. Gemini advises. Deterministic validators decide
-                facts and scope. A human decides whether the simulator may act.
-              </p>
-            </div>
+            {referenceAdapter === undefined ? null : (
+              <ReferenceScenarioExperience adapter={referenceAdapter} />
+            )}
+            <section aria-labelledby="canonical-recovery-title" className="shot-landing__legacy">
+              <div className="shot-landing__copy">
+                <p className="shot-eyebrow">Secondary compatibility workflow</p>
+                <h2 id="canonical-recovery-title">Canonical approval and recovery loop</h2>
+                <p className="shot-lede">
+                  One synthetic incident preserves the end-to-end human approval, simulator
+                  recovery, verification, and receipt workflow.
+                </p>
+              </div>
+              <div className="shot-landing__explain">
+                <ol className="shot-flow" aria-label="ColorTrace recovery flow">
+                  <li>
+                    <strong>Detect</strong>
+                    <span>Compare expected and observed output.</span>
+                  </li>
+                  <li>
+                    <strong>Explain</strong>
+                    <span>Read Grafana evidence; validate cause in deterministic code.</span>
+                  </li>
+                  <li>
+                    <strong>Approve</strong>
+                    <span>Review exact targets and protected work.</span>
+                  </li>
+                  <li>
+                    <strong>Verify</strong>
+                    <span>Confirm fresh recovery evidence and record the receipt.</span>
+                  </li>
+                </ol>
+                <p className="shot-landing__integration">
+                  Grafana supplies read-only evidence. Gemini advises. Deterministic validators
+                  decide facts and scope. A human decides whether the simulator may act.
+                </p>
+              </div>
+            </section>
           </section>
         ) : (
           <div className="shot-workspace">

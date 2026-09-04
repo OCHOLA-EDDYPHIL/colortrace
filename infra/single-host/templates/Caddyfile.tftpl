@@ -16,8 +16,8 @@ ${public_hostname} {
 			X-Frame-Options "DENY"
 		}
 
-		@demo path /v1/demo /v1/demo/*
-		reverse_proxy @demo runtime:8080 {
+		@public_api path /v1/demo /v1/demo/* /v1/benchmarks/reference-suite
+		reverse_proxy @public_api runtime:8080 {
 			header_up -Authorization
 		}
 

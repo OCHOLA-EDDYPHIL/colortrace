@@ -7,6 +7,7 @@ import {
   type DemoReceipt,
   type DemoVisualKind,
 } from "../src/demo-api.ts";
+import type { ReferenceDemoAdapter } from "../src/reference-demo-api.ts";
 import { ShotSafeColorRecoveryApp } from "../src/shot-safe-color-recovery-app.tsx";
 import {
   demoReceipt,
@@ -67,6 +68,19 @@ function adapterFixture() {
   return adapter;
 }
 
+function pendingReferenceAdapter(): ReferenceDemoAdapter {
+  const pending = () => new Promise<never>(() => undefined);
+  return {
+    listScenarios: vi.fn(pending),
+    getScenario: vi.fn(pending),
+    benchmarkSuite: vi.fn(pending),
+    runScenario: vi.fn(pending),
+    decideRecovery: vi.fn(pending),
+    loadVisual: vi.fn(pending),
+    releaseVisual: vi.fn(),
+  };
+}
+
 async function decodeRenderedImages(): Promise<void> {
   await act(async () => {
     for (const image of document.querySelectorAll("img")) fireEvent.load(image);
@@ -90,6 +104,29 @@ afterEach(() => {
 });
 
 describe("shot-safe color recovery", () => {
+  it("presents the open-film suite before the secondary compatibility workflow", () => {
+    render(
+      <ShotSafeColorRecoveryApp
+        adapter={adapterFixture()}
+        referenceAdapter={pendingReferenceAdapter()}
+        storage={memoryStorage()}
+      />,
+    );
+
+    const primaryProof = screen.getByRole("heading", {
+      name: "Three ways a successful render can still be wrong",
+    });
+    const secondaryWorkflow = screen.getByRole("heading", {
+      name: "Canonical approval and recovery loop",
+    });
+
+    expect(document.querySelectorAll("h1")).toHaveLength(1);
+    expect(
+      primaryProof.compareDocumentPosition(secondaryWorkflow) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(screen.getByText("Secondary compatibility workflow")).toBeVisible();
+  });
+
   it("shows the verified cinematic preview before any run mutation", async () => {
     const adapter = adapterFixture();
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);
