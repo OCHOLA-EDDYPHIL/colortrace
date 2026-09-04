@@ -290,6 +290,35 @@ function recordedBenchmarkSuite(passed = true): ReferenceBenchmarkSuite {
   };
 }
 
+function recordedSavingsMissSuite(): ReferenceBenchmarkSuite {
+  const suite = recordedBenchmarkSuite();
+  if (suite.result === null) throw new Error("missing recorded benchmark result");
+  return {
+    ...suite,
+    result: {
+      ...suite.result,
+      metrics: {
+        ...suite.result.metrics,
+        median_application_bytes_avoided_basis_points: 3500,
+      },
+      scenario_results: suite.result.scenario_results.map((item, index) =>
+        index === 2
+          ? item
+          : {
+              ...item,
+              selective: { ...item.selective, application_bytes: 650 },
+              application_bytes_avoided_basis_points: 3500,
+            },
+      ),
+      checks: {
+        ...suite.result.checks,
+        median_application_bytes_avoided_at_least_40_percent: false,
+      },
+      passed: false,
+    },
+  };
+}
+
 function actionParameters(incidentClass: ReferenceIncidentClass): Record<string, unknown> {
   switch (incidentClass) {
     case "resource-resolution-drift/v1":
@@ -1074,11 +1103,16 @@ describe("reference scenario experience", () => {
   });
 
   it.each([
-    [true, "Reference benchmark passed", "Passed"],
-    [false, "Reference benchmark failed", "Failed"],
+    [true, "Core mission gates passed", "Impact target passed", "Full impact benchmark · passed"],
+    [
+      false,
+      "Core mission gates failed",
+      "Core mission failed",
+      "Full impact benchmark · not passed",
+    ],
   ])(
     "renders a strictly recorded benchmark result when passed=%s",
-    async (passed, heading, badge) => {
+    async (passed, heading, badge, fullStatus) => {
       render(
         <ReferenceScenarioExperience
           adapter={adapterFixture({
@@ -1091,6 +1125,7 @@ describe("reference scenario experience", () => {
       expect(
         screen.getByText(badge, { selector: ".reference-benchmark__heading > span" }),
       ).toBeVisible();
+      expect(screen.getByText(fullStatus)).toBeVisible();
       expect(
         screen.getByText(/recorded worker receipts · 720 artifact observations/iu),
       ).toBeVisible();
@@ -1098,9 +1133,15 @@ describe("reference scenario experience", () => {
         screen.getByText(/60 model-output receipts replayed against sealed holdouts/iu),
       ).toBeVisible();
       expect(screen.getByText(/provider execution is not independently attested/iu)).toBeVisible();
-      expect(screen.getByText(/efficiency counts only after recovered outputs/iu)).toBeVisible();
+      expect(
+        screen.getByText(/compute and byte avoidance are separate impact targets/iu),
+      ).toBeVisible();
       expect(screen.getByText(/recorded evaluator output/iu)).toBeVisible();
-      expect(screen.getByText(/39 fail-closed mutation cases tested separately/iu)).toBeVisible();
+      expect(
+        screen.getByText(
+          /39 fail-closed control cases tested separately.*explicitly approved state transitions.*insufficient or ambiguous evidence/iu,
+        ),
+      ).toBeVisible();
       expect(
         screen.getByText(
           /deterministic validator classification on 60 resolvable sealed holdouts/iu,
@@ -1123,6 +1164,27 @@ describe("reference scenario experience", () => {
       expect(screen.queryByText("No measured result")).not.toBeInTheDocument();
     },
   );
+
+  it("keeps core mission success distinct from a missed secondary impact target", async () => {
+    render(
+      <ReferenceScenarioExperience
+        adapter={adapterFixture({
+          benchmarkSuite: vi.fn(async () => recordedSavingsMissSuite()),
+        })}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Core mission gates passed" })).toBeVisible();
+    expect(
+      screen.getByText("Impact target not met", {
+        selector: ".reference-benchmark__heading > span",
+      }),
+    ).toBeVisible();
+    expect(screen.getByText("Full impact benchmark · not passed")).toBeVisible();
+    expect(
+      screen.getByText(/compute and byte avoidance are separate impact targets/iu),
+    ).toBeVisible();
+  });
 
   it("presents the live adaptive path, Grafana proof, deterministic result, and safe intent", async () => {
     const runScenario = vi.fn(async (scenarioId: ReferenceScenarioId) =>
@@ -1812,7 +1874,7 @@ describe("reference demo API adapter", () => {
     });
   });
 
-  it("strictly accepts an attested recorded benchmark report", async () => {
+  it("strictly accepts a recorded benchmark report", async () => {
     const adapter = createReferenceDemoAdapter({
       baseUrl: "https://colortrace.example",
       fetch: async () => Response.json(recordedBenchmarkSuite()),

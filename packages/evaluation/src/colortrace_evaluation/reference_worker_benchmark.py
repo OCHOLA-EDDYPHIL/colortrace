@@ -7,6 +7,7 @@ import os
 import platform
 import re
 import stat
+import subprocess
 import sys
 from argparse import ArgumentParser
 from collections.abc import Callable, Mapping
@@ -30,7 +31,11 @@ from colortrace_fixture import (
     reference_scenarios,
     verify_reference_media,
 )
-from colortrace_simulator.reference_worker import ReferenceWorkerError
+from colortrace_simulator.reference_worker import (
+    ReferenceExecutionIdentity,
+    ReferenceWorkerError,
+    execute_reference_render_job,
+)
 
 from .contracts import (
     ContractError,
@@ -56,6 +61,8 @@ from .reference_campaign import (
 from .reference_execution import ReferenceWorkerCallable
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_GIT_OBJECT = re.compile(r"^[0-9a-f]{40}$")
+_TRUSTED_GIT = Path("/usr/bin/git")
 _EXPECTED_SCENARIOS = frozenset(
     {
         "tos-resource-resolution-drift-v1",
@@ -72,6 +79,153 @@ class ReferenceWorkerBenchmarkError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+def _trusted_git_bytes(
+    source_directory: Path,
+    *arguments: str,
+    maximum_bytes: int = 1_048_576,
+) -> bytes:
+    try:
+        executable = _TRUSTED_GIT.resolve(strict=True)
+        metadata = executable.lstat()
+    except OSError as error:
+        raise ReferenceWorkerBenchmarkError(
+            "reference-benchmark-source-identity-unavailable"
+        ) from error
+    if (
+        not _TRUSTED_GIT.is_absolute()
+        or _TRUSTED_GIT.is_symlink()
+        or executable != _TRUSTED_GIT
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != 0
+        or metadata.st_mode & 0o022
+        or not metadata.st_mode & stat.S_IXUSR
+    ):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-git-untrusted")
+    try:
+        completed = subprocess.run(
+            [
+                executable.as_posix(),
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.untrackedCache=false",
+                "-C",
+                source_directory.as_posix(),
+                *arguments,
+            ],
+            check=True,
+            capture_output=True,
+            env={
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_ATTR_NOSYSTEM": "1",
+                "HOME": "/nonexistent",
+                "XDG_CONFIG_HOME": "/nonexistent",
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PATH": "/usr/bin:/bin",
+            },
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ReferenceWorkerBenchmarkError(
+            "reference-benchmark-source-identity-unavailable"
+        ) from error
+    if len(completed.stdout) > maximum_bytes or completed.stderr:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-source-identity-unavailable")
+    return completed.stdout
+
+
+def _trusted_git(source_directory: Path, *arguments: str) -> str:
+    try:
+        return _trusted_git_bytes(source_directory, *arguments).decode("utf-8")
+    except UnicodeError as error:
+        raise ReferenceWorkerBenchmarkError(
+            "reference-benchmark-source-identity-unavailable"
+        ) from error
+
+
+def _trusted_repository(source_path: Path) -> tuple[Path, Path]:
+    try:
+        source = source_path.resolve(strict=True)
+    except OSError as error:
+        raise ReferenceWorkerBenchmarkError(
+            "reference-benchmark-source-identity-unavailable"
+        ) from error
+    repository_text = _trusted_git(
+        source.parent,
+        "rev-parse",
+        "--show-toplevel",
+    ).strip()
+    try:
+        repository = Path(repository_text).resolve(strict=True)
+        relative_source = source.relative_to(repository)
+    except (OSError, ValueError) as error:
+        raise ReferenceWorkerBenchmarkError(
+            "reference-benchmark-source-identity-unavailable"
+        ) from error
+    if repository == Path(repository.anchor) or not relative_source.parts:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-source-identity-unavailable")
+    return repository, relative_source
+
+
+def resolve_trusted_host_execution_identity(
+    source_path: Path = Path(__file__),
+) -> ReferenceExecutionIdentity:
+    repository, relative_path = _trusted_repository(source_path)
+    relative_source = relative_path.as_posix()
+
+    def snapshot() -> tuple[str, str]:
+        status = _trusted_git(
+            repository,
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        )
+        tracked = _trusted_git(
+            repository,
+            "ls-files",
+            "-v",
+        ).splitlines()
+        if status or not tracked or any(not line.startswith("H ") for line in tracked):
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-checkout-not-clean")
+        _trusted_git(
+            repository,
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            relative_source,
+        )
+        revision = _trusted_git(
+            repository,
+            "rev-parse",
+            "--verify",
+            "HEAD^{commit}",
+        ).strip()
+        tree = _trusted_git(
+            repository,
+            "rev-parse",
+            "--verify",
+            "HEAD^{tree}",
+        ).strip()
+        if _GIT_OBJECT.fullmatch(revision) is None or _GIT_OBJECT.fullmatch(tree) is None:
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-source-identity-unavailable")
+        return revision, tree
+
+    first = snapshot()
+    second = snapshot()
+    if first != second:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-source-identity-raced")
+    return ReferenceExecutionIdentity(
+        mode="host-python-module",
+        source_revision=first[0],
+        source_tree=first[1],
+        container_image_digest=None,
+    )
 
 
 def _freeze_evidence_value(value: Any) -> Any:
@@ -232,7 +386,7 @@ def prepare_sealed_reference_benchmark_suite(
     )
 
 
-def _safe_root(path: Path, *, create: bool) -> Path:
+def _safe_root_path(path: Path) -> Path:
     absolute = path if path.is_absolute() else Path.cwd() / path
     if ".." in absolute.parts or absolute.is_symlink():
         raise ReferenceWorkerBenchmarkError("reference-benchmark-root-unsafe")
@@ -243,6 +397,11 @@ def _safe_root(path: Path, *, create: bool) -> Path:
         or len(resolved.parts) < 3
     ):
         raise ReferenceWorkerBenchmarkError("reference-benchmark-root-unsafe")
+    return resolved
+
+
+def _safe_root(path: Path, *, create: bool) -> Path:
+    resolved = _safe_root_path(path)
     try:
         if create:
             resolved.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -250,6 +409,40 @@ def _safe_root(path: Path, *, create: bool) -> Path:
     except OSError as error:
         raise ReferenceWorkerBenchmarkError("reference-benchmark-root-unsafe") from error
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-root-unsafe")
+    return resolved
+
+
+def _fresh_output_root(path: Path) -> Path:
+    resolved = _safe_root_path(path)
+    try:
+        parent = resolved.parent.resolve(strict=True)
+        parent_metadata = parent.lstat()
+    except OSError as error:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-root-unsafe") from error
+    if (
+        parent != resolved.parent
+        or stat.S_ISLNK(parent_metadata.st_mode)
+        or not stat.S_ISDIR(parent_metadata.st_mode)
+    ):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-root-unsafe")
+    try:
+        resolved.mkdir(mode=0o700)
+        metadata = resolved.lstat()
+    except FileExistsError as error:
+        raise ReferenceWorkerBenchmarkError(
+            "reference-benchmark-recorded-output-not-fresh"
+        ) from error
+    except OSError as error:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-root-unsafe") from error
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) & 0o700 != 0o700
+        or stat.S_IMODE(metadata.st_mode) & 0o077
+        or any(resolved.iterdir())
+    ):
         raise ReferenceWorkerBenchmarkError("reference-benchmark-root-unsafe")
     return resolved
 
@@ -426,8 +619,12 @@ def _validate_receipt_for_job(
     job: Mapping[str, Any],
     *,
     output_root: Path,
+    execution_identity: ReferenceExecutionIdentity,
 ) -> dict[str, Any]:
-    receipt = _validate_receipt(receipt_value)
+    try:
+        receipt = _validate_receipt(receipt_value)
+    except ReferenceCampaignError as error:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-worker-receipt-invalid") from error
     source = cast(Mapping[str, Any], job["source"])
     color = cast(Mapping[str, Any], job["color"])
     runtime = cast(Mapping[str, Any], job["runtime"])
@@ -442,12 +639,19 @@ def _validate_receipt_for_job(
         "source_sha256": source["sha256"],
         "config_sha256": color["config_sha256"],
         "resource_sha256": color["resource_sha256"],
+        "input_color_space": color["input_color_space"],
+        "output_color_space": color["output_color_space"],
         "effective_generation": runtime["effective_generation"],
         "cache_key": runtime["cache_key"],
         "output_relative_path": output["relative_path"],
         "bytes_read": source["byte_length"],
+        "job_sha256": prefixed_sha256(job),
+        "execution_identity": execution_identity.to_dict(),
+        "execution_identity_sha256": execution_identity.sha256,
     }
-    if any(receipt.get(key) != value for key, value in expected.items()):
+    if receipt.get("schema") != "reference-render-receipt/v2" or any(
+        receipt.get(key) != value for key, value in expected.items()
+    ):
         raise ReferenceWorkerBenchmarkError("reference-benchmark-receipt-job-mismatch")
     output_path = _target(output_root, cast(str, output["relative_path"]))
     output_size = _safe_existing_file(output_path, output_root)
@@ -465,6 +669,8 @@ class _ReceiptStore:
     worker: ReferenceWorkerCallable
     source_root: Path
     config_root: Path
+    execution_identity: ReferenceExecutionIdentity
+    allow_reuse: bool = True
     executed: int = 0
     reused: int = 0
 
@@ -488,10 +694,17 @@ class _ReceiptStore:
         output_present = _present(output_path)
         receipt_present = _present(receipt_path)
         if output_present or receipt_present:
+            if not self.allow_reuse:
+                raise ReferenceWorkerBenchmarkError("reference-benchmark-recorded-reuse-forbidden")
             if not output_present or not receipt_present:
                 raise ReferenceWorkerBenchmarkError("reference-benchmark-resume-pair-incomplete")
             receipt = _json_mapping(receipt_path, self.output_root)
-            result = _validate_receipt_for_job(receipt, job, output_root=self.output_root)
+            result = _validate_receipt_for_job(
+                receipt,
+                job,
+                output_root=self.output_root,
+                execution_identity=self.execution_identity,
+            )
             self.reused += 1
             return result
         returned = self.worker(
@@ -499,10 +712,16 @@ class _ReceiptStore:
             source_root=self.source_root,
             config_root=self.config_root,
             output_root=self.output_root,
+            execution_identity=self.execution_identity,
         )
         if not isinstance(returned, Mapping) or any(not isinstance(key, str) for key in returned):
             raise ReferenceWorkerBenchmarkError("reference-benchmark-worker-receipt-invalid")
-        result = _validate_receipt_for_job(returned, job, output_root=self.output_root)
+        result = _validate_receipt_for_job(
+            returned,
+            job,
+            output_root=self.output_root,
+            execution_identity=self.execution_identity,
+        )
         if _write_exact(receipt_path, self.output_root, result):
             persisted = _json_mapping(receipt_path, self.output_root)
             if persisted != result:
@@ -532,6 +751,33 @@ def _cache_entry_path(
     return _target(output_root, relative)
 
 
+def _immediate_predecessor_by_artifact(
+    manifest: ReferenceMediaManifest,
+    *,
+    required_artifact_ids: tuple[str, ...] = (),
+) -> Mapping[str, ReferenceFrame]:
+    predecessors: dict[str, ReferenceFrame] = {}
+    for sequence in manifest.sequences:
+        for predecessor, frame in zip(
+            sequence.frames,
+            sequence.frames[1:],
+            strict=False,
+        ):
+            if (
+                predecessor.sequence_id != sequence.sequence_id
+                or frame.sequence_id != sequence.sequence_id
+                or predecessor.frame + 1 != frame.frame
+            ):
+                raise ReferenceWorkerBenchmarkError("reference-benchmark-stale-parent-invalid")
+            artifact_id = f"frame:{frame.sequence_id}:{frame.frame:05d}"
+            if artifact_id in predecessors:
+                raise ReferenceWorkerBenchmarkError("reference-benchmark-stale-parent-invalid")
+            predecessors[artifact_id] = predecessor
+    if not set(required_artifact_ids).issubset(predecessors):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-stale-parent-missing")
+    return MappingProxyType(predecessors)
+
+
 def _stale_derivative_job(
     *,
     frame: ReferenceFrame,
@@ -540,6 +786,8 @@ def _stale_derivative_job(
     variants: Mapping[ReferenceVariantName, ReferenceColorVariant],
     trace_id: str,
 ) -> dict[str, Any]:
+    if stale_parent.sequence_id != frame.sequence_id or stale_parent.frame + 1 != frame.frame:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-stale-parent-invalid")
     job = reference_render_job(
         frame=frame,
         scenario=scenario,
@@ -547,8 +795,6 @@ def _stale_derivative_job(
         mode="observed",
         trace_id=trace_id,
     )
-    if stale_parent.sequence_id != frame.sequence_id or stale_parent.frame == frame.frame:
-        raise ReferenceWorkerBenchmarkError("reference-benchmark-stale-parent-invalid")
     job["job_id"] = f"observed-stale-parent-{frame.sequence_id}-{frame.frame:05d}"
     job["source"] = {
         "relative_path": f"{stale_parent.sequence_id}/{stale_parent.filename}",
@@ -743,14 +989,92 @@ def _record_invalidation(
     return record, bytes_read + record_bytes, record_bytes
 
 
+def _bound_real_worker() -> ReferenceWorkerCallable:
+    worker = cast(ReferenceWorkerCallable, execute_reference_render_job)
+    try:
+        module = inspect.getmodule(worker)
+        source_path = inspect.getsourcefile(worker)
+    except TypeError as error:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-worker-binding-invalid") from error
+    module_path = getattr(module, "__file__", None)
+    if (
+        module is None
+        or getattr(module, "__name__", None) != "colortrace_simulator.reference_worker"
+        or getattr(module, "execute_reference_render_job", None) is not worker
+        or getattr(worker, "__name__", None) != "execute_reference_render_job"
+        or source_path is None
+        or module_path is None
+    ):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-worker-binding-invalid")
+    try:
+        source = Path(source_path).resolve(strict=True)
+        module_source = Path(module_path).resolve(strict=True)
+    except OSError as error:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-worker-binding-invalid") from error
+    if source != module_source:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-worker-binding-invalid")
+    return cast(ReferenceWorkerCallable, worker)
+
+
+def _trusted_implementation_digest(repository: Path, source_path: Path) -> str:
+    try:
+        resolved = source_path.resolve(strict=True)
+        metadata = resolved.lstat()
+        relative = resolved.relative_to(repository).as_posix()
+    except (OSError, ValueError) as error:
+        raise ReferenceWorkerBenchmarkError(
+            "reference-benchmark-implementation-untrusted"
+        ) from error
+    if (
+        not relative
+        or source_path.is_symlink()
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+    ):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-implementation-untrusted")
+    try:
+        tracked = _trusted_git(
+            repository,
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            relative,
+        ).splitlines()
+        committed = _trusted_git_bytes(
+            repository,
+            "cat-file",
+            "blob",
+            f"HEAD:{relative}",
+            maximum_bytes=max(metadata.st_size + 1, 1_048_576),
+        )
+    except ReferenceWorkerBenchmarkError as error:
+        raise ReferenceWorkerBenchmarkError(
+            "reference-benchmark-implementation-untrusted"
+        ) from error
+    if tracked != [relative]:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-implementation-untrusted")
+    try:
+        working = resolved.read_bytes()
+    except OSError as error:
+        raise ReferenceWorkerBenchmarkError(
+            "reference-benchmark-implementation-untrusted"
+        ) from error
+    if working != committed:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-implementation-untrusted")
+    return f"sha256:{hashlib.sha256(working).hexdigest()}"
+
+
 def _provenance_record(
     suite: PreparedReferenceBenchmarkSuite,
     evidence_source: BenchmarkEvidenceSource,
     *,
     sealed_suite: bool,
     real_worker: bool,
+    execution_identity: ReferenceExecutionIdentity,
 ) -> dict[str, Any]:
     if (evidence_source == "recorded-worker-receipts") != (sealed_suite and real_worker):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-provenance-invalid")
+    if (execution_identity.mode == "injected-worker-callable") == real_worker:
         raise ReferenceWorkerBenchmarkError("reference-benchmark-provenance-invalid")
     implementation_targets: dict[str, Callable[..., Any] | type[Any]] = {
         "reference-assets": materialize_reference_color_variants,
@@ -760,20 +1084,31 @@ def _provenance_record(
         "reference-worker-benchmark": run_reference_worker_benchmark,
     }
     if real_worker:
-        implementation_targets["reference-worker"] = ReferenceWorkerError
+        implementation_targets["reference-worker"] = _bound_real_worker()
+    trusted_repository: Path | None = None
+    if evidence_source == "recorded-worker-receipts":
+        trusted_identity = resolve_trusted_host_execution_identity()
+        if trusted_identity != execution_identity:
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-attestation-mismatch")
+        trusted_repository, _relative_source = _trusted_repository(Path(__file__))
     implementation_files: dict[str, str] = {}
     for name, target in implementation_targets.items():
         source_path = inspect.getsourcefile(target)
         if source_path is None:
             raise ReferenceWorkerBenchmarkError("reference-benchmark-provenance-invalid")
+        candidate = Path(source_path)
         try:
-            resolved = Path(source_path).resolve(strict=True)
+            resolved = candidate.resolve(strict=True)
             metadata = resolved.lstat()
         except OSError as error:
             raise ReferenceWorkerBenchmarkError("reference-benchmark-provenance-invalid") from error
         if not stat.S_ISREG(metadata.st_mode):
             raise ReferenceWorkerBenchmarkError("reference-benchmark-provenance-invalid")
-        implementation_files[name] = sha256_file(resolved)
+        implementation_files[name] = (
+            _trusted_implementation_digest(trusted_repository, candidate)
+            if trusted_repository is not None
+            else sha256_file(resolved)
+        )
 
     dependency_lock_sha256: str | None = None
     for parent in Path(__file__).resolve(strict=True).parents:
@@ -786,20 +1121,31 @@ def _provenance_record(
             raise ReferenceWorkerBenchmarkError("reference-benchmark-provenance-invalid") from error
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
             raise ReferenceWorkerBenchmarkError("reference-benchmark-provenance-invalid")
-        dependency_lock_sha256 = sha256_file(candidate)
+        dependency_lock_sha256 = (
+            _trusted_implementation_digest(trusted_repository, candidate)
+            if trusted_repository is not None
+            else sha256_file(candidate)
+        )
         break
+    if trusted_repository is not None:
+        if dependency_lock_sha256 is None:
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-dependency-lock-untrusted")
+        if resolve_trusted_host_execution_identity() != execution_identity:
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-source-identity-raced")
 
     body = {
-        "schema": "reference-worker-benchmark-provenance/v1",
+        "schema": "reference-worker-benchmark-provenance/v2",
         "evidence_source": evidence_source,
         "reference_manifest_sha256": suite.manifest.manifest_sha256,
         "suite_binding": "sealed-reference-suite" if sealed_suite else "injected-suite",
         "worker_binding": (
-            "colortrace-simulator-reference-worker/v1" if real_worker else "injected-worker"
+            "colortrace-simulator-reference-worker/v2" if real_worker else "injected-worker"
         ),
-        "execution_mode": "host-python-module" if real_worker else "injected-worker-callable",
-        "container_image_digest": None,
-        "source_revision": None,
+        "execution_mode": execution_identity.mode,
+        "container_image_digest": execution_identity.container_image_digest,
+        "source_revision": execution_identity.source_revision,
+        "source_tree": execution_identity.source_tree,
+        "execution_identity_sha256": execution_identity.sha256,
         "runtime": {
             "python_implementation": platform.python_implementation(),
             "python_version": platform.python_version(),
@@ -820,6 +1166,7 @@ def _seal_provenance(
     *,
     sealed_suite: bool,
     real_worker: bool,
+    execution_identity: ReferenceExecutionIdentity,
 ) -> Mapping[str, Any]:
     path = _target(output_root, "metadata/reference-worker-benchmark-provenance.json")
     record = _provenance_record(
@@ -827,6 +1174,7 @@ def _seal_provenance(
         evidence_source,
         sealed_suite=sealed_suite,
         real_worker=real_worker,
+        execution_identity=execution_identity,
     )
     if not _present(path) and any(output_root.iterdir()):
         raise ReferenceWorkerBenchmarkError("reference-benchmark-provenance-missing")
@@ -836,12 +1184,6 @@ def _seal_provenance(
     if persisted != record or persisted.get("provenance_sha256") != prefixed_sha256(body):
         raise ReferenceWorkerBenchmarkError("reference-benchmark-provenance-invalid")
     return MappingProxyType(persisted)
-
-
-def _load_real_worker() -> ReferenceWorkerCallable:
-    from colortrace_simulator.reference_worker import execute_reference_render_job
-
-    return cast(ReferenceWorkerCallable, execute_reference_render_job)
 
 
 def _frame_output_after(
@@ -875,21 +1217,22 @@ def _benchmark_stale_derivative_cache(
     before_entries: dict[str, dict[str, Any]] = {}
     before_bytes: dict[str, int] = {}
     observed_receipts: dict[str, Mapping[str, Any]] = {}
-    stale_parent_by_artifact: dict[str, ReferenceFrame] = {}
-    for sequence in suite.manifest.sequences:
-        for index, sequence_frame in enumerate(sequence.frames):
-            stale_parent_by_artifact[
-                f"frame:{sequence_frame.sequence_id}:{sequence_frame.frame:05d}"
-            ] = sequence.frames[index - 1]
+    stale_parent_by_artifact = _immediate_predecessor_by_artifact(
+        suite.manifest,
+        required_artifact_ids=scenario.affected_artifact_ids,
+    )
     for frame in frames:
         artifact_id = f"frame:{frame.sequence_id}:{frame.frame:05d}"
         baseline = baseline_by_artifact[artifact_id]
         affected = artifact_id in scenario.affected_artifact_ids
         live_path = _cache_entry_path(output_root, scenario, artifact_id, "live")
         if affected:
+            stale_parent = stale_parent_by_artifact.get(artifact_id)
+            if stale_parent is None:
+                raise ReferenceWorkerBenchmarkError("reference-benchmark-stale-parent-missing")
             stale_job = _stale_derivative_job(
                 frame=frame,
-                stale_parent=stale_parent_by_artifact[artifact_id],
+                stale_parent=stale_parent,
                 scenario=scenario,
                 variants=suite.variants,
                 trace_id=_trace_id(
@@ -914,19 +1257,21 @@ def _benchmark_stale_derivative_cache(
                 entry,
             )
         else:
-            stale_job = _stale_derivative_job(
-                frame=frame,
-                stale_parent=stale_parent_by_artifact[artifact_id],
-                scenario=scenario,
-                variants=suite.variants,
-                trace_id=_trace_id(
-                    suite.manifest.manifest_sha256,
-                    scenario.scenario_id,
-                    "cache-observed",
-                    artifact_id,
-                ),
-            )
-            store.require_absent(stale_job, phase="cache-observed-parent-v1")
+            stale_parent = stale_parent_by_artifact.get(artifact_id)
+            if stale_parent is not None:
+                stale_job = _stale_derivative_job(
+                    frame=frame,
+                    stale_parent=stale_parent,
+                    scenario=scenario,
+                    variants=suite.variants,
+                    trace_id=_trace_id(
+                        suite.manifest.manifest_sha256,
+                        scenario.scenario_id,
+                        "cache-observed",
+                        artifact_id,
+                    ),
+                )
+                store.require_absent(stale_job, phase="cache-observed-parent-v1")
             selective_job = reference_render_job(
                 frame=frame,
                 scenario=scenario,
@@ -1128,7 +1473,7 @@ def _evidence_set_record(
     provenance: Mapping[str, Any],
 ) -> dict[str, Any]:
     body = {
-        "schema": "reference-worker-evidence-set/v1",
+        "schema": "reference-worker-evidence-set/v2",
         "source": evidence_source,
         "reference_manifest_sha256": suite.manifest.manifest_sha256,
         "media_verification_sha256": prefixed_sha256(suite.media_verification.to_dict()),
@@ -1154,7 +1499,7 @@ def _evidence_set_record(
         ],
     }
     record = {**body, "evidence_set_id": prefixed_sha256(body)}
-    validate_schema("reference-worker-evidence-set-v1.schema.json", record)
+    validate_schema("reference-worker-evidence-set-v2.schema.json", record)
     return record
 
 
@@ -1165,6 +1510,7 @@ def _verified_evidence_receipt(
     job: Mapping[str, Any],
     phase: str,
     output_root: Path,
+    execution_identity: ReferenceExecutionIdentity,
 ) -> dict[str, Any]:
     if (
         not isinstance(value, Mapping)
@@ -1172,7 +1518,12 @@ def _verified_evidence_receipt(
         or value.get("receipt_sha256") != claimed_sha256
     ):
         raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-receipt-invalid")
-    receipt = _validate_receipt_for_job(value, job, output_root=output_root)
+    receipt = _validate_receipt_for_job(
+        value,
+        job,
+        output_root=output_root,
+        execution_identity=execution_identity,
+    )
     receipt_path = _target(output_root, _receipt_relative_path(job, phase))
     if _json_mapping(receipt_path, output_root) != receipt:
         raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-receipt-mismatch")
@@ -1340,11 +1691,12 @@ def _verify_reference_worker_evidence_set(
     *,
     suite: PreparedReferenceBenchmarkSuite,
     output_root: Path,
+    expected_execution_identity: ReferenceExecutionIdentity,
 ) -> _VerifiedReferenceWorkerEvidence:
     output = _safe_root(output_root, create=False)
     document = cast(dict[str, Any], _plain(evidence_set))
     try:
-        validate_schema("reference-worker-evidence-set-v1.schema.json", document)
+        validate_schema("reference-worker-evidence-set-v2.schema.json", document)
     except ContractError as error:
         raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-invalid") from error
     body = {key: child for key, child in document.items() if key != "evidence_set_id"}
@@ -1361,15 +1713,29 @@ def _verify_reference_worker_evidence_set(
         key: child for key, child in provenance.items() if key != "provenance_sha256"
     }
     sealed_suite = provenance.get("suite_binding") == "sealed-reference-suite"
-    real_worker = provenance.get("worker_binding") == "colortrace-simulator-reference-worker/v1"
-    if real_worker != (provenance.get("execution_mode") == "host-python-module"):
-        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-provenance-invalid")
+    try:
+        execution_identity = ReferenceExecutionIdentity.from_mapping(
+            {
+                "mode": provenance.get("execution_mode"),
+                "source_revision": provenance.get("source_revision"),
+                "source_tree": provenance.get("source_tree"),
+                "container_image_digest": provenance.get("container_image_digest"),
+            }
+        )
+        real_worker = provenance.get("worker_binding") == "colortrace-simulator-reference-worker/v2"
+    except ReferenceWorkerError as error:
+        raise ReferenceWorkerBenchmarkError(
+            "reference-benchmark-evidence-provenance-invalid"
+        ) from error
+    if execution_identity != expected_execution_identity:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-attestation-mismatch")
     try:
         expected_provenance = _provenance_record(
             suite,
             source,
             sealed_suite=sealed_suite,
             real_worker=real_worker,
+            execution_identity=expected_execution_identity,
         )
     except ReferenceWorkerBenchmarkError as error:
         raise ReferenceWorkerBenchmarkError(
@@ -1378,6 +1744,7 @@ def _verify_reference_worker_evidence_set(
     if (
         provenance.get("provenance_sha256") != prefixed_sha256(provenance_body)
         or document["execution_provenance_sha256"] != provenance.get("provenance_sha256")
+        or provenance.get("execution_identity_sha256") != execution_identity.sha256
         or persisted_provenance != provenance
         or dict(provenance) != expected_provenance
         or document["reference_manifest_sha256"] != suite.manifest.manifest_sha256
@@ -1397,11 +1764,15 @@ def _verify_reference_worker_evidence_set(
 
     frames = tuple(frame for sequence in suite.manifest.sequences for frame in sequence.frames)
     frame_by_artifact = {f"frame:{frame.sequence_id}:{frame.frame:05d}": frame for frame in frames}
-    stale_parent_by_artifact: dict[str, ReferenceFrame] = {}
-    for sequence in suite.manifest.sequences:
-        for index, sequence_frame in enumerate(sequence.frames):
-            artifact_id = f"frame:{sequence_frame.sequence_id}:{sequence_frame.frame:05d}"
-            stale_parent_by_artifact[artifact_id] = sequence.frames[index - 1]
+    stale_parent_by_artifact = _immediate_predecessor_by_artifact(
+        suite.manifest,
+        required_artifact_ids=tuple(
+            artifact_id
+            for scenario in suite.scenarios.values()
+            if scenario.incident_class == "stale-derivative-cache/v1"
+            for artifact_id in scenario.affected_artifact_ids
+        ),
+    )
 
     observations: list[BenchmarkArtifactObservation] = []
     operation_ids: list[str] = []
@@ -1450,6 +1821,7 @@ def _verify_reference_worker_evidence_set(
             job=baseline_job,
             phase="baseline",
             output_root=output,
+            execution_identity=expected_execution_identity,
         )
         selective_job = reference_render_job(
             frame=selected_frame,
@@ -1463,18 +1835,24 @@ def _verify_reference_worker_evidence_set(
                 artifact_id,
             ),
         )
+        observed_job: Mapping[str, Any] | None
         if scenario.incident_class == "stale-derivative-cache/v1":
-            observed_job = _stale_derivative_job(
-                frame=selected_frame,
-                stale_parent=stale_parent_by_artifact[artifact_id],
-                scenario=scenario,
-                variants=suite.variants,
-                trace_id=_trace_id(
-                    suite.manifest.manifest_sha256,
-                    scenario_id,
-                    "cache-observed",
-                    artifact_id,
-                ),
+            stale_parent = stale_parent_by_artifact.get(artifact_id)
+            observed_job = (
+                _stale_derivative_job(
+                    frame=selected_frame,
+                    stale_parent=stale_parent,
+                    scenario=scenario,
+                    variants=suite.variants,
+                    trace_id=_trace_id(
+                        suite.manifest.manifest_sha256,
+                        scenario_id,
+                        "cache-observed",
+                        artifact_id,
+                    ),
+                )
+                if stale_parent is not None
+                else None
             )
             observed_phase = "cache-observed-parent-v1"
         else:
@@ -1493,12 +1871,15 @@ def _verify_reference_worker_evidence_set(
             observed_phase = "incident-observed"
 
         if raw["affected"]:
+            if observed_job is None:
+                raise ReferenceWorkerBenchmarkError("reference-benchmark-stale-parent-missing")
             observed = _verified_evidence_receipt(
                 raw["observed_receipt"],
                 raw["observed_receipt_sha256"],
                 job=observed_job,
                 phase=observed_phase,
                 output_root=output,
+                execution_identity=expected_execution_identity,
             )
             selective = _verified_evidence_receipt(
                 raw["selective_receipt"],
@@ -1506,6 +1887,7 @@ def _verify_reference_worker_evidence_set(
                 job=selective_job,
                 phase="selective",
                 output_root=output,
+                execution_identity=expected_execution_identity,
             )
         else:
             if any(
@@ -1518,11 +1900,12 @@ def _verify_reference_worker_evidence_set(
                 )
             ):
                 raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-receipt-invalid")
-            _require_evidence_job_absent(
-                observed_job,
-                phase=observed_phase,
-                output_root=output,
-            )
+            if observed_job is not None:
+                _require_evidence_job_absent(
+                    observed_job,
+                    phase=observed_phase,
+                    output_root=output,
+                )
             _require_evidence_job_absent(
                 selective_job,
                 phase="selective",
@@ -1579,6 +1962,31 @@ def _verify_reference_worker_evidence_set(
         evidence_set_id=cast(str, document["evidence_set_id"]),
         observations=selected,
         verification_token=_VERIFIED_EVIDENCE_TOKEN,
+    )
+
+
+def verify_reference_worker_evidence_set(
+    evidence_set: Mapping[str, Any],
+    *,
+    suite: PreparedReferenceBenchmarkSuite,
+    output_root: Path,
+    expected_execution_identity: ReferenceExecutionIdentity | Mapping[str, Any],
+) -> _VerifiedReferenceWorkerEvidence:
+    try:
+        identity = (
+            expected_execution_identity
+            if isinstance(expected_execution_identity, ReferenceExecutionIdentity)
+            else ReferenceExecutionIdentity.from_mapping(expected_execution_identity)
+        )
+    except ReferenceWorkerError as error:
+        raise ReferenceWorkerBenchmarkError(
+            "reference-benchmark-expected-source-identity-invalid"
+        ) from error
+    return _verify_reference_worker_evidence_set(
+        evidence_set,
+        suite=suite,
+        output_root=output_root,
+        expected_execution_identity=identity,
     )
 
 
@@ -1642,21 +2050,77 @@ def run_reference_worker_benchmark(
     evidence_index_relative_path: str | None = ("reports/reference-worker-evidence-index.json"),
     worker: ReferenceWorkerCallable | None = None,
     suite_preparer: ReferenceSuitePreparer | None = None,
+    execution_identity: ReferenceExecutionIdentity | Mapping[str, Any] | None = None,
+    expected_source_revision: str | None = None,
+    expected_source_tree: str | None = None,
 ) -> dict[str, Any]:
+    recorded = worker is None and suite_preparer is None
     source = _safe_root(source_root, create=False)
     config = _safe_root(config_root, create=False)
-    output = _safe_root(output_root, create=True)
-    if _overlaps(source, config) or _overlaps(source, output) or _overlaps(config, output):
+    output_path = _safe_root_path(output_root)
+    if (
+        _overlaps(source, config)
+        or _overlaps(source, output_path)
+        or _overlaps(config, output_path)
+    ):
         raise ReferenceWorkerBenchmarkError("reference-benchmark-roots-overlap")
+    try:
+        if recorded:
+            if execution_identity is not None:
+                raise ReferenceWorkerBenchmarkError(
+                    "reference-benchmark-recorded-identity-caller-supplied"
+                )
+            if expected_source_revision is None or expected_source_tree is None:
+                raise ReferenceWorkerBenchmarkError(
+                    "reference-benchmark-expected-source-identity-required"
+                )
+            if (
+                _GIT_OBJECT.fullmatch(expected_source_revision) is None
+                or _GIT_OBJECT.fullmatch(expected_source_tree) is None
+            ):
+                raise ReferenceWorkerBenchmarkError(
+                    "reference-benchmark-expected-source-identity-invalid"
+                )
+            selected_identity = resolve_trusted_host_execution_identity()
+            if (
+                selected_identity.mode != "host-python-module"
+                or selected_identity.container_image_digest is not None
+            ):
+                raise ReferenceWorkerBenchmarkError("reference-benchmark-recorded-identity-invalid")
+            if (
+                selected_identity.source_revision != expected_source_revision
+                or selected_identity.source_tree != expected_source_tree
+            ):
+                raise ReferenceWorkerBenchmarkError(
+                    "reference-benchmark-expected-source-identity-mismatch"
+                )
+        else:
+            if expected_source_revision is not None or expected_source_tree is not None:
+                raise ReferenceWorkerBenchmarkError(
+                    "reference-benchmark-expected-source-identity-unexpected"
+                )
+            if execution_identity is None:
+                raise ReferenceWorkerBenchmarkError(
+                    "reference-benchmark-execution-identity-required"
+                )
+            selected_identity = (
+                execution_identity
+                if isinstance(execution_identity, ReferenceExecutionIdentity)
+                else ReferenceExecutionIdentity.from_mapping(execution_identity)
+            )
+    except ReferenceWorkerError as error:
+        raise ReferenceWorkerBenchmarkError(
+            "reference-benchmark-execution-identity-invalid"
+        ) from error
     verified_campaign = _verified_campaign_report(
         campaign_report=campaign_report,
         campaign_receipt_set=campaign_receipt_set,
     )
-
-    recorded = worker is None and suite_preparer is None
     evidence_source: BenchmarkEvidenceSource = (
         "recorded-worker-receipts" if recorded else "controlled-receipt-set"
     )
+    selected_worker = worker if worker is not None else _bound_real_worker()
+    output = _fresh_output_root(output_path) if recorded else _safe_root(output_path, create=True)
     prepare = suite_preparer or prepare_sealed_reference_benchmark_suite
     suite = prepare(source_root=source, config_root=config)
     verified_root = Path(suite.media_verification.cache_root).resolve(strict=False)
@@ -1668,13 +2132,15 @@ def run_reference_worker_benchmark(
         evidence_source,
         sealed_suite=suite_preparer is None,
         real_worker=worker is None,
+        execution_identity=selected_identity,
     )
-    selected_worker = worker or _load_real_worker()
     store = _ReceiptStore(
         output_root=output,
         worker=selected_worker,
         source_root=source,
         config_root=config,
+        execution_identity=selected_identity,
+        allow_reuse=not recorded,
     )
 
     frames = tuple(frame for sequence in suite.manifest.sequences for frame in sequence.frames)
@@ -1801,6 +2267,12 @@ def run_reference_worker_benchmark(
                 )
             )
 
+    if recorded:
+        if store.reused != 0:
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-recorded-reuse-forbidden")
+        if resolve_trusted_host_execution_identity() != selected_identity:
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-source-identity-raced")
+
     selected_observations = tuple(
         sorted(observations, key=lambda item: (item.scenario_id, item.artifact_id))
     )
@@ -1820,10 +2292,11 @@ def run_reference_worker_benchmark(
         evidence_source,
         provenance,
     )
-    verified_evidence = _verify_reference_worker_evidence_set(
+    verified_evidence = verify_reference_worker_evidence_set(
         evidence_record,
         suite=suite,
         output_root=output,
+        expected_execution_identity=selected_identity,
     )
     if evidence_index_relative_path is not None:
         evidence_path = _target(output, evidence_index_relative_path)
@@ -1853,6 +2326,8 @@ def main() -> None:
     parser.add_argument("--source-root", required=True, type=Path)
     parser.add_argument("--config-root", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
+    parser.add_argument("--expected-source-revision", required=True)
+    parser.add_argument("--expected-source-tree", required=True)
     parser.add_argument("--campaign-report", type=Path)
     parser.add_argument("--campaign-receipt-set", type=Path)
     parser.add_argument(
@@ -1883,6 +2358,8 @@ def main() -> None:
             campaign_receipt_set=campaign_receipt_set,
             report_relative_path=arguments.report_relative_path,
             evidence_index_relative_path=arguments.evidence_index_relative_path,
+            expected_source_revision=arguments.expected_source_revision,
+            expected_source_tree=arguments.expected_source_tree,
         )
     except (
         ContractError,
@@ -1906,7 +2383,9 @@ __all__ = [
     "ReferenceWorkerBenchmarkError",
     "main",
     "prepare_sealed_reference_benchmark_suite",
+    "resolve_trusted_host_execution_identity",
     "run_reference_worker_benchmark",
+    "verify_reference_worker_evidence_set",
 ]
 
 

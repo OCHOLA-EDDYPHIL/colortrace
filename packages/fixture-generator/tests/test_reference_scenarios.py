@@ -47,6 +47,29 @@ def test_reference_scenarios_are_mutually_exclusive_and_reproducible() -> None:
         assert digest == f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def test_stale_cache_scope_has_same_sequence_immediate_predecessors() -> None:
+    manifest = load_reference_media_manifest()
+    stale = reference_scenarios(manifest)["tos-stale-derivative-cache-v1"]
+    predecessor_and_frame_by_artifact = {
+        f"frame:{frame.sequence_id}:{frame.frame:05d}": (predecessor, frame)
+        for sequence in manifest.sequences
+        for predecessor, frame in zip(sequence.frames, sequence.frames[1:], strict=False)
+    }
+    sequence_first_artifact_ids = {
+        f"frame:{sequence.frames[0].sequence_id}:{sequence.frames[0].frame:05d}"
+        for sequence in manifest.sequences
+    }
+
+    assert len(stale.affected_artifact_ids) == 72
+    assert len(stale.protected_artifact_ids) == 168
+    assert sequence_first_artifact_ids.isdisjoint(stale.affected_artifact_ids)
+    assert sequence_first_artifact_ids.issubset(stale.protected_artifact_ids)
+    for artifact_id in stale.affected_artifact_ids:
+        predecessor, frame = predecessor_and_frame_by_artifact[artifact_id]
+        assert predecessor.sequence_id == frame.sequence_id
+        assert predecessor.frame == frame.frame - 1
+
+
 def test_each_scenario_changes_only_its_declared_fault_dimension() -> None:
     scenarios = reference_scenarios()
     resource = scenarios["tos-resource-resolution-drift-v1"]

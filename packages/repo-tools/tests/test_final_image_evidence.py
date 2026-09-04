@@ -972,7 +972,9 @@ class FinalImageEvidenceTest(unittest.TestCase):
         self.assertIn("AS reference-worker", runtime)
         self.assertIn("OpenImageIO.VERSION_STRING", runtime)
         self.assertIn("PyOpenColorIO.__version__", runtime)
-        self.assertIn('ENTRYPOINT ["/opt/colortrace/bin/colortrace-reference-worker"]', runtime)
+        self.assertIn(
+            'ENTRYPOINT ["/opt/colortrace/bin/colortrace-reference-batch-worker"]', runtime
+        )
         self.assertIn('LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}"', runtime)
         self.assertIn("USER 65532:65532", runtime)
         self.assertIn("find /source/.venv -type f -name '*.py[co]'", runtime)

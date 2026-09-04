@@ -120,6 +120,19 @@ _CLASS_COMMAND: Mapping[IncidentClass, str] = MappingProxyType(
         IncidentClass.STALE_DERIVATIVE_CACHE: "invalidate-cache",
     }
 )
+_APPROVED_CHANGE_FIELDS: Mapping[IncidentClass, tuple[str, ...]] = MappingProxyType(
+    {
+        IncidentClass.RESOURCE_RESOLUTION_DRIFT: ("resource_sha256",),
+        IncidentClass.CONFIGURATION_ROLLOUT_DRIFT: (
+            "config_sha256",
+            "config_generation",
+        ),
+        IncidentClass.STALE_DERIVATIVE_CACHE: (
+            "derivative_parent_sha256",
+            "derivative_generation",
+        ),
+    }
+)
 _FACT_BODY_KEYS = (
     "schema",
     "request_id",
@@ -141,7 +154,7 @@ _FACT_BODY_KEYS = (
     "attributes",
     "provenance",
 )
-_RECEIPT_KEYS = frozenset(
+_RECEIPT_V1_KEYS = frozenset(
     {
         "schema",
         "job_id",
@@ -170,7 +183,15 @@ _RECEIPT_KEYS = frozenset(
         "receipt_sha256",
     }
 )
+_RECEIPT_V2_KEYS = _RECEIPT_V1_KEYS | {
+    "job_sha256",
+    "execution_identity",
+    "execution_identity_sha256",
+    "input_color_space",
+    "output_color_space",
+}
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_GIT_OBJECT = re.compile(r"^[0-9a-f]{40}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _PROVIDER_IDENTIFIER = re.compile(r"^[^\x00-\x1f\x7f]{1,512}$")
 _RECORDED_TRACE_TOKEN = object()
@@ -200,6 +221,7 @@ class MutationKind(StrEnum):
     SCOPE_MISMATCH = "scope-mismatch"
     MULTI_DIMENSION_DRIFT = "multi-dimension-drift"
     NO_CAUSAL_DRIFT = "no-causal-drift"
+    APPROVED_CHANGE = "approved-change"
     MALFORMED_DIGEST = "malformed-digest"
 
 
@@ -672,6 +694,71 @@ def _mutate_fact(
     return _readdress_fact(result)
 
 
+def _approved_change_transition(
+    *,
+    case_id: str,
+    incident_class: IncidentClass,
+    expected: Mapping[str, Any],
+    affected_job_id: str,
+    affected_artifact_id: str,
+) -> dict[str, Any]:
+    current_approved = cast(dict[str, Any], _plain(expected["approved"]))
+    prior_approved = dict(current_approved)
+    changed_fields = _APPROVED_CHANGE_FIELDS[incident_class]
+    for field_name in changed_fields:
+        current_value = current_approved[field_name]
+        prior_approved[field_name] = (
+            current_value - 1
+            if isinstance(current_value, int)
+            else _digest_text(f"{case_id}:prior-approved:{field_name}")
+        )
+    body = {
+        "schema": "declared-reference-transition/v1",
+        "scenario_id": expected["scenario_id"],
+        "prior_approved": prior_approved,
+        "prior_approved_state_sha256": prefixed_sha256(prior_approved),
+        "current_approved": current_approved,
+        "current_approved_state_sha256": prefixed_sha256(current_approved),
+        "changed_fields": list(changed_fields),
+        "scope": {
+            "affected_job_ids": [affected_job_id],
+            "affected_artifact_ids": [affected_artifact_id],
+        },
+        "current_expected_state_id": expected["expected_state_id"],
+        "current_expected_state_sha256": expected["expected_state_sha256"],
+        "approval": {
+            "role": "color-pipeline-supervisor",
+            "status": "approved",
+            "requested_at": "2026-09-04T11:55:00.000Z",
+            "approved_at": "2026-09-04T11:58:00.000Z",
+            "effective_at": "2026-09-04T12:00:00.000Z",
+        },
+    }
+    return {**body, "transition_sha256": prefixed_sha256(body)}
+
+
+def _bind_approved_change_transition(
+    value: Mapping[str, Any], transition: Mapping[str, Any]
+) -> dict[str, Any]:
+    result = cast(dict[str, Any], _plain(value))
+    transition_sha256 = cast(str, transition["transition_sha256"])
+    attributes = cast(dict[str, str], result["attributes"])
+    attributes["declared_reference.transition_sha256"] = transition_sha256
+    provenance = cast(dict[str, Any], result["provenance"])
+    provenance["declared_reference_transition_sha256"] = transition_sha256
+    provenance["declared_reference_transition"] = _plain(transition)
+    evidence_sha256 = prefixed_sha256(
+        {
+            "event_id": result["event_id"],
+            "query_key": provenance["query_key"],
+            "attributes": attributes,
+        }
+    )
+    provenance["evidence_id"] = evidence_sha256
+    provenance["event_sha256"] = evidence_sha256
+    return _readdress_fact(result)
+
+
 def _case_queries(
     *,
     case_id: str,
@@ -899,6 +986,59 @@ def _case_queries(
                 else document
                 for document in queries[key]
             ]
+    elif mutation is MutationKind.APPROVED_CHANGE:
+        approved = cast(Mapping[str, Any], expected["approved"])
+        transition = _approved_change_transition(
+            case_id=case_id,
+            incident_class=incident_class,
+            expected=expected,
+            affected_job_id=affected_job_id,
+            affected_artifact_id=affected_artifact_id,
+        )
+        for key in populated:
+            signal = _QUERY_SIGNAL[key]
+            attributes = {
+                "metric": {
+                    "declared_reference.state": "reference_match",
+                    **{
+                        attribute_name: "true"
+                        for attribute_name in _MATCH_ATTRIBUTE_BY_FIELD.values()
+                    },
+                },
+                "log": {
+                    "runtime.effective_resource_sha256": cast(str, approved["resource_sha256"]),
+                    "runtime.effective_config_sha256": cast(str, approved["config_sha256"]),
+                    "runtime.config_generation": str(approved["config_generation"]),
+                    "runtime.frame_pipeline_sha256": cast(str, approved["frame_pipeline_sha256"]),
+                    "cache.key": cast(str, approved["cache_key"]),
+                },
+                "trace": {
+                    "runtime.frame_pipeline_sha256": cast(str, approved["frame_pipeline_sha256"]),
+                    "derivative.parent_sha256": cast(str, approved["derivative_parent_sha256"]),
+                    "cache.generation": str(approved["derivative_generation"]),
+                    "cache.key": cast(str, approved["cache_key"]),
+                },
+            }[signal]
+            matched: list[dict[str, Any]] = []
+            for document in queries[key]:
+                if document["job_id"] != affected_job_id:
+                    matched.append(document)
+                    continue
+                matching = _mutate_fact(
+                    document,
+                    attributes=attributes,
+                    **(
+                        {
+                            "resource_sha256": cast(str, approved["resource_sha256"]).removeprefix(
+                                "sha256:"
+                            )
+                        }
+                        if signal == "log"
+                        else {}
+                    ),
+                )
+                matched.append(_bind_approved_change_transition(matching, transition))
+            queries[key] = matched
     elif mutation is MutationKind.MALFORMED_DIGEST:
         queries["metric.correlated-observations"][0]["fact_sha256"] = "sha256:" + "0" * 64
     elif mutation not in {MutationKind.NONE, MutationKind.DISPLAY_TEXT_INJECTION}:
@@ -981,7 +1121,7 @@ def sealed_reference_holdouts() -> ReferenceHoldoutCorpus:
         MutationKind.CONFLICTING_EVENT,
         MutationKind.SCOPE_MISMATCH,
         MutationKind.MULTI_DIMENSION_DRIFT,
-        MutationKind.NO_CAUSAL_DRIFT,
+        MutationKind.APPROVED_CHANGE,
         MutationKind.MALFORMED_DIGEST,
     )
     for incident_class in IncidentClass:
@@ -1746,7 +1886,15 @@ def run_reference_campaign(
 
 def _validate_receipt(value: Mapping[str, Any]) -> Mapping[str, Any]:
     receipt = cast(dict[str, Any], _plain(value))
-    if set(receipt) != _RECEIPT_KEYS or receipt.get("schema") != "reference-render-receipt/v1":
+    schema = receipt.get("schema")
+    expected_keys = (
+        _RECEIPT_V1_KEYS
+        if schema == "reference-render-receipt/v1"
+        else _RECEIPT_V2_KEYS
+        if schema == "reference-render-receipt/v2"
+        else None
+    )
+    if expected_keys is None or set(receipt) != expected_keys:
         raise ReferenceCampaignError("reference-benchmark-receipt-invalid")
     body = {key: receipt[key] for key in receipt if key != "receipt_sha256"}
     if receipt["receipt_sha256"] != prefixed_sha256(body):
@@ -1758,8 +1906,16 @@ def _validate_receipt(value: Mapping[str, Any]) -> Mapping[str, Any]:
         "output_sha256",
         "canonical_pixel_sha256",
         "receipt_sha256",
+        *(
+            ("job_sha256", "execution_identity_sha256")
+            if schema == "reference-render-receipt/v2"
+            else ()
+        ),
     )
-    if any(_DIGEST.fullmatch(cast(str, receipt[name])) is None for name in digest_fields):
+    if any(
+        not isinstance(receipt[name], str) or _DIGEST.fullmatch(cast(str, receipt[name])) is None
+        for name in digest_fields
+    ):
         raise ReferenceCampaignError("reference-benchmark-receipt-invalid")
     identifiers = (
         "job_id",
@@ -1786,6 +1942,39 @@ def _validate_receipt(value: Mapping[str, Any]) -> Mapping[str, Any]:
     scenario_class = _SCENARIO_CLASS.get(cast(str, receipt["scenario_id"]))
     output_path = receipt["output_relative_path"]
     cache_key = receipt["cache_key"]
+    execution = receipt.get("execution_identity")
+    execution_valid = True
+    if schema == "reference-render-receipt/v2":
+        if not isinstance(execution, Mapping):
+            execution_valid = False
+        else:
+            mode = execution.get("mode")
+            image_digest = execution.get("container_image_digest")
+            execution_valid = bool(
+                set(execution)
+                == {"mode", "source_revision", "source_tree", "container_image_digest"}
+                and mode
+                in {
+                    "host-python-module",
+                    "container",
+                    "google-cloud-batch",
+                    "injected-worker-callable",
+                }
+                and isinstance(execution.get("source_revision"), str)
+                and _GIT_OBJECT.fullmatch(cast(str, execution["source_revision"])) is not None
+                and isinstance(execution.get("source_tree"), str)
+                and _GIT_OBJECT.fullmatch(cast(str, execution["source_tree"])) is not None
+                and (
+                    isinstance(image_digest, str) and _DIGEST.fullmatch(image_digest) is not None
+                    if mode in {"container", "google-cloud-batch"}
+                    else image_digest is None
+                )
+                and receipt["execution_identity_sha256"] == prefixed_sha256(execution)
+                and isinstance(receipt.get("input_color_space"), str)
+                and _IDENTIFIER.fullmatch(cast(str, receipt["input_color_space"])) is not None
+                and isinstance(receipt.get("output_color_space"), str)
+                and _IDENTIFIER.fullmatch(cast(str, receipt["output_color_space"])) is not None
+            )
     if (
         any(
             isinstance(receipt[name], bool)
@@ -1814,6 +2003,7 @@ def _validate_receipt(value: Mapping[str, Any]) -> Mapping[str, Any]:
         or receipt["dependencies"] != {"openimageio": "3.1.17.0", "opencolorio": "2.5.2"}
         or scenario_class is None
         or scenario_class.value != receipt["incident_class"]
+        or not execution_valid
     ):
         raise ReferenceCampaignError("reference-benchmark-receipt-invalid")
     return cast(Mapping[str, Any], _freeze(receipt))

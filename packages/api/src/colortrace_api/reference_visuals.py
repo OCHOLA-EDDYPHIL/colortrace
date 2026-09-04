@@ -6,7 +6,7 @@ import re
 import struct
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
@@ -29,6 +29,11 @@ _SCENARIO_IDS = frozenset(
         "tos-stale-derivative-cache-v1",
     }
 )
+_SCENARIO_CLASSES = {
+    "tos-resource-resolution-drift-v1": "resource-resolution-drift/v1",
+    "tos-config-rollout-drift-v1": "configuration-rollout-drift/v1",
+    "tos-stale-derivative-cache-v1": "stale-derivative-cache/v1",
+}
 _ROOT_KEYS = frozenset(
     {
         "schema",
@@ -57,7 +62,7 @@ _VISUAL_KEYS = frozenset(
         "width",
     }
 )
-_RECEIPT_KEYS = frozenset(
+_RECEIPT_V1_KEYS = frozenset(
     {
         "schema",
         "job_id",
@@ -86,8 +91,18 @@ _RECEIPT_KEYS = frozenset(
         "receipt_sha256",
     }
 )
+_RECEIPT_V2_KEYS = _RECEIPT_V1_KEYS | {
+    "job_sha256",
+    "execution_identity",
+    "execution_identity_sha256",
+    "input_color_space",
+    "output_color_space",
+}
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_GIT_OBJECT = re.compile(r"^[0-9a-f]{40}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
+_RECEIPT_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+_TRACE = re.compile(r"^[0-9a-f]{32}$")
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _MAX_MANIFEST_BYTES = 128 * 1024
 _MAX_PREVIEW_BYTES = 2 * 1024 * 1024
@@ -164,19 +179,121 @@ def _validate_receipts(value: Any) -> Mapping[str, Mapping[str, Any]]:
         raise ReferencePreviewError("reference-preview-receipts-invalid")
     result: dict[str, Mapping[str, Any]] = {}
     for key, receipt in value.items():
+        schema = receipt.get("schema") if isinstance(receipt, dict) else None
+        expected_keys = (
+            _RECEIPT_V1_KEYS
+            if schema == "reference-render-receipt/v1"
+            else _RECEIPT_V2_KEYS
+            if schema == "reference-render-receipt/v2"
+            else None
+        )
         if (
             not isinstance(key, str)
             or _DIGEST.fullmatch(key) is None
             or not isinstance(receipt, dict)
-            or set(receipt) != _RECEIPT_KEYS
-            or receipt.get("schema") != "reference-render-receipt/v1"
+            or expected_keys is None
+            or set(receipt) != expected_keys
         ):
             raise ReferencePreviewError("reference-preview-receipts-invalid")
         body = {name: child for name, child in receipt.items() if name != "receipt_sha256"}
+        execution = receipt.get("execution_identity")
+        output_relative_path = receipt.get("output_relative_path")
+        output_path = (
+            PurePosixPath(output_relative_path) if isinstance(output_relative_path, str) else None
+        )
+        common_binding_valid = bool(
+            all(
+                isinstance(receipt.get(name), str)
+                and _RECEIPT_IDENTIFIER.fullmatch(cast(str, receipt[name])) is not None
+                for name in ("job_id", "scenario_id", "incident_class", "worker_id", "artifact_id")
+            )
+            and receipt.get("scenario_id") in _SCENARIO_IDS
+            and receipt.get("incident_class")
+            == _SCENARIO_CLASSES.get(cast(str, receipt.get("scenario_id")))
+            and isinstance(receipt.get("trace_id"), str)
+            and _TRACE.fullmatch(cast(str, receipt["trace_id"])) is not None
+            and all(
+                isinstance(receipt.get(name), str)
+                and _DIGEST.fullmatch(cast(str, receipt[name])) is not None
+                for name in (
+                    "source_sha256",
+                    "config_sha256",
+                    "resource_sha256",
+                    "output_sha256",
+                    "canonical_pixel_sha256",
+                )
+            )
+            and (
+                receipt.get("cache_key") is None
+                or (
+                    isinstance(receipt.get("cache_key"), str)
+                    and _RECEIPT_IDENTIFIER.fullmatch(cast(str, receipt["cache_key"])) is not None
+                )
+            )
+            and isinstance(output_relative_path, str)
+            and 1 <= len(output_relative_path) <= 512
+            and output_path is not None
+            and not output_path.is_absolute()
+            and output_path.as_posix() == output_relative_path
+            and all(part not in {"", ".", ".."} for part in output_path.parts)
+            and all(
+                isinstance(receipt.get(name), int)
+                and not isinstance(receipt.get(name), bool)
+                and cast(int, receipt[name]) >= minimum
+                for name, minimum in (
+                    ("effective_generation", 1),
+                    ("width", 1),
+                    ("height", 1),
+                    ("pixel_work", 1),
+                    ("bytes_read", 1),
+                    ("bytes_written", 1),
+                    ("cpu_nanoseconds", 0),
+                    ("wall_nanoseconds", 0),
+                )
+            )
+            and isinstance(receipt.get("channels"), int)
+            and not isinstance(receipt.get("channels"), bool)
+            and receipt.get("channels") in {3, 4}
+            and cast(int, receipt["pixel_work"])
+            == cast(int, receipt["width"]) * cast(int, receipt["height"])
+        )
+        v2_binding_valid = schema != "reference-render-receipt/v2" or bool(
+            isinstance(receipt.get("job_sha256"), str)
+            and _DIGEST.fullmatch(cast(str, receipt["job_sha256"])) is not None
+            and isinstance(receipt.get("execution_identity_sha256"), str)
+            and _DIGEST.fullmatch(cast(str, receipt["execution_identity_sha256"])) is not None
+            and isinstance(execution, dict)
+            and set(execution)
+            == {"mode", "source_revision", "source_tree", "container_image_digest"}
+            and execution.get("mode")
+            in {
+                "host-python-module",
+                "container",
+                "google-cloud-batch",
+                "injected-worker-callable",
+            }
+            and isinstance(execution.get("source_revision"), str)
+            and _GIT_OBJECT.fullmatch(cast(str, execution["source_revision"])) is not None
+            and isinstance(execution.get("source_tree"), str)
+            and _GIT_OBJECT.fullmatch(cast(str, execution["source_tree"])) is not None
+            and (
+                isinstance(execution.get("container_image_digest"), str)
+                and _DIGEST.fullmatch(cast(str, execution["container_image_digest"])) is not None
+                if execution.get("mode") in {"container", "google-cloud-batch"}
+                else execution.get("container_image_digest") is None
+            )
+            and receipt["execution_identity_sha256"] == _digest(execution)
+            and isinstance(receipt.get("input_color_space"), str)
+            and _RECEIPT_IDENTIFIER.fullmatch(cast(str, receipt["input_color_space"])) is not None
+            and isinstance(receipt.get("output_color_space"), str)
+            and _RECEIPT_IDENTIFIER.fullmatch(cast(str, receipt["output_color_space"])) is not None
+        )
         if (
             receipt.get("receipt_sha256") != key
             or key != _digest(body)
             or receipt.get("dependencies") != {"openimageio": "3.1.17.0", "opencolorio": "2.5.2"}
+            or not common_binding_valid
+            or not v2_binding_valid
         ):
             raise ReferencePreviewError("reference-preview-receipts-invalid")
         result[key] = MappingProxyType(dict(receipt))

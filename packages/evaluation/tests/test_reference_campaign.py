@@ -45,6 +45,14 @@ def _digest(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode()).hexdigest()}"
 
 
+def _plain(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _plain(child) for key, child in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_plain(child) for child in value]
+    return value
+
+
 class _RecordedSelectionModel:
     def __init__(self) -> None:
         self.calls: list[ModelCall] = []
@@ -255,7 +263,7 @@ def test_sealed_holdouts_are_deterministic_balanced_and_include_mutations() -> N
         MutationKind.CONFLICTING_EVENT,
         MutationKind.SCOPE_MISMATCH,
         MutationKind.MULTI_DIMENSION_DRIFT,
-        MutationKind.NO_CAUSAL_DRIFT,
+        MutationKind.APPROVED_CHANGE,
         MutationKind.MALFORMED_DIGEST,
     }
 
@@ -285,6 +293,195 @@ def test_campaign_meets_classification_authority_and_ablation_gates() -> None:
     )
     body = {key: value for key, value in report.items() if key != "report_sha256"}
     assert report["report_sha256"] == prefixed_sha256(body)
+
+
+def test_approved_change_controls_never_create_an_action_intent() -> None:
+    controls = [
+        result
+        for result in run_reference_campaign()["case_results"]
+        if result["mutation"] == MutationKind.APPROVED_CHANGE
+    ]
+
+    assert len(controls) == 3
+    assert all(result["kind"] == CaseKind.FAIL_CLOSED for result in controls)
+    assert all(result["status"] == "insufficient" for result in controls)
+    assert all(result["incident_class"] is None for result in controls)
+    assert all(result["action_intent_present"] is False for result in controls)
+    assert all(result["authorizes_execution"] is False for result in controls)
+
+
+@pytest.mark.parametrize(
+    ("incident_class", "changed_fields"),
+    (
+        (IncidentClass.RESOURCE_RESOLUTION_DRIFT, {"resource_sha256"}),
+        (
+            IncidentClass.CONFIGURATION_ROLLOUT_DRIFT,
+            {"config_sha256", "config_generation"},
+        ),
+        (
+            IncidentClass.STALE_DERIVATIVE_CACHE,
+            {"derivative_parent_sha256", "derivative_generation"},
+        ),
+    ),
+)
+def test_approved_change_controls_bind_authorized_state_transitions(
+    incident_class: IncidentClass,
+    changed_fields: set[str],
+) -> None:
+    case = next(
+        item
+        for item in sealed_reference_holdouts().cases
+        if item.mutation is MutationKind.APPROVED_CHANGE
+        and item.source_incident_class is incident_class
+    )
+    expected = _plain(case.expected_state)
+    affected_job_id = cast(list[str], expected["scope"]["affected_job_ids"])[0]
+    affected = [
+        observation
+        for observations in case.query_observations.values()
+        for observation in observations
+        if observation["job_id"] == affected_job_id
+    ]
+    safe = [
+        observation
+        for observations in case.query_observations.values()
+        for observation in observations
+        if observation["job_id"] != affected_job_id
+    ]
+
+    assert len(affected) == 2
+    assert len(safe) == 2
+    transitions = [
+        _plain(observation["provenance"]["declared_reference_transition"])
+        for observation in affected
+    ]
+    assert transitions[0] == transitions[1]
+    transition = transitions[0]
+    transition_body = {
+        key: value for key, value in transition.items() if key != "transition_sha256"
+    }
+    assert transition["schema"] == "declared-reference-transition/v1"
+    assert transition["transition_sha256"] == prefixed_sha256(transition_body)
+    assert transition["prior_approved_state_sha256"] == prefixed_sha256(
+        transition["prior_approved"]
+    )
+    assert transition["current_approved_state_sha256"] == prefixed_sha256(
+        transition["current_approved"]
+    )
+    assert transition["current_approved"] == expected["approved"]
+    assert set(transition["changed_fields"]) == changed_fields
+    assert {
+        key
+        for key, value in transition["prior_approved"].items()
+        if value != transition["current_approved"][key]
+    } == changed_fields
+    assert transition["scope"] == {
+        "affected_job_ids": [affected_job_id],
+        "affected_artifact_ids": [affected[0]["artifact_id"]],
+    }
+    assert transition["current_expected_state_id"] == expected["expected_state_id"]
+    assert transition["current_expected_state_sha256"] == expected["expected_state_sha256"]
+    assert transition["approval"] == {
+        "role": "color-pipeline-supervisor",
+        "status": "approved",
+        "requested_at": "2026-09-04T11:55:00.000Z",
+        "approved_at": "2026-09-04T11:58:00.000Z",
+        "effective_at": "2026-09-04T12:00:00.000Z",
+    }
+
+    for observation in affected:
+        attributes = _plain(observation["attributes"])
+        provenance = _plain(observation["provenance"])
+        if observation["signal"] == "metric":
+            assert attributes["declared_reference.state"] == "reference_match"
+            assert (
+                attributes["declared_reference.approved_state_sha256"]
+                == transition["current_approved_state_sha256"]
+            )
+            assert all(
+                value == "true"
+                for name, value in attributes.items()
+                if name.startswith("declared_reference.") and name.endswith("_matches_approved")
+            )
+        elif observation["signal"] == "log":
+            assert (
+                attributes["runtime.effective_resource_sha256"]
+                == expected["approved"]["resource_sha256"]
+            )
+            assert (
+                attributes["runtime.effective_config_sha256"]
+                == expected["approved"]["config_sha256"]
+            )
+            assert attributes["runtime.config_generation"] == str(
+                expected["approved"]["config_generation"]
+            )
+            assert (
+                attributes["runtime.frame_pipeline_sha256"]
+                == expected["approved"]["frame_pipeline_sha256"]
+            )
+            assert attributes["cache.key"] == expected["approved"]["cache_key"]
+        else:
+            assert observation["signal"] == "trace"
+            assert (
+                attributes["runtime.frame_pipeline_sha256"]
+                == expected["approved"]["frame_pipeline_sha256"]
+            )
+            assert (
+                attributes["derivative.parent_sha256"]
+                == expected["approved"]["derivative_parent_sha256"]
+            )
+            assert attributes["cache.generation"] == str(
+                expected["approved"]["derivative_generation"]
+            )
+            assert attributes["cache.key"] == expected["approved"]["cache_key"]
+        assert attributes["declared_reference.transition_sha256"] == transition["transition_sha256"]
+        assert provenance["declared_reference_transition_sha256"] == transition["transition_sha256"]
+        assert provenance["declared_reference_transition"] == transition
+        evidence_sha256 = prefixed_sha256(
+            {
+                "event_id": observation["event_id"],
+                "query_key": provenance["query_key"],
+                "attributes": attributes,
+            }
+        )
+        assert provenance["evidence_id"] == evidence_sha256
+        assert provenance["event_sha256"] == evidence_sha256
+        fact_body = {
+            key: _plain(observation[key])
+            for key in (
+                "schema",
+                "request_id",
+                "incident_id",
+                "event_id",
+                "signal",
+                "fixture_id",
+                "run_id",
+                "job_id",
+                "worker_id",
+                "trace_id",
+                "artifact_id",
+                "config_sha256",
+                "resource_sha256",
+                "transform_id",
+                "observed_at",
+                "emitted_at",
+                "retrieved_at",
+                "attributes",
+                "provenance",
+            )
+        }
+        assert observation["fact_sha256"] == prefixed_sha256(fact_body)
+
+    assert all(
+        "declared_reference.transition_sha256" not in observation["attributes"]
+        and "declared_reference_transition_sha256" not in observation["provenance"]
+        and "declared_reference_transition" not in observation["provenance"]
+        for observation in safe
+    )
+
+
+def test_legacy_no_causal_drift_control_remains_read_compatible() -> None:
+    assert MutationKind("no-causal-drift") is MutationKind.NO_CAUSAL_DRIFT
 
 
 def test_adaptive_control_beats_fixed_order_under_the_same_caps() -> None:

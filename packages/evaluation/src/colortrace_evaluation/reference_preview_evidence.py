@@ -29,9 +29,16 @@ from colortrace_fixture import (
     reference_render_job,
     reference_scenarios,
 )
-from colortrace_simulator.reference_worker import execute_reference_render_job
+from colortrace_simulator.reference_worker import (
+    ReferenceExecutionIdentity,
+    execute_reference_render_job,
+)
 
 from .contracts import canonical_json_bytes
+from .reference_worker_benchmark import (
+    ReferenceWorkerBenchmarkError,
+    resolve_trusted_host_execution_identity,
+)
 
 ReferenceRenderer = Callable[..., dict[str, Any]]
 PreviewAssetBuilder = Callable[..., Mapping[str, bytes]]
@@ -67,6 +74,28 @@ class ReferencePreviewRefreshError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+def _preview_execution_identity(
+    *,
+    renderer: ReferenceRenderer,
+    requested: ReferenceExecutionIdentity | None,
+) -> ReferenceExecutionIdentity:
+    if renderer is execute_reference_render_job:
+        try:
+            trusted = resolve_trusted_host_execution_identity()
+        except ReferenceWorkerBenchmarkError as error:
+            raise ReferencePreviewRefreshError(
+                "reference-preview-execution-identity-unavailable"
+            ) from error
+        if requested is not None and requested != trusted:
+            raise ReferencePreviewRefreshError("reference-preview-execution-identity-mismatch")
+        return trusted
+    if requested is None:
+        raise ReferencePreviewRefreshError("reference-preview-execution-identity-required")
+    if requested.mode != "injected-worker-callable":
+        raise ReferencePreviewRefreshError("reference-preview-controlled-identity-invalid")
+    return requested
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,15 +186,29 @@ def _trace_id(scenario_id: str, mode: str) -> str:
     return hashlib.sha256(f"reference-preview\0{scenario_id}\0{mode}".encode()).hexdigest()[:32]
 
 
-def _receipt_matches_job(receipt: Mapping[str, Any], job: Mapping[str, Any]) -> bool:
+def _receipt_matches_job(
+    receipt: Mapping[str, Any],
+    job: Mapping[str, Any],
+    execution_identity: ReferenceExecutionIdentity | None,
+) -> bool:
     source = cast(Mapping[str, Any], job["source"])
     color = cast(Mapping[str, Any], job["color"])
     runtime = cast(Mapping[str, Any], job["runtime"])
     output = cast(Mapping[str, Any], job["output"])
     receipt_id = receipt.get("receipt_sha256")
     receipt_body = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    schema = receipt.get("schema")
+    version_binding_valid = bool(
+        schema == "reference-render-receipt/v2"
+        and execution_identity is not None
+        and receipt.get("job_sha256") == _content_digest(canonical_json_bytes(job))
+        and receipt.get("execution_identity") == execution_identity.to_dict()
+        and receipt.get("execution_identity_sha256") == execution_identity.sha256
+        and receipt.get("input_color_space") == color["input_color_space"]
+        and receipt.get("output_color_space") == color["output_color_space"]
+    )
     return (
-        receipt.get("schema") == "reference-render-receipt/v1"
+        version_binding_valid
         and isinstance(receipt_id, str)
         and receipt_id == _content_digest(canonical_json_bytes(receipt_body))
         and receipt.get("job_id") == job["job_id"]
@@ -194,6 +237,7 @@ def _render_jobs(
     source_root: Path,
     work_root: Path,
     renderer: ReferenceRenderer,
+    execution_identity: ReferenceExecutionIdentity,
 ) -> Mapping[tuple[str, str], Mapping[str, Any]]:
     manifest = load_reference_media_manifest()
     scenarios = reference_scenarios(manifest)
@@ -235,13 +279,14 @@ def _render_jobs(
                 job["output"]["relative_path"] = (
                     f"{scenario_id}/observed-stale-parent/{frame.sequence_id}/{frame.filename}"
                 )
-            receipt = renderer(
-                job,
-                source_root=source_root,
-                config_root=work_root / "config",
-                output_root=output_root,
-            )
-            if not _receipt_matches_job(receipt, job):
+            renderer_arguments: dict[str, Any] = {
+                "source_root": source_root,
+                "config_root": work_root / "config",
+                "output_root": output_root,
+            }
+            renderer_arguments["execution_identity"] = execution_identity
+            receipt = renderer(job, **renderer_arguments)
+            if not _receipt_matches_job(receipt, job, execution_identity):
                 raise ReferencePreviewRefreshError("reference-preview-receipt-job-mismatch")
             receipts[(scenario_id, mode)] = receipt
     return receipts
@@ -783,6 +828,7 @@ def refresh_reference_previews(
     write: bool = False,
     renderer: ReferenceRenderer = execute_reference_render_job,
     asset_builder: PreviewAssetBuilder = _build_preview_assets,
+    execution_identity: ReferenceExecutionIdentity | None = None,
 ) -> dict[str, Any]:
     if manifest_path.absolute() != (asset_root / "manifest.json").absolute():
         raise ReferencePreviewRefreshError("reference-preview-asset-layout-invalid")
@@ -798,6 +844,11 @@ def refresh_reference_previews(
     if original_snapshot.names != frozenset({"manifest.json", *filenames.values()}):
         raise ReferencePreviewRefreshError("reference-preview-assets-unsafe")
 
+    selected_identity = _preview_execution_identity(
+        renderer=renderer,
+        requested=execution_identity,
+    )
+
     with tempfile.TemporaryDirectory(
         prefix="colortrace-reference-previews-build-",
         ignore_cleanup_errors=True,
@@ -807,6 +858,7 @@ def refresh_reference_previews(
             source_root=source_root,
             work_root=work_root,
             renderer=renderer,
+            execution_identity=selected_identity,
         )
         assets = dict(
             asset_builder(
@@ -893,6 +945,7 @@ def refresh_reference_preview_manifest(
     write: bool = False,
     renderer: ReferenceRenderer = execute_reference_render_job,
     asset_builder: PreviewAssetBuilder = _build_preview_assets,
+    execution_identity: ReferenceExecutionIdentity | None = None,
 ) -> dict[str, Any]:
     return refresh_reference_previews(
         source_root=source_root,
@@ -901,6 +954,7 @@ def refresh_reference_preview_manifest(
         write=write,
         renderer=renderer,
         asset_builder=asset_builder,
+        execution_identity=execution_identity,
     )
 
 

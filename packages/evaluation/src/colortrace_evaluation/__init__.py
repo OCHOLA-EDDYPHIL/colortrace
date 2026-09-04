@@ -16,6 +16,7 @@ from .campaign import (
 )
 from .contracts import canonical_json_bytes, prefixed_sha256, strict_json_file
 from .evidence import build_action_recovery_evidence
+from .google_cloud_execution import GoogleBatchApiClient, GoogleCloudStorageControlClient
 from .grafana_cleanup import cleanup_grafana_resources
 from .reference_campaign import (
     BenchmarkArtifactObservation,
@@ -48,8 +49,8 @@ from .reference_execution import (
     BatchReconciliation,
     BatchSubmission,
     GcsBucketSecurity,
+    GcsControlClient,
     GcsObjectRef,
-    GcsStagedTransferClient,
     GoogleBatchExecutionPlan,
     GoogleBatchPlanner,
     GoogleBatchSubmitter,
@@ -57,9 +58,6 @@ from .reference_execution import (
     ReferenceExecutionError,
     ReferenceExecutionSpec,
     ReferenceWorkerCallable,
-    StagedInput,
-    StagedOutput,
-    StagedTransferPlan,
 )
 from .reference_worker_benchmark import (
     PreparedReferenceBenchmarkSuite,
@@ -80,11 +78,13 @@ __all__ = [
     "CaseKind",
     "EvaluationError",
     "GcsBucketSecurity",
+    "GcsControlClient",
     "GcsObjectRef",
-    "GcsStagedTransferClient",
+    "GoogleBatchApiClient",
     "GoogleBatchExecutionPlan",
     "GoogleBatchPlanner",
     "GoogleBatchSubmitter",
+    "GoogleCloudStorageControlClient",
     "LocalReferenceExecutor",
     "MutationKind",
     "PreparedReferenceBenchmarkSuite",
@@ -101,9 +101,6 @@ __all__ = [
     "SelectionBudget",
     "SelectionSource",
     "SelectionTrace",
-    "StagedInput",
-    "StagedOutput",
-    "StagedTransferPlan",
     "aggregate_campaign",
     "build_alert",
     "build_action_recovery_evidence",

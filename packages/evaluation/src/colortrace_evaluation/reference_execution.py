@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import re
+import stat
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -8,7 +10,22 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Protocol, cast
 
-from .contracts import canonical_json_bytes, prefixed_sha256
+from colortrace_simulator.reference_batch_worker import (
+    ReferenceBatchObject,
+    ReferenceBatchOutputs,
+    ReferenceBatchTask,
+    ReferenceBatchWorkerError,
+    encode_reference_batch_task,
+    parse_reference_receipt,
+    validate_reference_receipt,
+    validate_reference_render_receipt,
+)
+from colortrace_simulator.reference_worker import (
+    ReferenceExecutionIdentity,
+    ReferenceWorkerError,
+)
+
+from .contracts import canonical_json_bytes, prefixed_sha256, sha256_file
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
@@ -19,10 +36,8 @@ _BUCKET = re.compile(r"^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$")
 _OBJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,1023}$")
 _IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/-]+@sha256:[0-9a-f]{64}$")
 _TRACE = re.compile(r"^[0-9a-f]{32}$")
-_HOST_ROOT = PurePosixPath("/mnt/disks/colortrace-reference")
-_CONTAINER_INPUT = "/mnt/colortrace/input"
-_CONTAINER_OUTPUT = "/mnt/colortrace/output"
-_REMOTE_JOB_REQUEST_KEYS = ("taskGroups", "allocationPolicy", "logsPolicy", "labels")
+_MAX_REFERENCE_OUTPUT_BYTES = 512 * 1024 * 1024
+_MAX_REFERENCE_RECEIPT_BYTES = 65_536
 _SCENARIO_CLASSES = {
     "tos-resource-resolution-drift-v1": "resource-resolution-drift/v1",
     "tos-config-rollout-drift-v1": "configuration-rollout-drift/v1",
@@ -304,6 +319,46 @@ class ReferenceExecutionSpec:
             },
         }
 
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> ReferenceExecutionSpec:
+        if (
+            set(value) != {"schema", "execution_id", "job", "inputs", "outputs"}
+            or value.get("schema") != "reference-execution-spec/v1"
+        ):
+            raise ReferenceExecutionError("reference-execution-spec-invalid")
+        inputs = _mapping(value.get("inputs"), code="reference-execution-spec-invalid")
+        outputs = _mapping(value.get("outputs"), code="reference-execution-spec-invalid")
+        if set(inputs) != {"job", "source", "config", "resource"} or set(outputs) != {
+            "bucket",
+            "object",
+            "receipt_object",
+        }:
+            raise ReferenceExecutionError("reference-execution-spec-invalid")
+
+        def object_reference(name: str) -> GcsObjectRef:
+            item = _mapping(inputs.get(name), code="reference-execution-spec-invalid")
+            if set(item) != {"bucket", "object", "generation", "sha256", "byte_length"}:
+                raise ReferenceExecutionError("reference-execution-spec-invalid")
+            return GcsObjectRef(
+                bucket=cast(str, item.get("bucket")),
+                object=cast(str, item.get("object")),
+                generation=cast(int, item.get("generation")),
+                sha256=cast(str, item.get("sha256")),
+                byte_length=cast(int, item.get("byte_length")),
+            )
+
+        return cls(
+            execution_id=cast(str, value.get("execution_id")),
+            job=_mapping(value.get("job"), code="reference-execution-spec-invalid"),
+            job_object=object_reference("job"),
+            source_object=object_reference("source"),
+            config_object=object_reference("config"),
+            resource_object=object_reference("resource"),
+            output_bucket=cast(str, outputs.get("bucket")),
+            output_object=cast(str, outputs.get("object")),
+            receipt_object=cast(str, outputs.get("receipt_object")),
+        )
+
     @property
     def sha256(self) -> str:
         return prefixed_sha256(self.to_dict())
@@ -317,12 +372,26 @@ class ReferenceWorkerCallable(Protocol):
         source_root: Path,
         config_root: Path,
         output_root: Path,
+        execution_identity: ReferenceExecutionIdentity | Mapping[str, Any],
     ) -> Mapping[str, Any]: ...
 
 
 class LocalReferenceExecutor:
-    def __init__(self, worker: ReferenceWorkerCallable | None = None) -> None:
+    def __init__(
+        self,
+        worker: ReferenceWorkerCallable | None = None,
+        *,
+        execution_identity: ReferenceExecutionIdentity | Mapping[str, Any],
+    ) -> None:
         self._worker = worker
+        try:
+            self._execution_identity = (
+                execution_identity
+                if isinstance(execution_identity, ReferenceExecutionIdentity)
+                else ReferenceExecutionIdentity.from_mapping(execution_identity)
+            )
+        except ReferenceWorkerError as error:
+            raise ReferenceExecutionError("reference-execution-identity-invalid") from error
 
     def execute(
         self,
@@ -344,10 +413,42 @@ class LocalReferenceExecutor:
             source_root=source_root,
             config_root=config_root,
             output_root=output_root,
+            execution_identity=self._execution_identity,
         )
         if not isinstance(result, Mapping) or any(not isinstance(key, str) for key in result):
             raise ReferenceExecutionError("reference-local-receipt-invalid")
-        return {str(key): _plain_json(child) for key, child in result.items()}
+        try:
+            parsed = parse_reference_receipt(canonical_json_bytes(_plain_json(result)))
+            root = output_root.resolve(strict=True)
+            root_metadata = root.lstat()
+            relative = _relative_path(
+                _mapping(spec.job["output"], code="reference-job-invalid")["relative_path"]
+            )
+            candidate = output_root / relative
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(root)
+            output_metadata = resolved.lstat()
+            if (
+                root != output_root.absolute()
+                or not stat.S_ISDIR(root_metadata.st_mode)
+                or candidate != resolved
+                or candidate.is_symlink()
+                or not stat.S_ISREG(output_metadata.st_mode)
+                or output_metadata.st_nlink != 1
+            ):
+                raise ReferenceExecutionError("reference-local-output-invalid")
+            validate_reference_render_receipt(
+                parsed,
+                job=spec.job,
+                execution_identity=self._execution_identity,
+                output_sha256=sha256_file(resolved),
+                output_bytes=output_metadata.st_size,
+            )
+        except ReferenceExecutionError:
+            raise
+        except (OSError, ValueError, ReferenceBatchWorkerError, ReferenceWorkerError) as error:
+            raise ReferenceExecutionError("reference-local-receipt-invalid") from error
+        return parsed
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,60 +460,15 @@ class GcsBucketSecurity:
 
 
 @dataclass(frozen=True, slots=True)
-class StagedInput:
-    reference: GcsObjectRef
-    destination: str
-    if_generation_match: int
-
-    def __post_init__(self) -> None:
-        if self.if_generation_match != self.reference.generation:
-            raise ReferenceExecutionError("gcs-input-precondition-invalid")
-        _staging_path(self.destination)
-
-
-@dataclass(frozen=True, slots=True)
-class StagedOutput:
-    source: str
-    bucket: str
-    object: str
-    if_generation_match: int
-
-    def __post_init__(self) -> None:
-        _staging_path(self.source)
-        _bucket_name(self.bucket)
-        _object_name(self.object)
-        if self.if_generation_match != 0:
-            raise ReferenceExecutionError("gcs-output-precondition-invalid")
-
-
-@dataclass(frozen=True, slots=True)
-class StagedTransferPlan:
-    inputs: tuple[StagedInput, ...]
-    outputs: tuple[StagedOutput, ...]
-
-
-def _staging_path(value: str) -> None:
-    if not isinstance(value, str):
-        raise ReferenceExecutionError("reference-staging-path-invalid")
-    path = PurePosixPath(value)
-    try:
-        path.relative_to(_HOST_ROOT)
-    except ValueError as error:
-        raise ReferenceExecutionError("reference-staging-path-invalid") from error
-    if not path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        raise ReferenceExecutionError("reference-staging-path-invalid")
-
-
-@dataclass(frozen=True, slots=True)
 class GoogleBatchExecutionPlan:
     parent: str
     job_id: str
     job_resource: str
     request_id: str
     spec_sha256: str
+    task_sha256: str
     request_sha256: str
     request: Mapping[str, Any]
-    transfers: StagedTransferPlan
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "request", _freeze_json(self.request))
@@ -453,22 +509,29 @@ class BatchClient(Protocol):
     ) -> Mapping[str, Any]: ...
 
 
-class GcsStagedTransferClient(Protocol):
-    """Node-staging boundary; implementations enforce every precondition in the plan."""
+class GcsControlClient(Protocol):
+    """Read-only control-plane access; the Batch worker owns data transfer."""
 
     @property
     def principal(self) -> str: ...
 
     def inspect_bucket(self, *, bucket: str) -> GcsBucketSecurity: ...
 
-    def prepare(self, *, job_resource: str, plan: StagedTransferPlan) -> None: ...
+    def describe_object(self, *, bucket: str, object: str) -> GcsObjectRef | None: ...
 
-    def collect(
+    def download_bytes(
         self,
         *,
-        job_resource: str,
-        plan: StagedTransferPlan,
-    ) -> Sequence[GcsObjectRef]: ...
+        reference: GcsObjectRef,
+        maximum_bytes: int,
+    ) -> bytes: ...
+
+    def digest_object(
+        self,
+        *,
+        reference: GcsObjectRef,
+        maximum_bytes: int,
+    ) -> tuple[str, int]: ...
 
 
 def _service_account(value: str, project_id: str) -> str:
@@ -496,13 +559,88 @@ def _worker_image(value: str) -> str:
     return value
 
 
+def _network(value: str, project_id: str) -> str:
+    pattern = re.compile(
+        rf"^projects/{re.escape(project_id)}/global/networks/"
+        r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    )
+    if not isinstance(value, str) or pattern.fullmatch(value) is None:
+        raise ReferenceExecutionError("batch-network-invalid")
+    return value
+
+
+def _subnetwork(value: str, project_id: str, region: str) -> str:
+    pattern = re.compile(
+        rf"^projects/{re.escape(project_id)}/regions/{re.escape(region)}/subnetworks/"
+        r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    )
+    if not isinstance(value, str) or pattern.fullmatch(value) is None:
+        raise ReferenceExecutionError("batch-subnetwork-invalid")
+    return value
+
+
+def _batch_object(reference: GcsObjectRef) -> ReferenceBatchObject:
+    try:
+        return ReferenceBatchObject(**reference.to_dict())
+    except ReferenceBatchWorkerError as error:
+        raise ReferenceExecutionError("reference-batch-task-invalid") from error
+
+
+def _expected_projection(
+    expected: Any,
+    remote: Any,
+    *,
+    path: tuple[str, ...] = (),
+) -> Any:
+    if isinstance(expected, Mapping):
+        if not isinstance(remote, Mapping):
+            raise ReferenceExecutionError("batch-job-identity-conflict")
+        allowed_extras = (
+            {"name", "uid", "status", "createTime", "updateTime"}
+            if not path
+            else {"name"}
+            if path == ("taskGroups", "*")
+            else set()
+        )
+        if not set(remote).difference(expected).issubset(allowed_extras):
+            raise ReferenceExecutionError("batch-job-identity-conflict")
+        projected: dict[str, Any] = {}
+        for key, child in expected.items():
+            if key not in remote:
+                raise ReferenceExecutionError("batch-job-identity-conflict")
+            projected[str(key)] = _expected_projection(
+                child,
+                remote[key],
+                path=(*path, str(key)),
+            )
+        return projected
+    if isinstance(expected, (list, tuple)):
+        if (
+            not isinstance(remote, Sequence)
+            or isinstance(remote, (str, bytes, bytearray))
+            or len(remote) != len(expected)
+        ):
+            raise ReferenceExecutionError("batch-job-identity-conflict")
+        return [
+            _expected_projection(expected_child, remote_child, path=(*path, "*"))
+            for expected_child, remote_child in zip(expected, remote, strict=True)
+        ]
+    if remote != expected:
+        raise ReferenceExecutionError("batch-job-identity-conflict")
+    return remote
+
+
 @dataclass(frozen=True, slots=True)
 class GoogleBatchPlanner:
     project_id: str
     region: str
     worker_image: str
+    source_revision: str
+    source_tree: str
     submitter_service_account: str
     worker_service_account: str
+    network: str
+    subnetwork: str
 
     def __post_init__(self) -> None:
         if not isinstance(self.project_id, str) or _PROJECT_ID.fullmatch(self.project_id) is None:
@@ -510,10 +648,52 @@ class GoogleBatchPlanner:
         if not isinstance(self.region, str) or _REGION.fullmatch(self.region) is None:
             raise ReferenceExecutionError("batch-region-invalid")
         _worker_image(self.worker_image)
+        try:
+            ReferenceExecutionIdentity.from_mapping(
+                {
+                    "mode": "google-cloud-batch",
+                    "source_revision": self.source_revision,
+                    "source_tree": self.source_tree,
+                    "container_image_digest": self.worker_image.rpartition("@")[2],
+                }
+            )
+        except ReferenceWorkerError as error:
+            raise ReferenceExecutionError("batch-source-identity-invalid") from error
         _service_account(self.submitter_service_account, self.project_id)
         _service_account(self.worker_service_account, self.project_id)
         if self.submitter_service_account == self.worker_service_account:
             raise ReferenceExecutionError("batch-service-accounts-not-separated")
+        _network(self.network, self.project_id)
+        _subnetwork(self.subnetwork, self.project_id, self.region)
+
+    @property
+    def execution_identity(self) -> ReferenceExecutionIdentity:
+        return ReferenceExecutionIdentity(
+            mode="google-cloud-batch",
+            source_revision=self.source_revision,
+            source_tree=self.source_tree,
+            container_image_digest=self.worker_image.rpartition("@")[2],
+        )
+
+    def batch_task(self, spec: ReferenceExecutionSpec) -> ReferenceBatchTask:
+        try:
+            return ReferenceBatchTask(
+                execution_id=spec.execution_id,
+                execution_spec_sha256=spec.sha256,
+                job=spec.job,
+                job_object=_batch_object(spec.job_object),
+                source_object=_batch_object(spec.source_object),
+                config_object=_batch_object(spec.config_object),
+                resource_object=_batch_object(spec.resource_object),
+                outputs=ReferenceBatchOutputs(
+                    bucket=spec.output_bucket,
+                    object=spec.output_object,
+                    receipt_object=spec.receipt_object,
+                ),
+                execution_identity=self.execution_identity,
+            )
+        except (ReferenceBatchWorkerError, ReferenceWorkerError) as error:
+            raise ReferenceExecutionError("reference-batch-task-invalid") from error
 
     def plan(self, spec: ReferenceExecutionSpec) -> GoogleBatchExecutionPlan:
         spec_hex = spec.sha256.removeprefix("sha256:")
@@ -521,48 +701,8 @@ class GoogleBatchPlanner:
         parent = f"projects/{self.project_id}/locations/{self.region}"
         resource = f"{parent}/jobs/{job_id}"
         request_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"colortrace:{spec.sha256}"))
-        host_root = _HOST_ROOT / job_id
-        input_root = host_root / "input"
-        output_root = host_root / "output"
-        source = _mapping(spec.job["source"], code="reference-job-invalid")
-        color = _mapping(spec.job["color"], code="reference-job-invalid")
-        output = _mapping(spec.job["output"], code="reference-job-invalid")
-        transfers = StagedTransferPlan(
-            inputs=(
-                StagedInput(
-                    spec.job_object, str(input_root / "job.json"), spec.job_object.generation
-                ),
-                StagedInput(
-                    spec.source_object,
-                    str(input_root / "source" / cast(str, source["relative_path"])),
-                    spec.source_object.generation,
-                ),
-                StagedInput(
-                    spec.config_object,
-                    str(input_root / "config" / cast(str, color["config_relative_path"])),
-                    spec.config_object.generation,
-                ),
-                StagedInput(
-                    spec.resource_object,
-                    str(input_root / "config" / cast(str, color["resource_relative_path"])),
-                    spec.resource_object.generation,
-                ),
-            ),
-            outputs=(
-                StagedOutput(
-                    str(output_root / cast(str, output["relative_path"])),
-                    spec.output_bucket,
-                    spec.output_object,
-                    0,
-                ),
-                StagedOutput(
-                    str(output_root / "receipt.json"),
-                    spec.output_bucket,
-                    spec.receipt_object,
-                    0,
-                ),
-            ),
-        )
+        task = self.batch_task(spec)
+        encoded_task, task_sha256 = encode_reference_batch_task(task)
         request: dict[str, Any] = {
             "taskGroups": [
                 {
@@ -575,29 +715,17 @@ class GoogleBatchPlanner:
                                 "displayName": "colortrace-reference-worker",
                                 "container": {
                                     "imageUri": self.worker_image,
-                                    "entrypoint": "colortrace-reference-worker",
+                                    "entrypoint": "colortrace-reference-batch-worker",
                                     "commands": [
-                                        "--job",
-                                        f"{_CONTAINER_INPUT}/job.json",
-                                        "--source-root",
-                                        f"{_CONTAINER_INPUT}/source",
-                                        "--config-root",
-                                        f"{_CONTAINER_INPUT}/config",
-                                        "--output-root",
-                                        _CONTAINER_OUTPUT,
-                                        "--receipt-relative-path",
-                                        "receipt.json",
+                                        "--task-base64",
+                                        encoded_task,
+                                        "--task-sha256",
+                                        task_sha256,
                                     ],
-                                    "volumes": [
-                                        f"{input_root}:{_CONTAINER_INPUT}:ro",
-                                        f"{output_root}:{_CONTAINER_OUTPUT}:rw",
-                                    ],
-                                    "blockExternalNetwork": True,
                                 },
                             }
                         ],
                         "computeResource": {"cpuMilli": "2000", "memoryMib": "4096"},
-                        "maxRetryCount": 0,
                         "maxRunDuration": "3600s",
                     },
                 }
@@ -613,6 +741,15 @@ class GoogleBatchPlanner:
                     }
                 ],
                 "serviceAccount": {"email": self.worker_service_account},
+                "network": {
+                    "networkInterfaces": [
+                        {
+                            "network": self.network,
+                            "subnetwork": self.subnetwork,
+                            "noExternalIpAddress": True,
+                        }
+                    ]
+                },
             },
             "logsPolicy": {"destination": "CLOUD_LOGGING"},
             "labels": {
@@ -628,9 +765,9 @@ class GoogleBatchPlanner:
             job_resource=resource,
             request_id=request_id,
             spec_sha256=spec.sha256,
+            task_sha256=task_sha256,
             request_sha256=request_sha256,
             request=request,
-            transfers=transfers,
         )
 
 
@@ -640,15 +777,15 @@ class GoogleBatchSubmitter:
         *,
         planner: GoogleBatchPlanner,
         batch: BatchClient,
-        transfers: GcsStagedTransferClient,
+        objects: GcsControlClient,
     ) -> None:
         if batch.principal != planner.submitter_service_account:
             raise ReferenceExecutionError("batch-submitter-identity-mismatch")
-        if transfers.principal != planner.worker_service_account:
-            raise ReferenceExecutionError("gcs-worker-identity-mismatch")
+        if objects.principal != planner.submitter_service_account:
+            raise ReferenceExecutionError("gcs-control-identity-mismatch")
         self._planner = planner
         self._batch = batch
-        self._transfers = transfers
+        self._objects = objects
 
     def _assert_private_buckets(self, spec: ReferenceExecutionSpec) -> None:
         buckets = {
@@ -659,7 +796,7 @@ class GoogleBatchSubmitter:
             spec.output_bucket,
         }
         for bucket in sorted(buckets):
-            state = self._transfers.inspect_bucket(bucket=bucket)
+            state = self._objects.inspect_bucket(bucket=bucket)
             if (
                 state.bucket != bucket
                 or state.project_id != self._planner.project_id
@@ -677,9 +814,7 @@ class GoogleBatchSubmitter:
         spec_hex = plan.spec_sha256.removeprefix("sha256:")
         try:
             expected_request = _plain_json(plan.request)
-            remote_request = {key: _plain_json(value[key]) for key in _REMOTE_JOB_REQUEST_KEYS}
-            expected_request_sha256 = prefixed_sha256(expected_request)
-            remote_request_sha256 = prefixed_sha256(remote_request)
+            remote_request = _expected_projection(expected_request, value)
         except (KeyError, TypeError, ValueError) as error:
             raise ReferenceExecutionError("batch-job-identity-conflict") from error
         if (
@@ -687,8 +822,8 @@ class GoogleBatchSubmitter:
             or not isinstance(labels, Mapping)
             or labels.get("colortrace-spec-sha256-a") != spec_hex[:32]
             or labels.get("colortrace-spec-sha256-b") != spec_hex[32:]
-            or expected_request_sha256 != plan.request_sha256
-            or remote_request_sha256 != plan.request_sha256
+            or prefixed_sha256(expected_request) != plan.request_sha256
+            or prefixed_sha256(remote_request) != plan.request_sha256
             or remote_request != expected_request
         ):
             raise ReferenceExecutionError("batch-job-identity-conflict")
@@ -696,7 +831,6 @@ class GoogleBatchSubmitter:
     def submit(self, spec: ReferenceExecutionSpec) -> BatchSubmission:
         plan = self._planner.plan(spec)
         self._assert_private_buckets(spec)
-        self._transfers.prepare(job_resource=plan.job_resource, plan=plan.transfers)
         existing = self._batch.get_job(name=plan.job_resource)
         duplicate = existing is not None
         if existing is None:
@@ -737,6 +871,8 @@ class GoogleBatchSubmitter:
             "RUNNING",
             "SUCCEEDED",
             "FAILED",
+            "CANCELLATION_IN_PROGRESS",
+            "CANCELLED",
             "DELETION_IN_PROGRESS",
         }:
             raise ReferenceExecutionError("batch-job-state-invalid")
@@ -748,20 +884,50 @@ class GoogleBatchSubmitter:
                 output=None,
                 receipt=None,
             )
-        collected = tuple(
-            self._transfers.collect(job_resource=plan.job_resource, plan=plan.transfers)
+        output = self._objects.describe_object(
+            bucket=spec.output_bucket,
+            object=spec.output_object,
         )
-        if len(collected) != len(plan.transfers.outputs):
+        receipt = self._objects.describe_object(
+            bucket=spec.output_bucket,
+            object=spec.receipt_object,
+        )
+        if output is None or receipt is None:
             raise ReferenceExecutionError("gcs-output-reconciliation-invalid")
-        for reference, expected in zip(collected, plan.transfers.outputs, strict=True):
-            if reference.bucket != expected.bucket or reference.object != expected.object:
-                raise ReferenceExecutionError("gcs-output-reconciliation-invalid")
+        try:
+            raw_receipt = self._objects.download_bytes(
+                reference=receipt,
+                maximum_bytes=_MAX_REFERENCE_RECEIPT_BYTES,
+            )
+        except Exception as error:
+            raise ReferenceExecutionError("gcs-output-reconciliation-invalid") from error
+        if (
+            len(raw_receipt) != receipt.byte_length
+            or f"sha256:{hashlib.sha256(raw_receipt).hexdigest()}" != receipt.sha256
+        ):
+            raise ReferenceExecutionError("gcs-output-reconciliation-invalid")
+        try:
+            parsed_receipt = parse_reference_receipt(raw_receipt)
+            output_sha256, output_bytes = self._objects.digest_object(
+                reference=output,
+                maximum_bytes=_MAX_REFERENCE_OUTPUT_BYTES,
+            )
+            if output_sha256 != output.sha256 or output_bytes != output.byte_length:
+                raise ReferenceBatchWorkerError("reference-batch-output-integrity-failed")
+            validate_reference_receipt(
+                parsed_receipt,
+                task=self._planner.batch_task(spec),
+                output_sha256=output_sha256,
+                output_bytes=output_bytes,
+            )
+        except (ReferenceBatchWorkerError, ReferenceExecutionError, ReferenceWorkerError) as error:
+            raise ReferenceExecutionError("gcs-output-reconciliation-invalid") from error
         return BatchReconciliation(
             job_resource=plan.job_resource,
             state=state,
             spec_sha256=plan.spec_sha256,
-            output=collected[0],
-            receipt=collected[1],
+            output=output,
+            receipt=receipt,
         )
 
 
@@ -771,8 +937,8 @@ __all__ = [
     "BatchReconciliation",
     "BatchSubmission",
     "GcsBucketSecurity",
+    "GcsControlClient",
     "GcsObjectRef",
-    "GcsStagedTransferClient",
     "GoogleBatchExecutionPlan",
     "GoogleBatchPlanner",
     "GoogleBatchSubmitter",
@@ -780,7 +946,4 @@ __all__ = [
     "ReferenceExecutionError",
     "ReferenceExecutionSpec",
     "ReferenceWorkerCallable",
-    "StagedInput",
-    "StagedOutput",
-    "StagedTransferPlan",
 ]

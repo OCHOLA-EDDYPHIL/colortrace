@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import subprocess
 from collections.abc import Mapping
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -24,12 +25,18 @@ from colortrace_evaluation.reference_campaign import (
 from colortrace_evaluation.reference_worker_benchmark import (
     PreparedReferenceBenchmarkSuite,
     ReferenceWorkerBenchmarkError,
+    _bound_real_worker,
     _provenance_record,
     _seal_provenance,
+    _trusted_implementation_digest,
+    _validate_receipt_for_job,
     _VerifiedReferenceWorkerEvidence,
-    _verify_reference_worker_evidence_set,
     _write_exact,
+    resolve_trusted_host_execution_identity,
     run_reference_worker_benchmark,
+)
+from colortrace_evaluation.reference_worker_benchmark import (
+    verify_reference_worker_evidence_set as _verify_reference_worker_evidence_set_impl,
 )
 from colortrace_fixture import (
     ReferenceColorVariant,
@@ -39,6 +46,37 @@ from colortrace_fixture import (
     reference_scenarios,
 )
 from colortrace_investigation import ModelCall, ModelOutput
+from colortrace_simulator.reference_worker import ReferenceExecutionIdentity
+
+SOURCE_REVISION = "1" * 40
+SOURCE_TREE = "2" * 40
+INJECTED_IDENTITY = ReferenceExecutionIdentity(
+    mode="injected-worker-callable",
+    source_revision=SOURCE_REVISION,
+    source_tree=SOURCE_TREE,
+    container_image_digest=None,
+)
+HOST_IDENTITY = ReferenceExecutionIdentity(
+    mode="host-python-module",
+    source_revision=SOURCE_REVISION,
+    source_tree=SOURCE_TREE,
+    container_image_digest=None,
+)
+
+
+def _verify_reference_worker_evidence_set(
+    evidence_set: Mapping[str, Any],
+    *,
+    suite: PreparedReferenceBenchmarkSuite,
+    output_root: Path,
+    expected_execution_identity: ReferenceExecutionIdentity = INJECTED_IDENTITY,
+) -> _VerifiedReferenceWorkerEvidence:
+    return _verify_reference_worker_evidence_set_impl(
+        evidence_set,
+        suite=suite,
+        output_root=output_root,
+        expected_execution_identity=expected_execution_identity,
+    )
 
 
 def _digest(value: str) -> str:
@@ -168,6 +206,7 @@ class _FakeWorker:
         source_root: Path,
         config_root: Path,
         output_root: Path,
+        execution_identity: ReferenceExecutionIdentity | Mapping[str, Any],
     ) -> Mapping[str, Any]:
         del source_root, config_root
         self.calls += 1
@@ -175,6 +214,11 @@ class _FakeWorker:
         color = cast(Mapping[str, Any], value["color"])
         runtime = cast(Mapping[str, Any], value["runtime"])
         output = cast(Mapping[str, Any], value["output"])
+        identity = (
+            execution_identity
+            if isinstance(execution_identity, ReferenceExecutionIdentity)
+            else ReferenceExecutionIdentity.from_mapping(execution_identity)
+        )
         pixel_identity = {
             "source_sha256": source["sha256"],
             "config_sha256": color["config_sha256"],
@@ -187,7 +231,10 @@ class _FakeWorker:
         assert not output_path.exists()
         output_path.write_bytes(payload)
         body = {
-            "schema": "reference-render-receipt/v1",
+            "schema": "reference-render-receipt/v2",
+            "job_sha256": prefixed_sha256(value),
+            "execution_identity": identity.to_dict(),
+            "execution_identity_sha256": identity.sha256,
             "job_id": value["job_id"],
             "scenario_id": value["scenario_id"],
             "incident_class": value["incident_class"],
@@ -197,6 +244,8 @@ class _FakeWorker:
             "source_sha256": source["sha256"],
             "config_sha256": color["config_sha256"],
             "resource_sha256": color["resource_sha256"],
+            "input_color_space": color["input_color_space"],
+            "output_color_space": color["output_color_space"],
             "effective_generation": runtime["effective_generation"],
             "cache_key": runtime["cache_key"],
             "output_relative_path": output["relative_path"],
@@ -225,9 +274,67 @@ def _roots(tmp_path: Path) -> tuple[Path, Path, Path]:
     return cast(tuple[Path, Path, Path], roots)
 
 
+def _git(repository: Path, *arguments: str) -> str:
+    completed = subprocess.run(
+        ["/usr/bin/git", "-C", repository.as_posix(), *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+    )
+    return completed.stdout.strip()
+
+
 def _resign_evidence(document: dict[str, Any]) -> None:
     body = {key: value for key, value in document.items() if key != "evidence_set_id"}
     document["evidence_set_id"] = prefixed_sha256(body)
+
+
+def test_stale_parent_lookup_is_immediate_non_wrapping_and_fail_closed(
+    tmp_path: Path,
+) -> None:
+    suite = _suite(tmp_path)
+    scenario = suite.scenarios["tos-stale-derivative-cache-v1"]
+    frame_by_artifact = {
+        f"frame:{frame.sequence_id}:{frame.frame:05d}": frame
+        for sequence in suite.manifest.sequences
+        for frame in sequence.frames
+    }
+    predecessors = worker_benchmark._immediate_predecessor_by_artifact(
+        suite.manifest,
+        required_artifact_ids=scenario.affected_artifact_ids,
+    )
+
+    for artifact_id in scenario.affected_artifact_ids:
+        frame = frame_by_artifact[artifact_id]
+        predecessor = predecessors[artifact_id]
+        assert predecessor.sequence_id == frame.sequence_id
+        assert predecessor.frame == frame.frame - 1
+
+    for sequence in suite.manifest.sequences:
+        first = sequence.frames[0]
+        first_artifact_id = f"frame:{first.sequence_id}:{first.frame:05d}"
+        assert first_artifact_id not in predecessors
+        assert first_artifact_id in scenario.protected_artifact_ids
+        with pytest.raises(
+            ReferenceWorkerBenchmarkError,
+            match="reference-benchmark-stale-parent-missing",
+        ):
+            worker_benchmark._immediate_predecessor_by_artifact(
+                suite.manifest,
+                required_artifact_ids=(first_artifact_id,),
+            )
+        with pytest.raises(
+            ReferenceWorkerBenchmarkError,
+            match="reference-benchmark-stale-parent-invalid",
+        ):
+            worker_benchmark._stale_derivative_job(
+                frame=first,
+                stale_parent=sequence.frames[-1],
+                scenario=scenario,
+                variants=suite.variants,
+                trace_id="0" * 32,
+            )
 
 
 @pytest.mark.parametrize("root_kind", ("source", "config", "output"))
@@ -278,6 +385,321 @@ def test_benchmark_write_does_not_create_beneath_symlinked_parent(tmp_path: Path
     assert not (outside / "escaped").exists()
 
 
+def test_trusted_host_identity_ignores_git_environment_and_rejects_dirty_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    source = repository / "worker.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    _git(repository, "init", "--initial-branch=main")
+    _git(repository, "config", "user.name", "ColorTrace Test")
+    _git(repository, "config", "user.email", "test@colortrace.invalid")
+    _git(repository, "add", "worker.py")
+    _git(repository, "commit", "-m", "fixture")
+    expected_revision = _git(repository, "rev-parse", "HEAD^{commit}")
+    expected_tree = _git(repository, "rev-parse", "HEAD^{tree}")
+
+    spoof = tmp_path / "spoof"
+    spoof.mkdir()
+    monkeypatch.setenv("PATH", spoof.as_posix())
+    monkeypatch.setenv("GIT_DIR", spoof.as_posix())
+    monkeypatch.setenv("GIT_WORK_TREE", spoof.as_posix())
+    monkeypatch.setenv("GIT_OBJECT_DIRECTORY", spoof.as_posix())
+    monkeypatch.setenv("COLORTRACE_SOURCE_REVISION", "8" * 40)
+    monkeypatch.setenv("COLORTRACE_SOURCE_TREE", "9" * 40)
+    identity = resolve_trusted_host_execution_identity(source)
+
+    assert identity == ReferenceExecutionIdentity(
+        mode="host-python-module",
+        source_revision=expected_revision,
+        source_tree=expected_tree,
+        container_image_digest=None,
+    )
+
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-checkout-not-clean",
+    ):
+        resolve_trusted_host_execution_identity(source)
+
+
+def test_trusted_host_identity_rejects_caller_owned_git_binary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_git = tmp_path / "git"
+    fake_git.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_git.chmod(0o755)
+    source = tmp_path / "worker.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(worker_benchmark, "_TRUSTED_GIT", fake_git)
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-git-untrusted",
+    ):
+        resolve_trusted_host_execution_identity(source)
+
+
+def test_recorded_implementation_must_match_tracked_head_blob(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    source = repository / "worker.py"
+    content = b"VALUE = 1\n"
+    source.write_bytes(content)
+    _git(repository, "init", "--initial-branch=main")
+    _git(repository, "config", "user.name", "ColorTrace Test")
+    _git(repository, "config", "user.email", "test@colortrace.invalid")
+    _git(repository, "add", "worker.py")
+    _git(repository, "commit", "-m", "fixture")
+
+    assert _trusted_implementation_digest(repository, source) == (
+        f"sha256:{hashlib.sha256(content).hexdigest()}"
+    )
+
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-implementation-untrusted",
+    ):
+        _trusted_implementation_digest(repository, source)
+
+    outside = tmp_path / "outside.py"
+    outside.write_text("VALUE = 1\n", encoding="utf-8")
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-implementation-untrusted",
+    ):
+        _trusted_implementation_digest(repository, outside)
+
+
+def test_real_worker_binding_has_no_loader_substitution_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert not hasattr(worker_benchmark, "_load_real_worker")
+    assert _bound_real_worker() is worker_benchmark.execute_reference_render_job
+
+    monkeypatch.setattr(worker_benchmark, "execute_reference_render_job", _FakeWorker())
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-worker-binding-invalid",
+    ):
+        _bound_real_worker()
+
+
+def test_recorded_benchmark_requires_external_expected_identity(tmp_path: Path) -> None:
+    source_root, config_root, output_root = _roots(tmp_path)
+
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-expected-source-identity-required",
+    ):
+        run_reference_worker_benchmark(
+            source_root=source_root,
+            config_root=config_root,
+            output_root=output_root,
+        )
+
+
+def test_recorded_benchmark_rejects_caller_supplied_identity(tmp_path: Path) -> None:
+    source_root, config_root, output_root = _roots(tmp_path)
+
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-recorded-identity-caller-supplied",
+    ):
+        run_reference_worker_benchmark(
+            source_root=source_root,
+            config_root=config_root,
+            output_root=output_root,
+            execution_identity=HOST_IDENTITY,
+            expected_source_revision=SOURCE_REVISION,
+            expected_source_tree=SOURCE_TREE,
+        )
+
+
+def test_recorded_benchmark_rejects_mismatched_expected_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root, config_root, output_root = _roots(tmp_path)
+    monkeypatch.setattr(
+        worker_benchmark,
+        "resolve_trusted_host_execution_identity",
+        lambda: HOST_IDENTITY,
+    )
+
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-expected-source-identity-mismatch",
+    ):
+        run_reference_worker_benchmark(
+            source_root=source_root,
+            config_root=config_root,
+            output_root=output_root,
+            expected_source_revision="8" * 40,
+            expected_source_tree=SOURCE_TREE,
+        )
+
+
+def test_recorded_benchmark_rejects_existing_output_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root, config_root, output_root = _roots(tmp_path)
+    monkeypatch.setattr(
+        worker_benchmark,
+        "resolve_trusted_host_execution_identity",
+        lambda: HOST_IDENTITY,
+    )
+
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-recorded-output-not-fresh",
+    ):
+        run_reference_worker_benchmark(
+            source_root=source_root,
+            config_root=config_root,
+            output_root=output_root,
+            expected_source_revision=SOURCE_REVISION,
+            expected_source_tree=SOURCE_TREE,
+        )
+
+
+def test_recorded_output_root_is_created_exclusively(tmp_path: Path) -> None:
+    output_root = tmp_path / "fresh-output"
+
+    created = worker_benchmark._fresh_output_root(output_root)
+
+    assert created == output_root
+    assert created.is_dir()
+    assert list(created.iterdir()) == []
+    assert created.stat().st_mode & 0o077 == 0
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-recorded-output-not-fresh",
+    ):
+        worker_benchmark._fresh_output_root(output_root)
+
+
+def test_receipt_verifier_rejects_missing_and_tampered_execution_bindings(
+    tmp_path: Path,
+) -> None:
+    source_root, config_root, output_root = _roots(tmp_path)
+    suite = _suite(source_root)
+    scenario = suite.scenarios[sorted(suite.scenarios)[0]]
+    frame = suite.manifest.sequences[0].frames[0]
+    job = reference_render_job(
+        frame=frame,
+        scenario=scenario,
+        variants=suite.variants,
+        mode="expected",
+        trace_id="0" * 32,
+    )
+    receipt = dict(
+        _FakeWorker()(
+            job,
+            source_root=source_root,
+            config_root=config_root,
+            output_root=output_root,
+            execution_identity=INJECTED_IDENTITY,
+        )
+    )
+
+    missing = deepcopy(receipt)
+    del missing["job_sha256"]
+    missing_body = {key: value for key, value in missing.items() if key != "receipt_sha256"}
+    missing["receipt_sha256"] = prefixed_sha256(missing_body)
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-worker-receipt-invalid",
+    ):
+        _validate_receipt_for_job(
+            missing,
+            job,
+            output_root=output_root,
+            execution_identity=INJECTED_IDENTITY,
+        )
+
+    wrong_job = deepcopy(receipt)
+    wrong_job["job_sha256"] = _digest("different-job")
+    wrong_job_body = {key: value for key, value in wrong_job.items() if key != "receipt_sha256"}
+    wrong_job["receipt_sha256"] = prefixed_sha256(wrong_job_body)
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-receipt-job-mismatch",
+    ):
+        _validate_receipt_for_job(
+            wrong_job,
+            job,
+            output_root=output_root,
+            execution_identity=INJECTED_IDENTITY,
+        )
+
+    mixed_identity = deepcopy(receipt)
+    mixed_identity["execution_identity"]["source_tree"] = "9" * 40
+    mixed_identity["execution_identity_sha256"] = prefixed_sha256(
+        mixed_identity["execution_identity"]
+    )
+    mixed_body = {key: value for key, value in mixed_identity.items() if key != "receipt_sha256"}
+    mixed_identity["receipt_sha256"] = prefixed_sha256(mixed_body)
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-receipt-job-mismatch",
+    ):
+        _validate_receipt_for_job(
+            mixed_identity,
+            job,
+            output_root=output_root,
+            execution_identity=INJECTED_IDENTITY,
+        )
+
+
+def test_recorded_receipt_store_refuses_preseeded_pairs(tmp_path: Path) -> None:
+    source_root, config_root, output_root = _roots(tmp_path)
+    suite = _suite(source_root)
+    scenario = suite.scenarios[sorted(suite.scenarios)[0]]
+    frame = suite.manifest.sequences[0].frames[0]
+    job = reference_render_job(
+        frame=frame,
+        scenario=scenario,
+        variants=suite.variants,
+        mode="expected",
+        trace_id="0" * 32,
+    )
+    output_path = output_root / cast(
+        str,
+        cast(Mapping[str, Any], job["output"])["relative_path"],
+    )
+    receipt_path = output_root / worker_benchmark._receipt_relative_path(job, "baseline")
+    output_path.parent.mkdir(parents=True)
+    receipt_path.parent.mkdir(parents=True)
+    output_path.write_bytes(b"preseeded-output")
+    receipt_path.write_bytes(b"{}\n")
+    worker = _FakeWorker()
+    store = worker_benchmark._ReceiptStore(
+        output_root=output_root,
+        worker=worker,
+        source_root=source_root,
+        config_root=config_root,
+        execution_identity=HOST_IDENTITY,
+        allow_reuse=False,
+    )
+
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-recorded-reuse-forbidden",
+    ):
+        store.obtain(job, phase="baseline")
+
+    assert store.reused == 0
+    assert store.executed == 0
+    assert worker.calls == 0
+
+
 def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Path) -> None:
     source_root, config_root, output_root = _roots(tmp_path)
     suite = _suite(source_root)
@@ -294,6 +716,7 @@ def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Pat
         report_relative_path="reports/impact.json",
         worker=worker,
         suite_preparer=preparer,
+        execution_identity=INJECTED_IDENTITY,
     )
 
     assert first["evidence"] == {
@@ -314,7 +737,7 @@ def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Pat
     evidence_body = {
         key: value for key, value in evidence_index.items() if key != "evidence_set_id"
     }
-    assert evidence_index["schema"] == "reference-worker-evidence-set/v1"
+    assert evidence_index["schema"] == "reference-worker-evidence-set/v2"
     assert len(evidence_index["observations"]) == 720
     assert len(evidence_index["cache_invalidation_operation_sha256"]) == 72
     assert evidence_index["evidence_set_id"] == prefixed_sha256(evidence_body)
@@ -339,6 +762,9 @@ def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Pat
     assert provenance["worker_binding"] == "injected-worker"
     assert provenance["execution_mode"] == "injected-worker-callable"
     assert provenance["container_image_digest"] is None
+    assert provenance["source_revision"] == SOURCE_REVISION
+    assert provenance["source_tree"] == SOURCE_TREE
+    assert provenance["execution_identity_sha256"] == INJECTED_IDENTITY.sha256
     assert provenance["dependency_lock_sha256"].startswith("sha256:")
     assert provenance["implementation_sha256"] == prefixed_sha256(
         provenance["implementation_files"]
@@ -445,6 +871,7 @@ def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Pat
         report_relative_path="reports/impact.json",
         worker=worker,
         suite_preparer=preparer,
+        execution_identity=INJECTED_IDENTITY,
     )
 
     assert resumed == first
@@ -465,25 +892,17 @@ def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Pat
             campaign_receipt_set=campaign_receipts.to_dict(),
             worker=worker,
             suite_preparer=preparer,
+            execution_identity=INJECTED_IDENTITY,
         )
     assert worker.calls == 1_152
 
 
-def test_recorded_report_requires_verified_complete_evidence(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_verifier_rejects_tampered_complete_controlled_evidence(tmp_path: Path) -> None:
     source_root, config_root, output_root = _roots(tmp_path)
     suite = _suite(source_root)
     preparer = _PreparedSuite(suite)
     worker = _FakeWorker()
     campaign_receipts, campaign = _recorded_campaign()
-    monkeypatch.setattr(
-        worker_benchmark,
-        "prepare_sealed_reference_benchmark_suite",
-        preparer,
-    )
-    monkeypatch.setattr(worker_benchmark, "_load_real_worker", lambda: worker)
 
     report = run_reference_worker_benchmark(
         source_root=source_root,
@@ -491,6 +910,9 @@ def test_recorded_report_requires_verified_complete_evidence(
         output_root=output_root,
         campaign_report=campaign,
         campaign_receipt_set=campaign_receipts,
+        worker=worker,
+        suite_preparer=preparer,
+        execution_identity=INJECTED_IDENTITY,
     )
     evidence = json.loads(
         (output_root / "reports" / "reference-worker-evidence-index.json").read_text(
@@ -502,14 +924,30 @@ def test_recorded_report_requires_verified_complete_evidence(
         suite=suite,
         output_root=output_root,
     )
+    different_attestation = ReferenceExecutionIdentity(
+        mode="host-python-module",
+        source_revision="8" * 40,
+        source_tree=SOURCE_TREE,
+        container_image_digest=None,
+    )
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-evidence-attestation-mismatch",
+    ):
+        _verify_reference_worker_evidence_set(
+            evidence,
+            suite=suite,
+            output_root=output_root,
+            expected_execution_identity=different_attestation,
+        )
 
     assert report["evidence"] == {
-        "source": "recorded-worker-receipts",
+        "source": "controlled-receipt-set",
         "evidence_set_id": verified.evidence_set_id,
-        "recorded_worker_evidence": True,
+        "recorded_worker_evidence": False,
         "observation_count": 720,
     }
-    assert verified.source == "recorded-worker-receipts"
+    assert verified.source == "controlled-receipt-set"
     assert len(verified.observations) == 720
     with pytest.raises(
         ReferenceWorkerBenchmarkError,
@@ -563,6 +1001,61 @@ def test_recorded_report_requires_verified_complete_evidence(
     ):
         _verify_reference_worker_evidence_set(
             resigned_receipt,
+            suite=suite,
+            output_root=output_root,
+        )
+
+    wrong_job_binding = deepcopy(evidence)
+    receipt_observation = wrong_job_binding["observations"][0]
+    receipt = receipt_observation["baseline_receipt"]
+    receipt["job_sha256"] = _digest("different-job-payload")
+    receipt_body = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    receipt["receipt_sha256"] = prefixed_sha256(receipt_body)
+    receipt_observation["baseline_receipt_sha256"] = receipt["receipt_sha256"]
+    _resign_evidence(wrong_job_binding)
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-receipt-job-mismatch",
+    ):
+        _verify_reference_worker_evidence_set(
+            wrong_job_binding,
+            suite=suite,
+            output_root=output_root,
+        )
+
+    missing_execution_binding = deepcopy(evidence)
+    receipt_observation = missing_execution_binding["observations"][0]
+    receipt = receipt_observation["baseline_receipt"]
+    del receipt["execution_identity"]
+    receipt_body = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    receipt["receipt_sha256"] = prefixed_sha256(receipt_body)
+    receipt_observation["baseline_receipt_sha256"] = receipt["receipt_sha256"]
+    _resign_evidence(missing_execution_binding)
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-evidence-invalid",
+    ):
+        _verify_reference_worker_evidence_set(
+            missing_execution_binding,
+            suite=suite,
+            output_root=output_root,
+        )
+
+    mixed_execution_binding = deepcopy(evidence)
+    receipt_observation = mixed_execution_binding["observations"][0]
+    receipt = receipt_observation["baseline_receipt"]
+    receipt["execution_identity"]["source_tree"] = "9" * 40
+    receipt["execution_identity_sha256"] = prefixed_sha256(receipt["execution_identity"])
+    receipt_body = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    receipt["receipt_sha256"] = prefixed_sha256(receipt_body)
+    receipt_observation["baseline_receipt_sha256"] = receipt["receipt_sha256"]
+    _resign_evidence(mixed_execution_binding)
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-receipt-job-mismatch",
+    ):
+        _verify_reference_worker_evidence_set(
+            mixed_execution_binding,
             suite=suite,
             output_root=output_root,
         )
@@ -717,6 +1210,7 @@ def test_partial_resume_pair_fails_before_worker_execution(tmp_path: Path) -> No
                 "controlled-receipt-set",
                 sealed_suite=False,
                 real_worker=False,
+                execution_identity=INJECTED_IDENTITY,
             )
         )
         + b"\n"
@@ -732,6 +1226,29 @@ def test_partial_resume_pair_fails_before_worker_execution(tmp_path: Path) -> No
             output_root=output_root,
             worker=worker,
             suite_preparer=preparer,
+            execution_identity=INJECTED_IDENTITY,
+        )
+
+    assert worker.calls == 0
+
+
+def test_injected_worker_requires_explicit_execution_identity(tmp_path: Path) -> None:
+    source_root, config_root, output_root = _roots(tmp_path)
+    worker = _FakeWorker()
+    campaign_receipts, campaign = _recorded_campaign()
+
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-execution-identity-required",
+    ):
+        run_reference_worker_benchmark(
+            source_root=source_root,
+            config_root=config_root,
+            output_root=output_root,
+            campaign_report=campaign,
+            campaign_receipt_set=campaign_receipts.to_dict(),
+            worker=worker,
+            suite_preparer=_PreparedSuite(_suite(source_root)),
         )
 
     assert worker.calls == 0
@@ -755,7 +1272,7 @@ def test_suite_requires_the_exact_sealed_population(tmp_path: Path) -> None:
         )
 
 
-def test_controlled_receipts_cannot_be_promoted_to_recorded_evidence(tmp_path: Path) -> None:
+def test_sealed_provenance_cannot_replace_an_existing_record(tmp_path: Path) -> None:
     source_root, _config_root, output_root = _roots(tmp_path)
     suite = _suite(source_root)
     _seal_provenance(
@@ -764,6 +1281,7 @@ def test_controlled_receipts_cannot_be_promoted_to_recorded_evidence(tmp_path: P
         "controlled-receipt-set",
         sealed_suite=False,
         real_worker=False,
+        execution_identity=INJECTED_IDENTITY,
     )
 
     with pytest.raises(
@@ -773,7 +1291,8 @@ def test_controlled_receipts_cannot_be_promoted_to_recorded_evidence(tmp_path: P
         _seal_provenance(
             output_root,
             suite,
-            "recorded-worker-receipts",
+            "controlled-receipt-set",
             sealed_suite=True,
-            real_worker=True,
+            real_worker=False,
+            execution_identity=INJECTED_IDENTITY,
         )

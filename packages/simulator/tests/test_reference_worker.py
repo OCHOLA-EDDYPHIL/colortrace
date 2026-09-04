@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,11 +16,19 @@ from colortrace_fixture.fixture import (  # type: ignore[import-untyped]
     prepare_worker,
 )
 from colortrace_simulator.reference_worker import (
+    ReferenceExecutionIdentity,
     ReferenceRenderJob,
     ReferenceWorkerError,
     execute_reference_render_job,
     execute_reference_render_job_file,
     load_reference_render_job,
+)
+
+HOST_IDENTITY = ReferenceExecutionIdentity(
+    mode="host-python-module",
+    source_revision="1" * 40,
+    source_tree="2" * 40,
+    container_image_digest=None,
 )
 
 SCENARIOS = (
@@ -149,6 +158,7 @@ def _execute(case: RenderCase, *, output_root: Path | None = None) -> dict[str, 
         source_root=case.source_root,
         config_root=case.config_root,
         output_root=case.output_root if output_root is None else output_root,
+        execution_identity=HOST_IDENTITY,
     )
 
 
@@ -168,8 +178,16 @@ def test_registered_scenarios_execute_real_tiny_exr_round_trip(
 
     output_path = case.output_root / cast(dict[str, str], case.job["output"])["relative_path"]
     spec, pixels = _read_exr(output_path)
+    assert receipt["schema"] == "reference-render-receipt/v2"
+    assert receipt["job_sha256"] == _canonical_digest(
+        ReferenceRenderJob.from_mapping(case.job).to_dict()
+    )
+    assert receipt["execution_identity"] == HOST_IDENTITY.to_dict()
+    assert receipt["execution_identity_sha256"] == HOST_IDENTITY.sha256
     assert receipt["scenario_id"] == scenario_id
     assert receipt["incident_class"] == incident_class
+    assert receipt["input_color_space"] == "fixture_input"
+    assert receipt["output_color_space"] == "fixture_output"
     assert receipt["output_sha256"] == _sha256_file(output_path)
     assert receipt["canonical_pixel_sha256"] == _sha256_bytes(
         TINY_PIXELS.astype(">f4", copy=False).tobytes(order="C")
@@ -324,7 +342,11 @@ def test_worker_rejects_root_beneath_symlinked_parent(
         "output_root": escaped_root if root_kind == "output" else case.output_root,
     }
     with pytest.raises(ReferenceWorkerError) as raised:
-        execute_reference_render_job(case.job, **roots)
+        execute_reference_render_job(
+            case.job,
+            **roots,
+            execution_identity=HOST_IDENTITY,
+        )
 
     assert raised.value.code == "reference-root-unsafe"
 
@@ -360,6 +382,7 @@ def test_file_entrypoint_writes_content_bound_receipt(tmp_path: Path) -> None:
         config_root=case.config_root,
         output_root=case.output_root,
         receipt_relative_path="receipts/result.json",
+        execution_identity=HOST_IDENTITY,
     )
 
     persisted = json.loads(
@@ -376,3 +399,54 @@ def test_job_file_rejects_duplicate_json_keys(tmp_path: Path) -> None:
         load_reference_render_job(job_path.resolve())
 
     assert raised.value.code == "reference-job-file-invalid"
+
+
+@pytest.mark.parametrize(
+    "identity",
+    (
+        {
+            "mode": "host-python-module",
+            "source_revision": "1" * 40,
+            "source_tree": "2" * 40,
+        },
+        {
+            "mode": "host-python-module",
+            "source_revision": "1" * 40,
+            "source_tree": "2" * 40,
+            "container_image_digest": "sha256:" + "3" * 64,
+        },
+        {
+            "mode": "container",
+            "source_revision": "1" * 40,
+            "source_tree": "2" * 40,
+            "container_image_digest": None,
+        },
+        {
+            "mode": "container",
+            "source_revision": "not-a-git-object",
+            "source_tree": "2" * 40,
+            "container_image_digest": "sha256:" + "3" * 64,
+        },
+    ),
+)
+def test_execution_identity_rejects_missing_or_dishonest_bindings(
+    identity: Mapping[str, Any],
+) -> None:
+    with pytest.raises(ReferenceWorkerError) as raised:
+        ReferenceExecutionIdentity.from_mapping(identity)
+
+    assert raised.value.code == "reference-execution-identity-invalid"
+
+
+def test_container_execution_identity_requires_and_preserves_pinned_digest() -> None:
+    identity = ReferenceExecutionIdentity.from_mapping(
+        {
+            "mode": "container",
+            "source_revision": "1" * 40,
+            "source_tree": "2" * 40,
+            "container_image_digest": "sha256:" + "3" * 64,
+        }
+    )
+
+    assert identity.container_image_digest == "sha256:" + "3" * 64
+    assert identity.sha256 == _canonical_digest(identity.to_dict())

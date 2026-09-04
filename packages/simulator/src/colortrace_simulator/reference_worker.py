@@ -22,19 +22,26 @@ from .renderer import RendererError, VerifiedPrivateConfigRoot
 
 REFERENCE_JOB_SCHEMA = Path(__file__).parent / "schemas" / "reference-render-job-v1.schema.json"
 REFERENCE_RECEIPT_SCHEMA = (
-    Path(__file__).parent / "schemas" / "reference-render-receipt-v1.schema.json"
+    Path(__file__).parent / "schemas" / "reference-render-receipt-v2.schema.json"
 )
 OPENIMAGEIO_VERSION = "3.1.17.0"
 OPENCOLORIO_VERSION = "2.5.2"
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TRACE = re.compile(r"^[0-9a-f]{32}$")
+_GIT_OBJECT = re.compile(r"^[0-9a-f]{40}$")
 _MAX_JOB_BYTES = 65_536
 
 IncidentClass = Literal[
     "resource-resolution-drift/v1",
     "configuration-rollout-drift/v1",
     "stale-derivative-cache/v1",
+]
+ExecutionMode = Literal[
+    "host-python-module",
+    "container",
+    "google-cloud-batch",
+    "injected-worker-callable",
 ]
 _SCENARIO_CLASSES: Mapping[str, IncidentClass] = {
     "tos-resource-resolution-drift-v1": "resource-resolution-drift/v1",
@@ -47,6 +54,77 @@ class ReferenceWorkerError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceExecutionIdentity:
+    mode: ExecutionMode
+    source_revision: str
+    source_tree: str
+    container_image_digest: str | None
+
+    def __post_init__(self) -> None:
+        if (
+            self.mode
+            not in {
+                "host-python-module",
+                "container",
+                "google-cloud-batch",
+                "injected-worker-callable",
+            }
+            or not isinstance(self.source_revision, str)
+            or _GIT_OBJECT.fullmatch(self.source_revision) is None
+            or not isinstance(self.source_tree, str)
+            or _GIT_OBJECT.fullmatch(self.source_tree) is None
+            or (
+                self.container_image_digest is not None
+                and (
+                    not isinstance(self.container_image_digest, str)
+                    or _DIGEST.fullmatch(self.container_image_digest) is None
+                )
+            )
+            or (
+                self.mode in {"container", "google-cloud-batch"}
+                and self.container_image_digest is None
+            )
+            or (
+                self.mode in {"host-python-module", "injected-worker-callable"}
+                and self.container_image_digest is not None
+            )
+        ):
+            raise ReferenceWorkerError("reference-execution-identity-invalid")
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> ReferenceExecutionIdentity:
+        if set(value) != {
+            "mode",
+            "source_revision",
+            "source_tree",
+            "container_image_digest",
+        }:
+            raise ReferenceWorkerError("reference-execution-identity-invalid")
+        mode = value.get("mode")
+        source_revision = value.get("source_revision")
+        source_tree = value.get("source_tree")
+        container_image_digest = value.get("container_image_digest")
+        return cls(
+            mode=cast(ExecutionMode, mode),
+            source_revision=cast(str, source_revision),
+            source_tree=cast(str, source_tree),
+            container_image_digest=cast(str | None, container_image_digest),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "source_revision": self.source_revision,
+            "source_tree": self.source_tree,
+            "container_image_digest": self.container_image_digest,
+        }
+
+    @property
+    def sha256(self) -> str:
+        return f"sha256:{hashlib.sha256(_canonical_json_bytes(self.to_dict())).hexdigest()}"
 
 
 def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -306,8 +384,16 @@ def execute_reference_render_job(
     source_root: Path,
     config_root: Path,
     output_root: Path,
+    execution_identity: ReferenceExecutionIdentity | Mapping[str, Any],
 ) -> dict[str, Any]:
     job = value if isinstance(value, ReferenceRenderJob) else ReferenceRenderJob.from_mapping(value)
+    identity = (
+        execution_identity
+        if isinstance(execution_identity, ReferenceExecutionIdentity)
+        else ReferenceExecutionIdentity.from_mapping(execution_identity)
+    )
+    if identity.mode == "injected-worker-callable":
+        raise ReferenceWorkerError("reference-execution-identity-invalid")
     source_base = _safe_root(source_root)
     config_base = _safe_root(config_root)
     output_base = _safe_root(output_root, create=True)
@@ -413,7 +499,12 @@ def execute_reference_render_job(
         os.close(output_parent_fd)
 
     receipt_body: dict[str, Any] = {
-        "schema": "reference-render-receipt/v1",
+        "schema": "reference-render-receipt/v2",
+        "job_sha256": (
+            f"sha256:{hashlib.sha256(_canonical_json_bytes(job.to_dict())).hexdigest()}"
+        ),
+        "execution_identity": identity.to_dict(),
+        "execution_identity_sha256": identity.sha256,
         "job_id": job.job_id,
         "scenario_id": job.scenario_id,
         "incident_class": job.incident_class,
@@ -423,6 +514,8 @@ def execute_reference_render_job(
         "source_sha256": job.source_sha256,
         "config_sha256": job.config_sha256,
         "resource_sha256": job.resource_sha256,
+        "input_color_space": job.input_color_space,
+        "output_color_space": job.output_color_space,
         "effective_generation": job.effective_generation,
         "cache_key": job.cache_key,
         "output_relative_path": output_relative.as_posix(),
@@ -456,6 +549,7 @@ def execute_reference_render_job_file(
     config_root: Path,
     output_root: Path,
     receipt_relative_path: str,
+    execution_identity: ReferenceExecutionIdentity | Mapping[str, Any],
 ) -> dict[str, Any]:
     job = load_reference_render_job(job_path)
     receipt = execute_reference_render_job(
@@ -463,6 +557,7 @@ def execute_reference_render_job_file(
         source_root=source_root,
         config_root=config_root,
         output_root=output_root,
+        execution_identity=execution_identity,
     )
     root = _safe_root(output_root)
     relative = _relative(receipt_relative_path)
@@ -518,14 +613,43 @@ def main() -> None:
     parser.add_argument("--config-root", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--receipt-relative-path", default="receipt.json")
+    parser.add_argument(
+        "--execution-mode",
+        choices=("host-python-module", "container"),
+        default=os.environ.get("COLORTRACE_REFERENCE_EXECUTION_MODE"),
+        required=os.environ.get("COLORTRACE_REFERENCE_EXECUTION_MODE") is None,
+    )
+    parser.add_argument(
+        "--source-revision",
+        default=os.environ.get("COLORTRACE_SOURCE_REVISION"),
+        required=os.environ.get("COLORTRACE_SOURCE_REVISION") is None,
+    )
+    parser.add_argument(
+        "--source-tree",
+        default=os.environ.get("COLORTRACE_SOURCE_TREE"),
+        required=os.environ.get("COLORTRACE_SOURCE_TREE") is None,
+    )
+    parser.add_argument(
+        "--container-image-digest",
+        default=os.environ.get("COLORTRACE_CONTAINER_IMAGE_DIGEST"),
+    )
     arguments = parser.parse_args()
     try:
+        execution_identity = ReferenceExecutionIdentity.from_mapping(
+            {
+                "mode": arguments.execution_mode,
+                "source_revision": arguments.source_revision,
+                "source_tree": arguments.source_tree,
+                "container_image_digest": arguments.container_image_digest,
+            }
+        )
         receipt = execute_reference_render_job_file(
             arguments.job,
             source_root=arguments.source_root,
             config_root=arguments.config_root,
             output_root=arguments.output_root,
             receipt_relative_path=arguments.receipt_relative_path,
+            execution_identity=execution_identity,
         )
     except ReferenceWorkerError as error:
         print(error.code, file=sys.stderr)
@@ -534,9 +658,11 @@ def main() -> None:
 
 
 __all__ = [
+    "ExecutionMode",
     "IncidentClass",
     "OPENIMAGEIO_VERSION",
     "OPENCOLORIO_VERSION",
+    "ReferenceExecutionIdentity",
     "ReferenceRenderJob",
     "ReferenceWorkerError",
     "execute_reference_render_job",

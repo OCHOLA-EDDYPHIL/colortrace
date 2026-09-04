@@ -19,6 +19,8 @@
       "colortrace-vertical-slice",
       "colortrace-validator",
       "fastapi",
+      "google-cloud-batch",
+      "google-cloud-storage",
       "jsonschema",
       "opencolorio",
       "openimageio",

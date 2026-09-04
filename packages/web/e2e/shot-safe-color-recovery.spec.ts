@@ -1,6 +1,19 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  REFERENCE_SCENARIO_IDS,
+  type ReferenceIncidentClass,
+  type ReferenceRecoveryKind,
+  type ReferenceScenarioId,
+  type ReferenceScenarioList,
+  type ReferenceVisualRepresentation,
+  type ReferenceVisualSourceRelation,
+} from "../src/reference-demo-api.ts";
 import {
   demoReceipt,
   demoReset,
@@ -14,6 +27,72 @@ import {
   TARGET_DIGEST,
 } from "../test/demo-fixtures.ts";
 const VISUAL_KINDS = ["diff", "expected", "observed", "recovered"] as const;
+const REFERENCE_PREVIEW_ROOT = fileURLToPath(
+  new URL("../../api/src/colortrace_api/reference_previews/", import.meta.url),
+);
+const REFERENCE_SCENARIO_SHA256 = {
+  "tos-resource-resolution-drift-v1": `sha256:${"1".repeat(64)}`,
+  "tos-config-rollout-drift-v1": `sha256:${"2".repeat(64)}`,
+  "tos-stale-derivative-cache-v1": `sha256:${"3".repeat(64)}`,
+} as const satisfies Readonly<Record<ReferenceScenarioId, string>>;
+const REFERENCE_SCENARIOS = {
+  "tos-resource-resolution-drift-v1": {
+    incidentClass: "resource-resolution-drift/v1",
+    recoveryKind: "reconcile-resource",
+    title: "A successful render resolved the wrong look resource",
+  },
+  "tos-config-rollout-drift-v1": {
+    incidentClass: "configuration-rollout-drift/v1",
+    recoveryKind: "pin-rollout",
+    title: "A stale color configuration remained active",
+  },
+  "tos-stale-derivative-cache-v1": {
+    incidentClass: "stale-derivative-cache/v1",
+    recoveryKind: "invalidate-cache",
+    title: "Correct frames served stale review derivatives",
+  },
+} as const satisfies Readonly<
+  Record<
+    ReferenceScenarioId,
+    {
+      readonly incidentClass: ReferenceIncidentClass;
+      readonly recoveryKind: ReferenceRecoveryKind;
+      readonly title: string;
+    }
+  >
+>;
+
+type ReferencePreviewManifest = {
+  readonly scenarios: Readonly<
+    Record<
+      ReferenceScenarioId,
+      {
+        readonly served_artifact_id: string;
+        readonly visuals: Readonly<
+          Record<
+            VisualKind,
+            {
+              readonly filename: string;
+              readonly height: 506;
+              readonly representation: ReferenceVisualRepresentation;
+              readonly sha256: string;
+              readonly source_artifact_ids: readonly string[];
+              readonly source_canonical_pixel_sha256: readonly string[];
+              readonly source_output_sha256: readonly string[];
+              readonly source_receipt_sha256: readonly string[];
+              readonly source_relation: ReferenceVisualSourceRelation;
+              readonly width: 960;
+            }
+          >
+        >;
+      }
+    >
+  >;
+};
+
+const referencePreviewManifest = JSON.parse(
+  await readFile(path.join(REFERENCE_PREVIEW_ROOT, "manifest.json"), "utf8"),
+) as ReferencePreviewManifest;
 
 type VisualKind = (typeof VISUAL_KINDS)[number];
 
@@ -48,6 +127,66 @@ const VISUAL_DIGESTS = Object.fromEntries(
 
 function isVisualKind(value: string | undefined): value is VisualKind {
   return VISUAL_KINDS.some((kind) => kind === value);
+}
+
+function isReferenceScenarioId(value: string): value is ReferenceScenarioId {
+  return REFERENCE_SCENARIO_IDS.some((scenarioId) => scenarioId === value);
+}
+
+function referenceScenarioList(): ReferenceScenarioList {
+  return {
+    schema: "reference-scenario-list/v1",
+    collection_id: "tears-of-steel-linear-exr-240-v1",
+    items: REFERENCE_SCENARIO_IDS.map((scenarioId) => {
+      const metadata = REFERENCE_SCENARIOS[scenarioId];
+      const preview = referencePreviewManifest.scenarios[scenarioId];
+      return {
+        scenario_id: scenarioId,
+        scenario_sha256: REFERENCE_SCENARIO_SHA256[scenarioId],
+        title: metadata.title,
+        symptom: "The render completed, but its receipt-bound pixel output is wrong.",
+        incident_class: metadata.incidentClass,
+        recovery_kind: metadata.recoveryKind,
+        scope: {
+          artifact_count: 240,
+          affected_artifact_count: 72,
+          protected_artifact_count: 168,
+        },
+        visuals: VISUAL_KINDS.map((kind) => {
+          const visual = preview.visuals[kind];
+          return {
+            kind,
+            href: `/v1/demo/scenarios/${scenarioId}/visuals/${kind}`,
+            content_sha256: visual.sha256,
+            representation: visual.representation,
+            pixel_evidence: true,
+            width: visual.width,
+            height: visual.height,
+            served_artifact_id: preview.served_artifact_id,
+            source_artifact_ids: visual.source_artifact_ids,
+            source_relation: visual.source_relation,
+            source_receipt_sha256: visual.source_receipt_sha256,
+            source_output_sha256: visual.source_output_sha256,
+            source_canonical_pixel_sha256: visual.source_canonical_pixel_sha256,
+          };
+        }),
+      };
+    }),
+    provenance: {
+      attribution: "Tears of Steel © Blender Foundation | mango.blender.org",
+      license: { spdx: "CC-BY-3.0", url: "https://creativecommons.org/licenses/by/3.0/" },
+    },
+    authority: {
+      schema: "reference-authority-boundary/v1",
+      catalog_facts: "sealed-reference-contracts",
+      incident_facts: "deterministic-validators",
+      model_role: "advisory",
+      evidence_access: "grafana-mcp-read-only",
+      action_approval: "human-only",
+      action_execution_target: "colortrace-simulator",
+    },
+    catalog_sha256: `sha256:${"a".repeat(64)}`,
+  };
 }
 
 type ApiState = "awaiting-approval" | "awaiting-closure" | "closed";
@@ -108,6 +247,31 @@ async function installDemoApi(page: Page, options: DemoApiOptions = {}) {
   await page.route("**/v1/demo/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname === "/v1/demo/scenarios") {
+      await route.fulfill({ json: referenceScenarioList() });
+      return;
+    }
+    const referenceVisualMatch = url.pathname.match(
+      /^\/v1\/demo\/scenarios\/([^/]+)\/visuals\/([^/]+)$/u,
+    );
+    if (request.method() === "GET" && referenceVisualMatch !== null) {
+      const scenarioId = referenceVisualMatch[1] ?? "";
+      const kind = referenceVisualMatch[2];
+      if (isReferenceScenarioId(scenarioId) && isVisualKind(kind)) {
+        const descriptor = referencePreviewManifest.scenarios[scenarioId].visuals[kind];
+        await route.fulfill({
+          body: await readFile(path.join(REFERENCE_PREVIEW_ROOT, descriptor.filename)),
+          contentType: "image/png",
+          headers: {
+            "X-ColorTrace-Pixel-Evidence": "true",
+            "X-ColorTrace-Representation": descriptor.representation,
+            "X-ColorTrace-Scenario-SHA256": REFERENCE_SCENARIO_SHA256[scenarioId],
+            "X-Content-SHA256": descriptor.sha256,
+          },
+        });
+        return;
+      }
+    }
     const visualKind = url.pathname.split("/").at(-1);
     if (
       request.method() === "GET" &&
@@ -218,32 +382,35 @@ test("completes the visual-first recovery flow with exact bound approval", async
   await expect(
     page.getByRole("heading", { name: /both renders succeeded.*look different/iu }),
   ).toBeVisible();
+  const firstFold = page.locator('[data-first-fold="comparison-and-action"]');
   const openFilmAction = page.getByRole("link", { name: "Explore the open-film proof" });
   const compatibilityLabel = page.getByText("Secondary compatibility workflow", {
     exact: true,
   });
-  const previewExpected = page.getByAltText(/Expected cinematic soundstage portrait/u);
-  const previewObserved = page.getByAltText(/Observed version of the same cinematic portrait/u);
-  const previewDiff = page.getByAltText(/Red heat-map view/u);
-  await expect(previewExpected).toHaveJSProperty("naturalWidth", 160);
-  await expect(previewObserved).toHaveJSProperty("naturalWidth", 160);
-  await expect(previewDiff).toHaveJSProperty("naturalWidth", 160);
-  await expect(
-    page.getByText("Build-time fixture · hash verified · no live investigation yet"),
-  ).toBeVisible();
-  const firstFold = page.locator('[data-first-fold="comparison-and-action"]');
+  const openFilmExpected = firstFold.getByAltText(/Expected state open-film pixel preview/iu);
+  const openFilmObserved = firstFold.getByAltText(/Observed failure open-film pixel preview/iu);
+  const syntheticExpected = page.getByAltText(/Expected cinematic soundstage portrait/u);
+  await expect(openFilmExpected).toHaveJSProperty("naturalWidth", 960);
+  await expect(openFilmObserved).toHaveJSProperty("naturalWidth", 960);
+  await expect(firstFold.getByText("PNG hash verified · pixel evidence")).toHaveCount(2);
+  await expect(syntheticExpected).toHaveJSProperty("naturalWidth", 160);
   const callToAction = page.getByRole("button", { name: "Investigate the color fault" });
   await expect(openFilmAction).toHaveAttribute("href", "#reference-suite-title");
   await expect(compatibilityLabel).toBeVisible();
-  for (const locator of [
-    firstFold,
-    openFilmAction,
-    compatibilityLabel,
-    callToAction,
-    previewExpected,
-    previewObserved,
-    previewDiff,
-  ]) {
+  expect(
+    await syntheticExpected.evaluate(
+      (element) => element.closest('[data-first-fold="comparison-and-action"]') === null,
+    ),
+  ).toBe(true);
+  expect(
+    await callToAction.evaluate(
+      (element) => element.closest('[data-first-fold="comparison-and-action"]') === null,
+    ),
+  ).toBe(true);
+  const syntheticBox = await syntheticExpected.boundingBox();
+  expect(syntheticBox).not.toBeNull();
+  expect(syntheticBox?.y ?? 0).toBeGreaterThanOrEqual(900);
+  for (const locator of [firstFold, openFilmAction, openFilmExpected, openFilmObserved]) {
     const box = await locator.boundingBox();
     expect(box).not.toBeNull();
     expect((box?.y ?? 901) + (box?.height ?? 0)).toBeLessThanOrEqual(900);
@@ -415,30 +582,37 @@ test("keeps the clean-session flow usable on a small reduced-motion viewport", a
   await expect(page.getByRole("link", { name: "ColorTrace home" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("link", { name: "Explore the open-film proof" })).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(page.getByRole("button", { name: "Investigate the color fault" })).toBeFocused();
+  const mobileFirstFold = page.locator('[data-first-fold="comparison-and-action"]');
   const mobileHook = page.getByRole("heading", {
     name: /both renders succeeded.*look different/iu,
   });
   const mobileOpenFilmAction = page.getByRole("link", { name: "Explore the open-film proof" });
-  const mobileCompatibilityLabel = page.getByText("Secondary compatibility workflow", {
-    exact: true,
-  });
   const mobileCallToAction = page.getByRole("button", { name: "Investigate the color fault" });
-  const mobileExpected = page.getByAltText(/Expected cinematic soundstage portrait/u);
-  const mobileObserved = page.getByAltText(/Observed version of the same cinematic portrait/u);
-  const mobileDiff = page.getByAltText(/Red heat-map view/u);
-  await expect(mobileExpected).toHaveJSProperty("naturalWidth", 160);
-  await expect(mobileObserved).toHaveJSProperty("naturalWidth", 160);
-  await expect(mobileDiff).toHaveJSProperty("naturalWidth", 160);
+  const mobileExpected = mobileFirstFold.getByAltText(/Expected state open-film pixel preview/iu);
+  const mobileObserved = mobileFirstFold.getByAltText(/Observed failure open-film pixel preview/iu);
+  const mobileSyntheticExpected = page.getByAltText(/Expected cinematic soundstage portrait/u);
+  await expect(mobileExpected).toHaveJSProperty("naturalWidth", 960);
+  await expect(mobileObserved).toHaveJSProperty("naturalWidth", 960);
+  await expect(mobileSyntheticExpected).toHaveJSProperty("naturalWidth", 160);
+  expect(
+    await mobileSyntheticExpected.evaluate(
+      (element) => element.closest('[data-first-fold="comparison-and-action"]') === null,
+    ),
+  ).toBe(true);
+  expect(
+    await mobileCallToAction.evaluate(
+      (element) => element.closest('[data-first-fold="comparison-and-action"]') === null,
+    ),
+  ).toBe(true);
+  const mobileSyntheticBox = await mobileSyntheticExpected.boundingBox();
+  expect(mobileSyntheticBox).not.toBeNull();
+  expect(mobileSyntheticBox?.y ?? 0).toBeGreaterThanOrEqual(844);
   for (const locator of [
+    mobileFirstFold,
     mobileHook,
     mobileOpenFilmAction,
-    mobileCompatibilityLabel,
-    mobileCallToAction,
     mobileExpected,
     mobileObserved,
-    mobileDiff,
   ]) {
     const box = await locator.boundingBox();
     expect(box).not.toBeNull();
@@ -486,7 +660,7 @@ test("replays the persisted start request after response loss and reload", async
   await page.goto("/");
 
   await page.getByRole("button", { name: "Investigate the color fault" }).click();
-  await expect(page.getByRole("alert")).toContainText("service is unavailable");
+  await expect(page.getByText(/The recovery service is unavailable/iu)).toBeVisible();
   const pending = await page.evaluate(() => ({
     nonce: sessionStorage.getItem("colortrace.demo.approval-nonce"),
     startKey: sessionStorage.getItem("colortrace.demo.start-idempotency-key"),

@@ -64,7 +64,7 @@
             "wrong-signal-pair", "missing-match-flag", "baseline-binding-mismatch",
             "flag-detail-contradiction",
             "stale-observation", "cross-run", "conflicting-event", "scope-mismatch",
-            "multi-dimension-drift", "no-causal-drift", "malformed-digest"
+            "multi-dimension-drift", "no-causal-drift", "approved-change", "malformed-digest"
           ]
         },
         "expected_state_sha256": {"$ref": "#/$defs/digest"},

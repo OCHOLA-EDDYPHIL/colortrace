@@ -105,12 +105,18 @@ def _artifact_ids(manifest: ReferenceMediaManifest) -> tuple[str, ...]:
 
 
 def _scope(
-    artifacts: tuple[str, ...], scenario_id: str, *, affected_count: int
+    artifacts: tuple[str, ...],
+    scenario_id: str,
+    *,
+    affected_count: int,
+    excluded_from_affected: frozenset[str] = frozenset(),
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     ranked = sorted(
-        artifacts,
+        (artifact_id for artifact_id in artifacts if artifact_id not in excluded_from_affected),
         key=lambda artifact_id: hashlib.sha256(f"{scenario_id}\0{artifact_id}".encode()).digest(),
     )
+    if len(ranked) < affected_count:
+        raise ValueError("reference scenario affected scope is too small")
     affected = tuple(sorted(ranked[:affected_count]))
     protected = tuple(sorted(set(artifacts).difference(affected)))
     return affected, protected
@@ -123,6 +129,11 @@ def reference_scenarios(
     artifacts = _artifact_ids(selected)
     if len(artifacts) != 240 or len(set(artifacts)) != len(artifacts):
         raise ValueError("reference media does not match the sealed scenario population")
+    sequence_first_artifact_ids = frozenset(
+        f"frame:{sequence.frames[0].sequence_id}:{sequence.frames[0].frame:05d}"
+        for sequence in selected.sequences
+        if sequence.frames
+    )
 
     definitions: tuple[tuple[Any, ...], ...] = (
         (
@@ -180,10 +191,20 @@ def reference_scenarios(
     scenarios: dict[str, ReferenceScenario] = {}
     for definition in definitions:
         scenario_id = cast(str, definition[0])
-        affected, protected = _scope(artifacts, scenario_id, affected_count=72)
+        incident_class = cast(ReferenceIncidentClass, definition[1])
+        affected, protected = _scope(
+            artifacts,
+            scenario_id,
+            affected_count=72,
+            excluded_from_affected=(
+                sequence_first_artifact_ids
+                if incident_class == "stale-derivative-cache/v1"
+                else frozenset()
+            ),
+        )
         scenarios[scenario_id] = ReferenceScenario(
             scenario_id=scenario_id,
-            incident_class=cast(ReferenceIncidentClass, definition[1]),
+            incident_class=incident_class,
             title=cast(str, definition[2]),
             symptom=cast(str, definition[3]),
             recovery_kind=cast(RecoveryKind, definition[4]),

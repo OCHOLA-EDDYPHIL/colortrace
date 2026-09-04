@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -69,3 +70,47 @@ def test_reference_preview_manifest_digest_tampering_fails_closed(tmp_path: Path
 def test_reference_preview_manifest_rejects_wrong_reference_binding() -> None:
     with pytest.raises(ReferencePreviewError, match="manifest-invalid"):
         load_reference_preview_catalog(expected_reference_manifest_sha256="sha256:" + "0" * 64)
+
+
+def test_reference_preview_manifest_rejects_self_rehashed_malformed_receipt(
+    tmp_path: Path,
+) -> None:
+    document = json.loads(REFERENCE_PREVIEW_MANIFEST_PATH.read_text(encoding="utf-8"))
+    old_receipt_sha256, receipt = next(iter(document["worker_receipts"].items()))
+    receipt["pixel_work"] += 1
+    receipt_body = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    encoded_receipt = json.dumps(
+        receipt_body,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    new_receipt_sha256 = f"sha256:{hashlib.sha256(encoded_receipt).hexdigest()}"
+    receipt["receipt_sha256"] = new_receipt_sha256
+    del document["worker_receipts"][old_receipt_sha256]
+    document["worker_receipts"][new_receipt_sha256] = receipt
+    for scenario in document["scenarios"].values():
+        for visual in scenario["visuals"].values():
+            visual["source_receipt_sha256"] = [
+                new_receipt_sha256 if value == old_receipt_sha256 else value
+                for value in visual["source_receipt_sha256"]
+            ]
+    manifest_body = {key: value for key, value in document.items() if key != "manifest_sha256"}
+    encoded_manifest = json.dumps(
+        manifest_body,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    document["manifest_sha256"] = f"sha256:{hashlib.sha256(encoded_manifest).hexdigest()}"
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ReferencePreviewError, match="receipts-invalid"):
+        load_reference_preview_catalog(
+            expected_reference_manifest_sha256=load_reference_media_manifest().manifest_sha256,
+            manifest_path=path,
+            asset_root=REFERENCE_PREVIEW_ROOT,
+        )

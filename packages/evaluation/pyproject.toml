@@ -23,8 +23,15 @@ dependencies = [
     "jsonschema==4.25.1",
 ]
 
+[project.optional-dependencies]
+reference-batch = [
+    "google-cloud-batch==0.22.3",
+    "google-cloud-storage==3.13.1",
+]
+
 [project.scripts]
 colortrace-evaluation = "colortrace_evaluation.cli:main"
+colortrace-reference-batch = "colortrace_evaluation.google_cloud_execution:main"
 colortrace-reference-benchmark = "colortrace_evaluation.reference_worker_benchmark:main"
 colortrace-reference-model-campaign = "colortrace_evaluation.reference_model_campaign:main"
 colortrace-reference-previews = "colortrace_evaluation.reference_preview_evidence:main"

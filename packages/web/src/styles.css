@@ -370,6 +370,37 @@ h4 {
   box-shadow: 0 28px 90px rgb(0 0 0 / 36%);
 }
 
+.shot-landing__visual--reference {
+  border-color: rgb(118 225 255 / 42%);
+  background:
+    linear-gradient(145deg, rgb(118 225 255 / 7%), transparent 30rem), rgb(11 16 24 / 92%);
+}
+
+.shot-landing__legacy-demo {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(17rem, 0.8fr);
+  align-items: center;
+  gap: clamp(1rem, 3vw, 2.5rem);
+}
+
+.shot-landing__legacy-action {
+  display: grid;
+  justify-items: start;
+  gap: 0.8rem;
+  border-left: 2px solid rgb(255 210 122 / 45%);
+  padding-left: 1.1rem;
+}
+
+.shot-landing__legacy-action h3,
+.shot-landing__legacy-action p {
+  margin: 0;
+}
+
+.shot-landing__legacy-action > p:not(.shot-eyebrow, .shot-alert, .shot-success) {
+  color: var(--shot-muted);
+  line-height: 1.55;
+}
+
 .shot-preview-heading,
 .shot-preview-frame figcaption {
   display: flex;
@@ -1971,6 +2002,10 @@ h4 {
   object-fit: contain;
 }
 
+.reference-visual img {
+  height: auto;
+}
+
 .reference-visual__relation {
   margin: 0;
   border-top: 1px solid var(--shot-border);
@@ -2014,6 +2049,94 @@ h4 {
   margin: 0;
   font-size: 0.66rem;
   overflow-wrap: anywhere;
+}
+
+.reference-primary-evidence {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.reference-primary-evidence__heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.reference-primary-evidence__heading h2 {
+  max-width: 32rem;
+  font-size: clamp(1.05rem, 1.55vw, 1.35rem);
+  line-height: 1.25;
+}
+
+.reference-primary-evidence__heading > span {
+  flex: 0 0 auto;
+  border: 1px solid rgb(169 240 197 / 38%);
+  border-radius: 999px;
+  padding: 0.35rem 0.55rem;
+  color: var(--shot-lime);
+  font-size: 0.64rem;
+  font-weight: 800;
+}
+
+.reference-primary-evidence__visuals {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.reference-primary-evidence .reference-visual:first-child {
+  border-color: rgb(118 225 255 / 55%);
+}
+
+.reference-primary-evidence .reference-visual:last-child {
+  border-color: rgb(255 170 167 / 50%);
+}
+
+.reference-primary-evidence .reference-visual figcaption {
+  display: grid;
+  align-content: center;
+  justify-content: stretch;
+  gap: 0.15rem;
+  min-height: 48px;
+  padding: 0.45rem 0.55rem;
+}
+
+.reference-primary-evidence .reference-visual__relation {
+  padding: 0.4rem 0.55rem;
+  font-size: 0.62rem;
+}
+
+.reference-primary-evidence .reference-visual__provenance {
+  display: none;
+}
+
+.reference-primary-evidence__loading {
+  display: grid;
+  place-items: center;
+  min-height: 14rem;
+  border: 1px dashed var(--shot-border);
+  border-radius: 0.8rem;
+  color: var(--shot-muted);
+}
+
+.reference-primary-evidence__provenance {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  margin: 0;
+  color: var(--shot-muted);
+  font-size: 0.64rem;
+}
+
+.reference-primary-evidence__provenance strong {
+  color: var(--shot-text);
+  font-weight: 700;
+}
+
+.reference-primary-evidence .reference-primary-evidence__provenance small {
+  color: var(--shot-lime);
+  font-weight: 800;
 }
 
 .reference-pixel-note {
@@ -3041,7 +3164,8 @@ h4 {
 }
 
 @media (max-width: 980px) {
-  .shot-landing__above-fold {
+  .shot-landing__above-fold,
+  .shot-landing__legacy-demo {
     grid-template-columns: 1fr;
     gap: 1.25rem;
     min-height: auto;
@@ -3137,6 +3261,10 @@ h4 {
     gap: 0.4rem;
   }
 
+  .shot-landing__above-fold--reference {
+    gap: 0.2rem;
+  }
+
   .shot-landing h1,
   .shot-comparison h1 {
     font-size: clamp(2rem, 10vw, 3.2rem);
@@ -3146,6 +3274,10 @@ h4 {
     margin: 0.75rem 0;
     font-size: 0.92rem;
     line-height: 1.48;
+  }
+
+  .shot-landing__above-fold--reference .shot-lede {
+    line-height: 1.42;
   }
 
   .shot-landing__outcome {
@@ -3163,6 +3295,38 @@ h4 {
 
   .shot-landing__visual {
     padding: 0.55rem;
+  }
+
+  .reference-primary-evidence {
+    gap: 0.5rem;
+  }
+
+  .reference-primary-evidence__heading {
+    display: grid;
+    gap: 0.35rem;
+  }
+
+  .reference-primary-evidence__heading > span {
+    justify-self: start;
+    padding: 0.25rem 0.4rem;
+    font-size: 0.58rem;
+  }
+
+  .reference-primary-evidence .reference-visual figcaption {
+    min-height: 40px;
+    padding: 0.35rem 0.4rem;
+    font-size: 0.64rem;
+  }
+
+  .reference-primary-evidence .reference-visual figcaption span,
+  .reference-primary-evidence .reference-visual__relation,
+  .reference-primary-evidence__provenance {
+    font-size: 0.56rem;
+  }
+
+  .reference-primary-evidence__provenance {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 0.35rem;
   }
 
   .shot-preview-heading {

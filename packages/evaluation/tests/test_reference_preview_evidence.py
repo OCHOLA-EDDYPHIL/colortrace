@@ -21,9 +21,31 @@ from colortrace_evaluation.reference_preview_evidence import (
     _difference_image,
     _display_image,
     _encode_png,
-    refresh_reference_previews,
+    _preview_execution_identity,
+)
+from colortrace_evaluation.reference_preview_evidence import (
+    refresh_reference_previews as _refresh_reference_previews_impl,
 )
 from colortrace_fixture import load_reference_media_manifest
+from colortrace_simulator.reference_worker import ReferenceExecutionIdentity
+
+PREVIEW_IDENTITY = ReferenceExecutionIdentity(
+    mode="injected-worker-callable",
+    source_revision="1" * 40,
+    source_tree="2" * 40,
+    container_image_digest=None,
+)
+HOST_IDENTITY = ReferenceExecutionIdentity(
+    mode="host-python-module",
+    source_revision="3" * 40,
+    source_tree="4" * 40,
+    container_image_digest=None,
+)
+
+
+def refresh_reference_previews(**arguments: Any) -> dict[str, Any]:
+    arguments.setdefault("execution_identity", PREVIEW_IDENTITY)
+    return _refresh_reference_previews_impl(**arguments)
 
 
 def _copy_previews(tmp_path: Path) -> Path:
@@ -61,6 +83,7 @@ def _fake_renderer(
         source_root: Path,
         config_root: Path,
         output_root: Path,
+        execution_identity: ReferenceExecutionIdentity,
     ) -> dict[str, Any]:
         del source_root, config_root, output_root
         mode = str(job["job_id"]).split("-", maxsplit=1)[0]
@@ -77,7 +100,10 @@ def _fake_renderer(
             f"sha256:{hashlib.sha256(canonical_json_bytes(output_identity)).hexdigest()}"
         )
         receipt: dict[str, Any] = {
-            "schema": "reference-render-receipt/v1",
+            "schema": "reference-render-receipt/v2",
+            "job_sha256": (f"sha256:{hashlib.sha256(canonical_json_bytes(job)).hexdigest()}"),
+            "execution_identity": execution_identity.to_dict(),
+            "execution_identity_sha256": execution_identity.sha256,
             "job_id": job["job_id"],
             "scenario_id": scenario_id,
             "incident_class": job["incident_class"],
@@ -87,6 +113,8 @@ def _fake_renderer(
             "source_sha256": job["source"]["sha256"],
             "config_sha256": job["color"]["config_sha256"],
             "resource_sha256": job["color"]["resource_sha256"],
+            "input_color_space": job["color"]["input_color_space"],
+            "output_color_space": job["color"]["output_color_space"],
             "effective_generation": job["runtime"]["effective_generation"],
             "cache_key": job["runtime"]["cache_key"],
             "output_relative_path": job["output"]["relative_path"],
@@ -160,6 +188,135 @@ def test_check_rebuilds_all_pngs_without_writing(tmp_path: Path) -> None:
     assert result["png_asset_count"] == 12
     assert result["png_content_changed"] is False
     assert _asset_bytes(asset_root) == original
+
+
+def test_new_preview_generation_requires_explicit_identity_for_custom_renderer(
+    tmp_path: Path,
+) -> None:
+    asset_root = _copy_previews(tmp_path)
+
+    with pytest.raises(
+        ReferencePreviewRefreshError,
+        match="reference-preview-execution-identity-required",
+    ):
+        _refresh_reference_previews_impl(
+            source_root=tmp_path / "unused-source",
+            manifest_path=asset_root / "manifest.json",
+            asset_root=asset_root,
+            renderer=_fake_renderer(_pixel_evidence(asset_root)),
+            asset_builder=_asset_builder(asset_root),
+        )
+
+
+def test_default_preview_renderer_uses_only_trusted_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        reference_preview_evidence,
+        "resolve_trusted_host_execution_identity",
+        lambda: HOST_IDENTITY,
+    )
+
+    assert (
+        _preview_execution_identity(
+            renderer=reference_preview_evidence.execute_reference_render_job,
+            requested=None,
+        )
+        == HOST_IDENTITY
+    )
+    with pytest.raises(
+        ReferencePreviewRefreshError,
+        match="reference-preview-execution-identity-mismatch",
+    ):
+        _preview_execution_identity(
+            renderer=reference_preview_evidence.execute_reference_render_job,
+            requested=PREVIEW_IDENTITY,
+        )
+
+
+def test_default_preview_renderer_fails_closed_without_trusted_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable():
+        raise reference_preview_evidence.ReferenceWorkerBenchmarkError(
+            "reference-benchmark-checkout-not-clean"
+        )
+
+    monkeypatch.setattr(
+        reference_preview_evidence,
+        "resolve_trusted_host_execution_identity",
+        unavailable,
+    )
+
+    with pytest.raises(
+        ReferencePreviewRefreshError,
+        match="reference-preview-execution-identity-unavailable",
+    ):
+        _preview_execution_identity(
+            renderer=reference_preview_evidence.execute_reference_render_job,
+            requested=None,
+        )
+
+
+def test_custom_preview_renderer_is_explicitly_non_attested() -> None:
+    renderer = _fake_renderer({})
+
+    assert (
+        _preview_execution_identity(renderer=renderer, requested=PREVIEW_IDENTITY)
+        == PREVIEW_IDENTITY
+    )
+    with pytest.raises(
+        ReferencePreviewRefreshError,
+        match="reference-preview-controlled-identity-invalid",
+    ):
+        _preview_execution_identity(renderer=renderer, requested=HOST_IDENTITY)
+
+
+def test_new_preview_generation_rejects_legacy_v1_receipts(tmp_path: Path) -> None:
+    asset_root = _copy_previews(tmp_path)
+    render_v2 = _fake_renderer(_pixel_evidence(asset_root))
+
+    def render_v1(
+        job: Mapping[str, Any],
+        *,
+        source_root: Path,
+        config_root: Path,
+        output_root: Path,
+        execution_identity: ReferenceExecutionIdentity,
+    ) -> dict[str, Any]:
+        receipt = render_v2(
+            job,
+            source_root=source_root,
+            config_root=config_root,
+            output_root=output_root,
+            execution_identity=execution_identity,
+        )
+        receipt["schema"] = "reference-render-receipt/v1"
+        for key in (
+            "job_sha256",
+            "execution_identity",
+            "execution_identity_sha256",
+            "input_color_space",
+            "output_color_space",
+        ):
+            del receipt[key]
+        body = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+        receipt["receipt_sha256"] = (
+            f"sha256:{hashlib.sha256(canonical_json_bytes(body)).hexdigest()}"
+        )
+        return receipt
+
+    with pytest.raises(
+        ReferencePreviewRefreshError,
+        match="reference-preview-receipt-job-mismatch",
+    ):
+        refresh_reference_previews(
+            source_root=tmp_path / "unused-source",
+            manifest_path=asset_root / "manifest.json",
+            asset_root=asset_root,
+            renderer=render_v1,
+            asset_builder=_asset_builder(asset_root),
+        )
 
 
 def test_check_rejects_stale_pngs_without_writing(tmp_path: Path) -> None:
@@ -297,12 +454,14 @@ def test_check_rejects_receipt_changed_after_self_hash(tmp_path: Path) -> None:
         source_root: Path,
         config_root: Path,
         output_root: Path,
+        execution_identity: ReferenceExecutionIdentity,
     ) -> dict[str, Any]:
         receipt = render(
             job,
             source_root=source_root,
             config_root=config_root,
             output_root=output_root,
+            execution_identity=execution_identity,
         )
         receipt["wall_nanoseconds"] = 3
         return receipt

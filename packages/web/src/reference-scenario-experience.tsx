@@ -98,12 +98,14 @@ function OpenFilmVisual({
   adapter,
   descriptor,
   label,
+  loading = "lazy",
   scenarioSha256,
   scenarioTitle,
 }: {
   readonly adapter: ReferenceDemoAdapter;
   readonly descriptor: ReferenceVisualDescriptor | null;
   readonly label: string;
+  readonly loading?: "eager" | "lazy";
   readonly scenarioSha256: string;
   readonly scenarioTitle: string;
 }) {
@@ -167,7 +169,7 @@ function OpenFilmVisual({
         <img
           alt={`${label} open-film pixel preview for ${scenarioTitle}`}
           height={loaded.height}
-          loading="lazy"
+          loading={loading}
           onError={() => setFailed(true)}
           src={loaded.src}
           width={loaded.width}
@@ -212,6 +214,85 @@ function OpenFilmVisual({
         </details>
       )}
     </figure>
+  );
+}
+
+export function ReferencePrimaryEvidence({ adapter }: ReferenceScenarioExperienceProps) {
+  const [catalog, setCatalog] = useState<ReferenceScenarioList | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void adapter
+      .listScenarios(controller.signal)
+      .then((next) => {
+        setCatalog(next);
+        setCatalogError(null);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setCatalogError(loadErrorMessage());
+      });
+    return () => controller.abort();
+  }, [adapter]);
+
+  const summary =
+    catalog?.items.find((item) => item.scenario_id === REFERENCE_SCENARIO_IDS[0]) ?? null;
+
+  return (
+    <section
+      aria-labelledby="reference-primary-evidence-title"
+      className="reference-primary-evidence"
+    >
+      <div className="reference-primary-evidence__heading">
+        <div>
+          <p className="shot-eyebrow">Checksum-verified open-film evidence</p>
+          <h2 id="reference-primary-evidence-title">
+            {summary?.title ?? "Verifying the sealed reference scenario"}
+          </h2>
+        </div>
+        <span>{summary === null ? "Verifying contract" : "Receipt-bound pixels"}</span>
+      </div>
+
+      {catalogError === null ? null : (
+        <p className="shot-alert" role="status">
+          {catalogError}
+        </p>
+      )}
+
+      {catalog === null || summary === null ? (
+        catalogError === null ? (
+          <div className="reference-primary-evidence__loading" role="status">
+            Loading sealed open-film pixel evidence…
+          </div>
+        ) : null
+      ) : (
+        <>
+          <div className="reference-primary-evidence__visuals">
+            <OpenFilmVisual
+              adapter={adapter}
+              descriptor={visual(summary, "expected")}
+              label="Expected state"
+              loading="eager"
+              scenarioSha256={summary.scenario_sha256}
+              scenarioTitle={summary.title}
+            />
+            <OpenFilmVisual
+              adapter={adapter}
+              descriptor={visual(summary, "observed")}
+              label="Observed failure"
+              loading="eager"
+              scenarioSha256={summary.scenario_sha256}
+              scenarioTitle={summary.title}
+            />
+          </div>
+          <p className="reference-primary-evidence__provenance">
+            <span>Source</span>
+            <strong>{catalog.provenance.attribution}</strong>
+            <small>{catalog.provenance.license.spdx}</small>
+          </p>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -1083,6 +1164,17 @@ function BenchmarkState({
         </section>
       );
     }
+    const coreMissionPassed =
+      result.checks.campaign_acceptance_passed &&
+      result.checks.output_equivalence &&
+      result.checks.protected_output_integrity &&
+      result.checks.zero_false_authorized_actions &&
+      result.checks.classification_at_least_95_percent &&
+      result.checks.same_selection_budgets &&
+      result.checks.measurable_adaptive_advantage;
+    const impactTargetsPassed =
+      result.checks.median_compute_avoided_at_least_40_percent &&
+      result.checks.median_application_bytes_avoided_at_least_40_percent;
     return (
       <section
         aria-labelledby="reference-benchmark-title"
@@ -1092,16 +1184,24 @@ function BenchmarkState({
           <div>
             <p className="shot-eyebrow">Recorded benchmark</p>
             <h3 id="reference-benchmark-title">
-              {result.passed ? "Reference benchmark passed" : "Reference benchmark failed"}
+              {coreMissionPassed ? "Core mission gates passed" : "Core mission gates failed"}
             </h3>
           </div>
-          <span data-result-state={result.passed ? "passed" : "failed"}>
-            {result.passed ? "Passed" : "Failed"}
+          <span data-result-state={coreMissionPassed && impactTargetsPassed ? "passed" : "failed"}>
+            {coreMissionPassed
+              ? impactTargetsPassed
+                ? "Impact target passed"
+                : "Impact target not met"
+              : "Core mission failed"}
           </span>
         </div>
         <p className="reference-benchmark__source">
+          Full impact benchmark · {result.passed ? "passed" : "not passed"}
+        </p>
+        <p className="reference-benchmark__source">
           Measured from recorded worker receipts · {result.evidence.observation_count} artifact
-          observations · recorded evaluator output · 39 fail-closed mutation cases tested separately
+          observations · recorded evaluator output · 39 fail-closed control cases tested separately,
+          including explicitly approved state transitions and insufficient or ambiguous evidence
         </p>
         <p className="reference-benchmark__source">
           Model boundary · 60 model-output receipts replayed against sealed holdouts · hashes,
@@ -1109,8 +1209,10 @@ function BenchmarkState({
           execution is not independently attested
         </p>
         <p>
-          Efficiency counts only after recovered outputs are equivalent, protected outputs remain
-          intact, and no false-authorized action occurs.
+          Core mission success requires correct diagnosis, equivalent recovery, intact protected
+          outputs, zero false-authorized actions, and measurable adaptive selection under the same
+          evidence budget. Compute and byte avoidance are separate impact targets that count only
+          after those gates pass.
         </p>
         <section aria-label="Recorded benchmark metrics" className="reference-benchmark__metrics">
           <div>
