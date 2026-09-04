@@ -14,6 +14,7 @@ from typing import Any, cast
 import pytest
 from colortrace_evaluation.contracts import prefixed_sha256
 from colortrace_evaluation.reference_campaign import (
+    RECORDED_SELECTION_MAXIMUM_RESPONSE_BYTES,
     BenchmarkArtifactObservation,
     CaseKind,
     MutationKind,
@@ -36,6 +37,7 @@ from colortrace_fixture import reference_scenarios
 from colortrace_investigation import (
     RECORDED_REFERENCE_SELECTION_TURN_KIND,
     ModelCall,
+    ModelFailure,
     ModelOutput,
 )
 from colortrace_validator import IncidentClass
@@ -95,6 +97,70 @@ class _RecordedSelectionModel:
             provider_request_id=f"provider-request-{len(self.calls):02d}",
             provider_model_version="gemini-3.5-flash-20260904",
         )
+
+
+class _MixedRecordedSelectionModel(_RecordedSelectionModel):
+    def __init__(self, journaled: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self.journaled = journaled
+
+    async def generate(self, call: ModelCall) -> ModelOutput:
+        assert len(self.journaled) == len(self.calls)
+        index = len(self.calls)
+        if index == 3:
+            self.calls.append(call)
+            raise ModelFailure(
+                "model-output-oversized",
+                transient=False,
+                input_tokens=700,
+                output_tokens=128,
+                model_calls=1,
+                unobserved_model_calls=0,
+                content=b"x" * 65_537,
+                provider_request_id="provider-failed-request-04",
+                provider_model_version="gemini-3.5-flash-20260904",
+            )
+        if index == 7:
+            self.calls.append(call)
+            raise ModelFailure(
+                "transport",
+                transient=True,
+                input_tokens=None,
+                output_tokens=None,
+                model_calls=1,
+                unobserved_model_calls=1,
+            )
+        output = await super().generate(call)
+        response = json.loads(output.content)
+        if index == 0:
+            response["selection_input_sha256"] = _digest("model-echoed-wrong-case")
+            return replace(
+                output,
+                content=json.dumps(response, separators=(",", ":"), sort_keys=True).encode(),
+            )
+        if index == 1:
+            return replace(output, content=b'{"not":"finished"')
+        if index == 2:
+            raw = json.dumps(response, separators=(",", ":"), sort_keys=True).encode()
+            return replace(
+                output,
+                content=raw + b" " * (RECORDED_SELECTION_MAXIMUM_RESPONSE_BYTES + 1 - len(raw)),
+            )
+        if index == 4:
+            response["selected_query_key"] = "metric.not-permitted"
+            return replace(
+                output,
+                content=json.dumps(response, separators=(",", ":"), sort_keys=True).encode(),
+            )
+        if index == 5:
+            return replace(output, input_tokens=0)
+        if index == 6:
+            del response["schema"]
+            return replace(
+                output,
+                content=json.dumps(response, separators=(",", ":"), sort_keys=True).encode(),
+            )
+        return output
 
 
 @cache
@@ -533,6 +599,7 @@ def test_recorded_model_output_is_distinguished_from_controlled_policy() -> None
     assert report["candidate"]["source"] == "recorded-model-output"
     assert report["candidate"]["recorded_receipt_count"] == 60
     assert report["candidate"]["recorded_receipt_set_sha256"] == (receipts.receipt_set_sha256)
+    assert report["schema"] == "reference-policy-comparison/v2"
     assert report["checks"]["recorded_model_output_evaluated"] is True
     assert campaign["passed"] is True
 
@@ -569,6 +636,250 @@ def test_recorded_selection_requires_complete_verified_no_retry_receipts() -> No
             selection_input_sha256=reference_selection_input(corpus.cases[0])["input_sha256"],
             provider_trace_id=_digest("forged-provider"),
         )
+
+
+def test_recorded_selection_preserves_all_mixed_outcomes_and_fails_closed() -> None:
+    corpus = sealed_reference_holdouts()
+    journaled: list[dict[str, Any]] = []
+    model = _MixedRecordedSelectionModel(journaled)
+    receipts = asyncio.run(
+        record_reference_model_selections(
+            model=model,
+            corpus=corpus,
+            clock=lambda: datetime(2026, 9, 4, 12, 0, tzinfo=UTC),
+            receipt_callback=lambda receipt: journaled.append(_plain(receipt)),
+        )
+    )
+
+    document = receipts.to_dict()
+    assert len(model.calls) == 60
+    assert len(journaled) == 60
+    assert document["schema"] == "reference-recorded-model-selection-set/v2"
+    assert document["maximum_response_bytes"] == 576
+    assert document["maximum_failure_response_bytes"] == 1_048_576
+    assert document["outcome_counts"] == {
+        "accepted-query": 52,
+        "domain-rejection": 6,
+        "model-failure": 2,
+    }
+    assert journaled == document["receipts"]
+
+    mismatch = document["receipts"][0]
+    assert mismatch["outcome"] == "domain-rejection"
+    assert mismatch["outcome_code"] == "input-binding-mismatch"
+    assert mismatch["model_selection_input_sha256"] == _digest("model-echoed-wrong-case")
+    assert mismatch["model_selection_input_matches_request"] is False
+    assert mismatch["selection_input_sha256"] != mismatch["model_selection_input_sha256"]
+
+    invalid_json = document["receipts"][1]
+    assert invalid_json["outcome_code"] == "response-invalid-json"
+    assert invalid_json["response_content"] == '{"not":"finished"'
+    invalid_raw = invalid_json["response_content"].encode()
+    assert invalid_json["response_byte_length"] == len(invalid_raw)
+    assert invalid_json["response_sha256"] == (f"sha256:{hashlib.sha256(invalid_raw).hexdigest()}")
+
+    oversize = document["receipts"][2]
+    assert oversize["outcome_code"] == "response-oversize"
+    assert oversize["response_byte_length"] == 577
+    assert oversize["model_selection_input_matches_request"] is True
+    failure = document["receipts"][3]
+    assert failure["outcome"] == "model-failure"
+    assert failure["model_failure_code"] == "model-output-oversized"
+    assert failure["input_tokens"] == 700
+    assert failure["output_tokens"] == 128
+    assert failure["unobserved_model_calls"] == 0
+    assert failure["response_content"] == "x" * 65_537
+    assert failure["response_sha256"] == _digest("x" * 65_537)
+    assert failure["response_byte_length"] == 65_537
+    assert failure["provider_request_id"] == "provider-failed-request-04"
+    assert failure["provider_model_version"] == "gemini-3.5-flash-20260904"
+    assert document["receipts"][4]["outcome_code"] == "query-not-permitted"
+    assert document["receipts"][5]["outcome_code"] == "invocation-invalid"
+    assert document["receipts"][6]["outcome_code"] == "response-schema-invalid"
+    unavailable_failure = document["receipts"][7]
+    assert unavailable_failure["outcome"] == "model-failure"
+    assert unavailable_failure["response_content"] is None
+    assert unavailable_failure["response_sha256"] is None
+    assert unavailable_failure["provider_request_id"] is None
+    assert unavailable_failure["provider_model_version"] is None
+
+    traces = verified_recorded_selection_traces(corpus, receipts)
+    assert Counter(len(trace.selected_query_keys) for trace in traces) == {2: 52, 1: 8}
+    comparison = compare_selection_policies(corpus, traces)
+    rejected_case_ids = {
+        receipt["case_id"]
+        for receipt in document["receipts"]
+        if receipt["outcome"] != "accepted-query"
+    }
+    rejected_results = [
+        result
+        for result in comparison["candidate"]["results"]
+        if result["case_id"] in rejected_case_ids
+    ]
+    assert len(rejected_results) == 8
+    assert all(result["resolved_correctly"] is False for result in rejected_results)
+    assert all(result["status"] != "supported" for result in rejected_results)
+    assert comparison["candidate"]["false_authorized_actions"] == 0
+
+    tampered = receipts.to_dict()
+    tampered_failure = next(
+        receipt
+        for receipt in tampered["receipts"]
+        if receipt["outcome"] == "model-failure" and receipt["response_content"] is None
+    )
+    tampered_failure["unobserved_model_calls"] = 0
+    failure_body = {
+        key: value for key, value in tampered_failure.items() if key != "receipt_sha256"
+    }
+    tampered_failure["receipt_sha256"] = prefixed_sha256(failure_body)
+    set_body = {key: value for key, value in tampered.items() if key != "receipt_set_sha256"}
+    tampered["receipt_set_sha256"] = prefixed_sha256(set_body)
+    with pytest.raises(
+        ReferenceCampaignError,
+        match="reference-recorded-selection-receipt-binding-invalid",
+    ):
+        verified_recorded_selection_traces(corpus, tampered)
+
+    tampered = receipts.to_dict()
+    observed_failure = next(
+        receipt
+        for receipt in tampered["receipts"]
+        if receipt["outcome"] == "model-failure" and receipt["response_content"] is not None
+    )
+    observed_failure["response_content"] += " "
+    failure_body = {
+        key: value for key, value in observed_failure.items() if key != "receipt_sha256"
+    }
+    observed_failure["receipt_sha256"] = prefixed_sha256(failure_body)
+    set_body = {key: value for key, value in tampered.items() if key != "receipt_set_sha256"}
+    tampered["receipt_set_sha256"] = prefixed_sha256(set_body)
+    with pytest.raises(
+        ReferenceCampaignError,
+        match="reference-recorded-selection-receipt-binding-invalid",
+    ):
+        verified_recorded_selection_traces(corpus, tampered)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("request_content", "response_content", "response_byte_length", "outcome"),
+)
+def test_recorded_selection_v2_recomputes_attempt_bindings(field: str) -> None:
+    corpus = sealed_reference_holdouts()
+    receipts, _traces, _campaign = _recorded_campaign()
+    document = receipts.to_dict()
+    receipt = document["receipts"][0]
+    if field == "request_content":
+        receipt[field] += " "
+    elif field == "response_content":
+        receipt[field] += " "
+    elif field == "response_byte_length":
+        receipt[field] += 1
+    else:
+        receipt[field] = "domain-rejection"
+        document["outcome_counts"]["accepted-query"] -= 1
+        document["outcome_counts"]["domain-rejection"] += 1
+    receipt_body = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    receipt["receipt_sha256"] = prefixed_sha256(receipt_body)
+    set_body = {key: value for key, value in document.items() if key != "receipt_set_sha256"}
+    document["receipt_set_sha256"] = prefixed_sha256(set_body)
+
+    imported = RecordedSelectionReceiptSet.from_mapping(document)
+    with pytest.raises(
+        ReferenceCampaignError,
+        match="reference-recorded-selection-receipt-binding-invalid",
+    ):
+        verified_recorded_selection_traces(corpus, imported)
+
+
+def test_recorded_selection_v1_receipt_set_remains_read_compatible() -> None:
+    corpus = sealed_reference_holdouts()
+    current, _traces, _campaign = _recorded_campaign()
+    current_document = current.to_dict()
+    receipt_fields = (
+        "corpus_id",
+        "corpus_sha256",
+        "resolvable_case_set_sha256",
+        "case_id",
+        "case_sha256",
+        "selection_input_sha256",
+        "request_content",
+        "request_sha256",
+        "response_schema_sha256",
+        "response_content",
+        "response_sha256",
+        "selected_query_key",
+        "provider",
+        "model",
+        "location",
+        "model_profile_sha256",
+        "prompt_version",
+        "prompt_sha256",
+        "provider_request_id",
+        "provider_model_version",
+        "input_tokens",
+        "output_tokens",
+        "model_calls",
+        "attempt_count",
+        "retry_count",
+        "recorded_at",
+    )
+    legacy_receipts: list[dict[str, Any]] = []
+    for current_receipt in current_document["receipts"]:
+        body = {
+            "schema": "reference-recorded-model-selection-receipt/v1",
+            **{field: current_receipt[field] for field in receipt_fields},
+        }
+        legacy_receipts.append({**body, "receipt_sha256": prefixed_sha256(body)})
+    legacy_body = {
+        "schema": "reference-recorded-model-selection-set/v1",
+        "corpus_id": current_document["corpus_id"],
+        "corpus_sha256": current_document["corpus_sha256"],
+        "resolvable_case_count": current_document["resolvable_case_count"],
+        "resolvable_case_set_sha256": current_document["resolvable_case_set_sha256"],
+        "budget": current_document["budget"],
+        "model_profile": current_document["model_profile"],
+        "model_profile_sha256": current_document["model_profile_sha256"],
+        "response_schema_sha256": current_document["response_schema_sha256"],
+        "receipts": legacy_receipts,
+    }
+    legacy = RecordedSelectionReceiptSet.from_mapping(
+        {**legacy_body, "receipt_set_sha256": prefixed_sha256(legacy_body)}
+    )
+
+    traces = verified_recorded_selection_traces(corpus, legacy)
+    assert len(traces) == 60
+    assert all(len(trace.selected_query_keys) == 2 for trace in traces)
+    assert all(trace.policy_id == "gemini-recorded-selection-v1" for trace in traces)
+
+
+def test_recorded_selection_preserves_then_rejects_invalid_model_call_count() -> None:
+    class RetriedSelectionModel(_RecordedSelectionModel):
+        async def generate(self, call: ModelCall) -> ModelOutput:
+            output = await super().generate(call)
+            return replace(output, model_calls=2) if len(self.calls) == 1 else output
+
+    corpus = sealed_reference_holdouts()
+    journaled: list[dict[str, Any]] = []
+    model = RetriedSelectionModel()
+    receipts = asyncio.run(
+        record_reference_model_selections(
+            model=model,
+            corpus=corpus,
+            clock=lambda: datetime(2026, 9, 4, 12, 0, tzinfo=UTC),
+            receipt_callback=lambda receipt: journaled.append(_plain(receipt)),
+        )
+    )
+
+    assert len(model.calls) == 60
+    assert len(journaled) == 60
+    assert journaled[0]["model_calls"] == 2
+    assert journaled[0]["outcome_code"] == "invocation-invalid"
+    with pytest.raises(
+        ReferenceCampaignError,
+        match="reference-recorded-selection-receipt-binding-invalid",
+    ):
+        verified_recorded_selection_traces(corpus, receipts)
 
 
 def test_recorded_selection_rejects_rehashed_response_binding_tamper() -> None:
@@ -692,6 +1003,22 @@ def test_selection_comparison_rejects_incomplete_and_over_budget_inputs() -> Non
             controlled_adaptive_selection_traces(corpus, budget=tiny_budget),
             budget=tiny_budget,
         )
+
+    one_query = tuple(
+        SelectionTrace(
+            case_id=trace.case_id,
+            policy_id="gemini-recorded-selection-v2",
+            source="controlled-policy",
+            selected_query_keys=("metric.correlated-observations",),
+            selection_input_sha256=trace.selection_input_sha256,
+        )
+        for trace in traces
+    )
+    with pytest.raises(
+        ReferenceCampaignError,
+        match="reference-selection-query-budget-exceeded",
+    ):
+        compare_selection_policies(corpus, one_query)
 
 
 def test_impact_benchmark_proves_equivalence_integrity_and_avoided_work() -> None:

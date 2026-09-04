@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-recorded-model-selection-set-v2.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "corpus_id", "corpus_sha256", "resolvable_case_count",
+    "resolvable_case_set_sha256", "budget", "model_profile",
+    "model_profile_sha256", "response_schema_sha256", "maximum_response_bytes",
+    "maximum_failure_response_bytes", "outcome_counts", "receipts",
+    "receipt_set_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "reference-recorded-model-selection-set/v2"},
+    "corpus_id": {"$ref": "#/$defs/id"},
+    "corpus_sha256": {"$ref": "#/$defs/digest"},
+    "resolvable_case_count": {"const": 60},
+    "resolvable_case_set_sha256": {"$ref": "#/$defs/digest"},
+    "budget": {"$ref": "#/$defs/budget"},
+    "model_profile": {"$ref": "#/$defs/modelProfile"},
+    "model_profile_sha256": {"$ref": "#/$defs/digest"},
+    "response_schema_sha256": {"$ref": "#/$defs/digest"},
+    "maximum_response_bytes": {"const": 576},
+    "maximum_failure_response_bytes": {"const": 1048576},
+    "outcome_counts": {"$ref": "#/$defs/outcomeCounts"},
+    "receipts": {
+      "type": "array",
+      "minItems": 60,
+      "maxItems": 60,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/receipt"}
+    },
+    "receipt_set_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "nullableDigest": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]
+    },
+    "nullableString": {
+      "oneOf": [{"type": "null"}, {"type": "string", "maxLength": 65536}]
+    },
+    "nullableResponseString": {
+      "oneOf": [{"type": "null"}, {"type": "string", "maxLength": 1048576}]
+    },
+    "nullableNonemptyString": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "minLength": 1, "maxLength": 512}
+      ]
+    },
+    "nullableInteger": {
+      "oneOf": [{"type": "null"}, {"type": "integer"}]
+    },
+    "nullableBoolean": {
+      "oneOf": [{"type": "null"}, {"type": "boolean"}]
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_queries_per_case", "max_normalized_bytes_per_case"],
+      "properties": {
+        "max_queries_per_case": {"const": 2},
+        "max_normalized_bytes_per_case": {"const": 65536}
+      }
+    },
+    "modelProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "provider", "model", "location", "google_adk_version",
+        "google_genai_version", "prompt_version", "prompt_sha256", "temperature",
+        "candidate_count", "thinking_level", "maximum_output_tokens",
+        "transport_attempts", "maximum_llm_calls", "uses_evidence_tool"
+      ],
+      "properties": {
+        "schema": {"const": "model-execution-profile/v1"},
+        "provider": {"const": "vertex-ai"},
+        "model": {"const": "gemini-3.5-flash"},
+        "location": {"const": "global"},
+        "google_adk_version": {"type": "string", "minLength": 1},
+        "google_genai_version": {"type": "string", "minLength": 1},
+        "prompt_version": {"const": "recorded-reference-selection/v1"},
+        "prompt_sha256": {"$ref": "#/$defs/digest"},
+        "temperature": {"const": 0},
+        "candidate_count": {"const": 1},
+        "thinking_level": {"const": "minimal"},
+        "maximum_output_tokens": {"const": 128},
+        "transport_attempts": {"const": 1},
+        "maximum_llm_calls": {"const": 1},
+        "uses_evidence_tool": {"const": false}
+      }
+    },
+    "outcomeCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accepted-query", "domain-rejection", "model-failure"],
+      "properties": {
+        "accepted-query": {"type": "integer", "minimum": 0, "maximum": 60},
+        "domain-rejection": {"type": "integer", "minimum": 0, "maximum": 60},
+        "model-failure": {"type": "integer", "minimum": 0, "maximum": 60}
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "corpus_id", "corpus_sha256", "resolvable_case_set_sha256",
+        "case_id", "case_sha256", "selection_input_sha256", "request_content",
+        "request_sha256", "request_byte_length", "response_schema_sha256",
+        "response_content", "response_content_base64", "response_sha256",
+        "response_byte_length", "model_selection_input_sha256",
+        "model_selection_input_matches_request", "selected_query_key", "outcome",
+        "outcome_code", "provider", "model", "location", "model_profile_sha256",
+        "prompt_version", "prompt_sha256", "provider_request_id",
+        "provider_model_version", "input_tokens", "output_tokens", "model_calls",
+        "unobserved_model_calls", "model_failure_code", "model_failure_transient",
+        "attempt_count", "retry_count", "recorded_at", "receipt_sha256"
+      ],
+      "properties": {
+        "schema": {"const": "reference-recorded-model-selection-receipt/v2"},
+        "corpus_id": {"$ref": "#/$defs/id"},
+        "corpus_sha256": {"$ref": "#/$defs/digest"},
+        "resolvable_case_set_sha256": {"$ref": "#/$defs/digest"},
+        "case_id": {"$ref": "#/$defs/id"},
+        "case_sha256": {"$ref": "#/$defs/digest"},
+        "selection_input_sha256": {"$ref": "#/$defs/digest"},
+        "request_content": {"type": "string", "minLength": 1, "maxLength": 131072},
+        "request_sha256": {"$ref": "#/$defs/digest"},
+        "request_byte_length": {"type": "integer", "minimum": 1},
+        "response_schema_sha256": {"$ref": "#/$defs/digest"},
+        "response_content": {"$ref": "#/$defs/nullableResponseString"},
+        "response_content_base64": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "string", "maxLength": 1398104,
+              "pattern": "^[A-Za-z0-9+/]*={0,2}$"
+            }
+          ]
+        },
+        "response_sha256": {"$ref": "#/$defs/nullableDigest"},
+        "response_byte_length": {
+          "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]
+        },
+        "model_selection_input_sha256": {"$ref": "#/$defs/nullableString"},
+        "model_selection_input_matches_request": {"type": "boolean"},
+        "selected_query_key": {"$ref": "#/$defs/nullableString"},
+        "outcome": {
+          "enum": ["accepted-query", "domain-rejection", "model-failure"]
+        },
+        "outcome_code": {
+          "enum": [
+            "accepted-query", "response-oversize", "response-not-utf8",
+            "response-invalid-json", "response-schema-invalid",
+            "input-binding-mismatch", "query-not-permitted",
+            "invocation-invalid", "model-failure"
+          ]
+        },
+        "provider": {"const": "vertex-ai"},
+        "model": {"const": "gemini-3.5-flash"},
+        "location": {"const": "global"},
+        "model_profile_sha256": {"$ref": "#/$defs/digest"},
+        "prompt_version": {"const": "recorded-reference-selection/v1"},
+        "prompt_sha256": {"$ref": "#/$defs/digest"},
+        "provider_request_id": {"$ref": "#/$defs/nullableString"},
+        "provider_model_version": {"$ref": "#/$defs/nullableString"},
+        "input_tokens": {"$ref": "#/$defs/nullableInteger"},
+        "output_tokens": {"$ref": "#/$defs/nullableInteger"},
+        "model_calls": {"type": "integer"},
+        "unobserved_model_calls": {"type": "integer"},
+        "model_failure_code": {"$ref": "#/$defs/nullableNonemptyString"},
+        "model_failure_transient": {"$ref": "#/$defs/nullableBoolean"},
+        "attempt_count": {"const": 1},
+        "retry_count": {"const": 0},
+        "recorded_at": {"type": "string", "format": "date-time"},
+        "receipt_sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}
