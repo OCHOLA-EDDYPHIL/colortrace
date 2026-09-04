@@ -642,12 +642,17 @@ def test_recorded_selection_preserves_all_mixed_outcomes_and_fails_closed() -> N
     corpus = sealed_reference_holdouts()
     journaled: list[dict[str, Any]] = []
     model = _MixedRecordedSelectionModel(journaled)
+
+    def journal(receipt: Mapping[str, Any]) -> None:
+        assert isinstance(receipt, dict)
+        journaled.append(receipt)
+
     receipts = asyncio.run(
         record_reference_model_selections(
             model=model,
             corpus=corpus,
             clock=lambda: datetime(2026, 9, 4, 12, 0, tzinfo=UTC),
-            receipt_callback=lambda receipt: journaled.append(_plain(receipt)),
+            receipt_callback=journal,
         )
     )
 

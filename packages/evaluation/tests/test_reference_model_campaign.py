@@ -123,7 +123,13 @@ def test_cli_preserves_journal_and_aggregate_when_verification_fails(
 
 def test_cli_attempt_journal_is_exclusive(tmp_path: Path) -> None:
     journal_path = tmp_path / "attempts"
-    reference_model_campaign._prepare_attempt_journal(journal_path)
+    persist = reference_model_campaign._prepare_attempt_journal(journal_path)
+    persist({"case_id": "case-001", "outcome": "accepted-query"})
+
+    assert strict_json_file(journal_path / "001.json") == {
+        "case_id": "case-001",
+        "outcome": "accepted-query",
+    }
 
     with pytest.raises(ValueError, match="output-exists"):
         reference_model_campaign._prepare_attempt_journal(journal_path)

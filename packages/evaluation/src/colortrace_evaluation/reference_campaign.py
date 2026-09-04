@@ -1515,7 +1515,7 @@ async def record_reference_model_selections(
         receipt = {**receipt_body, "receipt_sha256": prefixed_sha256(receipt_body)}
         receipts.append(receipt)
         if receipt_callback is not None:
-            receipt_callback(cast(Mapping[str, Any], _freeze(receipt)))
+            receipt_callback(cast(Mapping[str, Any], _plain(receipt)))
     outcome_counts = {
         outcome: sum(receipt["outcome"] == outcome for receipt in receipts)
         for outcome in ("accepted-query", "domain-rejection", "model-failure")
