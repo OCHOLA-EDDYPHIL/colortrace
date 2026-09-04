@@ -61,6 +61,8 @@
         "mutation": {
           "enum": [
             "none", "display-text-injection", "no-evidence", "one-signal",
+            "wrong-signal-pair", "missing-match-flag", "baseline-binding-mismatch",
+            "flag-detail-contradiction",
             "stale-observation", "cross-run", "conflicting-event", "scope-mismatch",
             "multi-dimension-drift", "no-causal-drift", "malformed-digest"
           ]

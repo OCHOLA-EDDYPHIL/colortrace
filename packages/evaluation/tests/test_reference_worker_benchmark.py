@@ -4,19 +4,21 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Mapping
+from copy import deepcopy
 from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 from typing import Any, cast
 
+import colortrace_evaluation.reference_worker_benchmark as worker_benchmark
 import pytest
 from colortrace_evaluation import canonical_json_bytes, prefixed_sha256
 from colortrace_evaluation.reference_campaign import (
     BenchmarkArtifactObservation,
+    RecordedSelectionReceiptSet,
     build_reference_impact_benchmark,
     record_reference_model_selections,
     run_recorded_reference_campaign,
-    run_reference_campaign,
     sealed_reference_holdouts,
 )
 from colortrace_evaluation.reference_worker_benchmark import (
@@ -24,6 +26,8 @@ from colortrace_evaluation.reference_worker_benchmark import (
     ReferenceWorkerBenchmarkError,
     _provenance_record,
     _seal_provenance,
+    _VerifiedReferenceWorkerEvidence,
+    _verify_reference_worker_evidence_set,
     _write_exact,
     run_reference_worker_benchmark,
 )
@@ -43,7 +47,6 @@ def _digest(value: str) -> str:
 
 class _RecordedSelectionModel:
     async def generate(self, call: ModelCall) -> ModelOutput:
-        approved = cast(Mapping[str, Any], call.payload["approved"])
         initial = cast(Mapping[str, Any], call.payload["initial_query"])
         observations = cast(list[Mapping[str, Any]], initial["observations"])
         affected = next(
@@ -54,8 +57,8 @@ class _RecordedSelectionModel:
         )
         attributes = cast(Mapping[str, str], affected["attributes"])
         derivative_changed = (
-            attributes["derivative.parent_sha256"] != approved["derivative_parent_sha256"]
-            or int(attributes["cache.generation"]) != approved["derivative_generation"]
+            attributes["declared_reference.derivative_parent_matches_approved"] == "false"
+            or attributes["declared_reference.derivative_generation_matches_approved"] == "false"
         )
         content = json.dumps(
             {
@@ -78,7 +81,7 @@ class _RecordedSelectionModel:
 
 
 @cache
-def _recorded_campaign() -> Mapping[str, Any]:
+def _recorded_campaign() -> tuple[RecordedSelectionReceiptSet, Mapping[str, Any]]:
     corpus = sealed_reference_holdouts()
     receipts = asyncio.run(
         record_reference_model_selections(
@@ -87,7 +90,7 @@ def _recorded_campaign() -> Mapping[str, Any]:
             clock=lambda: datetime(2026, 9, 4, 12, 0, tzinfo=UTC),
         )
     )
-    return run_recorded_reference_campaign(receipts, corpus)
+    return receipts, run_recorded_reference_campaign(receipts, corpus)
 
 
 def _suite(source_root: Path) -> PreparedReferenceBenchmarkSuite:
@@ -222,6 +225,11 @@ def _roots(tmp_path: Path) -> tuple[Path, Path, Path]:
     return cast(tuple[Path, Path, Path], roots)
 
 
+def _resign_evidence(document: dict[str, Any]) -> None:
+    body = {key: value for key, value in document.items() if key != "evidence_set_id"}
+    document["evidence_set_id"] = prefixed_sha256(body)
+
+
 @pytest.mark.parametrize("root_kind", ("source", "config", "output"))
 def test_benchmark_rejects_root_beneath_symlinked_parent(
     tmp_path: Path,
@@ -275,13 +283,14 @@ def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Pat
     suite = _suite(source_root)
     preparer = _PreparedSuite(suite)
     worker = _FakeWorker()
-    campaign = _recorded_campaign()
+    campaign_receipts, campaign = _recorded_campaign()
 
     first = run_reference_worker_benchmark(
         source_root=source_root,
         config_root=config_root,
         output_root=output_root,
         campaign_report=campaign,
+        campaign_receipt_set=campaign_receipts.to_dict(),
         report_relative_path="reports/impact.json",
         worker=worker,
         suite_preparer=preparer,
@@ -422,6 +431,7 @@ def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Pat
         campaign,
         evidence_source=evidence_index["source"],
         evidence_set_id=evidence_index["evidence_set_id"],
+        campaign_receipt_set=campaign_receipts.to_dict(),
     )
     for key in ("metrics", "timing", "scenario_results", "checks", "passed"):
         assert recomputed[key] == first[key]
@@ -431,6 +441,7 @@ def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Pat
         config_root=config_root,
         output_root=output_root,
         campaign_report=campaign,
+        campaign_receipt_set=campaign_receipts.to_dict(),
         report_relative_path="reports/impact.json",
         worker=worker,
         suite_preparer=preparer,
@@ -451,10 +462,232 @@ def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Pat
             config_root=config_root,
             output_root=output_root,
             campaign_report=campaign,
+            campaign_receipt_set=campaign_receipts.to_dict(),
             worker=worker,
             suite_preparer=preparer,
         )
     assert worker.calls == 1_152
+
+
+def test_recorded_report_requires_verified_complete_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root, config_root, output_root = _roots(tmp_path)
+    suite = _suite(source_root)
+    preparer = _PreparedSuite(suite)
+    worker = _FakeWorker()
+    campaign_receipts, campaign = _recorded_campaign()
+    monkeypatch.setattr(
+        worker_benchmark,
+        "prepare_sealed_reference_benchmark_suite",
+        preparer,
+    )
+    monkeypatch.setattr(worker_benchmark, "_load_real_worker", lambda: worker)
+
+    report = run_reference_worker_benchmark(
+        source_root=source_root,
+        config_root=config_root,
+        output_root=output_root,
+        campaign_report=campaign,
+        campaign_receipt_set=campaign_receipts,
+    )
+    evidence = json.loads(
+        (output_root / "reports" / "reference-worker-evidence-index.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    verified = _verify_reference_worker_evidence_set(
+        evidence,
+        suite=suite,
+        output_root=output_root,
+    )
+
+    assert report["evidence"] == {
+        "source": "recorded-worker-receipts",
+        "evidence_set_id": verified.evidence_set_id,
+        "recorded_worker_evidence": True,
+        "observation_count": 720,
+    }
+    assert verified.source == "recorded-worker-receipts"
+    assert len(verified.observations) == 720
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-evidence-unverified",
+    ):
+        _VerifiedReferenceWorkerEvidence()
+
+    mutable_receipt = cast(dict[str, Any], verified.observations[0].baseline_receipt)
+    with pytest.raises(TypeError):
+        mutable_receipt["pixel_work"] = 1
+
+    reordered = deepcopy(evidence)
+    reordered["observations"][0], reordered["observations"][1] = (
+        reordered["observations"][1],
+        reordered["observations"][0],
+    )
+    _resign_evidence(reordered)
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-evidence-scope-invalid",
+    ):
+        _verify_reference_worker_evidence_set(
+            reordered,
+            suite=suite,
+            output_root=output_root,
+        )
+
+    invented_id = deepcopy(evidence)
+    invented_id["evidence_set_id"] = _digest("invented-evidence-id")
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-evidence-digest-invalid",
+    ):
+        _verify_reference_worker_evidence_set(
+            invented_id,
+            suite=suite,
+            output_root=output_root,
+        )
+
+    resigned_receipt = deepcopy(evidence)
+    receipt_observation = resigned_receipt["observations"][0]
+    receipt = receipt_observation["baseline_receipt"]
+    receipt["bytes_read"] += 1
+    receipt_body = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    receipt["receipt_sha256"] = prefixed_sha256(receipt_body)
+    receipt_observation["baseline_receipt_sha256"] = receipt["receipt_sha256"]
+    _resign_evidence(resigned_receipt)
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-receipt-job-mismatch",
+    ):
+        _verify_reference_worker_evidence_set(
+            resigned_receipt,
+            suite=suite,
+            output_root=output_root,
+        )
+
+    resigned_observation = deepcopy(evidence)
+    stale = next(
+        item
+        for item in resigned_observation["observations"]
+        if item["scenario_id"] == "tos-stale-derivative-cache-v1" and item["affected"]
+    )
+    stale["operation_bytes_read"] += 1
+    _resign_evidence(resigned_observation)
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-evidence-operation-invalid",
+    ):
+        _verify_reference_worker_evidence_set(
+            resigned_observation,
+            suite=suite,
+            output_root=output_root,
+        )
+
+    resigned_cache_proof = deepcopy(evidence)
+    stale = next(
+        item
+        for item in resigned_cache_proof["observations"]
+        if item["scenario_id"] == "tos-stale-derivative-cache-v1" and item["affected"]
+    )
+    operation = stale["cache_invalidation_operation"]
+    original_operation_sha256 = operation["operation_sha256"]
+    operation["expected_parent_output_sha256"] = _digest("forged-parent-output")
+    operation_body = {key: value for key, value in operation.items() if key != "operation_sha256"}
+    operation["operation_sha256"] = prefixed_sha256(operation_body)
+    operation_ids = resigned_cache_proof["cache_invalidation_operation_sha256"]
+    operation_ids[operation_ids.index(original_operation_sha256)] = operation["operation_sha256"]
+    _resign_evidence(resigned_cache_proof)
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-evidence-cache-invalid",
+    ):
+        _verify_reference_worker_evidence_set(
+            resigned_cache_proof,
+            suite=suite,
+            output_root=output_root,
+        )
+
+    resigned_provenance = deepcopy(evidence)
+    provenance = resigned_provenance["execution_provenance"]
+    provenance["runtime"]["platform_machine"] = "forged-machine"
+    provenance_body = {
+        key: value for key, value in provenance.items() if key != "provenance_sha256"
+    }
+    provenance["provenance_sha256"] = prefixed_sha256(provenance_body)
+    resigned_provenance["execution_provenance_sha256"] = provenance["provenance_sha256"]
+    _resign_evidence(resigned_provenance)
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-evidence-provenance-invalid",
+    ):
+        _verify_reference_worker_evidence_set(
+            resigned_provenance,
+            suite=suite,
+            output_root=output_root,
+        )
+
+    provenance_path = output_root / "metadata" / "reference-worker-benchmark-provenance.json"
+    provenance_bytes = provenance_path.read_bytes()
+    provenance_path.unlink()
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-file-unavailable",
+    ):
+        _verify_reference_worker_evidence_set(
+            evidence,
+            suite=suite,
+            output_root=output_root,
+        )
+    provenance_path.write_bytes(provenance_bytes)
+
+    persisted_provenance = json.loads(provenance_bytes)
+    persisted_provenance["runtime"]["platform_machine"] = "mismatched-machine"
+    persisted_body = {
+        key: value for key, value in persisted_provenance.items() if key != "provenance_sha256"
+    }
+    persisted_provenance["provenance_sha256"] = prefixed_sha256(persisted_body)
+    provenance_path.write_bytes(canonical_json_bytes(persisted_provenance) + b"\n")
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-evidence-provenance-invalid",
+    ):
+        _verify_reference_worker_evidence_set(
+            evidence,
+            suite=suite,
+            output_root=output_root,
+        )
+    provenance_path.write_bytes(provenance_bytes)
+
+    outside_provenance = tmp_path / "outside-provenance.json"
+    outside_provenance.write_bytes(provenance_bytes)
+    provenance_path.unlink()
+    provenance_path.symlink_to(outside_provenance)
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-file-unsafe",
+    ):
+        _verify_reference_worker_evidence_set(
+            evidence,
+            suite=suite,
+            output_root=output_root,
+        )
+    provenance_path.unlink()
+    provenance_path.write_bytes(provenance_bytes)
+
+    baseline = evidence["observations"][0]["baseline_receipt"]
+    output_path = output_root / baseline["output_relative_path"]
+    output_path.write_bytes(output_path.read_bytes() + b"tampered")
+    with pytest.raises(
+        ReferenceWorkerBenchmarkError,
+        match="reference-benchmark-output-mismatch",
+    ):
+        _verify_reference_worker_evidence_set(
+            evidence,
+            suite=suite,
+            output_root=output_root,
+        )
 
 
 def test_partial_resume_pair_fails_before_worker_execution(tmp_path: Path) -> None:
@@ -497,7 +730,6 @@ def test_partial_resume_pair_fails_before_worker_execution(tmp_path: Path) -> No
             source_root=source_root,
             config_root=config_root,
             output_root=output_root,
-            campaign_report=run_reference_campaign(),
             worker=worker,
             suite_preparer=preparer,
         )

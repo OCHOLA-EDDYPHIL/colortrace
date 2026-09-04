@@ -5,6 +5,7 @@ import hashlib
 import json
 from collections import Counter
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import cache
@@ -29,6 +30,7 @@ from colortrace_evaluation.reference_campaign import (
     run_reference_campaign,
     sealed_reference_holdouts,
     verified_recorded_selection_traces,
+    verify_reference_campaign_report,
 )
 from colortrace_fixture import reference_scenarios
 from colortrace_investigation import (
@@ -67,8 +69,8 @@ class _RecordedSelectionModel:
         attributes = affected["attributes"]
         assert isinstance(attributes, dict)
         derivative_changed = (
-            attributes["derivative.parent_sha256"] != approved["derivative_parent_sha256"]
-            or int(attributes["cache.generation"]) != approved["derivative_generation"]
+            attributes["declared_reference.derivative_parent_matches_approved"] == "false"
+            or attributes["declared_reference.derivative_generation_matches_approved"] == "false"
         )
         response = {
             "schema": "reference-recorded-model-selection/v1",
@@ -227,7 +229,7 @@ def test_sealed_holdouts_are_deterministic_balanced_and_include_mutations() -> N
 
     assert first.to_dict() == second.to_dict()
     assert first.corpus_sha256 == second.corpus_sha256
-    assert len(first.cases) == 87
+    assert len(first.cases) == 99
     resolvable = [case for case in first.cases if case.kind is CaseKind.RESOLVABLE]
     assert Counter(case.source_incident_class for case in resolvable) == {
         IncidentClass.RESOURCE_RESOLUTION_DRIFT: 20,
@@ -237,13 +239,17 @@ def test_sealed_holdouts_are_deterministic_balanced_and_include_mutations() -> N
     assert Counter(
         case.source_incident_class for case in first.cases if case.kind is CaseKind.FAIL_CLOSED
     ) == {
-        IncidentClass.RESOURCE_RESOLUTION_DRIFT: 9,
-        IncidentClass.CONFIGURATION_ROLLOUT_DRIFT: 9,
-        IncidentClass.STALE_DERIVATIVE_CACHE: 9,
+        IncidentClass.RESOURCE_RESOLUTION_DRIFT: 13,
+        IncidentClass.CONFIGURATION_ROLLOUT_DRIFT: 13,
+        IncidentClass.STALE_DERIVATIVE_CACHE: 13,
     }
     assert {case.mutation for case in first.cases if case.kind is CaseKind.FAIL_CLOSED} == {
         MutationKind.NO_EVIDENCE,
         MutationKind.ONE_SIGNAL,
+        MutationKind.WRONG_SIGNAL_PAIR,
+        MutationKind.MISSING_MATCH_FLAG,
+        MutationKind.BASELINE_BINDING_MISMATCH,
+        MutationKind.FLAG_DETAIL_CONTRADICTION,
         MutationKind.STALE_OBSERVATION,
         MutationKind.CROSS_RUN,
         MutationKind.CONFLICTING_EVENT,
@@ -259,9 +265,9 @@ def test_campaign_meets_classification_authority_and_ablation_gates() -> None:
 
     assert report["passed"] is False
     assert report["case_counts"] == {
-        "total": 87,
+        "total": 99,
         "resolvable": 60,
-        "fail_closed": 27,
+        "fail_closed": 39,
         "resolvable_by_class": {
             "resource-resolution-drift/v1": 20,
             "configuration-rollout-drift/v1": 20,
@@ -269,7 +275,7 @@ def test_campaign_meets_classification_authority_and_ablation_gates() -> None:
         },
     }
     assert report["metrics"]["classification_accuracy_basis_points"] == 10_000
-    assert report["metrics"]["negative_cases_failed_closed"] == 27
+    assert report["metrics"]["negative_cases_failed_closed"] == 39
     assert report["metrics"]["false_action_intents"] == 0
     assert report["metrics"]["false_authorized_actions"] == 0
     assert report["metrics"]["display_text_mutations_resolved"] == 3
@@ -309,7 +315,7 @@ def test_selection_input_is_blinded_and_bound_to_the_trace() -> None:
 
     assert case.scenario_id not in encoded
     assert case.source_incident_class.value not in encoded
-    assert case.mutation.value not in encoded
+    assert "mutation" not in value
     body = {key: child for key, child in value.items() if key != "input_sha256"}
     assert value["input_sha256"] == prefixed_sha256(body)
     trace = next(
@@ -391,6 +397,91 @@ def test_recorded_selection_rejects_rehashed_response_binding_tamper() -> None:
         verified_recorded_selection_traces(corpus, imported)
 
 
+@pytest.mark.parametrize("field", ("metrics", "passed", "advantage"))
+def test_campaign_verification_rejects_resigned_summary_tamper(field: str) -> None:
+    receipts, _traces, campaign = _recorded_campaign()
+    tampered = deepcopy(campaign)
+    if field == "metrics":
+        tampered["metrics"]["classification_accuracy_basis_points"] = 9_999
+    elif field == "passed":
+        tampered["passed"] = False
+    else:
+        comparison = tampered["selection_comparison"]
+        comparison["adaptive_advantage_basis_points"] = 3_333
+        comparison["recorded_model_advantage_basis_points"] = 3_333
+        comparison_body = {
+            key: value for key, value in comparison.items() if key != "report_sha256"
+        }
+        comparison["report_sha256"] = prefixed_sha256(comparison_body)
+    body = {key: value for key, value in tampered.items() if key != "report_sha256"}
+    tampered["report_sha256"] = prefixed_sha256(body)
+
+    with pytest.raises(
+        ReferenceCampaignError,
+        match="reference-campaign-report-recomputation-mismatch",
+    ):
+        verify_reference_campaign_report(tampered, receipt_set=receipts)
+
+
+def test_campaign_verification_requires_receipts_for_recorded_model_claim() -> None:
+    _receipts, _traces, campaign = _recorded_campaign()
+
+    with pytest.raises(
+        ReferenceCampaignError,
+        match="reference-campaign-receipts-required",
+    ):
+        verify_reference_campaign_report(campaign)
+    with pytest.raises(
+        ReferenceCampaignError,
+        match="reference-campaign-receipts-required",
+    ):
+        build_reference_impact_benchmark(
+            _benchmark_observations(),
+            campaign,
+            evidence_source="controlled-receipt-set",
+            evidence_set_id=_digest("unverified-campaign"),
+        )
+
+
+def test_public_impact_builder_cannot_assert_recorded_worker_evidence() -> None:
+    receipts, _traces, campaign = _recorded_campaign()
+
+    with pytest.raises(
+        ReferenceCampaignError,
+        match="reference-benchmark-recorded-evidence-unverified",
+    ):
+        build_reference_impact_benchmark(
+            _benchmark_observations(),
+            campaign,
+            evidence_source="recorded-worker-receipts",
+            evidence_set_id=_digest("self-reported-worker-evidence"),
+            campaign_receipt_set=receipts,
+        )
+
+
+@pytest.mark.parametrize("binding", ("corpus", "case"))
+def test_campaign_verification_rejects_resigned_receipt_binding(binding: str) -> None:
+    receipts, _traces, campaign = _recorded_campaign()
+    document = receipts.to_dict()
+    if binding == "corpus":
+        wrong = _digest("wrong-holdout-corpus")
+        document["corpus_sha256"] = wrong
+        for receipt in document["receipts"]:
+            receipt["corpus_sha256"] = wrong
+            receipt_body = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+            receipt["receipt_sha256"] = prefixed_sha256(receipt_body)
+    else:
+        receipt = document["receipts"][0]
+        receipt["case_sha256"] = _digest("wrong-holdout-case")
+        receipt_body = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+        receipt["receipt_sha256"] = prefixed_sha256(receipt_body)
+    set_body = {key: value for key, value in document.items() if key != "receipt_set_sha256"}
+    document["receipt_set_sha256"] = prefixed_sha256(set_body)
+
+    with pytest.raises(ReferenceCampaignError, match="reference-recorded-selection-.*binding"):
+        verify_reference_campaign_report(campaign, receipt_set=document)
+
+
 def test_selection_comparison_rejects_incomplete_and_over_budget_inputs() -> None:
     corpus = sealed_reference_holdouts()
     traces = controlled_adaptive_selection_traces(corpus)
@@ -407,7 +498,7 @@ def test_selection_comparison_rejects_incomplete_and_over_budget_inputs() -> Non
 
 
 def test_impact_benchmark_proves_equivalence_integrity_and_avoided_work() -> None:
-    campaign = _recorded_campaign()[2]
+    receipts, _traces, campaign = _recorded_campaign()
     observations = _benchmark_observations()
 
     report = build_reference_impact_benchmark(
@@ -415,6 +506,7 @@ def test_impact_benchmark_proves_equivalence_integrity_and_avoided_work() -> Non
         campaign,
         evidence_source="controlled-receipt-set",
         evidence_set_id=_digest("controlled-reference-receipts"),
+        campaign_receipt_set=receipts,
     )
 
     assert report["passed"] is True
@@ -432,7 +524,7 @@ def test_impact_benchmark_proves_equivalence_integrity_and_avoided_work() -> Non
 
 
 def test_impact_benchmark_reports_scenario_overhead_without_hiding_median_savings() -> None:
-    campaign = _recorded_campaign()[2]
+    receipts, _traces, campaign = _recorded_campaign()
     observations = tuple(
         replace(observation, operation_bytes_read=4_000)
         if observation.scenario_id == "tos-stale-derivative-cache-v1" and observation.affected
@@ -445,6 +537,7 @@ def test_impact_benchmark_reports_scenario_overhead_without_hiding_median_saving
         campaign,
         evidence_source="controlled-receipt-set",
         evidence_set_id=_digest("overhead-reference-receipts"),
+        campaign_receipt_set=receipts,
     )
     stale = next(
         result
@@ -459,7 +552,7 @@ def test_impact_benchmark_reports_scenario_overhead_without_hiding_median_saving
 
 
 def test_impact_benchmark_detects_output_and_protected_mutations() -> None:
-    campaign = _recorded_campaign()[2]
+    receipts, _traces, campaign = _recorded_campaign()
     observations = list(_benchmark_observations())
     protected_index = next(
         index for index, observation in enumerate(observations) if not observation.affected
@@ -474,6 +567,7 @@ def test_impact_benchmark_detects_output_and_protected_mutations() -> None:
         campaign,
         evidence_source="controlled-receipt-set",
         evidence_set_id=_digest("mutated-reference-receipts"),
+        campaign_receipt_set=receipts,
     )
 
     assert report["passed"] is False
@@ -498,13 +592,14 @@ def test_impact_benchmark_detects_output_and_protected_mutations() -> None:
         campaign,
         evidence_source="controlled-receipt-set",
         evidence_set_id=_digest("byte-mismatched-reference-receipts"),
+        campaign_receipt_set=receipts,
     )
     assert byte_mismatch["passed"] is False
     assert byte_mismatch["checks"]["output_equivalence"] is False
 
 
 def test_impact_benchmark_rejects_incomplete_scope_and_tampered_receipts() -> None:
-    campaign = _recorded_campaign()[2]
+    receipts, _traces, campaign = _recorded_campaign()
     observations = list(_benchmark_observations())
 
     with pytest.raises(ReferenceCampaignError, match="reference-benchmark-scope-invalid"):
@@ -513,6 +608,7 @@ def test_impact_benchmark_rejects_incomplete_scope_and_tampered_receipts() -> No
             campaign,
             evidence_source="controlled-receipt-set",
             evidence_set_id=_digest("incomplete-reference-receipts"),
+            campaign_receipt_set=receipts,
         )
 
     first = observations[0]

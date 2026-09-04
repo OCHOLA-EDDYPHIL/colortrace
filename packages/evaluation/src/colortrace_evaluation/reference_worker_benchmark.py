@@ -43,11 +43,15 @@ from .contracts import (
 from .reference_campaign import (
     BenchmarkArtifactObservation,
     BenchmarkEvidenceSource,
+    RecordedSelectionReceiptSet,
     ReferenceCampaignError,
     _receipt_equivalent,
+    _reference_impact_benchmark_body,
     _validate_receipt,
     build_reference_impact_benchmark,
+    run_recorded_reference_campaign,
     run_reference_campaign,
+    verify_reference_campaign_report,
 )
 from .reference_execution import ReferenceWorkerCallable
 
@@ -61,12 +65,23 @@ _EXPECTED_SCENARIOS = frozenset(
 )
 _EXPECTED_VARIANTS = frozenset({"approved", "shadowed", "stale-rollout"})
 _RECEIPT_LIMIT = 65_536
+_VERIFIED_EVIDENCE_TOKEN = object()
 
 
 class ReferenceWorkerBenchmarkError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+def _freeze_evidence_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {str(key): _freeze_evidence_value(child) for key, child in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_evidence_value(child) for child in value)
+    return value
 
 
 class ReferenceSuitePreparer(Protocol):
@@ -127,6 +142,69 @@ class PreparedReferenceBenchmarkSuite:
                 raise ReferenceWorkerBenchmarkError("reference-benchmark-suite-invalid")
         object.__setattr__(self, "scenarios", scenarios)
         object.__setattr__(self, "variants", variants)
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class _VerifiedReferenceWorkerEvidence:
+    _source: BenchmarkEvidenceSource
+    _evidence_set_id: str
+    _observations: tuple[BenchmarkArtifactObservation, ...]
+
+    def __init__(self) -> None:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-unverified")
+
+    @classmethod
+    def _from_validation(
+        cls,
+        *,
+        source: BenchmarkEvidenceSource,
+        evidence_set_id: str,
+        observations: tuple[BenchmarkArtifactObservation, ...],
+        verification_token: object,
+    ) -> _VerifiedReferenceWorkerEvidence:
+        if verification_token is not _VERIFIED_EVIDENCE_TOKEN:
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-unverified")
+        for observation in observations:
+            object.__setattr__(
+                observation,
+                "baseline_receipt",
+                _freeze_evidence_value(observation.baseline_receipt),
+            )
+            object.__setattr__(
+                observation,
+                "observed_receipt",
+                (
+                    _freeze_evidence_value(observation.observed_receipt)
+                    if observation.observed_receipt is not None
+                    else None
+                ),
+            )
+            object.__setattr__(
+                observation,
+                "selective_receipt",
+                (
+                    _freeze_evidence_value(observation.selective_receipt)
+                    if observation.selective_receipt is not None
+                    else None
+                ),
+            )
+        value = object.__new__(cls)
+        object.__setattr__(value, "_source", source)
+        object.__setattr__(value, "_evidence_set_id", evidence_set_id)
+        object.__setattr__(value, "_observations", observations)
+        return value
+
+    @property
+    def source(self) -> BenchmarkEvidenceSource:
+        return self._source
+
+    @property
+    def evidence_set_id(self) -> str:
+        return self._evidence_set_id
+
+    @property
+    def observations(self) -> tuple[BenchmarkArtifactObservation, ...]:
+        return self._observations
 
 
 @dataclass(frozen=True, slots=True)
@@ -1080,12 +1158,486 @@ def _evidence_set_record(
     return record
 
 
+def _verified_evidence_receipt(
+    value: Any,
+    claimed_sha256: Any,
+    *,
+    job: Mapping[str, Any],
+    phase: str,
+    output_root: Path,
+) -> dict[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or not isinstance(claimed_sha256, str)
+        or value.get("receipt_sha256") != claimed_sha256
+    ):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-receipt-invalid")
+    receipt = _validate_receipt_for_job(value, job, output_root=output_root)
+    receipt_path = _target(output_root, _receipt_relative_path(job, phase))
+    if _json_mapping(receipt_path, output_root) != receipt:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-receipt-mismatch")
+    return receipt
+
+
+def _require_evidence_job_absent(
+    job: Mapping[str, Any],
+    *,
+    phase: str,
+    output_root: Path,
+) -> None:
+    output = cast(Mapping[str, Any], job["output"])
+    if _present(_target(output_root, cast(str, output["relative_path"]))) or _present(
+        _target(output_root, _receipt_relative_path(job, phase))
+    ):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-unexpected-output")
+
+
+def _record_body_matches(value: Mapping[str, Any], digest_field: str) -> bool:
+    body = {key: child for key, child in value.items() if key != digest_field}
+    return value.get(digest_field) == prefixed_sha256(body)
+
+
+def _verified_cache_proof(
+    raw: Mapping[str, Any],
+    *,
+    scenario: ReferenceScenario,
+    observation: BenchmarkArtifactObservation,
+    output_root: Path,
+) -> str | None:
+    before_value = raw["cache_entry_before"]
+    after_value = raw["cache_entry_after"]
+    cache_receipt_value = raw["cache_observed_receipt"]
+    operation_value = raw["cache_invalidation_operation"]
+    lookup_value = raw["cache_lookup_after_invalidation"]
+    if scenario.incident_class != "stale-derivative-cache/v1":
+        if any(
+            value is not None
+            for value in (
+                before_value,
+                after_value,
+                cache_receipt_value,
+                operation_value,
+                lookup_value,
+            )
+        ):
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-cache-invalid")
+        if any(
+            value != 0
+            for value in (
+                observation.operation_compute_units,
+                observation.operation_bytes_read,
+                observation.operation_bytes_written,
+                observation.operation_cpu_nanoseconds,
+                observation.operation_wall_nanoseconds,
+            )
+        ):
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-operation-invalid")
+        if (
+            not observation.affected
+            and observation.verification_bytes_read != observation.baseline_receipt["bytes_written"]
+        ):
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-operation-invalid")
+        return None
+
+    if not isinstance(before_value, Mapping) or not isinstance(after_value, Mapping):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-cache-invalid")
+    before = cast(dict[str, Any], _plain(before_value))
+    after = cast(dict[str, Any], _plain(after_value))
+    if not _record_body_matches(before, "entry_sha256") or not _record_body_matches(
+        after, "entry_sha256"
+    ):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-cache-invalid")
+
+    invalidated_path = _cache_entry_path(
+        output_root,
+        scenario,
+        observation.artifact_id,
+        "invalidated",
+    )
+    live_path = _cache_entry_path(output_root, scenario, observation.artifact_id, "live")
+    operation_path = _operation_path(output_root, scenario, observation.artifact_id)
+    if observation.affected:
+        if (
+            observation.observed_receipt is None
+            or observation.selective_receipt is None
+            or not isinstance(cache_receipt_value, Mapping)
+            or not isinstance(operation_value, Mapping)
+            or lookup_value != "miss"
+        ):
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-cache-invalid")
+        cache_receipt = cast(dict[str, Any], _plain(cache_receipt_value))
+        operation = cast(dict[str, Any], _plain(operation_value))
+        expected_before = _cache_entry(
+            scenario,
+            observation.observed_receipt,
+            state="stale",
+            derivative_generation=scenario.observed_derivative_generation,
+        )
+        expected_after = _cache_entry(
+            scenario,
+            observation.selective_receipt,
+            state="current",
+            derivative_generation=scenario.expected_derivative_generation,
+        )
+        expected_operation = _invalidation_record(
+            scenario,
+            expected_before,
+            observation.baseline_receipt,
+        )
+        if (
+            cache_receipt != observation.observed_receipt
+            or before != expected_before
+            or after != expected_after
+            or operation != expected_operation
+            or not _record_body_matches(operation, "operation_sha256")
+        ):
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-cache-invalid")
+        persisted_before, before_bytes = _cache_lookup(output_root, invalidated_path)
+        persisted_after, after_bytes = _cache_lookup(output_root, live_path)
+        if (
+            persisted_before != before
+            or persisted_after != after
+            or _json_mapping(operation_path, output_root) != operation
+        ):
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-cache-mismatch")
+        operation_bytes = len(canonical_json_bytes(operation)) + 1
+        after_entry_bytes = len(canonical_json_bytes(after)) + 1
+        if (
+            observation.verification_bytes_read != 0
+            or observation.operation_compute_units != 0
+            or observation.operation_bytes_read != before_bytes + operation_bytes + after_bytes
+            or observation.operation_bytes_written != operation_bytes + after_entry_bytes
+            or observation.operation_cpu_nanoseconds != 0
+            or observation.operation_wall_nanoseconds != 0
+        ):
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-operation-invalid")
+        return cast(str, operation["operation_sha256"])
+
+    expected = _cache_entry(
+        scenario,
+        observation.baseline_receipt,
+        state="current",
+        derivative_generation=scenario.expected_derivative_generation,
+    )
+    persisted, cache_bytes = _cache_lookup(output_root, live_path)
+    if (
+        before != expected
+        or after != expected
+        or persisted != expected
+        or cache_receipt_value is not None
+        or operation_value is not None
+        or lookup_value is not None
+        or _present(invalidated_path)
+        or _present(operation_path)
+        or observation.verification_bytes_read != cache_bytes * 2
+    ):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-cache-invalid")
+    return None
+
+
+def _verify_reference_worker_evidence_set(
+    evidence_set: Mapping[str, Any],
+    *,
+    suite: PreparedReferenceBenchmarkSuite,
+    output_root: Path,
+) -> _VerifiedReferenceWorkerEvidence:
+    output = _safe_root(output_root, create=False)
+    document = cast(dict[str, Any], _plain(evidence_set))
+    try:
+        validate_schema("reference-worker-evidence-set-v1.schema.json", document)
+    except ContractError as error:
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-invalid") from error
+    body = {key: child for key, child in document.items() if key != "evidence_set_id"}
+    if document["evidence_set_id"] != prefixed_sha256(body):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-digest-invalid")
+
+    source = cast(BenchmarkEvidenceSource, document["source"])
+    provenance = cast(Mapping[str, Any], document["execution_provenance"])
+    persisted_provenance = _json_mapping(
+        _target(output, "metadata/reference-worker-benchmark-provenance.json"),
+        output,
+    )
+    provenance_body = {
+        key: child for key, child in provenance.items() if key != "provenance_sha256"
+    }
+    sealed_suite = provenance.get("suite_binding") == "sealed-reference-suite"
+    real_worker = provenance.get("worker_binding") == "colortrace-simulator-reference-worker/v1"
+    if real_worker != (provenance.get("execution_mode") == "host-python-module"):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-provenance-invalid")
+    try:
+        expected_provenance = _provenance_record(
+            suite,
+            source,
+            sealed_suite=sealed_suite,
+            real_worker=real_worker,
+        )
+    except ReferenceWorkerBenchmarkError as error:
+        raise ReferenceWorkerBenchmarkError(
+            "reference-benchmark-evidence-provenance-invalid"
+        ) from error
+    if (
+        provenance.get("provenance_sha256") != prefixed_sha256(provenance_body)
+        or document["execution_provenance_sha256"] != provenance.get("provenance_sha256")
+        or persisted_provenance != provenance
+        or dict(provenance) != expected_provenance
+        or document["reference_manifest_sha256"] != suite.manifest.manifest_sha256
+        or document["media_verification_sha256"]
+        != prefixed_sha256(suite.media_verification.to_dict())
+        or document["variant_digests"]
+        != {
+            name: {
+                "config_sha256": variant.config_sha256,
+                "resource_sha256": variant.resource_sha256,
+                "config_generation": variant.config_generation,
+            }
+            for name, variant in sorted(suite.variants.items())
+        }
+    ):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-provenance-invalid")
+
+    frames = tuple(frame for sequence in suite.manifest.sequences for frame in sequence.frames)
+    frame_by_artifact = {f"frame:{frame.sequence_id}:{frame.frame:05d}": frame for frame in frames}
+    stale_parent_by_artifact: dict[str, ReferenceFrame] = {}
+    for sequence in suite.manifest.sequences:
+        for index, sequence_frame in enumerate(sequence.frames):
+            artifact_id = f"frame:{sequence_frame.sequence_id}:{sequence_frame.frame:05d}"
+            stale_parent_by_artifact[artifact_id] = sequence.frames[index - 1]
+
+    observations: list[BenchmarkArtifactObservation] = []
+    operation_ids: list[str] = []
+    raw_observations = cast(list[Mapping[str, Any]], document["observations"])
+    expected_pairs = {
+        (scenario.scenario_id, artifact_id): artifact_id in scenario.affected_artifact_ids
+        for scenario in suite.scenarios.values()
+        for artifact_id in (
+            *scenario.affected_artifact_ids,
+            *scenario.protected_artifact_ids,
+        )
+    }
+    raw_order = [
+        (cast(str, item["scenario_id"]), cast(str, item["artifact_id"]))
+        for item in raw_observations
+    ]
+    if raw_order != sorted(expected_pairs):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-scope-invalid")
+    for raw in raw_observations:
+        scenario_id = cast(str, raw["scenario_id"])
+        artifact_id = cast(str, raw["artifact_id"])
+        scenario = suite.scenarios.get(scenario_id)
+        selected_frame = frame_by_artifact.get(artifact_id)
+        if (
+            scenario is None
+            or selected_frame is None
+            or raw["affected"] != (artifact_id in scenario.affected_artifact_ids)
+        ):
+            raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-scope-invalid")
+
+        baseline_job = reference_render_job(
+            frame=selected_frame,
+            scenario=scenario,
+            variants=suite.variants,
+            mode="expected",
+            trace_id=_trace_id(
+                suite.manifest.manifest_sha256,
+                scenario_id,
+                "baseline",
+                artifact_id,
+            ),
+        )
+        baseline = _verified_evidence_receipt(
+            raw["baseline_receipt"],
+            raw["baseline_receipt_sha256"],
+            job=baseline_job,
+            phase="baseline",
+            output_root=output,
+        )
+        selective_job = reference_render_job(
+            frame=selected_frame,
+            scenario=scenario,
+            variants=suite.variants,
+            mode="recovered",
+            trace_id=_trace_id(
+                suite.manifest.manifest_sha256,
+                scenario_id,
+                "selective",
+                artifact_id,
+            ),
+        )
+        if scenario.incident_class == "stale-derivative-cache/v1":
+            observed_job = _stale_derivative_job(
+                frame=selected_frame,
+                stale_parent=stale_parent_by_artifact[artifact_id],
+                scenario=scenario,
+                variants=suite.variants,
+                trace_id=_trace_id(
+                    suite.manifest.manifest_sha256,
+                    scenario_id,
+                    "cache-observed",
+                    artifact_id,
+                ),
+            )
+            observed_phase = "cache-observed-parent-v1"
+        else:
+            observed_job = reference_render_job(
+                frame=selected_frame,
+                scenario=scenario,
+                variants=suite.variants,
+                mode="observed",
+                trace_id=_trace_id(
+                    suite.manifest.manifest_sha256,
+                    scenario_id,
+                    "incident-observed",
+                    artifact_id,
+                ),
+            )
+            observed_phase = "incident-observed"
+
+        if raw["affected"]:
+            observed = _verified_evidence_receipt(
+                raw["observed_receipt"],
+                raw["observed_receipt_sha256"],
+                job=observed_job,
+                phase=observed_phase,
+                output_root=output,
+            )
+            selective = _verified_evidence_receipt(
+                raw["selective_receipt"],
+                raw["selective_receipt_sha256"],
+                job=selective_job,
+                phase="selective",
+                output_root=output,
+            )
+        else:
+            if any(
+                raw[name] is not None
+                for name in (
+                    "observed_receipt_sha256",
+                    "observed_receipt",
+                    "selective_receipt_sha256",
+                    "selective_receipt",
+                )
+            ):
+                raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-receipt-invalid")
+            _require_evidence_job_absent(
+                observed_job,
+                phase=observed_phase,
+                output_root=output,
+            )
+            _require_evidence_job_absent(
+                selective_job,
+                phase="selective",
+                output_root=output,
+            )
+            observed = None
+            selective = None
+
+        observation = BenchmarkArtifactObservation(
+            scenario_id=scenario_id,
+            artifact_id=artifact_id,
+            affected=cast(bool, raw["affected"]),
+            baseline_receipt=baseline,
+            observed_receipt=observed,
+            selective_receipt=selective,
+            preserved_before_output_sha256=cast(str | None, raw["preserved_before_output_sha256"]),
+            preserved_after_output_sha256=cast(str | None, raw["preserved_after_output_sha256"]),
+            preserved_before_canonical_pixel_sha256=cast(
+                str | None,
+                raw["preserved_before_canonical_pixel_sha256"],
+            ),
+            preserved_after_canonical_pixel_sha256=cast(
+                str | None,
+                raw["preserved_after_canonical_pixel_sha256"],
+            ),
+            verification_bytes_read=cast(int, raw["verification_bytes_read"]),
+            operation_compute_units=cast(int, raw["operation_compute_units"]),
+            operation_bytes_read=cast(int, raw["operation_bytes_read"]),
+            operation_bytes_written=cast(int, raw["operation_bytes_written"]),
+            operation_cpu_nanoseconds=cast(int, raw["operation_cpu_nanoseconds"]),
+            operation_wall_nanoseconds=cast(int, raw["operation_wall_nanoseconds"]),
+        )
+        operation_id = _verified_cache_proof(
+            raw,
+            scenario=scenario,
+            observation=observation,
+            output_root=output,
+        )
+        if operation_id is not None:
+            operation_ids.append(operation_id)
+        observations.append(observation)
+
+    selected = tuple(observations)
+    actual_pairs = {(item.scenario_id, item.artifact_id): item for item in selected}
+    if (
+        len(actual_pairs) != len(selected)
+        or set(actual_pairs) != set(expected_pairs)
+        or any(item.affected != expected_pairs[key] for key, item in actual_pairs.items())
+        or document["cache_invalidation_operation_sha256"] != operation_ids
+    ):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-scope-invalid")
+    return _VerifiedReferenceWorkerEvidence._from_validation(
+        source=source,
+        evidence_set_id=cast(str, document["evidence_set_id"]),
+        observations=selected,
+        verification_token=_VERIFIED_EVIDENCE_TOKEN,
+    )
+
+
+def _build_verified_recorded_reference_impact_benchmark(
+    evidence: _VerifiedReferenceWorkerEvidence,
+    campaign_report: Mapping[str, Any],
+    *,
+    campaign_receipt_set: RecordedSelectionReceiptSet | Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if (
+        type(evidence) is not _VerifiedReferenceWorkerEvidence
+        or evidence.source != "recorded-worker-receipts"
+    ):
+        raise ReferenceWorkerBenchmarkError("reference-benchmark-recorded-evidence-unverified")
+    campaign = verify_reference_campaign_report(
+        campaign_report,
+        receipt_set=campaign_receipt_set,
+    )
+    measurements = _reference_impact_benchmark_body(evidence.observations, campaign)
+    body = {
+        **measurements,
+        "evidence": {
+            "source": evidence.source,
+            "evidence_set_id": evidence.evidence_set_id,
+            "recorded_worker_evidence": True,
+            "observation_count": len(evidence.observations),
+        },
+    }
+    report = {**body, "report_sha256": prefixed_sha256(body)}
+    validate_schema("reference-impact-benchmark-v1.schema.json", report)
+    return report
+
+
+def _verified_campaign_report(
+    *,
+    campaign_report: Mapping[str, Any] | None,
+    campaign_receipt_set: RecordedSelectionReceiptSet | Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if campaign_receipt_set is None:
+        if campaign_report is not None:
+            return verify_reference_campaign_report(campaign_report)
+        return run_reference_campaign()
+
+    recomputed = run_recorded_reference_campaign(campaign_receipt_set)
+    if campaign_report is not None:
+        verify_reference_campaign_report(
+            campaign_report,
+            receipt_set=campaign_receipt_set,
+        )
+    return recomputed
+
+
 def run_reference_worker_benchmark(
     *,
     source_root: Path,
     config_root: Path,
     output_root: Path,
     campaign_report: Mapping[str, Any] | None = None,
+    campaign_receipt_set: RecordedSelectionReceiptSet | Mapping[str, Any] | None = None,
     report_relative_path: str | None = None,
     evidence_index_relative_path: str | None = ("reports/reference-worker-evidence-index.json"),
     worker: ReferenceWorkerCallable | None = None,
@@ -1096,6 +1648,10 @@ def run_reference_worker_benchmark(
     output = _safe_root(output_root, create=True)
     if _overlaps(source, config) or _overlaps(source, output) or _overlaps(config, output):
         raise ReferenceWorkerBenchmarkError("reference-benchmark-roots-overlap")
+    verified_campaign = _verified_campaign_report(
+        campaign_report=campaign_report,
+        campaign_receipt_set=campaign_receipt_set,
+    )
 
     recorded = worker is None and suite_preparer is None
     evidence_source: BenchmarkEvidenceSource = (
@@ -1245,26 +1801,47 @@ def run_reference_worker_benchmark(
                 )
             )
 
-    selected_observations = tuple(observations)
+    selected_observations = tuple(
+        sorted(observations, key=lambda item: (item.scenario_id, item.artifact_id))
+    )
+    selected_operation_records = tuple(
+        sorted(
+            operation_records,
+            key=lambda item: (cast(str, item["scenario_id"]), cast(str, item["artifact_id"])),
+        )
+    )
     if len(selected_observations) != 720:
         raise ReferenceWorkerBenchmarkError("reference-benchmark-observation-count-invalid")
     evidence_record = _evidence_set_record(
         suite,
         selected_observations,
-        tuple(operation_records),
+        selected_operation_records,
         cache_proofs,
         evidence_source,
         provenance,
     )
+    verified_evidence = _verify_reference_worker_evidence_set(
+        evidence_record,
+        suite=suite,
+        output_root=output,
+    )
     if evidence_index_relative_path is not None:
         evidence_path = _target(output, evidence_index_relative_path)
         _write_exact(evidence_path, output, evidence_record)
-    report = build_reference_impact_benchmark(
-        selected_observations,
-        campaign_report or run_reference_campaign(),
-        evidence_source=evidence_source,
-        evidence_set_id=cast(str, evidence_record["evidence_set_id"]),
-    )
+    if evidence_source == "recorded-worker-receipts":
+        report = _build_verified_recorded_reference_impact_benchmark(
+            verified_evidence,
+            verified_campaign,
+            campaign_receipt_set=campaign_receipt_set,
+        )
+    else:
+        report = build_reference_impact_benchmark(
+            verified_evidence.observations,
+            verified_campaign,
+            evidence_source=verified_evidence.source,
+            evidence_set_id=verified_evidence.evidence_set_id,
+            campaign_receipt_set=campaign_receipt_set,
+        )
     if report_relative_path is not None:
         report_path = _target(output, report_relative_path)
         _write_exact(report_path, output, report)
@@ -1277,6 +1854,7 @@ def main() -> None:
     parser.add_argument("--config-root", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--campaign-report", type=Path)
+    parser.add_argument("--campaign-receipt-set", type=Path)
     parser.add_argument(
         "--report-relative-path",
         default="reports/reference-impact-benchmark.json",
@@ -1292,11 +1870,17 @@ def main() -> None:
             if arguments.campaign_report is not None
             else None
         )
+        campaign_receipt_set = (
+            strict_json_file(arguments.campaign_receipt_set)
+            if arguments.campaign_receipt_set is not None
+            else None
+        )
         report = run_reference_worker_benchmark(
             source_root=arguments.source_root,
             config_root=arguments.config_root,
             output_root=arguments.output_root,
             campaign_report=campaign_report,
+            campaign_receipt_set=campaign_receipt_set,
             report_relative_path=arguments.report_relative_path,
             evidence_index_relative_path=arguments.evidence_index_relative_path,
         )

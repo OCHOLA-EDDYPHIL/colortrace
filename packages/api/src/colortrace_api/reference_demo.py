@@ -975,7 +975,7 @@ def _validate_telemetry_plan(
     incident_class: str,
     observed_at: datetime,
     emitted_at: datetime,
-) -> tuple[Any, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     if (
         plan.scenario_id != request.scenario_id
         or plan.incident_class != incident_class
@@ -985,10 +985,10 @@ def _validate_telemetry_plan(
         or not plan.events
     ):
         raise ReferenceDemoError("reference-run-telemetry-unavailable")
-    events_by_role: dict[str, list[Any]] = {"affected": [], "protected": []}
+    events_by_role: dict[str, dict[str, Any]] = {"affected": {}, "protected": {}}
     for event in plan.events:
         role = event.attributes.get("reference.scope_role")
-        if role not in events_by_role:
+        if role not in events_by_role or event.signal in events_by_role[role]:
             raise ReferenceDemoError("reference-run-telemetry-unavailable")
         if (
             event.scenario_id != request.scenario_id
@@ -998,26 +998,112 @@ def _validate_telemetry_plan(
             or event.attributes.get("reference.incident_class") != incident_class
         ):
             raise ReferenceDemoError("reference-run-telemetry-unavailable")
-        events_by_role[role].append(event)
+        events_by_role[role][event.signal] = event
     expected_timestamp = _timestamp(observed_at)
     expected_emitted_timestamp = _timestamp(emitted_at)
-    if any(
-        {event.signal for event in events} != {"metric", "log", "trace"}
-        or len(events) != 3
-        or len({event.correlation["job_id"] for event in events}) != 1
-        or len({tuple(sorted(event.attributes.items())) for event in events}) != 1
-        or {event.observed_at for event in events} != {expected_timestamp}
-        or {event.emitted_at for event in events} != {expected_emitted_timestamp}
+    common_correlation_fields = (
+        "incident_id",
+        "fixture_id",
+        "run_id",
+        "job_id",
+        "worker_id",
+        "artifact_id",
+        "trace_id",
+        "config_sha256",
+        "transform_id",
+    )
+    if len(plan.events) != 6 or any(
+        set(events) != {"metric", "log", "trace"}
+        or any(
+            {event.correlation[field] for event in events.values()}
+            != {events["metric"].correlation[field]}
+            for field in common_correlation_fields
+        )
+        or events["log"].correlation.get("resource_sha256")
+        != events["log"]
+        .attributes.get("runtime.effective_resource_sha256", "")
+        .removeprefix("sha256:")
+        or events["metric"].correlation.get("resource_sha256") != "none"
+        or events["trace"].correlation.get("resource_sha256") != "none"
+        or {event.observed_at for event in events.values()} != {expected_timestamp}
+        or {event.emitted_at for event in events.values()} != {expected_emitted_timestamp}
         for events in events_by_role.values()
     ):
         raise ReferenceDemoError("reference-run-telemetry-unavailable")
-    return events_by_role["affected"][0], events_by_role["protected"][0]
+    affected_state = _telemetry_state(events_by_role["affected"])
+    protected_state = _telemetry_state(events_by_role["protected"])
+    match_attributes = {
+        "resource_sha256": "declared_reference.effective_resource_matches_approved",
+        "config_sha256": "declared_reference.effective_config_matches_approved",
+        "config_generation": "declared_reference.config_generation_matches_approved",
+        "frame_pipeline_sha256": "declared_reference.frame_pipeline_matches_approved",
+        "derivative_parent_sha256": ("declared_reference.derivative_parent_matches_approved"),
+        "derivative_generation": ("declared_reference.derivative_generation_matches_approved"),
+        "cache_key": "declared_reference.cache_key_matches_approved",
+    }
+    expected_false_fields = {
+        "resource-resolution-drift/v1": {"resource_sha256", "frame_pipeline_sha256"},
+        "configuration-rollout-drift/v1": {
+            "config_sha256",
+            "config_generation",
+            "frame_pipeline_sha256",
+        },
+        "stale-derivative-cache/v1": {
+            "derivative_parent_sha256",
+            "derivative_generation",
+        },
+    }
+    approved_sha256 = _digest(protected_state)
+    for role, state in (("affected", affected_state), ("protected", protected_state)):
+        metric_attributes = events_by_role[role]["metric"].attributes
+        expected_flags = {
+            field: "true" if value == protected_state[field] else "false"
+            for field, value in state.items()
+        }
+        observed_flags = {
+            field: metric_attributes.get(attribute) for field, attribute in match_attributes.items()
+        }
+        if (
+            metric_attributes.get("declared_reference.approved_state_sha256") != approved_sha256
+            or observed_flags != expected_flags
+            or metric_attributes.get("declared_reference.state")
+            != ("reference_mismatch" if role == "affected" else "reference_match")
+        ):
+            raise ReferenceDemoError("reference-run-telemetry-unavailable")
+    if {
+        field for field, value in affected_state.items() if value != protected_state[field]
+    } != expected_false_fields[incident_class] or events_by_role["affected"]["metric"].correlation[
+        "job_id"
+    ] == events_by_role["protected"]["metric"].correlation["job_id"]:
+        raise ReferenceDemoError("reference-run-telemetry-unavailable")
+    return events_by_role["affected"], events_by_role["protected"]
+
+
+def _telemetry_state(events: Mapping[str, Any]) -> dict[str, str | int]:
+    log_attributes = events["log"].attributes
+    trace_attributes = events["trace"].attributes
+    if log_attributes.get("runtime.frame_pipeline_sha256") != trace_attributes.get(
+        "runtime.frame_pipeline_sha256"
+    ) or log_attributes.get("cache.key") != trace_attributes.get("cache.key"):
+        raise ReferenceDemoError("reference-run-telemetry-unavailable")
+    try:
+        return {
+            "resource_sha256": log_attributes["runtime.effective_resource_sha256"],
+            "config_sha256": log_attributes["runtime.effective_config_sha256"],
+            "config_generation": int(log_attributes["runtime.config_generation"]),
+            "frame_pipeline_sha256": trace_attributes["runtime.frame_pipeline_sha256"],
+            "derivative_parent_sha256": trace_attributes["derivative.parent_sha256"],
+            "derivative_generation": int(trace_attributes["cache.generation"]),
+            "cache_key": trace_attributes["cache.key"],
+        }
+    except (KeyError, TypeError, ValueError) as error:
+        raise ReferenceDemoError("reference-run-telemetry-unavailable") from error
 
 
 def _build_alert(
     *,
     request: ReferenceScenarioRunRequest,
-    affected: Any,
+    affected: Mapping[str, Any],
     observed_at: datetime,
     retrieved_at: datetime,
     alert_binding: Mapping[str, str],
@@ -1033,7 +1119,7 @@ def _build_alert(
         "transform_id",
     )
     try:
-        correlation = {key: affected.correlation[key] for key in fields}
+        correlation = {key: affected["metric"].correlation[key] for key in fields}
     except KeyError as error:
         raise ReferenceDemoError("reference-run-telemetry-unavailable") from error
     alert_seed = f"{request.scenario_id}\0{request.incident_id}\0{request.run_id}".encode()
@@ -1054,7 +1140,7 @@ def _expected_state_from_telemetry(
     request: ReferenceScenarioRunRequest,
     *,
     intake: AlertIntake,
-    protected: Any,
+    protected: Mapping[str, Any],
 ) -> dict[str, Any]:
     intake_window = intake.window.to_dict()
     if (
@@ -1063,19 +1149,7 @@ def _expected_state_from_telemetry(
         or intake.correlation_keys.get("run_id") != request.run_id
     ):
         raise ReferenceDemoError("reference-run-telemetry-unavailable")
-    attributes = protected.attributes
-    try:
-        approved = {
-            "resource_sha256": attributes["runtime.effective_resource_sha256"],
-            "config_sha256": attributes["runtime.effective_config_sha256"],
-            "config_generation": int(attributes["runtime.config_generation"]),
-            "frame_pipeline_sha256": attributes["runtime.frame_pipeline_sha256"],
-            "derivative_parent_sha256": attributes["derivative.parent_sha256"],
-            "derivative_generation": int(attributes["cache.generation"]),
-            "cache_key": attributes["cache.key"],
-        }
-    except (KeyError, TypeError, ValueError) as error:
-        raise ReferenceDemoError("reference-run-telemetry-unavailable") from error
+    approved = _telemetry_state(protected)
     body = {
         "schema": "reference-expected-state/v1",
         "scenario_id": request.scenario_id,
@@ -1088,7 +1162,7 @@ def _expected_state_from_telemetry(
         "approved": approved,
         "scope": {
             "affected_job_ids": [intake.correlation_keys["job_id"]],
-            "safe_job_ids": [protected.correlation["job_id"]],
+            "safe_job_ids": [protected["metric"].correlation["job_id"]],
         },
     }
     expected_sha256 = _digest(body)

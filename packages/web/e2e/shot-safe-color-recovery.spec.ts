@@ -201,7 +201,9 @@ test("redirects the legacy workspace to the canonical product without legacy API
   await expect(
     page.getByRole("heading", { name: /both renders succeeded.*look different/iu }),
   ).toBeVisible();
-  await expect(page.getByText(/ColorTrace helps VFX pipeline technical directors/iu)).toBeVisible();
+  await expect(
+    page.getByText(/ColorTrace traces successful-but-wrong color across checksum-pinned/iu),
+  ).toBeVisible();
   expect(requestedPaths.some((path) => path.startsWith("/v1/session"))).toBe(false);
   expect(requestedPaths.some((path) => path.startsWith("/v1/incidents"))).toBe(false);
 });
@@ -216,6 +218,10 @@ test("completes the visual-first recovery flow with exact bound approval", async
   await expect(
     page.getByRole("heading", { name: /both renders succeeded.*look different/iu }),
   ).toBeVisible();
+  const openFilmAction = page.getByRole("link", { name: "Explore the open-film proof" });
+  const compatibilityLabel = page.getByText("Secondary compatibility workflow", {
+    exact: true,
+  });
   const previewExpected = page.getByAltText(/Expected cinematic soundstage portrait/u);
   const previewObserved = page.getByAltText(/Observed version of the same cinematic portrait/u);
   const previewDiff = page.getByAltText(/Red heat-map view/u);
@@ -227,7 +233,17 @@ test("completes the visual-first recovery flow with exact bound approval", async
   ).toBeVisible();
   const firstFold = page.locator('[data-first-fold="comparison-and-action"]');
   const callToAction = page.getByRole("button", { name: "Investigate the color fault" });
-  for (const locator of [firstFold, callToAction, previewExpected, previewObserved, previewDiff]) {
+  await expect(openFilmAction).toHaveAttribute("href", "#reference-suite-title");
+  await expect(compatibilityLabel).toBeVisible();
+  for (const locator of [
+    firstFold,
+    openFilmAction,
+    compatibilityLabel,
+    callToAction,
+    previewExpected,
+    previewObserved,
+    previewDiff,
+  ]) {
     const box = await locator.boundingBox();
     expect(box).not.toBeNull();
     expect((box?.y ?? 901) + (box?.height ?? 0)).toBeLessThanOrEqual(900);
@@ -395,8 +411,18 @@ test("keeps the clean-session flow usable on a small reduced-motion viewport", a
 
   await page.keyboard.press("Tab");
   await expect(page.getByRole("link", { name: "Skip to recovery workspace" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("link", { name: "ColorTrace home" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("link", { name: "Explore the open-film proof" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "Investigate the color fault" })).toBeFocused();
   const mobileHook = page.getByRole("heading", {
     name: /both renders succeeded.*look different/iu,
+  });
+  const mobileOpenFilmAction = page.getByRole("link", { name: "Explore the open-film proof" });
+  const mobileCompatibilityLabel = page.getByText("Secondary compatibility workflow", {
+    exact: true,
   });
   const mobileCallToAction = page.getByRole("button", { name: "Investigate the color fault" });
   const mobileExpected = page.getByAltText(/Expected cinematic soundstage portrait/u);
@@ -407,6 +433,8 @@ test("keeps the clean-session flow usable on a small reduced-motion viewport", a
   await expect(mobileDiff).toHaveJSProperty("naturalWidth", 160);
   for (const locator of [
     mobileHook,
+    mobileOpenFilmAction,
+    mobileCompatibilityLabel,
     mobileCallToAction,
     mobileExpected,
     mobileObserved,

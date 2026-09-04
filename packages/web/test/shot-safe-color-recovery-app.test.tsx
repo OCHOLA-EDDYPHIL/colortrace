@@ -104,7 +104,7 @@ afterEach(() => {
 });
 
 describe("shot-safe color recovery", () => {
-  it("presents the open-film suite before the secondary compatibility workflow", () => {
+  it("presents the open-film suite as the primary proof before compatibility", () => {
     render(
       <ShotSafeColorRecoveryApp
         adapter={adapterFixture()}
@@ -121,6 +121,18 @@ describe("shot-safe color recovery", () => {
     });
 
     expect(document.querySelectorAll("h1")).toHaveLength(1);
+    const primaryAction = screen.getByRole("link", { name: "Explore the open-film proof" });
+    const compatibilityAction = screen.getByRole("button", {
+      name: "Investigate the color fault",
+    });
+    expect(screen.getByText("Primary proof · open-film reference suite")).toBeVisible();
+    expect(screen.getByText("Secondary · synthetic compatibility preview")).toBeVisible();
+    expect(primaryAction).toHaveAttribute("href", "#reference-suite-title");
+    expect(primaryAction).toHaveClass("shot-button--primary");
+    expect(compatibilityAction).toHaveClass("shot-button--secondary");
+    expect(
+      primaryAction.compareDocumentPosition(compatibilityAction) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
     expect(
       primaryProof.compareDocumentPosition(secondaryWorkflow) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);

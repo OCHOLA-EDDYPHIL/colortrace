@@ -2704,9 +2704,7 @@ export function ShotSafeColorRecoveryApp({
           referenceAdapter === undefined ? (
             <span className="shot-mode">Shot-safe recovery</span>
           ) : (
-            <a className="shot-mode shot-mode--link" href="#reference-suite-title">
-              Open-film reference ↓
-            </a>
+            <span className="shot-mode">Open-film reference proof</span>
           )
         ) : (
           <div className="shot-run-chip">
@@ -2722,12 +2720,16 @@ export function ShotSafeColorRecoveryApp({
             <div className="shot-landing__above-fold" data-first-fold="comparison-and-action">
               <div className="shot-landing__copy">
                 <div className="shot-landing__primary-intro">
-                  <p className="shot-eyebrow">Shot-Safe Color Recovery</p>
+                  <p className="shot-eyebrow">
+                    {referenceAdapter === undefined
+                      ? "Shot-Safe Color Recovery"
+                      : "Primary proof · open-film reference suite"}
+                  </p>
                   <h1>Both renders succeeded—why do they look different?</h1>
                   <p className="shot-lede">
-                    ColorTrace helps VFX pipeline technical directors trace successful renders with
-                    the wrong color, prove the affected outputs, and recover only that work while
-                    verified-safe outputs stay untouched.
+                    {referenceAdapter === undefined
+                      ? "ColorTrace helps VFX pipeline technical directors trace successful renders with the wrong color, prove the affected outputs, and recover only that work while verified-safe outputs stay untouched."
+                      : "ColorTrace traces successful-but-wrong color across checksum-pinned Tears of Steel frames, proves the affected outputs, and recovers only that work while verified-safe outputs stay untouched."}
                   </p>
                 </div>
                 <div className="shot-landing__outcome">
@@ -2747,14 +2749,33 @@ export function ShotSafeColorRecoveryApp({
                     receipt remains stored.
                   </p>
                 ) : null}
-                <button
-                  className="shot-button shot-button--primary shot-button--large"
-                  disabled={busy}
-                  onClick={start}
-                  type="button"
-                >
-                  {busy ? "Preparing recovery…" : "Investigate the color fault"}
-                </button>
+                <div className="shot-landing__actions">
+                  {referenceAdapter === undefined ? null : (
+                    <a
+                      className="shot-button shot-button--primary shot-button--large"
+                      href="#reference-suite-title"
+                    >
+                      Explore the open-film proof
+                    </a>
+                  )}
+                  <div className="shot-landing__compatibility-action">
+                    {referenceAdapter === undefined ? null : (
+                      <span>Secondary compatibility workflow</span>
+                    )}
+                    <button
+                      className={`shot-button shot-button--large ${
+                        referenceAdapter === undefined
+                          ? "shot-button--primary"
+                          : "shot-button--secondary"
+                      }`}
+                      disabled={busy}
+                      onClick={start}
+                      type="button"
+                    >
+                      {busy ? "Preparing recovery…" : "Investigate the color fault"}
+                    </button>
+                  </div>
+                </div>
                 <p aria-live="polite" className="shot-landing__note">
                   {busy
                     ? pendingStartKey.current === null
@@ -2766,7 +2787,11 @@ export function ShotSafeColorRecoveryApp({
               <div className="shot-landing__visual">
                 <div className="shot-preview-heading">
                   <div>
-                    <p className="shot-eyebrow">Canonical scenario preview</p>
+                    <p className="shot-eyebrow">
+                      {referenceAdapter === undefined
+                        ? "Canonical scenario preview"
+                        : "Secondary · synthetic compatibility preview"}
+                    </p>
                     <h3>Same frame. Different resolved color.</h3>
                   </div>
                   <span>{preview === null ? "Verifying fixture" : "2 renders · succeeded"}</span>
@@ -2816,7 +2841,7 @@ export function ShotSafeColorRecoveryApp({
             )}
             <section aria-labelledby="canonical-recovery-title" className="shot-landing__legacy">
               <div className="shot-landing__copy">
-                <p className="shot-eyebrow">Secondary compatibility workflow</p>
+                <p className="shot-eyebrow">Compatibility workflow details</p>
                 <h2 id="canonical-recovery-title">Canonical approval and recovery loop</h2>
                 <p className="shot-lede">
                   One synthetic incident preserves the end-to-end human approval, simulator

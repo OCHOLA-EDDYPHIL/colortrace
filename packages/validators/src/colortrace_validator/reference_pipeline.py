@@ -111,6 +111,62 @@ _ATTRIBUTE_FIELDS = MappingProxyType(
         "reference_state": ("declared_reference.state",),
     }
 )
+_MATCH_ATTRIBUTE_FIELDS = MappingProxyType(
+    {
+        "effective_resource_sha256": ("declared_reference.effective_resource_matches_approved"),
+        "effective_config_sha256": ("declared_reference.effective_config_matches_approved"),
+        "config_generation": "declared_reference.config_generation_matches_approved",
+        "frame_pipeline_sha256": ("declared_reference.frame_pipeline_matches_approved"),
+        "derivative_parent_sha256": ("declared_reference.derivative_parent_matches_approved"),
+        "derivative_generation": ("declared_reference.derivative_generation_matches_approved"),
+        "cache_key": "declared_reference.cache_key_matches_approved",
+    }
+)
+_APPROVED_STATE_ATTRIBUTE = "declared_reference.approved_state_sha256"
+_METRIC_SCOPE_ATTRIBUTES = frozenset(
+    {
+        "reference.evidence_scope",
+        "reference.affected_representative_count",
+        "reference.protected_representative_count",
+        "reference.population_affected_artifact_count",
+        "reference.population_protected_artifact_count",
+    }
+)
+_SIGNAL_REQUIRED_ATTRIBUTES = MappingProxyType(
+    {
+        "metric": frozenset(
+            {
+                "declared_reference.state",
+                _APPROVED_STATE_ATTRIBUTE,
+                *_MATCH_ATTRIBUTE_FIELDS.values(),
+                *_METRIC_SCOPE_ATTRIBUTES,
+            }
+        ),
+        "log": frozenset(
+            {
+                "runtime.effective_resource_sha256",
+                "runtime.effective_config_sha256",
+                "runtime.config_generation",
+                "runtime.frame_pipeline_sha256",
+                "cache.key",
+            }
+        ),
+        "trace": frozenset(
+            {
+                "runtime.frame_pipeline_sha256",
+                "derivative.parent_sha256",
+                "cache.generation",
+                "cache.key",
+            }
+        ),
+    }
+)
+_ROLE_BOUND_ATTRIBUTES = frozenset(
+    {attribute for attributes in _ATTRIBUTE_FIELDS.values() for attribute in attributes}
+    | set(_MATCH_ATTRIBUTE_FIELDS.values())
+    | {_APPROVED_STATE_ATTRIBUTE}
+    | set(_METRIC_SCOPE_ATTRIBUTES)
+)
 _QUERY_SIGNALS = MappingProxyType(
     {
         "metric.correlated-observations": "metric",
@@ -615,7 +671,7 @@ class _RuntimeFact:
     trace_id: str
     artifact_id: str | None
     config_sha256: str | None
-    resource_sha256: str
+    resource_sha256: str | None
     transform_id: str | None
     observed_at: str
     emitted_at: str
@@ -769,7 +825,12 @@ def _parse_runtime_fact(value: Mapping[str, Any]) -> _RuntimeFact:
     artifact_id = document["artifact_id"]
     if artifact_id is not None:
         artifact_id = _identifier(artifact_id, "runtime-observation-malformed")
-    resource_sha256 = _digest(document["resource_sha256"], "runtime-observation-malformed")
+    resource_value = document["resource_sha256"]
+    resource_sha256 = (
+        None
+        if resource_value == "none"
+        else _digest(resource_value, "runtime-observation-malformed")
+    )
     config_sha256 = document["config_sha256"]
     if config_sha256 is not None:
         config_sha256 = _digest(config_sha256, "runtime-observation-malformed")
@@ -788,6 +849,41 @@ def _parse_runtime_fact(value: Mapping[str, Any]) -> _RuntimeFact:
         not isinstance(key, str) or not isinstance(child, str) for key, child in attributes.items()
     ):
         raise _AssessmentFailure("runtime-observation-malformed")
+    required_attributes = _SIGNAL_REQUIRED_ATTRIBUTES[signal]
+    present_role_attributes = set(attributes) & _ROLE_BOUND_ATTRIBUTES
+    if (
+        not required_attributes <= set(attributes)
+        or not present_role_attributes <= required_attributes
+    ):
+        raise _AssessmentFailure("runtime-signal-semantics-invalid")
+    if signal == "metric":
+        if (
+            resource_sha256 is not None
+            or attributes["reference.evidence_scope"] != "representative"
+            or attributes["reference.affected_representative_count"] != "1"
+            or attributes["reference.protected_representative_count"] != "1"
+            or any(
+                _positive_integer(attributes[name], "runtime-facts-malformed") < 1
+                for name in (
+                    "reference.population_affected_artifact_count",
+                    "reference.population_protected_artifact_count",
+                )
+            )
+            or _PREFIXED_DIGEST.fullmatch(attributes[_APPROVED_STATE_ATTRIBUTE]) is None
+            or any(
+                attributes[name] not in {"true", "false"}
+                for name in _MATCH_ATTRIBUTE_FIELDS.values()
+            )
+        ):
+            raise _AssessmentFailure("runtime-signal-semantics-invalid")
+    elif signal == "log":
+        if resource_sha256 is None or resource_sha256 != _digest(
+            attributes["runtime.effective_resource_sha256"],
+            "runtime-facts-malformed",
+        ):
+            raise _AssessmentFailure("runtime-signal-semantics-invalid")
+    elif resource_sha256 is not None:
+        raise _AssessmentFailure("runtime-signal-semantics-invalid")
     provenance = _mapping(document["provenance"], "runtime-observation-malformed")
     required_provenance = {
         "query_key",
@@ -864,10 +960,9 @@ def _invalid_operational(
 
 def _fact_semantic_identity(fact: _RuntimeFact) -> bytes:
     semantic_attributes = {
-        attribute: fact.attributes[attribute]
-        for attributes in _ATTRIBUTE_FIELDS.values()
-        for attribute in attributes
-        if attribute in fact.attributes
+        attribute: value
+        for attribute, value in fact.attributes.items()
+        if attribute in _ROLE_BOUND_ATTRIBUTES
     }
     return _canonical_json_bytes(
         {
@@ -892,7 +987,7 @@ def _fact_semantic_identity(fact: _RuntimeFact) -> bytes:
 def _job_semantic_value(facts: Sequence[_RuntimeFact], field_name: str) -> str | int:
     values: set[str] = set()
     if field_name == "effective_resource_sha256":
-        values.update(fact.resource_sha256 for fact in facts)
+        values.update(fact.resource_sha256 for fact in facts if fact.resource_sha256 is not None)
     for fact in facts:
         for attribute in _ATTRIBUTE_FIELDS[field_name]:
             if attribute in fact.attributes:
@@ -911,6 +1006,77 @@ def _job_semantic_value(facts: Sequence[_RuntimeFact], field_name: str) -> str |
         raise _AssessmentFailure("runtime-observation-conflict", AssessmentStatus.CONFLICTING)
     selected = next(iter(values))
     return int(selected) if field_name.endswith("generation") else selected
+
+
+def _optional_job_semantic_value(
+    facts: Sequence[_RuntimeFact], field_name: str
+) -> str | int | None:
+    try:
+        return _job_semantic_value(facts, field_name)
+    except _AssessmentFailure as error:
+        if error.code == "runtime-facts-incomplete":
+            return None
+        raise
+
+
+def _job_match_flags(
+    facts: Sequence[_RuntimeFact], expected: ExpectedStateAssessment
+) -> Mapping[str, bool]:
+    metrics = [fact for fact in facts if fact.signal == "metric"]
+    if not metrics:
+        raise _AssessmentFailure("complementary-signals-missing")
+    approved_state_sha256 = _sha256(expected.approved)
+    approved_bindings = {fact.attributes[_APPROVED_STATE_ATTRIBUTE] for fact in metrics}
+    if approved_bindings != {approved_state_sha256}:
+        raise _AssessmentFailure(
+            "runtime-approved-state-binding-mismatch",
+            AssessmentStatus.CONFLICTING,
+        )
+    result: dict[str, bool] = {}
+    for field_name, attribute_name in _MATCH_ATTRIBUTE_FIELDS.items():
+        values = {fact.attributes[attribute_name] for fact in metrics}
+        if len(values) != 1:
+            raise _AssessmentFailure(
+                "runtime-observation-conflict",
+                AssessmentStatus.CONFLICTING,
+            )
+        result[field_name] = next(iter(values)) == "true"
+    return MappingProxyType(result)
+
+
+def _job_values(facts: Sequence[_RuntimeFact], expected: ExpectedStateAssessment) -> dict[str, Any]:
+    flags = _job_match_flags(facts, expected)
+    values: dict[str, Any] = {}
+    for field_name in _SEMANTIC_FIELDS:
+        approved = expected.approved[_EXPECTED_SEMANTIC_FIELDS[field_name]]
+        observed = _optional_job_semantic_value(facts, field_name)
+        if flags[field_name]:
+            if observed is not None and observed != approved:
+                raise _AssessmentFailure(
+                    "runtime-observation-conflict",
+                    AssessmentStatus.CONFLICTING,
+                )
+            values[field_name] = approved
+            continue
+        if observed is None:
+            raise _AssessmentFailure("runtime-facts-incomplete")
+        if observed == approved:
+            raise _AssessmentFailure(
+                "runtime-observation-conflict",
+                AssessmentStatus.CONFLICTING,
+            )
+        values[field_name] = observed
+    state = _job_semantic_value(facts, "reference_state")
+    if state not in {"reference_match", "reference_mismatch"}:
+        raise _AssessmentFailure("runtime-facts-malformed")
+    if (state == "reference_mismatch") != any(not matches for matches in flags.values()):
+        raise _AssessmentFailure(
+            "runtime-observation-conflict",
+            AssessmentStatus.CONFLICTING,
+        )
+    values["reference_state"] = state
+    values["matches_approved"] = dict(flags)
+    return values
 
 
 def assess_operational_evidence(
@@ -1032,13 +1198,13 @@ def assess_operational_evidence(
                 raise _AssessmentFailure(
                     "runtime-observation-conflict", AssessmentStatus.CONFLICTING
                 )
-            values: dict[str, Any] = {
-                name: _job_semantic_value(selected, name) for name in _SEMANTIC_FIELDS
-            }
-            state = _job_semantic_value(selected, "reference_state")
-            if state not in {"reference_match", "reference_mismatch"}:
-                raise _AssessmentFailure("runtime-facts-malformed")
-            values["reference_state"] = state
+            approved_config = cast(str, expected.approved["config_sha256"])
+            if any(fact.config_sha256 != approved_config for fact in selected):
+                raise _AssessmentFailure(
+                    "runtime-observation-conflict",
+                    AssessmentStatus.CONFLICTING,
+                )
+            values = _job_values(selected, expected)
             values.update(
                 {
                     "worker_id": next(iter(workers)),

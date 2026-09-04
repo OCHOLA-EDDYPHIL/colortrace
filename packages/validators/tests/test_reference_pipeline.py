@@ -114,16 +114,61 @@ def runtime_fact(
         derivative_parent = fixed_digest("c")
         derivative_generation = 6
 
-    attributes = {
-        "declared_reference.state": "reference_mismatch" if affected else "reference_match",
-        "runtime.effective_resource_sha256": str(resource),
-        "runtime.effective_config_sha256": str(config),
-        "runtime.config_generation": str(config_generation),
-        "runtime.frame_pipeline_sha256": str(frame_pipeline),
-        "derivative.parent_sha256": str(derivative_parent),
-        "cache.generation": str(derivative_generation),
-        "cache.key": str(APPROVED["cache_key"]),
+    state_values = {
+        "effective_resource_sha256": resource,
+        "effective_config_sha256": config,
+        "config_generation": config_generation,
+        "frame_pipeline_sha256": frame_pipeline,
+        "derivative_parent_sha256": derivative_parent,
+        "derivative_generation": derivative_generation,
+        "cache_key": APPROVED["cache_key"],
     }
+    approved_values = {
+        "effective_resource_sha256": APPROVED["resource_sha256"],
+        "effective_config_sha256": APPROVED["config_sha256"],
+        "config_generation": APPROVED["config_generation"],
+        "frame_pipeline_sha256": APPROVED["frame_pipeline_sha256"],
+        "derivative_parent_sha256": APPROVED["derivative_parent_sha256"],
+        "derivative_generation": APPROVED["derivative_generation"],
+        "cache_key": APPROVED["cache_key"],
+    }
+    match_attributes = {
+        "effective_resource_sha256": ("declared_reference.effective_resource_matches_approved"),
+        "effective_config_sha256": ("declared_reference.effective_config_matches_approved"),
+        "config_generation": "declared_reference.config_generation_matches_approved",
+        "frame_pipeline_sha256": ("declared_reference.frame_pipeline_matches_approved"),
+        "derivative_parent_sha256": ("declared_reference.derivative_parent_matches_approved"),
+        "derivative_generation": ("declared_reference.derivative_generation_matches_approved"),
+        "cache_key": "declared_reference.cache_key_matches_approved",
+    }
+    attributes = {
+        "metric": {
+            "declared_reference.state": ("reference_mismatch" if affected else "reference_match"),
+            "declared_reference.approved_state_sha256": digest(APPROVED),
+            **{
+                match_attributes[name]: ("true" if value == approved_values[name] else "false")
+                for name, value in state_values.items()
+            },
+            "reference.evidence_scope": "representative",
+            "reference.affected_representative_count": "1",
+            "reference.protected_representative_count": "1",
+            "reference.population_affected_artifact_count": "72",
+            "reference.population_protected_artifact_count": "168",
+        },
+        "log": {
+            "runtime.effective_resource_sha256": str(resource),
+            "runtime.effective_config_sha256": str(config),
+            "runtime.config_generation": str(config_generation),
+            "runtime.frame_pipeline_sha256": str(frame_pipeline),
+            "cache.key": str(APPROVED["cache_key"]),
+        },
+        "trace": {
+            "runtime.frame_pipeline_sha256": str(frame_pipeline),
+            "derivative.parent_sha256": str(derivative_parent),
+            "cache.generation": str(derivative_generation),
+            "cache.key": str(APPROVED["cache_key"]),
+        },
+    }[signal]
     attributes.update(semantic_overrides or {})
     query_key, tool = _query(signal)
     selected_event_id = event_id or f"evt-{job_id}-{signal}"
@@ -143,7 +188,7 @@ def runtime_fact(
         "trace_id": "1" * 32 if affected else "2" * 32,
         "artifact_id": f"artifact-{job_id}",
         "config_sha256": str(APPROVED["config_sha256"]).removeprefix("sha256:"),
-        "resource_sha256": str(resource).removeprefix("sha256:"),
+        "resource_sha256": (str(resource).removeprefix("sha256:") if signal == "log" else "none"),
         "transform_id": "look/main/v1",
         "observed_at": observed_at,
         "emitted_at": "2026-09-04T12:01:01.000Z",
@@ -174,9 +219,14 @@ def runtime_fact(
 def evidence(
     incident_class: IncidentClass,
     *,
-    signals: Sequence[str] = ("metric", "log"),
+    signals: Sequence[str] | None = None,
     text: str | None = None,
 ) -> list[dict[str, Any]]:
+    selected_signals = signals or (
+        ("metric", "trace")
+        if incident_class is IncidentClass.STALE_DERIVATIVE_CACHE
+        else ("metric", "log")
+    )
     return [
         runtime_fact(
             job_id,
@@ -185,7 +235,7 @@ def evidence(
             text=text,
         )
         for job_id in ("job-affected", "job-safe")
-        for signal in signals
+        for signal in selected_signals
     ]
 
 
@@ -255,6 +305,8 @@ def test_each_sealed_class_resolves_to_only_its_typed_simulator_intent(
     (
         [],
         evidence(IncidentClass.RESOURCE_RESOLUTION_DRIFT, signals=("metric",)),
+        evidence(IncidentClass.RESOURCE_RESOLUTION_DRIFT, signals=("log",)),
+        evidence(IncidentClass.STALE_DERIVATIVE_CACHE, signals=("trace",)),
     ),
 )
 def test_missing_or_one_signal_grafana_evidence_never_produces_an_action(
@@ -271,13 +323,111 @@ def test_missing_or_one_signal_grafana_evidence_never_produces_an_action(
     assert reconciliation.action_intent is None
 
 
+@pytest.mark.parametrize(
+    ("scenario_id", "incident_class", "signals"),
+    (
+        (
+            "tos-resource-resolution-drift-v1",
+            IncidentClass.RESOURCE_RESOLUTION_DRIFT,
+            ("metric", "trace"),
+        ),
+        (
+            "tos-config-rollout-drift-v1",
+            IncidentClass.CONFIGURATION_ROLLOUT_DRIFT,
+            ("metric", "trace"),
+        ),
+        (
+            "tos-stale-derivative-cache-v1",
+            IncidentClass.STALE_DERIVATIVE_CACHE,
+            ("metric", "log"),
+        ),
+    ),
+)
+def test_wrong_complementary_signal_pair_fails_closed(
+    scenario_id: str,
+    incident_class: IncidentClass,
+    signals: Sequence[str],
+) -> None:
+    _expected, operational, _assessments, reconciliation = pipeline(
+        scenario_id,
+        incident_class,
+        observations=evidence(incident_class, signals=signals),
+    )
+
+    assert operational.status is AssessmentStatus.INSUFFICIENT
+    assert operational.reason_codes == ("runtime-facts-incomplete",)
+    assert reconciliation.action_intent is None
+
+
+def test_metric_baseline_binding_and_detail_contradictions_fail_closed() -> None:
+    baseline_mismatch = evidence(IncidentClass.RESOURCE_RESOLUTION_DRIFT)
+    baseline_mismatch[0]["attributes"]["declared_reference.approved_state_sha256"] = fixed_digest(
+        "f"
+    )
+    body = {
+        name: baseline_mismatch[0][name]
+        for name in baseline_mismatch[0]
+        if name not in {"fact_id", "fact_sha256"}
+    }
+    baseline_mismatch[0]["fact_sha256"] = digest(body)
+    baseline_mismatch[0]["fact_id"] = (
+        f"runtime-fact:{baseline_mismatch[0]['fact_sha256'].removeprefix('sha256:')}"
+    )
+
+    contradiction = evidence(IncidentClass.RESOURCE_RESOLUTION_DRIFT)
+    contradiction[0]["attributes"]["declared_reference.effective_resource_matches_approved"] = (
+        "true"
+    )
+    body = {
+        name: contradiction[0][name]
+        for name in contradiction[0]
+        if name not in {"fact_id", "fact_sha256"}
+    }
+    contradiction[0]["fact_sha256"] = digest(body)
+    contradiction[0]["fact_id"] = (
+        f"runtime-fact:{contradiction[0]['fact_sha256'].removeprefix('sha256:')}"
+    )
+
+    missing_flag = evidence(IncidentClass.RESOURCE_RESOLUTION_DRIFT)
+    del missing_flag[0]["attributes"]["declared_reference.effective_resource_matches_approved"]
+    body = {
+        name: missing_flag[0][name]
+        for name in missing_flag[0]
+        if name not in {"fact_id", "fact_sha256"}
+    }
+    missing_flag[0]["fact_sha256"] = digest(body)
+    missing_flag[0]["fact_id"] = (
+        f"runtime-fact:{missing_flag[0]['fact_sha256'].removeprefix('sha256:')}"
+    )
+
+    for observations, reason in (
+        (baseline_mismatch, "runtime-approved-state-binding-mismatch"),
+        (contradiction, "runtime-observation-conflict"),
+        (missing_flag, "runtime-signal-semantics-invalid"),
+    ):
+        _expected, operational, _assessments, reconciliation = pipeline(
+            "tos-resource-resolution-drift-v1",
+            IncidentClass.RESOURCE_RESOLUTION_DRIFT,
+            observations=observations,
+        )
+        assert operational.status is not AssessmentStatus.SUPPORTED
+        assert reason in operational.reason_codes
+        assert reconciliation.action_intent is None
+
+
 def test_two_dimension_drift_is_ambiguous_and_has_no_action() -> None:
     observations = evidence(IncidentClass.RESOURCE_RESOLUTION_DRIFT)
     for document in observations:
         if document["job_id"] != "job-affected":
             continue
-        document["attributes"]["runtime.effective_config_sha256"] = fixed_digest("b")
-        document["attributes"]["runtime.config_generation"] = "12"
+        if document["signal"] == "metric":
+            document["attributes"]["declared_reference.effective_config_matches_approved"] = "false"
+            document["attributes"]["declared_reference.config_generation_matches_approved"] = (
+                "false"
+            )
+        else:
+            document["attributes"]["runtime.effective_config_sha256"] = fixed_digest("b")
+            document["attributes"]["runtime.config_generation"] = "12"
         body = {name: document[name] for name in document if name not in {"fact_id", "fact_sha256"}}
         fact_sha256 = digest(body)
         document["fact_sha256"] = fact_sha256
@@ -347,7 +497,7 @@ def test_stale_cross_run_and_conflicting_events_fail_closed() -> None:
             "metric",
             incident_class=IncidentClass.RESOURCE_RESOLUTION_DRIFT,
             event_id="evt-job-affected-metric",
-            semantic_overrides={"runtime.effective_resource_sha256": fixed_digest("d")},
+            semantic_overrides={"declared_reference.effective_resource_matches_approved": "true"},
         )
     )
 
@@ -403,17 +553,32 @@ def test_scope_mismatch_and_approved_state_never_produce_an_action() -> None:
     scope_mismatch[0]["fact_id"] = f"runtime-fact:{value_sha256.removeprefix('sha256:')}"
 
     approved = evidence(IncidentClass.RESOURCE_RESOLUTION_DRIFT)
-    for index, document in enumerate(approved):
+    for document in approved:
         if document["job_id"] == "job-affected":
-            approved[index] = runtime_fact(
-                "job-affected",
-                document["signal"],
-                incident_class=IncidentClass.RESOURCE_RESOLUTION_DRIFT,
-                semantic_overrides={
-                    "declared_reference.state": "reference_match",
-                    "runtime.effective_resource_sha256": str(APPROVED["resource_sha256"]),
-                },
-            )
+            if document["signal"] == "metric":
+                document["attributes"]["declared_reference.state"] = "reference_match"
+                document["attributes"]["declared_reference.effective_resource_matches_approved"] = (
+                    "true"
+                )
+                document["attributes"]["declared_reference.frame_pipeline_matches_approved"] = (
+                    "true"
+                )
+            else:
+                document["attributes"]["runtime.effective_resource_sha256"] = str(
+                    APPROVED["resource_sha256"]
+                )
+                document["attributes"]["runtime.frame_pipeline_sha256"] = str(
+                    APPROVED["frame_pipeline_sha256"]
+                )
+                document["resource_sha256"] = str(APPROVED["resource_sha256"]).removeprefix(
+                    "sha256:"
+                )
+            body = {
+                name: document[name] for name in document if name not in {"fact_id", "fact_sha256"}
+            }
+            value_sha256 = digest(body)
+            document["fact_sha256"] = value_sha256
+            document["fact_id"] = f"runtime-fact:{value_sha256.removeprefix('sha256:')}"
 
     for observations in (scope_mismatch, approved):
         _expected, _operational, _assessments, reconciliation = pipeline(

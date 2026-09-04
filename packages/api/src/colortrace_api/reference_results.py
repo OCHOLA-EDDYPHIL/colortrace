@@ -134,23 +134,27 @@ def _work(value: Any) -> dict[str, int]:
     }
 
 
-def _validate_scenario_results(value: Any) -> tuple[int, int]:
+def _validate_scenario_results(value: Any) -> tuple[int, int, bool, bool]:
     if not isinstance(value, list) or len(value) != len(_SCENARIO_CLASSES):
         raise ReferenceResultError("reference-result-invalid")
     scenario_ids: list[str] = []
     compute_avoided_values: list[int] = []
     application_bytes_avoided_values: list[int] = []
+    output_equivalence_values: list[bool] = []
+    protected_output_integrity_values: list[bool] = []
     for raw in value:
         result = _mapping(raw, keys=_SCENARIO_RESULT_KEYS)
         scenario_id = result.get("scenario_id")
+        output_equivalence = result.get("output_equivalence")
+        protected_output_integrity = result.get("protected_output_integrity")
         if (
             not isinstance(scenario_id, str)
             or result.get("incident_class") != _SCENARIO_CLASSES.get(scenario_id)
             or _integer(result.get("artifact_count")) != 240
             or _integer(result.get("affected_artifact_count")) != 72
             or _integer(result.get("protected_artifact_count")) != 168
-            or result.get("output_equivalence") is not True
-            or result.get("protected_output_integrity") is not True
+            or not isinstance(output_equivalence, bool)
+            or not isinstance(protected_output_integrity, bool)
         ):
             raise ReferenceResultError("reference-result-invalid")
         baseline = _work(result["baseline"])
@@ -172,11 +176,15 @@ def _validate_scenario_results(value: Any) -> tuple[int, int]:
             else:
                 application_bytes_avoided_values.append(measured)
         scenario_ids.append(scenario_id)
+        output_equivalence_values.append(output_equivalence)
+        protected_output_integrity_values.append(protected_output_integrity)
     if scenario_ids != sorted(_SCENARIO_CLASSES):
         raise ReferenceResultError("reference-result-invalid")
     return (
         sorted(compute_avoided_values)[1],
         sorted(application_bytes_avoided_values)[1],
+        all(output_equivalence_values),
+        all(protected_output_integrity_values),
     )
 
 
@@ -192,7 +200,7 @@ def _validate_result(
         or result.get("reference_manifest_sha256") != expected_manifest_sha256
         or not isinstance(result.get("campaign_report_sha256"), str)
         or _DIGEST.fullmatch(result["campaign_report_sha256"]) is None
-        or result.get("passed") is not True
+        or not isinstance(result.get("passed"), bool)
     ):
         raise ReferenceResultError("reference-result-invalid")
 
@@ -243,18 +251,17 @@ def _validate_result(
         minimum=-10_000,
         maximum=10_000,
     )
-    compute_avoided = _integer(metrics.get("median_compute_avoided_basis_points"), maximum=10_000)
-    bytes_avoided = _integer(
-        metrics.get("median_application_bytes_avoided_basis_points"), maximum=10_000
+    compute_avoided = _integer(
+        metrics.get("median_compute_avoided_basis_points"),
+        minimum=None,
+        maximum=10_000,
     )
-    if (
-        classification < 9_500
-        or false_actions != 0
-        or adaptive_advantage != recorded_advantage
-        or recorded_advantage < 1
-        or compute_avoided < 4_000
-        or bytes_avoided < 4_000
-    ):
+    bytes_avoided = _integer(
+        metrics.get("median_application_bytes_avoided_basis_points"),
+        minimum=None,
+        maximum=10_000,
+    )
+    if adaptive_advantage != recorded_advantage:
         raise ReferenceResultError("reference-result-invalid")
 
     timing = _mapping(
@@ -284,12 +291,28 @@ def _validate_result(
         _integer(timing[key])
 
     checks = _mapping(result.get("checks"), keys=_CHECK_KEYS)
-    if any(value is not True for value in checks.values()):
+    if any(not isinstance(value, bool) for value in checks.values()):
         raise ReferenceResultError("reference-result-invalid")
-    scenario_compute_avoided, scenario_bytes_avoided = _validate_scenario_results(
-        result.get("scenario_results")
-    )
+    (
+        scenario_compute_avoided,
+        scenario_bytes_avoided,
+        output_equivalence,
+        protected_output_integrity,
+    ) = _validate_scenario_results(result.get("scenario_results"))
     if compute_avoided != scenario_compute_avoided or bytes_avoided != scenario_bytes_avoided:
+        raise ReferenceResultError("reference-result-invalid")
+    derived_checks = {
+        "output_equivalence": output_equivalence,
+        "protected_output_integrity": protected_output_integrity,
+        "zero_false_authorized_actions": false_actions == 0,
+        "classification_at_least_95_percent": classification >= 9_500,
+        "measurable_adaptive_advantage": recorded_advantage >= 1,
+        "median_compute_avoided_at_least_40_percent": compute_avoided >= 4_000,
+        "median_application_bytes_avoided_at_least_40_percent": bytes_avoided >= 4_000,
+    }
+    if any(checks[key] is not expected for key, expected in derived_checks.items()) or result[
+        "passed"
+    ] is not all(checks.values()):
         raise ReferenceResultError("reference-result-invalid")
 
     report_sha256 = result.get("report_sha256")

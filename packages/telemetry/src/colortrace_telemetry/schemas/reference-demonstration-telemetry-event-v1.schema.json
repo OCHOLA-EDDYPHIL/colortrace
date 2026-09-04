@@ -41,20 +41,133 @@
       "if": {"properties": {"signal": {"const": "metric"}}},
       "then": {
         "properties": {
-          "event_name": {"const": "colortrace.declared_reference.observed"}
+          "event_name": {"const": "colortrace.declared_reference.observed"},
+          "correlation": {
+            "properties": {"resource_sha256": {"const": "none"}}
+          },
+          "attributes": {
+            "required": [
+              "reference.data_origin",
+              "reference.scenario_id",
+              "reference.incident_class",
+              "reference.incident_id",
+              "reference.scope_role",
+              "declared_reference.state",
+              "declared_reference.approved_state_sha256",
+              "declared_reference.effective_resource_matches_approved",
+              "declared_reference.effective_config_matches_approved",
+              "declared_reference.config_generation_matches_approved",
+              "declared_reference.frame_pipeline_matches_approved",
+              "declared_reference.derivative_parent_matches_approved",
+              "declared_reference.derivative_generation_matches_approved",
+              "declared_reference.cache_key_matches_approved",
+              "reference.evidence_scope",
+              "reference.affected_representative_count",
+              "reference.protected_representative_count",
+              "reference.population_affected_artifact_count",
+              "reference.population_protected_artifact_count"
+            ],
+            "propertyNames": {
+              "enum": [
+                "reference.data_origin",
+                "reference.scenario_id",
+                "reference.incident_class",
+                "reference.incident_id",
+                "reference.scope_role",
+                "declared_reference.state",
+                "declared_reference.approved_state_sha256",
+                "declared_reference.effective_resource_matches_approved",
+                "declared_reference.effective_config_matches_approved",
+                "declared_reference.config_generation_matches_approved",
+                "declared_reference.frame_pipeline_matches_approved",
+                "declared_reference.derivative_parent_matches_approved",
+                "declared_reference.derivative_generation_matches_approved",
+                "declared_reference.cache_key_matches_approved",
+                "reference.evidence_scope",
+                "reference.affected_representative_count",
+                "reference.protected_representative_count",
+                "reference.population_affected_artifact_count",
+                "reference.population_protected_artifact_count"
+              ]
+            }
+          }
         }
       }
     },
     {
       "if": {"properties": {"signal": {"const": "log"}}},
       "then": {
-        "properties": {"event_name": {"const": "colortrace.declared_reference.log"}}
+        "properties": {
+          "event_name": {"const": "colortrace.declared_reference.log"},
+          "correlation": {
+            "properties": {"resource_sha256": {"$ref": "#/$defs/digest"}}
+          },
+          "attributes": {
+            "required": [
+              "reference.data_origin",
+              "reference.scenario_id",
+              "reference.incident_class",
+              "reference.incident_id",
+              "reference.scope_role",
+              "runtime.effective_resource_sha256",
+              "runtime.effective_config_sha256",
+              "runtime.config_generation",
+              "runtime.frame_pipeline_sha256",
+              "cache.key"
+            ],
+            "propertyNames": {
+              "enum": [
+                "reference.data_origin",
+                "reference.scenario_id",
+                "reference.incident_class",
+                "reference.incident_id",
+                "reference.scope_role",
+                "runtime.effective_resource_sha256",
+                "runtime.effective_config_sha256",
+                "runtime.config_generation",
+                "runtime.frame_pipeline_sha256",
+                "cache.key"
+              ]
+            }
+          }
+        }
       }
     },
     {
       "if": {"properties": {"signal": {"const": "trace"}}},
       "then": {
-        "properties": {"event_name": {"const": "colortrace.declared_reference.trace"}}
+        "properties": {
+          "event_name": {"const": "colortrace.declared_reference.trace"},
+          "correlation": {
+            "properties": {"resource_sha256": {"const": "none"}}
+          },
+          "attributes": {
+            "required": [
+              "reference.data_origin",
+              "reference.scenario_id",
+              "reference.incident_class",
+              "reference.incident_id",
+              "reference.scope_role",
+              "runtime.frame_pipeline_sha256",
+              "derivative.parent_sha256",
+              "cache.generation",
+              "cache.key"
+            ],
+            "propertyNames": {
+              "enum": [
+                "reference.data_origin",
+                "reference.scenario_id",
+                "reference.incident_class",
+                "reference.incident_id",
+                "reference.scope_role",
+                "runtime.frame_pipeline_sha256",
+                "derivative.parent_sha256",
+                "cache.generation",
+                "cache.key"
+              ]
+            }
+          }
+        }
       }
     }
   ],
@@ -105,7 +218,12 @@
         "artifact_id": {"$ref": "#/$defs/identifier"},
         "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
         "config_sha256": {"$ref": "#/$defs/digest"},
-        "resource_sha256": {"$ref": "#/$defs/digest"},
+        "resource_sha256": {
+          "oneOf": [
+            {"$ref": "#/$defs/digest"},
+            {"const": "none"}
+          ]
+        },
         "transform_id": {"$ref": "#/$defs/identifier"}
       }
     },
@@ -113,29 +231,24 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "declared_reference.state",
-        "runtime.effective_resource_sha256",
-        "runtime.effective_config_sha256",
-        "runtime.config_generation",
-        "runtime.frame_pipeline_sha256",
-        "derivative.parent_sha256",
-        "cache.generation",
-        "cache.key",
         "reference.data_origin",
         "reference.scenario_id",
         "reference.incident_class",
         "reference.incident_id",
-        "reference.scope_role",
-        "reference.evidence_scope",
-        "reference.affected_representative_count",
-        "reference.protected_representative_count",
-        "reference.population_affected_artifact_count",
-        "reference.population_protected_artifact_count"
+        "reference.scope_role"
       ],
       "properties": {
         "declared_reference.state": {
           "enum": ["reference_match", "reference_mismatch"]
         },
+        "declared_reference.approved_state_sha256": {"$ref": "#/$defs/prefixed_digest"},
+        "declared_reference.effective_resource_matches_approved": {"$ref": "#/$defs/boolean_text"},
+        "declared_reference.effective_config_matches_approved": {"$ref": "#/$defs/boolean_text"},
+        "declared_reference.config_generation_matches_approved": {"$ref": "#/$defs/boolean_text"},
+        "declared_reference.frame_pipeline_matches_approved": {"$ref": "#/$defs/boolean_text"},
+        "declared_reference.derivative_parent_matches_approved": {"$ref": "#/$defs/boolean_text"},
+        "declared_reference.derivative_generation_matches_approved": {"$ref": "#/$defs/boolean_text"},
+        "declared_reference.cache_key_matches_approved": {"$ref": "#/$defs/boolean_text"},
         "runtime.effective_resource_sha256": {"$ref": "#/$defs/prefixed_digest"},
         "runtime.effective_config_sha256": {"$ref": "#/$defs/prefixed_digest"},
         "runtime.config_generation": {"type": "string", "pattern": "^[1-9][0-9]*$"},
@@ -154,6 +267,7 @@
         "reference.population_affected_artifact_count": {"const": "72"},
         "reference.population_protected_artifact_count": {"const": "168"}
       }
-    }
+    },
+    "boolean_text": {"enum": ["true", "false"]}
   }
 }

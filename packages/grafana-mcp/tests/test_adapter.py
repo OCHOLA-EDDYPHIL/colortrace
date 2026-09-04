@@ -230,6 +230,7 @@ def runtime_observation_attributes(
     signal: str,
     *,
     event_id: str | None = None,
+    signal_specific: bool = False,
     overrides: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     values = {
@@ -256,6 +257,71 @@ def runtime_observation_attributes(
         "reference.population_affected_artifact_count": "72",
         "reference.population_protected_artifact_count": "168",
     }
+    if signal_specific:
+        bindings = {
+            "fixture_id",
+            "run_id",
+            "job_id",
+            "worker_id",
+            "artifact_id",
+            "trace_id",
+            "config_sha256",
+            "resource_sha256",
+            "transform_id",
+            "telemetry.event_id",
+            "telemetry.scheduled_at",
+            "telemetry.emitted_at",
+        }
+        fields = {
+            "metric": {
+                "declared_reference.state",
+                "declared_reference.approved_state_sha256",
+                "declared_reference.effective_resource_matches_approved",
+                "declared_reference.effective_config_matches_approved",
+                "declared_reference.config_generation_matches_approved",
+                "declared_reference.frame_pipeline_matches_approved",
+                "declared_reference.derivative_parent_matches_approved",
+                "declared_reference.derivative_generation_matches_approved",
+                "declared_reference.cache_key_matches_approved",
+                "reference.evidence_scope",
+                "reference.affected_representative_count",
+                "reference.protected_representative_count",
+                "reference.population_affected_artifact_count",
+                "reference.population_protected_artifact_count",
+            },
+            "log": {
+                "runtime.effective_resource_sha256",
+                "runtime.effective_config_sha256",
+                "runtime.config_generation",
+                "runtime.frame_pipeline_sha256",
+                "cache.key",
+            },
+            "trace": {
+                "runtime.frame_pipeline_sha256",
+                "derivative.parent_sha256",
+                "cache.generation",
+                "cache.key",
+            },
+        }[signal]
+        values.update(
+            {
+                "declared_reference.approved_state_sha256": "sha256:" + "a" * 64,
+                "declared_reference.effective_resource_matches_approved": "false",
+                "declared_reference.effective_config_matches_approved": "true",
+                "declared_reference.config_generation_matches_approved": "true",
+                "declared_reference.frame_pipeline_matches_approved": "false",
+                "declared_reference.derivative_parent_matches_approved": "true",
+                "declared_reference.derivative_generation_matches_approved": "true",
+                "declared_reference.cache_key_matches_approved": "true",
+                "runtime.config_generation": "7",
+                "runtime.frame_pipeline_sha256": "4" * 64,
+                "derivative.parent_sha256": "5" * 64,
+                "cache.generation": "7",
+            }
+        )
+        if signal != "log":
+            values["resource_sha256"] = "none"
+        values = {name: value for name, value in values.items() if name in bindings | fields}
     values.update(overrides or {})
     if signal == "trace":
         return values
@@ -267,6 +333,7 @@ def runtime_observation_payload(
     arguments: Mapping[str, Any],
     *,
     log_line: str = "runtime observation",
+    signal_specific: bool = False,
     overrides: Mapping[str, str] | None = None,
     duplicate_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -275,7 +342,11 @@ def runtime_observation_payload(
         "query_loki_logs": "log",
         "tempo_get-trace": "trace",
     }[tool]
-    attributes = runtime_observation_attributes(signal, overrides=overrides)
+    attributes = runtime_observation_attributes(
+        signal,
+        signal_specific=signal_specific,
+        overrides=overrides,
+    )
     if tool == "query_prometheus":
         rows = [{"metric": attributes, "value": [1, "1"]}]
         if duplicate_overrides is not None:
@@ -283,6 +354,7 @@ def runtime_observation_payload(
                 {
                     "metric": runtime_observation_attributes(
                         signal,
+                        signal_specific=signal_specific,
                         overrides=duplicate_overrides,
                     ),
                     "value": [1, "1"],
@@ -532,6 +604,58 @@ def test_runtime_observations_normalize_structured_signals_with_bound_provenance
         "metric.correlated-observations",
         "trace.by-id",
     )
+
+
+def test_runtime_observations_preserve_signal_specific_semantics() -> None:
+    async def handler(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        return runtime_observation_result(name, arguments, signal_specific=True)
+
+    value = adaptive_request(
+        "metric.correlated-observations",
+        "log.correlated-events",
+        "trace.by-id",
+    )
+    batch = subject.EvidenceBatch.from_mapping(value)
+    result = collect_with(FakeSession(handler), value)
+    observations = subject.normalize_runtime_observations(
+        batch,
+        result.envelopes,
+        catalog=catalog(),
+    )
+    by_signal = {observation.signal: observation for observation in observations}
+
+    assert by_signal["metric"].resource_sha256 == "none"
+    assert set(by_signal["metric"].attributes) == {
+        "declared_reference.state",
+        "declared_reference.approved_state_sha256",
+        "declared_reference.effective_resource_matches_approved",
+        "declared_reference.effective_config_matches_approved",
+        "declared_reference.config_generation_matches_approved",
+        "declared_reference.frame_pipeline_matches_approved",
+        "declared_reference.derivative_parent_matches_approved",
+        "declared_reference.derivative_generation_matches_approved",
+        "declared_reference.cache_key_matches_approved",
+        "reference.evidence_scope",
+        "reference.affected_representative_count",
+        "reference.protected_representative_count",
+        "reference.population_affected_artifact_count",
+        "reference.population_protected_artifact_count",
+    }
+    assert by_signal["log"].resource_sha256 == "3" * 64
+    assert set(by_signal["log"].attributes) == {
+        "runtime.effective_resource_sha256",
+        "runtime.effective_config_sha256",
+        "runtime.config_generation",
+        "runtime.frame_pipeline_sha256",
+        "cache.key",
+    }
+    assert by_signal["trace"].resource_sha256 == "none"
+    assert set(by_signal["trace"].attributes) == {
+        "runtime.frame_pipeline_sha256",
+        "derivative.parent_sha256",
+        "cache.generation",
+        "cache.key",
+    }
 
 
 def test_runtime_log_text_labels_and_display_excerpt_never_become_facts() -> None:

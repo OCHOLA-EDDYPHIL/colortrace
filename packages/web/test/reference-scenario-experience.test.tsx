@@ -317,34 +317,58 @@ function actionParameters(incidentClass: ReferenceIncidentClass): Record<string,
 function runtimeAttributes(
   scenarioId: ReferenceScenarioId,
   role: "affected" | "protected",
+  signal: "metric" | "log" | "trace",
 ): Readonly<Record<string, string>> {
   const affected = role === "affected";
+  if (signal === "metric") {
+    const resourceMismatch = scenarioId === "tos-resource-resolution-drift-v1" && affected;
+    const configMismatch = scenarioId === "tos-config-rollout-drift-v1" && affected;
+    const derivativeMismatch = scenarioId === "tos-stale-derivative-cache-v1" && affected;
+    const pipelineMismatch = scenarioId !== "tos-stale-derivative-cache-v1" && affected;
+    return {
+      "declared_reference.state": affected ? "reference_mismatch" : "reference_match",
+      "declared_reference.approved_state_sha256": DIGEST,
+      "declared_reference.effective_resource_matches_approved": String(!resourceMismatch),
+      "declared_reference.effective_config_matches_approved": String(!configMismatch),
+      "declared_reference.config_generation_matches_approved": String(!configMismatch),
+      "declared_reference.frame_pipeline_matches_approved": String(!pipelineMismatch),
+      "declared_reference.derivative_parent_matches_approved": String(!derivativeMismatch),
+      "declared_reference.derivative_generation_matches_approved": String(!derivativeMismatch),
+      "declared_reference.cache_key_matches_approved": "true",
+      "reference.evidence_scope": "representative",
+      "reference.affected_representative_count": "1",
+      "reference.protected_representative_count": "1",
+      "reference.population_affected_artifact_count": "72",
+      "reference.population_protected_artifact_count": "168",
+    };
+  }
+  if (signal === "log") {
+    return {
+      "runtime.effective_resource_sha256":
+        scenarioId === "tos-resource-resolution-drift-v1" && affected ? DIGEST_B : DIGEST,
+      "runtime.effective_config_sha256":
+        scenarioId === "tos-config-rollout-drift-v1" && affected ? DIGEST_B : DIGEST,
+      "runtime.config_generation":
+        scenarioId === "tos-config-rollout-drift-v1" && affected ? "6" : "7",
+      "runtime.frame_pipeline_sha256":
+        scenarioId !== "tos-stale-derivative-cache-v1" && affected ? DIGEST_B : DIGEST,
+      "cache.key": "cache:03_2a:00003:g7",
+    };
+  }
   return {
-    "declared_reference.state": affected ? "reference_mismatch" : "reference_match",
-    "runtime.effective_resource_sha256":
-      scenarioId === "tos-resource-resolution-drift-v1" && affected ? DIGEST_B : DIGEST,
-    "runtime.effective_config_sha256":
-      scenarioId === "tos-config-rollout-drift-v1" && affected ? DIGEST_B : DIGEST,
-    "runtime.config_generation":
-      scenarioId === "tos-config-rollout-drift-v1" && affected ? "6" : "7",
     "runtime.frame_pipeline_sha256": DIGEST,
     "derivative.parent_sha256":
       scenarioId === "tos-stale-derivative-cache-v1" && affected ? DIGEST_B : DIGEST,
     "cache.generation": scenarioId === "tos-stale-derivative-cache-v1" && affected ? "6" : "7",
     "cache.key": "cache:03_2a:00003:g7",
-    "reference.evidence_scope": "representative",
-    "reference.affected_representative_count": "1",
-    "reference.protected_representative_count": "1",
-    "reference.population_affected_artifact_count": "72",
-    "reference.population_protected_artifact_count": "168",
-    "reference.scenario_id": scenarioId,
-    "reference.incident_class": INCIDENTS[scenarioId],
   };
 }
 
+type RuntimeQueryKey = "metric.worker-cohort" | "log.config-cohort" | "trace.by-id";
+
 function runtimeObservation(
   scenarioId: ReferenceScenarioId,
-  queryKey: "metric.worker-cohort" | "log.config-cohort",
+  queryKey: RuntimeQueryKey,
   queryIndex: number,
   role: "affected" | "protected",
 ): Readonly<Record<string, unknown>> {
@@ -352,12 +376,19 @@ function runtimeObservation(
   const factHex = ["d", "e", "f", "9"][queryIndex * 2 + roleIndex] ?? "8";
   const evidenceId = queryIndex === 0 ? DIGEST_B : DIGEST_C;
   const jobId = role === "affected" ? "job-affected-001" : "job-safe-001";
+  const signal =
+    queryKey === "metric.worker-cohort" ? "metric" : queryKey === "trace.by-id" ? "trace" : "log";
+  const attributes = runtimeAttributes(scenarioId, role, signal);
+  const resourceSha256 =
+    signal === "log"
+      ? String(attributes["runtime.effective_resource_sha256"]).slice("sha256:".length)
+      : "none";
   return {
     schema: "normalized-runtime-observation/v1",
     request_id: "evidence-request-001",
     incident_id: RUN_INCIDENT_ID,
     event_id: `event-${queryIndex}-${role}`,
-    signal: queryKey === "metric.worker-cohort" ? "metric" : "log",
+    signal,
     fixture_id: "tears-of-steel-linear-exr-240-v1",
     run_id: RUN_ID,
     job_id: jobId,
@@ -365,12 +396,12 @@ function runtimeObservation(
     trace_id: role === "affected" ? "1".repeat(32) : "2".repeat(32),
     artifact_id: role === "affected" ? "frame:03_2a:00000" : "frame:04_5f:00108",
     config_sha256: "a".repeat(64),
-    resource_sha256: "a".repeat(64),
+    resource_sha256: resourceSha256,
     transform_id: "display-transform-reference",
     observed_at: "2026-09-04T12:01:00.000Z",
     emitted_at: "2026-09-04T12:01:01.000Z",
     retrieved_at: "2026-09-04T12:05:00.000Z",
-    attributes: runtimeAttributes(scenarioId, role),
+    attributes,
     provenance: {
       query_key: queryKey,
       evidence_id: evidenceId,
@@ -378,7 +409,12 @@ function runtimeObservation(
       content_sha256: DIGEST,
       catalog_version: "grafana-evidence-query-catalog/v2",
       catalog_sha256: DIGEST,
-      tool: queryKey === "metric.worker-cohort" ? "query_prometheus" : "query_loki_logs",
+      tool:
+        queryKey === "metric.worker-cohort"
+          ? "query_prometheus"
+          : queryKey === "trace.by-id"
+            ? "tempo_get-trace"
+            : "query_loki_logs",
       normalized_arguments: {
         query: queryKey,
         provider_payload: "not retained by the browser projection",
@@ -392,14 +428,21 @@ function runtimeObservation(
 function rawResponsePacket(
   scenarioId: ReferenceScenarioId,
   status: ReferenceRunStatus = "resolved",
+  selectedRuntimeQueryKeys?: readonly RuntimeQueryKey[],
 ): Readonly<Record<string, unknown>> {
   const incidentClass = INCIDENTS[scenarioId];
   const expectedAssessmentId = `expected-assessment:${"a".repeat(64)}`;
   const operationalAssessmentId = `operational-assessment:${"b".repeat(64)}`;
   const reconciliationId = `diagnosis-reconciliation:${"c".repeat(64)}`;
-  const evidenceIds = status === "resolved" ? [DIGEST, DIGEST_B, DIGEST_C] : [];
-  const runtimeQueryKeys =
-    status === "resolved" ? ["metric.worker-cohort", "log.config-cohort"] : [];
+  const runtimeQueryKeys: readonly RuntimeQueryKey[] =
+    status === "resolved"
+      ? (selectedRuntimeQueryKeys ?? [
+          "metric.worker-cohort",
+          scenarioId === "tos-stale-derivative-cache-v1" ? "trace.by-id" : "log.config-cohort",
+        ])
+      : [];
+  const runtimeEvidenceIds = [DIGEST_B, DIGEST_C].slice(0, runtimeQueryKeys.length);
+  const evidenceIds = status === "resolved" ? [DIGEST, ...runtimeEvidenceIds] : [];
   const traceQueryKeys = ["alert.rule", ...runtimeQueryKeys];
   const representativeAffectedJobIds = ["job-affected-001"];
   const representativeSafeJobIds = ["job-safe-001"];
@@ -432,18 +475,8 @@ function rawResponsePacket(
     observations:
       status === "resolved"
         ? runtimeQueryKeys.flatMap((queryKey, index) => [
-            runtimeObservation(
-              scenarioId,
-              queryKey as "metric.worker-cohort" | "log.config-cohort",
-              index,
-              "affected",
-            ),
-            runtimeObservation(
-              scenarioId,
-              queryKey as "metric.worker-cohort" | "log.config-cohort",
-              index,
-              "protected",
-            ),
+            runtimeObservation(scenarioId, queryKey, index, "affected"),
+            runtimeObservation(scenarioId, queryKey, index, "protected"),
           ])
         : [],
     projection_sha256: DIGEST,
@@ -508,21 +541,23 @@ function rawResponsePacket(
       ? [
           ["grafana", "ok", "alert.rule", 12, 1, null, null, null],
           ["gemini", "ok", null, 38, 3, null, 720, 96],
-          ["grafana", "ok", "metric.worker-cohort", 18, 1, null, null, null],
-          ["validator", "unresolved", "metric.worker-cohort", 2, 0, null, null, null],
-          [
-            "reconciliation",
-            "unresolved",
-            "metric.worker-cohort",
-            1,
-            0,
-            "incomplete-evidence",
-            null,
-            null,
-          ],
-          ["grafana", "ok", "log.config-cohort", 17, 1, null, null, null],
-          ["validator", "ok", "log.config-cohort", 2, 0, null, null, null],
-          ["reconciliation", "ok", "log.config-cohort", 1, 0, null, null, null],
+          ...runtimeQueryKeys.flatMap((queryKey, index) => {
+            const terminal = index === runtimeQueryKeys.length - 1;
+            return [
+              ["grafana", "ok", queryKey, 18, 1, null, null, null],
+              ["validator", terminal ? "ok" : "unresolved", queryKey, 2, 0, null, null, null],
+              [
+                "reconciliation",
+                terminal ? "ok" : "unresolved",
+                queryKey,
+                1,
+                0,
+                terminal ? null : "incomplete-evidence",
+                null,
+                null,
+              ],
+            ];
+          }),
         ]
       : [["grafana", "error", "alert.rule", 21, 0, "evidence-unavailable", null, null]];
 
@@ -590,7 +625,19 @@ function rawResponsePacket(
       fixture_id: "tears-of-steel-linear-exr-240-v1",
       run_id: RUN_ID,
       job_facts:
-        status === "resolved" ? { "job-affected-001": { signals: ["metric", "log"] } } : {},
+        status === "resolved"
+          ? {
+              "job-affected-001": {
+                signals: [
+                  ...new Set(
+                    runtimeQueryKeys.map((key) =>
+                      key.startsWith("metric") ? "metric" : key.startsWith("log") ? "log" : "trace",
+                    ),
+                  ),
+                ].sort(),
+              },
+            }
+          : {},
       fact_ids: evidenceFactIds,
       evidence_ids: evidenceIds.slice(1),
       reason_codes: [status === "resolved" ? "operational-evidence-supported" : "evidence-missing"],
@@ -659,6 +706,20 @@ function rawResponsePacket(
     no_action_reason: status === "resolved" ? null : "evidence-unavailable",
     finalized_at: "2026-09-04T12:05:00.000Z",
     derivation_sha256: DIGEST,
+  };
+}
+
+function replaceRuntimeObservations(
+  packet: Readonly<Record<string, unknown>>,
+  observations: readonly Readonly<Record<string, unknown>>[],
+): Readonly<Record<string, unknown>> {
+  const projection = packet.runtime_evidence_projection as Readonly<Record<string, unknown>>;
+  const replacement = { ...projection, observations };
+  const referenceEvidence = packet.reference_evidence as Readonly<Record<string, unknown>>;
+  return {
+    ...packet,
+    runtime_evidence_projection: replacement,
+    reference_evidence: { ...referenceEvidence, runtime_projection: replacement },
   };
 }
 
@@ -953,6 +1014,14 @@ describe("reference scenario experience", () => {
       screen.getByText(/worker-produced pixel evidence bound to its source receipt/iu),
     ).toBeVisible();
     expect(screen.getByText("No measured result")).toBeVisible();
+    const requirements = screen.getByRole("region", { name: "Benchmark requirements" });
+    expect(requirements).toHaveTextContent(/Required\s*equivalent recovered outputs/u);
+    expect(requirements).toHaveTextContent(/Unchanged\s*required protected outputs/u);
+    expect(requirements).toHaveTextContent(/0\s*maximum false-authorized actions/u);
+    expect(requirements).toHaveTextContent(
+      /≥95%\s*required correct resolution on resolvable holdouts/u,
+    );
+    expect(screen.getByText(/only after those correctness and safety gates pass/iu)).toBeVisible();
     expect(
       screen.getByText(/does not report compute, byte, time, cost, or accuracy results/u),
     ).toBeVisible();
@@ -1005,8 +1074,8 @@ describe("reference scenario experience", () => {
   });
 
   it.each([
-    [true, "Acceptance suite passed", "Passed"],
-    [false, "Acceptance suite failed", "Failed"],
+    [true, "Reference benchmark passed", "Passed"],
+    [false, "Reference benchmark failed", "Failed"],
   ])(
     "renders a strictly recorded benchmark result when passed=%s",
     async (passed, heading, badge) => {
@@ -1025,8 +1094,13 @@ describe("reference scenario experience", () => {
       expect(
         screen.getByText(/recorded worker receipts · 720 artifact observations/iu),
       ).toBeVisible();
+      expect(
+        screen.getByText(/60 model-output receipts replayed against sealed holdouts/iu),
+      ).toBeVisible();
+      expect(screen.getByText(/provider execution is not independently attested/iu)).toBeVisible();
+      expect(screen.getByText(/efficiency counts only after recovered outputs/iu)).toBeVisible();
       expect(screen.getByText(/recorded evaluator output/iu)).toBeVisible();
-      expect(screen.getByText(/27 fail-closed mutation cases tested separately/iu)).toBeVisible();
+      expect(screen.getByText(/39 fail-closed mutation cases tested separately/iu)).toBeVisible();
       expect(
         screen.getByText(
           /deterministic validator classification on 60 resolvable sealed holdouts/iu,
@@ -1085,7 +1159,7 @@ describe("reference scenario experience", () => {
     expect(within(correlationTable).getAllByText("1".repeat(32))).toHaveLength(2);
     expect(within(correlationTable).getAllByText("2026-09-04T12:01:00.000Z")).toHaveLength(4);
     expect(within(correlationTable).getAllByText("runtime.effective_resource_sha256")).toHaveLength(
-      4,
+      2,
     );
     expect(within(correlationTable).getAllByText("metric.worker-cohort")).toHaveLength(2);
     expect(within(correlationTable).getAllByText("metric")).toHaveLength(2);
@@ -1098,7 +1172,7 @@ describe("reference scenario experience", () => {
     expect(screen.getByText("Internal agent trace")).toBeVisible();
     expect(screen.getAllByText("incomplete-evidence").length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { name: "reconcile-resource" })).toBeVisible();
-    expect(screen.getByText("Required")).toBeVisible();
+    expect(screen.getByText("Required", { selector: "dd" })).toBeVisible();
     expect(screen.getByText("No")).toBeVisible();
     expect(
       screen.getByText(/No approval was requested or granted, and no recovery ran/iu),
@@ -1174,7 +1248,7 @@ describe("reference scenario experience", () => {
       await screen.findByRole("heading", { name: "Representative simulator recovery applied" }),
     ).toBeVisible();
     expect(screen.getByText("1 → 2")).toBeVisible();
-    expect(screen.getByText("Unchanged")).toBeVisible();
+    expect(screen.getByText("Unchanged", { selector: "dd" })).toBeVisible();
     expect(screen.getByText(`reference-recovery:${"a".repeat(64)}`)).toBeVisible();
     expect(screen.getByText("Fresh simulator state verified")).toBeVisible();
     expect(screen.getByText(/intent-expected fields matched/iu)).toBeVisible();
@@ -1405,7 +1479,18 @@ describe("reference demo API adapter", () => {
         "affected",
         "protected",
       ]);
-      expect(projection.observations[0]?.decisive_values.map(({ field }) => field)).toEqual(fields);
+      expect(projection.observations[0]?.decisive_values).toEqual([]);
+      expect(projection.observations[0]?.declared_reference).toMatchObject({
+        state: "reference_mismatch",
+        approved_state_sha256: DIGEST,
+      });
+      expect(
+        projection.observations[0]?.declared_reference?.match_statuses.filter(
+          ({ matches_approved }) => !matches_approved,
+        ).length,
+      ).toBe(scenarioId === "tos-config-rollout-drift-v1" ? 3 : 2);
+      expect(projection.observations[2]?.declared_reference).toBeNull();
+      expect(projection.observations[2]?.decisive_values.map(({ field }) => field)).toEqual(fields);
       const serialized = JSON.stringify(projection);
       expect(serialized).not.toContain("reference.scenario_id");
       expect(serialized).not.toContain("reference.incident_class");
@@ -1433,6 +1518,120 @@ describe("reference demo API adapter", () => {
       runtime_evidence_projection: tamperedProjection,
       reference_evidence: { ...referenceEvidence, runtime_projection: tamperedProjection },
     };
+
+    await expect(
+      parseReferenceResponsePacket(
+        tampered,
+        "tos-resource-resolution-drift-v1",
+        REQUEST_ID,
+        async () => DIGEST,
+      ),
+    ).rejects.toThrow("reference-response-invalid");
+  });
+
+  it.each([
+    ["one signal", ["metric.worker-cohort"]],
+    ["the wrong complementary pair", ["metric.worker-cohort", "trace.by-id"]],
+  ] as const)("rejects resolved evidence with %s", async (_label, queryKeys) => {
+    await expect(
+      parseReferenceResponsePacket(
+        rawResponsePacket("tos-resource-resolution-drift-v1", "resolved", queryKeys),
+        "tos-resource-resolution-drift-v1",
+        REQUEST_ID,
+        async () => DIGEST,
+      ),
+    ).rejects.toThrow("reference-response-invalid");
+  });
+
+  it.each([
+    [
+      "a missing metric match flag",
+      (attributes: Readonly<Record<string, unknown>>) =>
+        Object.fromEntries(
+          Object.entries(attributes).filter(
+            ([key]) => key !== "declared_reference.cache_key_matches_approved",
+          ),
+        ),
+    ],
+    [
+      "detail on the wrong signal",
+      (attributes: Readonly<Record<string, unknown>>) => ({
+        ...attributes,
+        "runtime.effective_resource_sha256": DIGEST_B,
+      }),
+    ],
+    [
+      "a mismatched approved-state binding",
+      (attributes: Readonly<Record<string, unknown>>) => ({
+        ...attributes,
+        "declared_reference.approved_state_sha256": DIGEST_B,
+      }),
+    ],
+  ] as const)("rejects %s", async (_label, mutateAttributes) => {
+    const raw = rawResponsePacket("tos-resource-resolution-drift-v1");
+    const projection = raw.runtime_evidence_projection as Readonly<Record<string, unknown>>;
+    const observations = projection.observations as readonly Readonly<Record<string, unknown>>[];
+    const metric = observations[0] ?? {};
+    const attributes = metric.attributes as Readonly<Record<string, unknown>>;
+    const tampered = replaceRuntimeObservations(raw, [
+      { ...metric, attributes: mutateAttributes(attributes) },
+      ...observations.slice(1),
+    ]);
+
+    await expect(
+      parseReferenceResponsePacket(
+        tampered,
+        "tos-resource-resolution-drift-v1",
+        REQUEST_ID,
+        async () => DIGEST,
+      ),
+    ).rejects.toThrow("reference-response-invalid");
+  });
+
+  it.each([
+    ["metric resource digest", 0, "a".repeat(64)],
+    ["log resource sentinel", 2, "none"],
+  ] as const)("rejects a %s", async (_label, observationIndex, resourceSha256) => {
+    const raw = rawResponsePacket("tos-resource-resolution-drift-v1");
+    const projection = raw.runtime_evidence_projection as Readonly<Record<string, unknown>>;
+    const observations = projection.observations as readonly Readonly<Record<string, unknown>>[];
+    const selected = observations[observationIndex] ?? {};
+    const tampered = replaceRuntimeObservations(raw, [
+      ...observations.slice(0, observationIndex),
+      { ...selected, resource_sha256: resourceSha256 },
+      ...observations.slice(observationIndex + 1),
+    ]);
+
+    await expect(
+      parseReferenceResponsePacket(
+        tampered,
+        "tos-resource-resolution-drift-v1",
+        REQUEST_ID,
+        async () => DIGEST,
+      ),
+    ).rejects.toThrow("reference-response-invalid");
+  });
+
+  it("rejects an exact detail that contradicts its metric match flag", async () => {
+    const raw = rawResponsePacket("tos-resource-resolution-drift-v1");
+    const projection = raw.runtime_evidence_projection as Readonly<Record<string, unknown>>;
+    const observations = projection.observations as readonly Readonly<Record<string, unknown>>[];
+    const tampered = replaceRuntimeObservations(
+      raw,
+      observations.map((observation) => {
+        if (observation.signal !== "log" || observation.job_id !== "job-affected-001") {
+          return observation;
+        }
+        return {
+          ...observation,
+          resource_sha256: "a".repeat(64),
+          attributes: {
+            ...(observation.attributes as Readonly<Record<string, unknown>>),
+            "runtime.effective_resource_sha256": DIGEST,
+          },
+        };
+      }),
+    );
 
     await expect(
       parseReferenceResponsePacket(

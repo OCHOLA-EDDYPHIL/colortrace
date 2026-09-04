@@ -40,6 +40,7 @@ from .reference_campaign import (
     run_reference_campaign,
     sealed_reference_holdouts,
     verified_recorded_selection_traces,
+    verify_reference_campaign_report,
 )
 from .reference_execution import (
     BatchAlreadyExists,
@@ -130,6 +131,7 @@ __all__ = [
     "run_reference_worker_benchmark",
     "sealed_reference_holdouts",
     "strict_json_file",
+    "verify_reference_campaign_report",
     "verified_recorded_selection_traces",
     "verify_control_record",
 ]

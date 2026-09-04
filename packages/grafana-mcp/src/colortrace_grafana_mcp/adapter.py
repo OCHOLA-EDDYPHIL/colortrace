@@ -2625,6 +2625,14 @@ _RUNTIME_OPTIONAL_CORRELATION_ATTRIBUTES = (
 _RUNTIME_FACT_ATTRIBUTES = frozenset(
     {
         "declared_reference.state",
+        "declared_reference.approved_state_sha256",
+        "declared_reference.effective_resource_matches_approved",
+        "declared_reference.effective_config_matches_approved",
+        "declared_reference.config_generation_matches_approved",
+        "declared_reference.frame_pipeline_matches_approved",
+        "declared_reference.derivative_parent_matches_approved",
+        "declared_reference.derivative_generation_matches_approved",
+        "declared_reference.cache_key_matches_approved",
         "runtime.effective_resource_sha256",
         "runtime.effective_config_sha256",
         "runtime.config_generation",

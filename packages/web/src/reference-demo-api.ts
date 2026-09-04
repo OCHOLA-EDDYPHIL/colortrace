@@ -899,17 +899,13 @@ async function parseImpactBenchmark(
       metricsSource,
       "recorded_model_advantage_basis_points",
     ),
-    median_compute_avoided_basis_points: boundedIntegerField(
+    median_compute_avoided_basis_points: signedScenarioBasisPoints(
       metricsSource,
       "median_compute_avoided_basis_points",
-      0,
-      10_000,
     ),
-    median_application_bytes_avoided_basis_points: boundedIntegerField(
+    median_application_bytes_avoided_basis_points: signedScenarioBasisPoints(
       metricsSource,
       "median_application_bytes_avoided_basis_points",
-      0,
-      10_000,
     ),
   };
   if (metrics.recorded_model_advantage_basis_points !== metrics.adaptive_advantage_basis_points) {

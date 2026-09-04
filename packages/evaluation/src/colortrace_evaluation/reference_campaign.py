@@ -92,6 +92,17 @@ _QUERY_TOOL: Mapping[QueryKey, str] = MappingProxyType(
         "trace.by-id": "tempo_get-trace",
     }
 )
+_MATCH_ATTRIBUTE_BY_FIELD: Mapping[str, str] = MappingProxyType(
+    {
+        "resource_sha256": "declared_reference.effective_resource_matches_approved",
+        "config_sha256": "declared_reference.effective_config_matches_approved",
+        "config_generation": "declared_reference.config_generation_matches_approved",
+        "frame_pipeline_sha256": "declared_reference.frame_pipeline_matches_approved",
+        "derivative_parent_sha256": ("declared_reference.derivative_parent_matches_approved"),
+        "derivative_generation": ("declared_reference.derivative_generation_matches_approved"),
+        "cache_key": "declared_reference.cache_key_matches_approved",
+    }
+)
 _SCENARIO_CLASS: Mapping[str, IncidentClass] = MappingProxyType(
     {
         "tos-resource-resolution-drift-v1": IncidentClass.RESOURCE_RESOLUTION_DRIFT,
@@ -179,6 +190,10 @@ class MutationKind(StrEnum):
     DISPLAY_TEXT_INJECTION = "display-text-injection"
     NO_EVIDENCE = "no-evidence"
     ONE_SIGNAL = "one-signal"
+    WRONG_SIGNAL_PAIR = "wrong-signal-pair"
+    MISSING_MATCH_FLAG = "missing-match-flag"
+    BASELINE_BINDING_MISMATCH = "baseline-binding-mismatch"
+    FLAG_DETAIL_CONTRADICTION = "flag-detail-contradiction"
     STALE_OBSERVATION = "stale-observation"
     CROSS_RUN = "cross-run"
     CONFLICTING_EVENT = "conflicting-event"
@@ -555,17 +570,46 @@ def _runtime_fact(
         derivative_parent = _digest_text(f"{case_id}:observed-stale-parent")
         derivative_generation = 6
 
-    attributes = {
-        "declared_reference.state": ("reference_mismatch" if affected else "reference_match"),
-        "runtime.effective_resource_sha256": resource,
-        "runtime.effective_config_sha256": config,
-        "runtime.config_generation": str(config_generation),
-        "runtime.frame_pipeline_sha256": frame_pipeline,
-        "derivative.parent_sha256": derivative_parent,
-        "cache.generation": str(derivative_generation),
-        "cache.key": cast(str, approved["cache_key"]),
+    state = {
+        "resource_sha256": resource,
+        "config_sha256": config,
+        "config_generation": config_generation,
+        "frame_pipeline_sha256": frame_pipeline,
+        "derivative_parent_sha256": derivative_parent,
+        "derivative_generation": derivative_generation,
+        "cache_key": cast(str, approved["cache_key"]),
     }
     signal = _QUERY_SIGNAL[query_key]
+    attributes = {
+        "metric": {
+            "declared_reference.state": ("reference_mismatch" if affected else "reference_match"),
+            "declared_reference.approved_state_sha256": prefixed_sha256(approved),
+            **{
+                _MATCH_ATTRIBUTE_BY_FIELD[field_name]: (
+                    "true" if value == approved[field_name] else "false"
+                )
+                for field_name, value in state.items()
+            },
+            "reference.evidence_scope": "representative",
+            "reference.affected_representative_count": "1",
+            "reference.protected_representative_count": "1",
+            "reference.population_affected_artifact_count": "72",
+            "reference.population_protected_artifact_count": "168",
+        },
+        "log": {
+            "runtime.effective_resource_sha256": resource,
+            "runtime.effective_config_sha256": config,
+            "runtime.config_generation": str(config_generation),
+            "runtime.frame_pipeline_sha256": frame_pipeline,
+            "cache.key": cast(str, approved["cache_key"]),
+        },
+        "trace": {
+            "runtime.frame_pipeline_sha256": frame_pipeline,
+            "derivative.parent_sha256": derivative_parent,
+            "cache.generation": str(derivative_generation),
+            "cache.key": cast(str, approved["cache_key"]),
+        },
+    }[signal]
     event_id = f"evt-{case_id}-{job_id}-{signal}"
     evidence_sha256 = prefixed_sha256(
         {"event_id": event_id, "query_key": query_key, "attributes": attributes}
@@ -582,7 +626,7 @@ def _runtime_fact(
         trace_id=hashlib.sha256(f"{case_id}:{job_id}".encode()).hexdigest()[:32],
         artifact_id=artifact_id,
         config_sha256=cast(str, approved["config_sha256"]).removeprefix("sha256:"),
-        resource_sha256=resource.removeprefix("sha256:"),
+        resource_sha256=(resource.removeprefix("sha256:") if signal == "log" else "none"),
         transform_id="look/main/v1",
         observed_at="2026-09-04T12:01:00.000Z",
         emitted_at="2026-09-04T12:01:01.000Z",
@@ -679,9 +723,62 @@ def _case_queries(
     if mutation is MutationKind.ONE_SIGNAL:
         queries[supplemental] = []
         return queries
+    if mutation is MutationKind.WRONG_SIGNAL_PAIR:
+        wrong_supplemental: QueryKey = (
+            "log.correlated-events" if supplemental == "trace.by-id" else "trace.by-id"
+        )
+        queries[supplemental] = []
+        queries[wrong_supplemental] = [
+            _runtime_fact(
+                case_id=case_id,
+                incident_class=incident_class,
+                expected=expected,
+                job_id=job_id,
+                artifact_id=artifact_id,
+                affected=affected,
+                query_key=wrong_supplemental,
+            )
+            for job_id, artifact_id, affected in (
+                (affected_job_id, affected_artifact_id, True),
+                (safe_job_id, safe_artifact_id, False),
+            )
+        ]
+        return queries
 
     populated = [key for key in _QUERY_KEYS if queries[key]]
-    if mutation is MutationKind.STALE_OBSERVATION:
+    changed_flag = {
+        IncidentClass.RESOURCE_RESOLUTION_DRIFT: (
+            "declared_reference.effective_resource_matches_approved"
+        ),
+        IncidentClass.CONFIGURATION_ROLLOUT_DRIFT: (
+            "declared_reference.effective_config_matches_approved"
+        ),
+        IncidentClass.STALE_DERIVATIVE_CACHE: (
+            "declared_reference.derivative_parent_matches_approved"
+        ),
+    }[incident_class]
+    if mutation is MutationKind.MISSING_MATCH_FLAG:
+        metric = cast(
+            dict[str, Any],
+            _plain(queries["metric.correlated-observations"][0]),
+        )
+        del cast(dict[str, str], metric["attributes"])[changed_flag]
+        queries["metric.correlated-observations"][0] = _readdress_fact(metric)
+    elif mutation is MutationKind.BASELINE_BINDING_MISMATCH:
+        queries["metric.correlated-observations"][0] = _mutate_fact(
+            queries["metric.correlated-observations"][0],
+            attributes={
+                "declared_reference.approved_state_sha256": _digest_text(
+                    f"{case_id}:wrong-approved-state"
+                )
+            },
+        )
+    elif mutation is MutationKind.FLAG_DETAIL_CONTRADICTION:
+        queries["metric.correlated-observations"][0] = _mutate_fact(
+            queries["metric.correlated-observations"][0],
+            attributes={changed_flag: "true"},
+        )
+    elif mutation is MutationKind.STALE_OBSERVATION:
         for key in populated:
             queries[key] = [
                 _mutate_fact(document, observed_at="2026-09-04T11:59:59.000Z")
@@ -693,11 +790,20 @@ def _case_queries(
         )
     elif mutation is MutationKind.CONFLICTING_EVENT:
         original = queries["metric.correlated-observations"][0]
+        conflicting_flag = {
+            IncidentClass.RESOURCE_RESOLUTION_DRIFT: (
+                "declared_reference.effective_resource_matches_approved"
+            ),
+            IncidentClass.CONFIGURATION_ROLLOUT_DRIFT: (
+                "declared_reference.effective_config_matches_approved"
+            ),
+            IncidentClass.STALE_DERIVATIVE_CACHE: (
+                "declared_reference.derivative_parent_matches_approved"
+            ),
+        }[incident_class]
         conflicting = _mutate_fact(
             original,
-            attributes={
-                "runtime.effective_resource_sha256": _digest_text(f"{case_id}:conflicting-resource")
-            },
+            attributes={conflicting_flag: "true"},
         )
         queries["metric.correlated-observations"].append(conflicting)
     elif mutation is MutationKind.SCOPE_MISMATCH:
@@ -713,37 +819,81 @@ def _case_queries(
                     mutated.append(document)
                     continue
                 if incident_class is IncidentClass.RESOURCE_RESOLUTION_DRIFT:
-                    attributes = {
-                        "runtime.effective_config_sha256": _digest_text(
-                            f"{case_id}:second-config-drift"
-                        ),
-                        "runtime.config_generation": "6",
-                    }
+                    attributes = (
+                        {
+                            "declared_reference.effective_config_matches_approved": "false",
+                            "declared_reference.config_generation_matches_approved": "false",
+                        }
+                        if key == "metric.correlated-observations"
+                        else {
+                            "runtime.effective_config_sha256": _digest_text(
+                                f"{case_id}:second-config-drift"
+                            ),
+                            "runtime.config_generation": "6",
+                        }
+                    )
+                    updates: dict[str, Any] = {}
+                elif incident_class is IncidentClass.CONFIGURATION_ROLLOUT_DRIFT:
+                    second_resource = _digest_text(f"{case_id}:second-resource-drift")
+                    attributes = (
+                        {"declared_reference.effective_resource_matches_approved": "false"}
+                        if key == "metric.correlated-observations"
+                        else {"runtime.effective_resource_sha256": second_resource}
+                    )
+                    updates = (
+                        {"resource_sha256": second_resource.removeprefix("sha256:")}
+                        if key == "log.correlated-events"
+                        else {}
+                    )
                 else:
-                    attributes = {
-                        "runtime.effective_resource_sha256": _digest_text(
-                            f"{case_id}:second-resource-drift"
-                        )
-                    }
-                mutated.append(_mutate_fact(document, attributes=attributes))
+                    second_cache_key = f"cache:{case_id}:unrelated"
+                    attributes = (
+                        {"declared_reference.cache_key_matches_approved": "false"}
+                        if key == "metric.correlated-observations"
+                        else {"cache.key": second_cache_key}
+                    )
+                    updates = {}
+                mutated.append(_mutate_fact(document, attributes=attributes, **updates))
             queries[key] = mutated
     elif mutation is MutationKind.NO_CAUSAL_DRIFT:
         approved = cast(Mapping[str, Any], expected["approved"])
-        attributes = {
-            "runtime.effective_resource_sha256": cast(str, approved["resource_sha256"]),
-            "runtime.effective_config_sha256": cast(str, approved["config_sha256"]),
-            "runtime.config_generation": str(approved["config_generation"]),
-            "runtime.frame_pipeline_sha256": cast(str, approved["frame_pipeline_sha256"]),
-            "derivative.parent_sha256": cast(str, approved["derivative_parent_sha256"]),
-            "cache.generation": str(approved["derivative_generation"]),
-            "cache.key": cast(str, approved["cache_key"]),
-        }
         for key in populated:
+            signal = _QUERY_SIGNAL[key]
+            attributes = {
+                "metric": {
+                    "declared_reference.state": "reference_match",
+                    **{
+                        attribute_name: "true"
+                        for attribute_name in _MATCH_ATTRIBUTE_BY_FIELD.values()
+                    },
+                },
+                "log": {
+                    "runtime.effective_resource_sha256": cast(str, approved["resource_sha256"]),
+                    "runtime.effective_config_sha256": cast(str, approved["config_sha256"]),
+                    "runtime.config_generation": str(approved["config_generation"]),
+                    "runtime.frame_pipeline_sha256": cast(str, approved["frame_pipeline_sha256"]),
+                    "cache.key": cast(str, approved["cache_key"]),
+                },
+                "trace": {
+                    "runtime.frame_pipeline_sha256": cast(str, approved["frame_pipeline_sha256"]),
+                    "derivative.parent_sha256": cast(str, approved["derivative_parent_sha256"]),
+                    "cache.generation": str(approved["derivative_generation"]),
+                    "cache.key": cast(str, approved["cache_key"]),
+                },
+            }[signal]
             queries[key] = [
                 _mutate_fact(
                     document,
                     attributes=attributes,
-                    resource_sha256=cast(str, approved["resource_sha256"]).removeprefix("sha256:"),
+                    **(
+                        {
+                            "resource_sha256": cast(str, approved["resource_sha256"]).removeprefix(
+                                "sha256:"
+                            )
+                        }
+                        if signal == "log"
+                        else {}
+                    ),
                 )
                 if document["job_id"] == affected_job_id
                 else document
@@ -822,6 +972,10 @@ def sealed_reference_holdouts() -> ReferenceHoldoutCorpus:
     negative_mutations = (
         MutationKind.NO_EVIDENCE,
         MutationKind.ONE_SIGNAL,
+        MutationKind.WRONG_SIGNAL_PAIR,
+        MutationKind.MISSING_MATCH_FLAG,
+        MutationKind.BASELINE_BINDING_MISMATCH,
+        MutationKind.FLAG_DETAIL_CONTRADICTION,
         MutationKind.STALE_OBSERVATION,
         MutationKind.CROSS_RUN,
         MutationKind.CONFLICTING_EVENT,
@@ -1279,7 +1433,6 @@ def controlled_adaptive_selection_traces(
     for case in corpus.cases:
         if case.kind is not CaseKind.RESOLVABLE:
             continue
-        expected = cast(Mapping[str, Any], case.expected_state["approved"])
         metric = case.query_observations["metric.correlated-observations"]
         affected = next(
             observation
@@ -1289,8 +1442,8 @@ def controlled_adaptive_selection_traces(
         )
         attributes = cast(Mapping[str, str], affected["attributes"])
         derivative_changed = (
-            attributes["derivative.parent_sha256"] != expected["derivative_parent_sha256"]
-            or int(attributes["cache.generation"]) != expected["derivative_generation"]
+            attributes["declared_reference.derivative_parent_matches_approved"] == "false"
+            or attributes["declared_reference.derivative_generation_matches_approved"] == "false"
         )
         pivot: QueryKey = "trace.by-id" if derivative_changed else "log.correlated-events"
         traces.append(
@@ -1818,25 +1971,37 @@ def _receipt_equivalent(baseline: Mapping[str, Any], selective: Mapping[str, Any
     )
 
 
-def build_reference_impact_benchmark(
-    observations: Sequence[BenchmarkArtifactObservation],
+def verify_reference_campaign_report(
     campaign_report: Mapping[str, Any],
     *,
-    evidence_source: BenchmarkEvidenceSource,
-    evidence_set_id: str,
+    receipt_set: RecordedSelectionReceiptSet | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    campaign = cast(dict[str, Any], _plain(campaign_report))
-    validate_schema("reference-campaign-report-v1.schema.json", campaign)
-    campaign_body = {key: value for key, value in campaign.items() if key != "report_sha256"}
-    if campaign.get("report_sha256") != prefixed_sha256(campaign_body):
+    claimed = cast(dict[str, Any], _plain(campaign_report))
+    validate_schema("reference-campaign-report-v1.schema.json", claimed)
+    claimed_body = {key: value for key, value in claimed.items() if key != "report_sha256"}
+    if claimed.get("report_sha256") != prefixed_sha256(claimed_body):
         raise ReferenceCampaignError("reference-campaign-report-digest-invalid")
-    validate_schema(
-        "reference-policy-comparison-v1.schema.json",
-        cast(Mapping[str, Any], campaign["selection_comparison"]),
-    )
-    if _DIGEST.fullmatch(evidence_set_id) is None:
-        raise ReferenceCampaignError("reference-benchmark-evidence-id-invalid")
 
+    comparison = cast(Mapping[str, Any], claimed["selection_comparison"])
+    validate_schema("reference-policy-comparison-v1.schema.json", comparison)
+    recorded = comparison.get("recorded_model_output_evaluated") is True
+    if recorded != (receipt_set is not None):
+        raise ReferenceCampaignError("reference-campaign-receipts-required")
+    recomputed = (
+        run_recorded_reference_campaign(receipt_set)
+        if receipt_set is not None
+        else run_reference_campaign()
+    )
+    if claimed != recomputed:
+        raise ReferenceCampaignError("reference-campaign-report-recomputation-mismatch")
+    return recomputed
+
+
+def _reference_impact_benchmark_body(
+    observations: Sequence[BenchmarkArtifactObservation],
+    campaign_report: Mapping[str, Any],
+) -> dict[str, Any]:
+    campaign = campaign_report
     selected = tuple(observations)
     scenarios = reference_scenarios()
     expected_pairs = {
@@ -1983,17 +2148,11 @@ def build_reference_impact_benchmark(
         ),
     }
     manifest = load_reference_media_manifest()
-    body = {
+    return {
         "schema": IMPACT_BENCHMARK_VERSION,
         "reference_collection_id": manifest.collection_id,
         "reference_manifest_sha256": manifest.manifest_sha256,
         "campaign_report_sha256": campaign["report_sha256"],
-        "evidence": {
-            "source": evidence_source,
-            "evidence_set_id": evidence_set_id,
-            "recorded_worker_evidence": evidence_source == "recorded-worker-receipts",
-            "observation_count": len(selected),
-        },
         "thresholds": {
             "minimum_classification_accuracy_basis_points": (MINIMUM_CLASSIFICATION_BASIS_POINTS),
             "minimum_median_compute_avoided_basis_points": (MINIMUM_SAVINGS_BASIS_POINTS),
@@ -2023,6 +2182,37 @@ def build_reference_impact_benchmark(
         "scenario_results": scenario_results,
         "checks": checks,
         "passed": all(checks.values()),
+    }
+
+
+def build_reference_impact_benchmark(
+    observations: Sequence[BenchmarkArtifactObservation],
+    campaign_report: Mapping[str, Any],
+    *,
+    evidence_source: BenchmarkEvidenceSource,
+    evidence_set_id: str,
+    campaign_receipt_set: RecordedSelectionReceiptSet | Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if evidence_source != "controlled-receipt-set":
+        raise ReferenceCampaignError("reference-benchmark-recorded-evidence-unverified")
+    if _DIGEST.fullmatch(evidence_set_id) is None:
+        raise ReferenceCampaignError("reference-benchmark-evidence-id-invalid")
+    campaign = verify_reference_campaign_report(
+        campaign_report,
+        receipt_set=campaign_receipt_set,
+    )
+    measurements = _reference_impact_benchmark_body(
+        observations,
+        campaign,
+    )
+    body = {
+        **measurements,
+        "evidence": {
+            "source": evidence_source,
+            "evidence_set_id": evidence_set_id,
+            "recorded_worker_evidence": False,
+            "observation_count": len(observations),
+        },
     }
     report = {**body, "report_sha256": prefixed_sha256(body)}
     validate_schema("reference-impact-benchmark-v1.schema.json", report)
@@ -2064,5 +2254,6 @@ __all__ = [
     "run_recorded_reference_campaign",
     "run_reference_campaign",
     "sealed_reference_holdouts",
+    "verify_reference_campaign_report",
     "verified_recorded_selection_traces",
 ]

@@ -45,6 +45,64 @@ REFERENCE_EVENT_NAMES: Mapping[ReferenceSignal, str] = MappingProxyType(
     }
 )
 _SIGNALS: tuple[ReferenceSignal, ...] = ("metric", "log", "trace")
+_COMMON_REFERENCE_ATTRIBUTES = frozenset(
+    {
+        "reference.data_origin",
+        "reference.scenario_id",
+        "reference.incident_class",
+        "reference.incident_id",
+        "reference.scope_role",
+    }
+)
+_METRIC_SCOPE_ATTRIBUTES = frozenset(
+    {
+        "reference.evidence_scope",
+        "reference.affected_representative_count",
+        "reference.protected_representative_count",
+        "reference.population_affected_artifact_count",
+        "reference.population_protected_artifact_count",
+    }
+)
+_MATCH_ATTRIBUTE_BY_STATE_FIELD: Mapping[str, str] = MappingProxyType(
+    {
+        "resource_sha256": "declared_reference.effective_resource_matches_approved",
+        "config_sha256": "declared_reference.effective_config_matches_approved",
+        "config_generation": "declared_reference.config_generation_matches_approved",
+        "frame_pipeline_sha256": "declared_reference.frame_pipeline_matches_approved",
+        "derivative_parent_sha256": "declared_reference.derivative_parent_matches_approved",
+        "derivative_generation": "declared_reference.derivative_generation_matches_approved",
+        "cache_key": "declared_reference.cache_key_matches_approved",
+    }
+)
+_SIGNAL_DETAIL_ATTRIBUTES: Mapping[ReferenceSignal, frozenset[str]] = MappingProxyType(
+    {
+        "metric": frozenset(
+            {
+                "declared_reference.state",
+                "declared_reference.approved_state_sha256",
+                *_MATCH_ATTRIBUTE_BY_STATE_FIELD.values(),
+                *_METRIC_SCOPE_ATTRIBUTES,
+            }
+        ),
+        "log": frozenset(
+            {
+                "runtime.effective_resource_sha256",
+                "runtime.effective_config_sha256",
+                "runtime.config_generation",
+                "runtime.frame_pipeline_sha256",
+                "cache.key",
+            }
+        ),
+        "trace": frozenset(
+            {
+                "runtime.frame_pipeline_sha256",
+                "derivative.parent_sha256",
+                "cache.generation",
+                "cache.key",
+            }
+        ),
+    }
+)
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _PREFIXED_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -182,16 +240,27 @@ class ReferenceTelemetryEvent:
         observed = datetime.fromisoformat(self.observed_at.replace("Z", "+00:00"))
         emitted = datetime.fromisoformat(self.emitted_at.replace("Z", "+00:00"))
         role = attributes["reference.scope_role"]
+        expected_attribute_names = (
+            _COMMON_REFERENCE_ATTRIBUTES | _SIGNAL_DETAIL_ATTRIBUTES[self.signal]
+        )
+        resource = correlation["resource_sha256"]
         if (
             emitted < observed
             or emitted - observed > timedelta(minutes=10)
             or correlation["incident_id"] != attributes["reference.incident_id"]
             or self.scenario_id != attributes["reference.scenario_id"]
             or self.incident_class != attributes["reference.incident_class"]
-            or correlation["resource_sha256"]
-            != _bare_digest(attributes["runtime.effective_resource_sha256"])
-            or (role == "affected")
-            != (attributes["declared_reference.state"] == "reference_mismatch")
+            or set(attributes) != expected_attribute_names
+            or (
+                self.signal == "log"
+                and resource != _bare_digest(attributes["runtime.effective_resource_sha256"])
+            )
+            or (self.signal != "log" and resource != "none")
+            or (
+                self.signal == "metric"
+                and (role == "affected")
+                != (attributes["declared_reference.state"] == "reference_mismatch")
+            )
         ):
             raise ValueError("reference telemetry event binding is invalid")
 
@@ -244,16 +313,9 @@ class ReferenceTelemetryPlan:
             }
             for role in ("affected", "protected")
         }
-        role_payloads = {
+        events_by_role = {
             role: {
-                canonical_json_bytes(
-                    {
-                        "correlation": dict(event.correlation),
-                        "attributes": dict(event.attributes),
-                        "observed_at": event.observed_at,
-                        "emitted_at": event.emitted_at,
-                    }
-                )
+                event.signal: event
                 for event in events
                 if event.attributes["reference.scope_role"] == role
             }
@@ -266,7 +328,6 @@ class ReferenceTelemetryPlan:
             or len(workers) != 1
             or len(config_digests) != 1
             or any(len(values) != 1 for values in role_jobs.values())
-            or any(len(values) != 1 for values in role_payloads.values())
             or role_jobs["affected"] == role_jobs["protected"]
             or any(
                 event.scenario_id != self.scenario_id
@@ -275,6 +336,76 @@ class ReferenceTelemetryPlan:
                 or event.correlation["fixture_id"] != self.fixture_id
                 or event.correlation["run_id"] != self.run_id
                 for event in events
+            )
+        ):
+            raise ValueError("reference telemetry plan binding is invalid")
+        states_by_role = {
+            role: {
+                "resource_sha256": role_events["log"].attributes[
+                    "runtime.effective_resource_sha256"
+                ],
+                "config_sha256": role_events["log"].attributes["runtime.effective_config_sha256"],
+                "config_generation": int(
+                    role_events["log"].attributes["runtime.config_generation"]
+                ),
+                "frame_pipeline_sha256": role_events["trace"].attributes[
+                    "runtime.frame_pipeline_sha256"
+                ],
+                "derivative_parent_sha256": role_events["trace"].attributes[
+                    "derivative.parent_sha256"
+                ],
+                "derivative_generation": int(role_events["trace"].attributes["cache.generation"]),
+                "cache_key": role_events["trace"].attributes["cache.key"],
+            }
+            for role, role_events in events_by_role.items()
+        }
+        protected_state = states_by_role["protected"]
+        expected_approved_sha256 = _prefixed_sha256(protected_state)
+        metric_approved_digests = {
+            events_by_role[role]["metric"].attributes["declared_reference.approved_state_sha256"]
+            for role in ("affected", "protected")
+        }
+        expected_false_fields: Mapping[str, frozenset[str]] = {
+            "resource-resolution-drift/v1": frozenset({"resource_sha256", "frame_pipeline_sha256"}),
+            "configuration-rollout-drift/v1": frozenset(
+                {"config_sha256", "config_generation", "frame_pipeline_sha256"}
+            ),
+            "stale-derivative-cache/v1": frozenset(
+                {"derivative_parent_sha256", "derivative_generation"}
+            ),
+        }
+        observed_false_fields = {
+            field_name
+            for field_name, attribute_name in _MATCH_ATTRIBUTE_BY_STATE_FIELD.items()
+            if events_by_role["affected"]["metric"].attributes[attribute_name] == "false"
+        }
+        protected_false_fields = {
+            field_name
+            for field_name, attribute_name in _MATCH_ATTRIBUTE_BY_STATE_FIELD.items()
+            if events_by_role["protected"]["metric"].attributes[attribute_name] == "false"
+        }
+        flags_match_details = all(
+            events_by_role[role]["metric"].attributes[attribute_name]
+            == (
+                "true"
+                if states_by_role[role][field_name] == protected_state[field_name]
+                else "false"
+            )
+            for role in ("affected", "protected")
+            for field_name, attribute_name in _MATCH_ATTRIBUTE_BY_STATE_FIELD.items()
+        )
+        if (
+            metric_approved_digests != {expected_approved_sha256}
+            or observed_false_fields != expected_false_fields[self.incident_class]
+            or protected_false_fields
+            or not flags_match_details
+            or config_digests != {_bare_digest(str(protected_state["config_sha256"]))}
+            or any(
+                events_by_role[role]["log"].attributes["runtime.frame_pipeline_sha256"]
+                != events_by_role[role]["trace"].attributes["runtime.frame_pipeline_sha256"]
+                or events_by_role[role]["log"].attributes["cache.key"]
+                != events_by_role[role]["trace"].attributes["cache.key"]
+                for role in ("affected", "protected")
             )
         ):
             raise ValueError("reference telemetry plan binding is invalid")
@@ -335,29 +466,57 @@ def _semantic_attributes(
     scenario: ReferenceScenario,
     context: ReferenceTelemetryContext,
     role: ReferenceScopeRole,
+    signal: ReferenceSignal,
+    approved_state: ReferenceTelemetryState,
     state: ReferenceTelemetryState,
 ) -> dict[str, str]:
-    return {
-        "declared_reference.state": (
-            "reference_mismatch" if role == "affected" else "reference_match"
-        ),
-        "runtime.effective_resource_sha256": state.resource_sha256,
-        "runtime.effective_config_sha256": state.config_sha256,
-        "runtime.config_generation": str(state.config_generation),
-        "runtime.frame_pipeline_sha256": state.frame_pipeline_sha256,
-        "derivative.parent_sha256": state.derivative_parent_sha256,
-        "cache.generation": str(state.derivative_generation),
-        "cache.key": state.cache_key,
+    common = {
         "reference.data_origin": REFERENCE_DATA_ORIGIN,
         "reference.scenario_id": scenario.scenario_id,
         "reference.incident_class": scenario.incident_class,
         "reference.incident_id": context.incident_id,
         "reference.scope_role": role,
-        "reference.evidence_scope": "representative",
-        "reference.affected_representative_count": "1",
-        "reference.protected_representative_count": "1",
-        "reference.population_affected_artifact_count": str(len(scenario.affected_artifact_ids)),
-        "reference.population_protected_artifact_count": str(len(scenario.protected_artifact_ids)),
+    }
+    if signal == "metric":
+        return {
+            **common,
+            "declared_reference.state": (
+                "reference_mismatch" if role == "affected" else "reference_match"
+            ),
+            "declared_reference.approved_state_sha256": _prefixed_sha256(approved_state.to_dict()),
+            **{
+                attribute_name: (
+                    "true"
+                    if getattr(state, field_name) == getattr(approved_state, field_name)
+                    else "false"
+                )
+                for field_name, attribute_name in _MATCH_ATTRIBUTE_BY_STATE_FIELD.items()
+            },
+            "reference.evidence_scope": "representative",
+            "reference.affected_representative_count": "1",
+            "reference.protected_representative_count": "1",
+            "reference.population_affected_artifact_count": str(
+                len(scenario.affected_artifact_ids)
+            ),
+            "reference.population_protected_artifact_count": str(
+                len(scenario.protected_artifact_ids)
+            ),
+        }
+    if signal == "log":
+        return {
+            **common,
+            "runtime.effective_resource_sha256": state.resource_sha256,
+            "runtime.effective_config_sha256": state.config_sha256,
+            "runtime.config_generation": str(state.config_generation),
+            "runtime.frame_pipeline_sha256": state.frame_pipeline_sha256,
+            "cache.key": state.cache_key,
+        }
+    return {
+        **common,
+        "runtime.frame_pipeline_sha256": state.frame_pipeline_sha256,
+        "derivative.parent_sha256": state.derivative_parent_sha256,
+        "cache.generation": str(state.derivative_generation),
+        "cache.key": state.cache_key,
     }
 
 
@@ -392,7 +551,7 @@ def build_reference_telemetry_plan(
         (context.affected, affected_state),
         (context.protected, approved_state),
     ):
-        correlation = {
+        base_correlation = {
             "incident_id": context.incident_id,
             "fixture_id": context.fixture_id,
             "run_id": context.run_id,
@@ -401,16 +560,23 @@ def build_reference_telemetry_plan(
             "artifact_id": representative.artifact_id,
             "trace_id": representative.trace_id,
             "config_sha256": _bare_digest(approved_state.config_sha256),
-            "resource_sha256": _bare_digest(state.resource_sha256),
             "transform_id": context.transform_id,
         }
-        attributes = _semantic_attributes(
-            scenario=scenario,
-            context=context,
-            role=representative.role,
-            state=state,
-        )
         for signal in _SIGNALS:
+            correlation = {
+                **base_correlation,
+                "resource_sha256": (
+                    _bare_digest(state.resource_sha256) if signal == "log" else "none"
+                ),
+            }
+            attributes = _semantic_attributes(
+                scenario=scenario,
+                context=context,
+                role=representative.role,
+                signal=signal,
+                approved_state=approved_state,
+                state=state,
+            )
             events.append(
                 ReferenceTelemetryEvent(
                     scenario_id=scenario.scenario_id,

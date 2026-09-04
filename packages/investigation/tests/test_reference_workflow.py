@@ -261,18 +261,69 @@ class FakeEvidence:
         elif affected and self.incident_class == "stale-derivative-cache/v1":
             derivative_parent = fixed_digest("c")
             derivative_generation = 6
-        attributes = {
-            "declared_reference.state": "reference_mismatch" if affected else "reference_match",
-            "runtime.effective_resource_sha256": resource,
-            "runtime.effective_config_sha256": config,
-            "runtime.config_generation": str(config_generation),
-            "runtime.frame_pipeline_sha256": pipeline,
-            "derivative.parent_sha256": derivative_parent,
-            "cache.generation": str(derivative_generation),
-            "cache.key": str(APPROVED["cache_key"]),
-            "reference.scenario_id": "tos-hidden-oracle-v1",
-            "reference.incident_class": self.incident_class,
+        state_values = {
+            "effective_resource_sha256": resource,
+            "effective_config_sha256": config,
+            "config_generation": config_generation,
+            "frame_pipeline_sha256": pipeline,
+            "derivative_parent_sha256": derivative_parent,
+            "derivative_generation": derivative_generation,
+            "cache_key": APPROVED["cache_key"],
         }
+        approved_values = {
+            "effective_resource_sha256": APPROVED["resource_sha256"],
+            "effective_config_sha256": APPROVED["config_sha256"],
+            "config_generation": APPROVED["config_generation"],
+            "frame_pipeline_sha256": APPROVED["frame_pipeline_sha256"],
+            "derivative_parent_sha256": APPROVED["derivative_parent_sha256"],
+            "derivative_generation": APPROVED["derivative_generation"],
+            "cache_key": APPROVED["cache_key"],
+        }
+        match_attributes = {
+            "effective_resource_sha256": ("declared_reference.effective_resource_matches_approved"),
+            "effective_config_sha256": ("declared_reference.effective_config_matches_approved"),
+            "config_generation": "declared_reference.config_generation_matches_approved",
+            "frame_pipeline_sha256": ("declared_reference.frame_pipeline_matches_approved"),
+            "derivative_parent_sha256": ("declared_reference.derivative_parent_matches_approved"),
+            "derivative_generation": ("declared_reference.derivative_generation_matches_approved"),
+            "cache_key": "declared_reference.cache_key_matches_approved",
+        }
+        attributes = {
+            "metric": {
+                "declared_reference.state": (
+                    "reference_mismatch" if affected else "reference_match"
+                ),
+                "declared_reference.approved_state_sha256": digest(APPROVED),
+                **{
+                    match_attributes[name]: ("true" if value == approved_values[name] else "false")
+                    for name, value in state_values.items()
+                },
+                "reference.evidence_scope": "representative",
+                "reference.affected_representative_count": "1",
+                "reference.protected_representative_count": "1",
+                "reference.population_affected_artifact_count": "72",
+                "reference.population_protected_artifact_count": "168",
+            },
+            "log": {
+                "runtime.effective_resource_sha256": resource,
+                "runtime.effective_config_sha256": config,
+                "runtime.config_generation": str(config_generation),
+                "runtime.frame_pipeline_sha256": pipeline,
+                "cache.key": str(APPROVED["cache_key"]),
+            },
+            "trace": {
+                "runtime.frame_pipeline_sha256": pipeline,
+                "derivative.parent_sha256": derivative_parent,
+                "cache.generation": str(derivative_generation),
+                "cache.key": str(APPROVED["cache_key"]),
+            },
+        }[signal]
+        attributes.update(
+            {
+                "reference.scenario_id": "tos-hidden-oracle-v1",
+                "reference.incident_class": self.incident_class,
+            }
+        )
         tool = {
             "metric": "query_prometheus",
             "log": "query_loki_logs",
@@ -290,7 +341,7 @@ class FakeEvidence:
             trace_id="1" * 32 if affected else "2" * 32,
             artifact_id=f"artifact-{job_id}",
             config_sha256=str(APPROVED["config_sha256"]).removeprefix("sha256:"),
-            resource_sha256=resource.removeprefix("sha256:"),
+            resource_sha256=(resource.removeprefix("sha256:") if signal == "log" else "none"),
             transform_id="look/main/v1",
             observed_at="2026-09-04T12:01:00.000Z",
             emitted_at="2026-09-04T12:01:01.000Z",

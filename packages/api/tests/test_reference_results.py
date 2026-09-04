@@ -6,10 +6,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from colortrace_api.reference_demo import ReferenceDemoCatalog
 from colortrace_api.reference_results import (
     ReferenceResultError,
     load_reference_impact_result,
 )
+from colortrace_fixture import load_reference_media_manifest
 
 COLLECTION_ID = "tears-of-steel-linear-exr-240-v1"
 MANIFEST_SHA256 = "sha256:" + "a" * 64
@@ -119,6 +121,20 @@ def _write(path: Path, result: dict[str, Any]) -> None:
     path.write_bytes(_canonical(result) + b"\n")
 
 
+def _savings_only_failure() -> dict[str, Any]:
+    result = _result()
+    for scenario in result["scenario_results"]:
+        if scenario["scenario_id"] == "tos-stale-derivative-cache-v1":
+            continue
+        scenario["selective"]["application_bytes"] = 1_300
+        scenario["application_bytes_avoided_basis_points"] = 3_500
+    result["metrics"]["median_application_bytes_avoided_basis_points"] = 3_500
+    result["checks"]["median_application_bytes_avoided_at_least_40_percent"] = False
+    result["passed"] = False
+    _resign(result)
+    return result
+
+
 def test_recorded_impact_result_is_strictly_bound_and_defensively_copied(
     tmp_path: Path,
 ) -> None:
@@ -200,6 +216,153 @@ def test_recorded_result_accepts_savings_below_negative_ten_thousand(
         if item["scenario_id"] == "tos-stale-derivative-cache-v1"
     )
     assert loaded_stale["application_bytes_avoided_basis_points"] == -15_000
+
+
+def test_recorded_result_accepts_internally_consistent_savings_only_failure(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "result.json"
+    _write(path, _savings_only_failure())
+
+    loaded = load_reference_impact_result(
+        expected_collection_id=COLLECTION_ID,
+        expected_manifest_sha256=MANIFEST_SHA256,
+        path=path,
+    )
+
+    assert loaded["passed"] is False
+    assert loaded["metrics"]["median_application_bytes_avoided_basis_points"] == 3_500
+    assert loaded["checks"] == {
+        "campaign_acceptance_passed": True,
+        "output_equivalence": True,
+        "protected_output_integrity": True,
+        "zero_false_authorized_actions": True,
+        "classification_at_least_95_percent": True,
+        "same_selection_budgets": True,
+        "measurable_adaptive_advantage": True,
+        "median_compute_avoided_at_least_40_percent": True,
+        "median_application_bytes_avoided_at_least_40_percent": False,
+    }
+
+
+def test_recorded_result_accepts_consistent_negative_median_savings_failure(
+    tmp_path: Path,
+) -> None:
+    result = _result()
+    for scenario in result["scenario_results"]:
+        scenario["selective"]["application_bytes"] = 5_000
+        scenario["application_bytes_avoided_basis_points"] = _signed_savings(
+            5_000,
+            scenario["baseline"]["application_bytes"],
+        )
+    result["metrics"]["median_application_bytes_avoided_basis_points"] = -15_000
+    result["checks"]["median_application_bytes_avoided_at_least_40_percent"] = False
+    result["passed"] = False
+    _resign(result)
+    path = tmp_path / "result.json"
+    _write(path, result)
+
+    loaded = load_reference_impact_result(
+        expected_collection_id=COLLECTION_ID,
+        expected_manifest_sha256=MANIFEST_SHA256,
+        path=path,
+    )
+
+    assert loaded["passed"] is False
+    assert loaded["metrics"]["median_application_bytes_avoided_basis_points"] == -15_000
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda value: value["checks"].update(
+            {"median_application_bytes_avoided_at_least_40_percent": True}
+        ),
+        lambda value: value.update({"passed": True}),
+    ),
+)
+def test_recorded_result_rejects_resigned_savings_failure_inconsistency(
+    tmp_path: Path,
+    mutation: Any,
+) -> None:
+    result = _savings_only_failure()
+    mutation(result)
+    _resign(result)
+    path = tmp_path / "result.json"
+    _write(path, result)
+
+    with pytest.raises(ReferenceResultError, match="reference-result-invalid"):
+        load_reference_impact_result(
+            expected_collection_id=COLLECTION_ID,
+            expected_manifest_sha256=MANIFEST_SHA256,
+            path=path,
+        )
+
+
+def test_recorded_result_rejects_false_outcome_when_every_check_passes(
+    tmp_path: Path,
+) -> None:
+    result = _result()
+    result["passed"] = False
+    _resign(result)
+    path = tmp_path / "result.json"
+    _write(path, result)
+
+    with pytest.raises(ReferenceResultError, match="reference-result-invalid"):
+        load_reference_impact_result(
+            expected_collection_id=COLLECTION_ID,
+            expected_manifest_sha256=MANIFEST_SHA256,
+            path=path,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda value: value["scenario_results"][0].update({"output_equivalence": False}),
+        lambda value: value["scenario_results"][0].update({"protected_output_integrity": False}),
+        lambda value: value["metrics"].update({"false_authorized_actions": 1}),
+        lambda value: value["metrics"].update({"classification_accuracy_basis_points": 9_499}),
+        lambda value: value["metrics"].update(
+            {
+                "adaptive_advantage_basis_points": 0,
+                "recorded_model_advantage_basis_points": 0,
+            }
+        ),
+    ),
+)
+def test_recorded_result_rejects_resigned_derived_check_mismatch(
+    tmp_path: Path,
+    mutation: Any,
+) -> None:
+    result = _result()
+    mutation(result)
+    _resign(result)
+    path = tmp_path / "result.json"
+    _write(path, result)
+
+    with pytest.raises(ReferenceResultError, match="reference-result-invalid"):
+        load_reference_impact_result(
+            expected_collection_id=COLLECTION_ID,
+            expected_manifest_sha256=MANIFEST_SHA256,
+            path=path,
+        )
+
+
+def test_catalog_reports_consistent_failed_result_as_recorded(tmp_path: Path) -> None:
+    manifest = load_reference_media_manifest()
+    result = _savings_only_failure()
+    result["reference_collection_id"] = manifest.collection_id
+    result["reference_manifest_sha256"] = manifest.manifest_sha256
+    _resign(result)
+    path = tmp_path / "result.json"
+    _write(path, result)
+
+    suite = ReferenceDemoCatalog(benchmark_result_path=path).benchmark_suite()
+
+    assert suite["result_state"] == "recorded"
+    assert suite["result"]["passed"] is False
+    assert suite["measurement_boundary"]["catalog_claims_observed_savings"] is True
 
 
 def test_recorded_result_rejects_resigned_signed_savings_tamper(tmp_path: Path) -> None:

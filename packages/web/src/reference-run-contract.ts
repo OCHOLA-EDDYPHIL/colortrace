@@ -37,6 +37,17 @@ export type ReferenceDecisiveValue = {
   readonly value: string;
 };
 
+export type ReferenceMatchStatus = {
+  readonly field: ReferenceDecisiveField;
+  readonly matches_approved: boolean;
+};
+
+export type ReferenceDeclaredState = {
+  readonly state: "reference_match" | "reference_mismatch";
+  readonly approved_state_sha256: string;
+  readonly match_statuses: readonly ReferenceMatchStatus[];
+};
+
 export type ReferenceRuntimeObservation = {
   readonly fact_id: string;
   readonly signal: ReferenceSignalClass;
@@ -46,6 +57,7 @@ export type ReferenceRuntimeObservation = {
   readonly observed_at: string;
   readonly query_key: ReferenceQueryKey;
   readonly evidence_id: string;
+  readonly declared_reference: ReferenceDeclaredState | null;
   readonly decisive_values: readonly ReferenceDecisiveValue[];
 };
 
@@ -198,8 +210,8 @@ const RUNTIME_FACT_ID = /^runtime-fact:[0-9a-f]{64}$/u;
 const TRACE_ID = /^[0-9a-f]{32}$/u;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const BARE_DIGEST = /^[0-9a-f]{64}$/u;
-const ATTRIBUTE_DIGEST = /^(?:sha256:)?[0-9a-f]{64}$/u;
 const POSITIVE_INTEGER_TEXT = /^[1-9][0-9]{0,15}$/u;
+const NONE = /^none$/u;
 const QUERY_KEY_SET = new Set<string>(REFERENCE_QUERY_KEYS);
 const INCIDENT_CLASS_SET = new Set<string>(REFERENCE_INCIDENT_CLASSES);
 const ASSESSMENT_STATUSES = new Set<ReferenceAssessmentStatus>([
@@ -227,6 +239,135 @@ const ACTION_CHANGED_FIELDS: Readonly<Record<ReferenceRunIncidentClass, readonly
   "resource-resolution-drift/v1": ["effective_resource_sha256"],
   "configuration-rollout-drift/v1": ["config_generation", "effective_config_sha256"],
   "stale-derivative-cache/v1": ["derivative_generation", "derivative_parent_sha256"],
+};
+
+type ReferenceApprovedState = {
+  readonly resource_sha256: string;
+  readonly config_sha256: string;
+  readonly config_generation: number;
+  readonly frame_pipeline_sha256: string;
+  readonly derivative_parent_sha256: string;
+  readonly derivative_generation: number;
+  readonly cache_key: string;
+};
+
+const APPROVED_STATE_KEYS = new Set([
+  "resource_sha256",
+  "config_sha256",
+  "config_generation",
+  "frame_pipeline_sha256",
+  "derivative_parent_sha256",
+  "derivative_generation",
+  "cache_key",
+]);
+const MATCH_ATTRIBUTES: readonly {
+  readonly field: ReferenceDecisiveField;
+  readonly attribute: string;
+  readonly approved: keyof ReferenceApprovedState;
+}[] = [
+  {
+    field: "runtime.effective_resource_sha256",
+    attribute: "declared_reference.effective_resource_matches_approved",
+    approved: "resource_sha256",
+  },
+  {
+    field: "runtime.effective_config_sha256",
+    attribute: "declared_reference.effective_config_matches_approved",
+    approved: "config_sha256",
+  },
+  {
+    field: "runtime.config_generation",
+    attribute: "declared_reference.config_generation_matches_approved",
+    approved: "config_generation",
+  },
+  {
+    field: "runtime.frame_pipeline_sha256",
+    attribute: "declared_reference.frame_pipeline_matches_approved",
+    approved: "frame_pipeline_sha256",
+  },
+  {
+    field: "derivative.parent_sha256",
+    attribute: "declared_reference.derivative_parent_matches_approved",
+    approved: "derivative_parent_sha256",
+  },
+  {
+    field: "cache.generation",
+    attribute: "declared_reference.derivative_generation_matches_approved",
+    approved: "derivative_generation",
+  },
+  {
+    field: "cache.key",
+    attribute: "declared_reference.cache_key_matches_approved",
+    approved: "cache_key",
+  },
+];
+const APPROVED_KEY_BY_FIELD = new Map(
+  MATCH_ATTRIBUTES.map(({ field, approved }) => [field, approved] as const),
+);
+const METRIC_ATTRIBUTE_KEYS = new Set([
+  "declared_reference.state",
+  "declared_reference.approved_state_sha256",
+  ...MATCH_ATTRIBUTES.map(({ attribute }) => attribute),
+  "reference.evidence_scope",
+  "reference.affected_representative_count",
+  "reference.protected_representative_count",
+  "reference.population_affected_artifact_count",
+  "reference.population_protected_artifact_count",
+]);
+const LOG_DETAIL_FIELDS = [
+  "runtime.effective_resource_sha256",
+  "runtime.effective_config_sha256",
+  "runtime.config_generation",
+  "runtime.frame_pipeline_sha256",
+  "cache.key",
+] as const satisfies readonly ReferenceDecisiveField[];
+const TRACE_DETAIL_FIELDS = [
+  "runtime.frame_pipeline_sha256",
+  "derivative.parent_sha256",
+  "cache.generation",
+  "cache.key",
+] as const satisfies readonly ReferenceDecisiveField[];
+const SIGNAL_ATTRIBUTE_KEYS: Readonly<Record<ReferenceSignalClass, ReadonlySet<string>>> = {
+  metric: METRIC_ATTRIBUTE_KEYS,
+  log: new Set(LOG_DETAIL_FIELDS),
+  trace: new Set(TRACE_DETAIL_FIELDS),
+};
+const SIGNAL_DETAIL_FIELDS: Readonly<
+  Record<ReferenceSignalClass, readonly ReferenceDecisiveField[]>
+> = {
+  metric: [],
+  log: LOG_DETAIL_FIELDS,
+  trace: TRACE_DETAIL_FIELDS,
+};
+const DECISIVE_FIELD_PATTERNS: Readonly<Record<ReferenceDecisiveField, RegExp>> = {
+  "runtime.effective_resource_sha256": DIGEST,
+  "runtime.effective_config_sha256": DIGEST,
+  "runtime.config_generation": POSITIVE_INTEGER_TEXT,
+  "runtime.frame_pipeline_sha256": DIGEST,
+  "derivative.parent_sha256": DIGEST,
+  "cache.generation": POSITIVE_INTEGER_TEXT,
+  "cache.key": IDENTIFIER,
+};
+const SCENARIO_CHANGED_FIELDS: Readonly<
+  Record<ReferenceRunScenarioId, readonly ReferenceDecisiveField[]>
+> = {
+  "tos-resource-resolution-drift-v1": [
+    "runtime.effective_resource_sha256",
+    "runtime.frame_pipeline_sha256",
+  ],
+  "tos-config-rollout-drift-v1": [
+    "runtime.effective_config_sha256",
+    "runtime.config_generation",
+    "runtime.frame_pipeline_sha256",
+  ],
+  "tos-stale-derivative-cache-v1": ["derivative.parent_sha256", "cache.generation"],
+};
+const SCENARIO_SIGNAL_PAIR: Readonly<
+  Record<ReferenceRunScenarioId, readonly ReferenceSignalClass[]>
+> = {
+  "tos-resource-resolution-drift-v1": ["metric", "log"],
+  "tos-config-rollout-drift-v1": ["metric", "log"],
+  "tos-stale-derivative-cache-v1": ["metric", "trace"],
 };
 
 const PACKET_KEYS = new Set([
@@ -448,28 +589,22 @@ const QUERY_TOOL: Readonly<Record<Exclude<ReferenceQueryKey, "alert.rule">, stri
   "log.config-cohort": "query_loki_logs",
 };
 const SCENARIO_DECISIVE_FIELDS: Readonly<
-  Record<
-    ReferenceRunScenarioId,
-    readonly {
-      readonly field: ReferenceDecisiveField;
-      readonly pattern: RegExp;
-    }[]
-  >
+  Record<ReferenceRunScenarioId, readonly ReferenceDecisiveField[]>
 > = {
   "tos-resource-resolution-drift-v1": [
-    { field: "runtime.effective_resource_sha256", pattern: ATTRIBUTE_DIGEST },
-    { field: "runtime.frame_pipeline_sha256", pattern: ATTRIBUTE_DIGEST },
+    "runtime.effective_resource_sha256",
+    "runtime.frame_pipeline_sha256",
   ],
   "tos-config-rollout-drift-v1": [
-    { field: "runtime.effective_config_sha256", pattern: ATTRIBUTE_DIGEST },
-    { field: "runtime.config_generation", pattern: POSITIVE_INTEGER_TEXT },
-    { field: "runtime.frame_pipeline_sha256", pattern: ATTRIBUTE_DIGEST },
+    "runtime.effective_config_sha256",
+    "runtime.config_generation",
+    "runtime.frame_pipeline_sha256",
   ],
   "tos-stale-derivative-cache-v1": [
-    { field: "runtime.frame_pipeline_sha256", pattern: ATTRIBUTE_DIGEST },
-    { field: "derivative.parent_sha256", pattern: ATTRIBUTE_DIGEST },
-    { field: "cache.generation", pattern: POSITIVE_INTEGER_TEXT },
-    { field: "cache.key", pattern: IDENTIFIER },
+    "runtime.frame_pipeline_sha256",
+    "derivative.parent_sha256",
+    "cache.generation",
+    "cache.key",
   ],
 };
 
@@ -510,6 +645,32 @@ function nullableInteger(value: unknown): number | null {
 function booleanValue(value: unknown): boolean {
   if (typeof value !== "boolean") throw invalidPacket();
   return value;
+}
+
+function parseApprovedState(value: unknown): ReferenceApprovedState {
+  const source = record(value);
+  exactKeys(source, APPROVED_STATE_KEYS);
+  return Object.freeze({
+    resource_sha256: stringValue(source.resource_sha256, DIGEST),
+    config_sha256: stringValue(source.config_sha256, DIGEST),
+    config_generation: integerValue(source.config_generation, 1, Number.MAX_SAFE_INTEGER),
+    frame_pipeline_sha256: stringValue(source.frame_pipeline_sha256, DIGEST),
+    derivative_parent_sha256: stringValue(source.derivative_parent_sha256, DIGEST),
+    derivative_generation: integerValue(source.derivative_generation, 1, Number.MAX_SAFE_INTEGER),
+    cache_key: stringValue(source.cache_key),
+  });
+}
+
+function approvedValue(approved: ReferenceApprovedState, field: ReferenceDecisiveField): string {
+  const approvedKey = APPROVED_KEY_BY_FIELD.get(field);
+  if (approvedKey === undefined) throw invalidPacket();
+  return String(approved[approvedKey]);
+}
+
+function booleanText(value: unknown): boolean {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw invalidPacket();
 }
 
 function stringArray(
@@ -844,14 +1005,188 @@ function parseActionIntent(value: unknown): ReferenceActionIntent {
   };
 }
 
+type ParsedSignalSemantics = {
+  readonly details: ReadonlyMap<ReferenceDecisiveField, string>;
+  readonly declaredReference: ReferenceDeclaredState | null;
+  readonly matches: ReadonlyMap<ReferenceDecisiveField, boolean>;
+};
+
+type ParsedProjectionObservation = {
+  readonly signal: ReferenceSignalClass;
+  readonly jobId: string;
+  readonly workerId: string;
+  readonly traceId: string;
+  readonly artifactId: string | null;
+  readonly configSha256: string;
+  readonly transformId: string | null;
+  readonly semantics: ParsedSignalSemantics;
+};
+
+function parseSignalSemantics(
+  attributes: Readonly<Record<string, unknown>>,
+  signal: ReferenceSignalClass,
+  status: ReferenceRunStatus,
+  scenarioId: ReferenceRunScenarioId,
+  scopeRole: "affected" | "protected",
+  approvedStateSha256: string,
+): ParsedSignalSemantics {
+  exactKeys(attributes, SIGNAL_ATTRIBUTE_KEYS[signal]);
+  const details = new Map<ReferenceDecisiveField, string>();
+  for (const field of SIGNAL_DETAIL_FIELDS[signal]) {
+    const pattern = DECISIVE_FIELD_PATTERNS[field];
+    const detail = stringValue(attributes[field], pattern);
+    if (pattern === POSITIVE_INTEGER_TEXT && !Number.isSafeInteger(Number.parseInt(detail, 10))) {
+      throw invalidPacket();
+    }
+    details.set(field, detail);
+  }
+  if (signal !== "metric") {
+    return {
+      details,
+      declaredReference: null,
+      matches: new Map<ReferenceDecisiveField, boolean>(),
+    };
+  }
+
+  const state = attributes["declared_reference.state"];
+  const expectedState = scopeRole === "affected" ? "reference_mismatch" : "reference_match";
+  if (
+    (state !== "reference_match" && state !== "reference_mismatch") ||
+    attributes["declared_reference.approved_state_sha256"] !== approvedStateSha256 ||
+    attributes["reference.evidence_scope"] !== "representative" ||
+    attributes["reference.affected_representative_count"] !== "1" ||
+    attributes["reference.protected_representative_count"] !== "1" ||
+    attributes["reference.population_affected_artifact_count"] !== "72" ||
+    attributes["reference.population_protected_artifact_count"] !== "168"
+  ) {
+    throw invalidPacket();
+  }
+  const changedFields = new Set(
+    scopeRole === "affected" ? SCENARIO_CHANGED_FIELDS[scenarioId] : [],
+  );
+  const matches = new Map<ReferenceDecisiveField, boolean>();
+  const matchStatuses = MATCH_ATTRIBUTES.map(({ field, attribute }) => {
+    const matchesApproved = booleanText(attributes[attribute]);
+    if (status === "resolved" && matchesApproved === changedFields.has(field)) {
+      throw invalidPacket();
+    }
+    matches.set(field, matchesApproved);
+    return Object.freeze({ field, matches_approved: matchesApproved });
+  });
+  const inferredState = matchStatuses.some(({ matches_approved }) => !matches_approved)
+    ? "reference_mismatch"
+    : "reference_match";
+  if (state !== inferredState || (status === "resolved" && state !== expectedState)) {
+    throw invalidPacket();
+  }
+  return {
+    details,
+    declaredReference: Object.freeze({
+      state,
+      approved_state_sha256: approvedStateSha256,
+      match_statuses: Object.freeze(matchStatuses),
+    }),
+    matches,
+  };
+}
+
+function validateProjectionSemantics(
+  observations: readonly ParsedProjectionObservation[],
+  status: ReferenceRunStatus,
+  scenarioId: ReferenceRunScenarioId,
+  scope: ReferenceRunScope,
+  approved: ReferenceApprovedState,
+): void {
+  const byJob = new Map<string, ParsedProjectionObservation[]>();
+  for (const observation of observations) {
+    const selected = byJob.get(observation.jobId) ?? [];
+    selected.push(observation);
+    byJob.set(observation.jobId, selected);
+  }
+  const scopedJobs = [...scope.affected_job_ids, ...scope.safe_job_ids];
+  if (
+    status === "resolved" &&
+    (byJob.size !== scopedJobs.length || scopedJobs.some((jobId) => !byJob.has(jobId)))
+  ) {
+    throw invalidPacket();
+  }
+
+  for (const selected of byJob.values()) {
+    if (
+      new Set(selected.map(({ workerId }) => workerId)).size !== 1 ||
+      new Set(selected.map(({ traceId }) => traceId)).size !== 1 ||
+      new Set(selected.map(({ artifactId }) => artifactId).filter((value) => value !== null)).size >
+        1 ||
+      new Set(selected.map(({ configSha256 }) => configSha256)).size !== 1 ||
+      new Set(selected.map(({ transformId }) => transformId)).size !== 1
+    ) {
+      throw invalidPacket();
+    }
+
+    const details = new Map<ReferenceDecisiveField, string>();
+    let declaredReference: ReferenceDeclaredState | null = null;
+    let matches: ReadonlyMap<ReferenceDecisiveField, boolean> | null = null;
+    for (const observation of selected) {
+      for (const [field, value] of observation.semantics.details) {
+        const previous = details.get(field);
+        if (previous !== undefined && previous !== value) throw invalidPacket();
+        details.set(field, value);
+      }
+      const candidate = observation.semantics.declaredReference;
+      if (candidate !== null) {
+        if (
+          declaredReference !== null &&
+          canonicalJson(declaredReference) !== canonicalJson(candidate)
+        ) {
+          throw invalidPacket();
+        }
+        declaredReference = candidate;
+        matches = observation.semantics.matches;
+      }
+    }
+
+    if (declaredReference !== null && matches !== null) {
+      for (const { field } of MATCH_ATTRIBUTES) {
+        const match = matches.get(field);
+        if (match === undefined) throw invalidPacket();
+        const detail = details.get(field);
+        if (
+          detail !== undefined &&
+          ((match && detail !== approvedValue(approved, field)) ||
+            (!match && detail === approvedValue(approved, field)))
+        ) {
+          throw invalidPacket();
+        }
+        if (status === "resolved" && !match && detail === undefined) throw invalidPacket();
+      }
+    }
+
+    if (status === "resolved") {
+      const signals = new Set(selected.map(({ signal }) => signal));
+      const expectedSignals = SCENARIO_SIGNAL_PAIR[scenarioId];
+      if (
+        signals.size !== expectedSignals.length ||
+        expectedSignals.some((signal) => !signals.has(signal)) ||
+        declaredReference === null ||
+        SCENARIO_DECISIVE_FIELDS[scenarioId].some((field) => !details.has(field))
+      ) {
+        throw invalidPacket();
+      }
+    }
+  }
+}
+
 function parseProjection(
   value: unknown,
   incidentId: string,
   packetEvidenceIds: readonly string[],
+  status: ReferenceRunStatus,
   scenarioId: ReferenceRunScenarioId,
   fixtureId: string,
   runId: string,
   scope: ReferenceRunScope,
+  approved: ReferenceApprovedState,
+  approvedStateSha256: string,
   windowStart: string,
   windowEnd: string,
 ): {
@@ -880,6 +1215,7 @@ function parseProjection(
   const observedEvidenceIds: string[] = [];
   const signalClasses: ReferenceSignalClass[] = [];
   const observations: ReferenceRuntimeObservation[] = [];
+  const parsedObservations: ParsedProjectionObservation[] = [];
   const scopedJobIds = new Set([...scope.affected_job_ids, ...scope.safe_job_ids]);
   for (const item of source.observations) {
     const observation = record(item);
@@ -900,15 +1236,21 @@ function parseProjection(
     if (factId !== `runtime-fact:${factSha256.slice("sha256:".length)}`) throw invalidPacket();
 
     stringValue(observation.event_id);
-    stringValue(observation.worker_id);
+    const workerId = stringValue(observation.worker_id);
     const jobId = stringValue(observation.job_id);
     if (!scopedJobIds.has(jobId)) throw invalidPacket();
     const scopeRole = scope.affected_job_ids.includes(jobId) ? "affected" : "protected";
     const traceId = stringValue(observation.trace_id, TRACE_ID);
-    if (observation.artifact_id !== null) stringValue(observation.artifact_id);
-    if (observation.config_sha256 !== null) stringValue(observation.config_sha256, BARE_DIGEST);
-    stringValue(observation.resource_sha256, BARE_DIGEST);
-    if (observation.transform_id !== null) stringValue(observation.transform_id);
+    const artifactId =
+      observation.artifact_id === null ? null : stringValue(observation.artifact_id);
+    const configSha256 = stringValue(observation.config_sha256, BARE_DIGEST);
+    if (configSha256 !== approved.config_sha256.slice("sha256:".length)) throw invalidPacket();
+    const resourceSha256 = stringValue(
+      observation.resource_sha256,
+      signal === "log" ? BARE_DIGEST : NONE,
+    );
+    const transformId =
+      observation.transform_id === null ? null : stringValue(observation.transform_id);
     const observedAt = parseTimestamp(observation.observed_at);
     const emittedAt = parseTimestamp(observation.emitted_at);
     const retrievedAt = parseTimestamp(observation.retrieved_at);
@@ -922,16 +1264,24 @@ function parseProjection(
     }
 
     const attributes = record(observation.attributes);
+    const semantics = parseSignalSemantics(
+      attributes,
+      signal,
+      status,
+      scenarioId,
+      scopeRole,
+      approvedStateSha256,
+    );
+    if (
+      signal === "log" &&
+      semantics.details.get("runtime.effective_resource_sha256") !== `sha256:${resourceSha256}`
+    ) {
+      throw invalidPacket();
+    }
     const decisiveValues = Object.freeze(
-      SCENARIO_DECISIVE_FIELDS[scenarioId].map(({ field, pattern }) => {
-        const decisiveValue = stringValue(attributes[field], pattern);
-        if (
-          pattern === POSITIVE_INTEGER_TEXT &&
-          !Number.isSafeInteger(Number.parseInt(decisiveValue, 10))
-        ) {
-          throw invalidPacket();
-        }
-        return Object.freeze({ field, value: decisiveValue });
+      SCENARIO_DECISIVE_FIELDS[scenarioId].flatMap((field) => {
+        const decisiveValue = semantics.details.get(field);
+        return decisiveValue === undefined ? [] : [Object.freeze({ field, value: decisiveValue })];
       }),
     );
     const provenance = record(observation.provenance);
@@ -966,9 +1316,20 @@ function parseProjection(
         observed_at: observedAt,
         query_key: provenanceQueryKey,
         evidence_id: evidenceId,
+        declared_reference: semantics.declaredReference,
         decisive_values: decisiveValues,
       }),
     );
+    parsedObservations.push({
+      signal,
+      jobId,
+      workerId,
+      traceId,
+      artifactId,
+      configSha256,
+      transformId,
+      semantics,
+    });
   }
   if (
     new Set(observedFactIds).size !== observedFactIds.length ||
@@ -977,6 +1338,7 @@ function parseProjection(
   ) {
     throw invalidPacket();
   }
+  validateProjectionSemantics(parsedObservations, status, scenarioId, scope, approved);
   return {
     source,
     requestId,
@@ -1149,6 +1511,9 @@ export async function parseReferenceResponsePacket(
   ) {
     throw invalidPacket();
   }
+  const approvedState = parseApprovedState(expected.approved);
+  const approvedStateSha256 = await sha256(utf8(canonicalJson(approvedState)));
+  if (!DIGEST.test(approvedStateSha256)) throw invalidPacket();
   stringArray(expected.reason_codes, REASON_CODE, 1, 16);
 
   const operational = record(source.operational_evidence_assessment);
@@ -1278,10 +1643,13 @@ export async function parseReferenceResponsePacket(
     source.runtime_evidence_projection,
     incidentId,
     evidenceIds,
+    status,
     expectedScenarioId,
     fixtureId,
     runId,
     expectedScope,
+    approvedState,
+    approvedStateSha256,
     windowStart,
     windowEnd,
   );

@@ -1092,7 +1092,7 @@ function BenchmarkState({
           <div>
             <p className="shot-eyebrow">Recorded benchmark</p>
             <h3 id="reference-benchmark-title">
-              {result.passed ? "Acceptance suite passed" : "Acceptance suite failed"}
+              {result.passed ? "Reference benchmark passed" : "Reference benchmark failed"}
             </h3>
           </div>
           <span data-result-state={result.passed ? "passed" : "failed"}>
@@ -1101,7 +1101,16 @@ function BenchmarkState({
         </div>
         <p className="reference-benchmark__source">
           Measured from recorded worker receipts · {result.evidence.observation_count} artifact
-          observations · recorded evaluator output · 27 fail-closed mutation cases tested separately
+          observations · recorded evaluator output · 39 fail-closed mutation cases tested separately
+        </p>
+        <p className="reference-benchmark__source">
+          Model boundary · 60 model-output receipts replayed against sealed holdouts · hashes,
+          corpus/input bindings, budgets, and deterministic scoring verified locally · provider
+          execution is not independently attested
+        </p>
+        <p>
+          Efficiency counts only after recovered outputs are equivalent, protected outputs remain
+          intact, and no false-authorized action occurs.
         </p>
         <section aria-label="Recorded benchmark metrics" className="reference-benchmark__metrics">
           <div>
@@ -1212,29 +1221,32 @@ function BenchmarkState({
       </div>
       <section className="reference-benchmark__metrics" aria-label="Benchmark requirements">
         <div>
-          <strong>{basisPoints(selected.scope_reduction_basis_points)}</strong>
-          <span>scope excluded by scenario definition</span>
+          <strong>Required</strong>
+          <span>equivalent recovered outputs</span>
         </div>
         <div>
-          <strong>
-            ≥{basisPoints(requirements.minimum_resolvable_holdout_accuracy_basis_points)}
-          </strong>
-          <span>required resolvable accuracy</span>
+          <strong>Unchanged</strong>
+          <span>required protected outputs</span>
         </div>
         <div>
           <strong>{requirements.maximum_false_authorized_actions}</strong>
           <span>maximum false-authorized actions</span>
         </div>
         <div>
-          <strong>≥{basisPoints(requirements.minimum_median_compute_avoided_basis_points)}</strong>
-          <span>required median compute avoided</span>
+          <strong>
+            ≥{basisPoints(requirements.minimum_resolvable_holdout_accuracy_basis_points)}
+          </strong>
+          <span>required correct resolution on resolvable holdouts</span>
         </div>
       </section>
       <p>
-        Output equivalence, protected-output integrity, and the same{" "}
-        {basisPoints(requirements.minimum_median_bytes_avoided_basis_points)} median threshold for
-        bytes avoided are required. This endpoint reports requirements and scope arithmetic only; it
-        does not report compute, byte, time, cost, or accuracy results.
+        Only after those correctness and safety gates pass, the impact target is ≥
+        {basisPoints(requirements.minimum_median_compute_avoided_basis_points)} median compute and ≥
+        {basisPoints(requirements.minimum_median_bytes_avoided_basis_points)} median application
+        bytes avoided. This scenario definition excludes{" "}
+        {basisPoints(selected.scope_reduction_basis_points)} of its scope from recovery. This
+        endpoint reports requirements and scope arithmetic only; it does not report compute, byte,
+        time, cost, or accuracy results.
       </p>
     </section>
   );

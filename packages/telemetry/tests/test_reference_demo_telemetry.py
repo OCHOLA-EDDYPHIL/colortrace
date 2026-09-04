@@ -38,11 +38,40 @@ SCENARIOS = {
     ),
 }
 
-SEMANTIC_FIELDS = {
+COMMON_FIELDS = {
+    "reference.data_origin",
+    "reference.scenario_id",
+    "reference.incident_class",
+    "reference.incident_id",
+    "reference.scope_role",
+}
+MATCH_FIELDS = {
+    "runtime.effective_resource_sha256": ("declared_reference.effective_resource_matches_approved"),
+    "runtime.effective_config_sha256": ("declared_reference.effective_config_matches_approved"),
+    "runtime.config_generation": "declared_reference.config_generation_matches_approved",
+    "runtime.frame_pipeline_sha256": ("declared_reference.frame_pipeline_matches_approved"),
+    "derivative.parent_sha256": "declared_reference.derivative_parent_matches_approved",
+    "cache.generation": "declared_reference.derivative_generation_matches_approved",
+    "cache.key": "declared_reference.cache_key_matches_approved",
+}
+METRIC_FIELDS = {
     "declared_reference.state",
+    "declared_reference.approved_state_sha256",
+    *MATCH_FIELDS.values(),
+    "reference.evidence_scope",
+    "reference.affected_representative_count",
+    "reference.protected_representative_count",
+    "reference.population_affected_artifact_count",
+    "reference.population_protected_artifact_count",
+}
+LOG_FIELDS = {
     "runtime.effective_resource_sha256",
     "runtime.effective_config_sha256",
     "runtime.config_generation",
+    "runtime.frame_pipeline_sha256",
+    "cache.key",
+}
+TRACE_FIELDS = {
     "runtime.frame_pipeline_sha256",
     "derivative.parent_sha256",
     "cache.generation",
@@ -98,6 +127,7 @@ def test_generated_plan_carries_distinct_two_scope_cross_signal_evidence(
     assert all(
         event.attributes["reference.data_origin"] == REFERENCE_DATA_ORIGIN for event in plan.events
     )
+    metric_events = [event for event in plan.events if event.signal == "metric"]
     assert {
         (
             event.attributes["reference.evidence_scope"],
@@ -106,30 +136,69 @@ def test_generated_plan_carries_distinct_two_scope_cross_signal_evidence(
             event.attributes["reference.population_affected_artifact_count"],
             event.attributes["reference.population_protected_artifact_count"],
         )
-        for event in plan.events
+        for event in metric_events
     } == {("representative", "1", "1", "72", "168")}
 
     by_role: dict[str, dict[str, str]] = {}
+    expected_signal_fields = {
+        "metric": METRIC_FIELDS,
+        "log": LOG_FIELDS,
+        "trace": TRACE_FIELDS,
+    }
     for role in ("affected", "protected"):
         role_events = [
             event for event in plan.events if event.attributes["reference.scope_role"] == role
         ]
         assert {event.signal for event in role_events} == {"metric", "log", "trace"}
-        assert all(SEMANTIC_FIELDS <= set(event.attributes) for event in role_events)
-        assert len({tuple(sorted(event.attributes.items())) for event in role_events}) == 1
+        assert all(
+            set(event.attributes) == COMMON_FIELDS | expected_signal_fields[event.signal]
+            for event in role_events
+        )
+        assert len({tuple(sorted(event.attributes.items())) for event in role_events}) == 3
         assert len({event.correlation["job_id"] for event in role_events}) == 1
         assert len({event.correlation["artifact_id"] for event in role_events}) == 1
         assert len({event.correlation["trace_id"] for event in role_events}) == 1
-        by_role[role] = dict(role_events[0].attributes)
+        role_by_signal = {event.signal: event for event in role_events}
+        assert role_by_signal["metric"].correlation["resource_sha256"] == "none"
+        assert role_by_signal["trace"].correlation["resource_sha256"] == "none"
+        assert role_by_signal["log"].correlation["resource_sha256"] == role_by_signal[
+            "log"
+        ].attributes["runtime.effective_resource_sha256"].removeprefix("sha256:")
+        assert (
+            role_by_signal["log"].attributes["runtime.frame_pipeline_sha256"]
+            == role_by_signal["trace"].attributes["runtime.frame_pipeline_sha256"]
+        )
+        assert (
+            role_by_signal["log"].attributes["cache.key"]
+            == role_by_signal["trace"].attributes["cache.key"]
+        )
+        by_role[role] = {
+            **{name: role_by_signal["log"].attributes[name] for name in LOG_FIELDS},
+            **{name: role_by_signal["trace"].attributes[name] for name in TRACE_FIELDS},
+        }
 
     changed = {
-        name
-        for name in SEMANTIC_FIELDS - {"declared_reference.state"}
-        if by_role["affected"][name] != by_role["protected"][name]
+        name for name in MATCH_FIELDS if by_role["affected"][name] != by_role["protected"][name]
     }
     assert changed == expected_changes
-    assert by_role["affected"]["declared_reference.state"] == "reference_mismatch"
-    assert by_role["protected"]["declared_reference.state"] == "reference_match"
+    affected_metric = next(
+        event for event in metric_events if event.attributes["reference.scope_role"] == "affected"
+    )
+    protected_metric = next(
+        event for event in metric_events if event.attributes["reference.scope_role"] == "protected"
+    )
+    assert affected_metric.attributes["declared_reference.state"] == "reference_mismatch"
+    assert protected_metric.attributes["declared_reference.state"] == "reference_match"
+    assert {
+        name
+        for detail_name, name in MATCH_FIELDS.items()
+        if affected_metric.attributes[name] == "false"
+    } == {MATCH_FIELDS[name] for name in expected_changes}
+    assert all(protected_metric.attributes[name] == "true" for name in MATCH_FIELDS.values())
+    assert (
+        affected_metric.attributes["declared_reference.approved_state_sha256"]
+        == protected_metric.attributes["declared_reference.approved_state_sha256"]
+    )
 
 
 def test_generated_plan_uses_run_scoped_trace_and_event_identities() -> None:
@@ -171,10 +240,11 @@ def test_emitted_attribute_shapes_match_metric_log_and_trace_normalization() -> 
         "transform_id",
     }
 
-    for signal in ("log", "trace"):
+    for signal, signal_fields in (("log", LOG_FIELDS), ("trace", TRACE_FIELDS)):
         attributes = reference_event_attributes(event_by_signal[signal])
         assert required_binding <= set(attributes)
-        assert SEMANTIC_FIELDS <= set(attributes)
+        assert signal_fields <= set(attributes)
+        assert "declared_reference.state" not in attributes
         assert attributes["telemetry.event_id"] == event_by_signal[signal].event_id
         assert attributes["telemetry.observed_at"] == event_by_signal[signal].observed_at
         assert attributes["telemetry.emitted_at"] == event_by_signal[signal].emitted_at
@@ -186,14 +256,16 @@ def test_emitted_attribute_shapes_match_metric_log_and_trace_normalization() -> 
         "telemetry_observed_at",
         "telemetry_emitted_at",
         "declared_reference_state",
-        "runtime_effective_resource_sha256",
-        "runtime_effective_config_sha256",
-        "runtime_config_generation",
-        "runtime_frame_pipeline_sha256",
-        "derivative_parent_sha256",
-        "cache_generation",
-        "cache_key",
+        "declared_reference_approved_state_sha256",
+        "declared_reference_effective_resource_matches_approved",
+        "declared_reference_effective_config_matches_approved",
+        "declared_reference_config_generation_matches_approved",
+        "declared_reference_frame_pipeline_matches_approved",
+        "declared_reference_derivative_parent_matches_approved",
+        "declared_reference_derivative_generation_matches_approved",
+        "declared_reference_cache_key_matches_approved",
     } <= set(metric_attributes)
+    assert "runtime_effective_resource_sha256" not in metric_attributes
 
 
 def test_otlp_metric_emission_uses_prometheus_safe_attribute_names() -> None:
@@ -214,7 +286,8 @@ def test_otlp_metric_emission_uses_prometheus_safe_attribute_names() -> None:
 
     assert counter.attributes is not None
     assert "telemetry_event_id" in counter.attributes
-    assert "runtime_effective_resource_sha256" in counter.attributes
+    assert "declared_reference_effective_resource_matches_approved" in counter.attributes
+    assert "runtime_effective_resource_sha256" not in counter.attributes
     assert "telemetry.event_id" not in counter.attributes
     assert "runtime.effective_resource_sha256" not in counter.attributes
 
@@ -287,5 +360,12 @@ def test_custom_plan_rejects_drift_outside_the_selected_scenario() -> None:
 def test_event_schema_rejects_signal_name_mismatch() -> None:
     event = _plans()[2].events[0].to_dict()
     event["event_name"] = "colortrace.declared_reference.log"
+    with pytest.raises(ValueError, match="validation failed"):
+        validate_schema("reference-demonstration-telemetry-event-v1.schema.json", event)
+
+
+def test_event_schema_rejects_cross_signal_semantic_fields() -> None:
+    event = next(event for event in _plans()[0].events if event.signal == "metric").to_dict()
+    event["attributes"]["runtime.effective_resource_sha256"] = "sha256:" + "a" * 64
     with pytest.raises(ValueError, match="validation failed"):
         validate_schema("reference-demonstration-telemetry-event-v1.schema.json", event)
