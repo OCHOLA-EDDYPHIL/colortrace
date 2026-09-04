@@ -21,6 +21,7 @@
       "fastapi",
       "jsonschema",
       "opencolorio",
+      "openimageio",
       "opentelemetry-api",
       "opentelemetry-exporter-otlp-proto-http",
       "opentelemetry-sdk",

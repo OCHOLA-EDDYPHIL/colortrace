@@ -1710,10 +1710,24 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+      "name": "numpy",
+      "source": "https://pypi.org/simple",
+      "version": "2.5.2"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "BSD-3-Clause",
       "name": "opencolorio",
       "source": "https://pypi.org/simple",
       "version": "2.5.2"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "openimageio",
+      "source": "https://pypi.org/simple",
+      "version": "3.1.17.0"
     },
     {
       "ecosystem": "pypi",

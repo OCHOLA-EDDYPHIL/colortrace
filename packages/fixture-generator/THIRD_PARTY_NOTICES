@@ -28,3 +28,17 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Tears of Steel VFX plates
+Creative Commons Attribution 3.0 Unported (CC BY 3.0)
+Source: https://media.xiph.org/tearsofsteel/linear-exr/README.txt
+License: https://creativecommons.org/licenses/by/3.0/
+
+Copyright Blender Foundation, Mango Open Movie contributors.
+
+ColorTrace's reference-media manifest identifies 240 unmodified linear OpenEXR source
+frames. Those source frames are downloaded into an external cache and are not
+redistributed with this source repository. The small PNG previews distributed with the
+ColorTrace API are modified derivatives: they are color-transformed, resized, and, for
+difference views, computed and amplified. Their exact source-frame and transformation
+provenance is recorded in the accompanying preview manifest.

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-holdout-corpus-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "corpus_id", "generator", "cases", "corpus_sha256"],
+  "properties": {
+    "schema": {"const": "reference-holdout-corpus/v1"},
+    "corpus_id": {"$ref": "#/$defs/id"},
+    "generator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "seed_sha256"],
+      "properties": {
+        "name": {"const": "colortrace-reference-holdouts"},
+        "version": {"const": "1"},
+        "seed_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 60,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/case"}
+    },
+    "corpus_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "incident": {
+      "enum": [
+        "resource-resolution-drift/v1",
+        "configuration-rollout-drift/v1",
+        "stale-derivative-cache/v1"
+      ]
+    },
+    "queryOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation_count", "normalized_bytes", "observations_sha256"],
+      "properties": {
+        "observation_count": {"type": "integer", "minimum": 0},
+        "normalized_bytes": {"type": "integer", "minimum": 1},
+        "observations_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id", "scenario_id", "source_incident_class", "kind", "mutation",
+        "expected_state_sha256", "query_outcomes", "expected_incident_class",
+        "case_sha256"
+      ],
+      "properties": {
+        "case_id": {"$ref": "#/$defs/id"},
+        "scenario_id": {"$ref": "#/$defs/id"},
+        "source_incident_class": {"$ref": "#/$defs/incident"},
+        "kind": {"enum": ["resolvable", "fail-closed"]},
+        "mutation": {
+          "enum": [
+            "none", "display-text-injection", "no-evidence", "one-signal",
+            "stale-observation", "cross-run", "conflicting-event", "scope-mismatch",
+            "multi-dimension-drift", "no-causal-drift", "malformed-digest"
+          ]
+        },
+        "expected_state_sha256": {"$ref": "#/$defs/digest"},
+        "query_outcomes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "metric.correlated-observations", "log.correlated-events", "trace.by-id"
+          ],
+          "properties": {
+            "metric.correlated-observations": {"$ref": "#/$defs/queryOutcome"},
+            "log.correlated-events": {"$ref": "#/$defs/queryOutcome"},
+            "trace.by-id": {"$ref": "#/$defs/queryOutcome"}
+          }
+        },
+        "expected_incident_class": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/incident"}]
+        },
+        "case_sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

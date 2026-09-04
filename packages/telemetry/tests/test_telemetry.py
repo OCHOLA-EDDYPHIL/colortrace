@@ -793,6 +793,20 @@ def test_local_stack_and_alert_contracts_are_pinned() -> None:
     assert "colortrace_declared_reference_observations_total" in expression
     assert 'declared_reference_state="reference_mismatch"' in expression
     assert "resource_sha256" not in expression
+    reference_rule = next(
+        child for child in group["rules"] if child["uid"] == "ct-reference-demo-divergence-v1"
+    )
+    reference_expression = reference_rule["data"][0]["model"]["expr"]
+    assert reference_rule["for"] == "0s"
+    assert 'fixture_id="tears-of-steel-linear-exr-240-v1"' in reference_expression
+    assert 'declared_reference_state="reference_mismatch"' in reference_expression
+    assert 'reference_data_origin="generated-demonstration-telemetry"' in reference_expression
+    assert reference_rule["annotations"] == {
+        "alert_contract": "grafana-reference-demo-alert/v1",
+        "evidence_scope": "representative",
+        "reference_data_origin": "generated-demonstration-telemetry",
+        "reference_fixture_id": "tears-of-steel-linear-exr-240-v1",
+    }
     alert_contract = json.loads(
         (REPOSITORY_ROOT / "config/telemetry/alert-contract.json").read_text(encoding="utf-8")
     )

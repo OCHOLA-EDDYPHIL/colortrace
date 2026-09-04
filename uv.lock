@@ -321,8 +321,9 @@ dependencies = [
     { name = "colortrace-investigation" },
     { name = "colortrace-recovery" },
     { name = "colortrace-response-plans" },
-    { name = "colortrace-simulator" },
+    { name = "colortrace-simulator", extra = ["reference-worker"] },
     { name = "colortrace-telemetry" },
+    { name = "colortrace-validator" },
     { name = "colortrace-vertical-slice" },
     { name = "jsonschema" },
 ]
@@ -335,8 +336,9 @@ requires-dist = [
     { name = "colortrace-investigation", editable = "packages/investigation" },
     { name = "colortrace-recovery", editable = "packages/recovery" },
     { name = "colortrace-response-plans", editable = "packages/response-plans" },
-    { name = "colortrace-simulator", editable = "packages/simulator" },
+    { name = "colortrace-simulator", extras = ["reference-worker"], editable = "packages/simulator" },
     { name = "colortrace-telemetry", editable = "packages/telemetry" },
+    { name = "colortrace-validator", editable = "packages/validators" },
     { name = "colortrace-vertical-slice", editable = "packages/vertical-slice" },
     { name = "jsonschema", specifier = "==4.25.1" },
 ]
@@ -446,15 +448,26 @@ source = { editable = "packages/simulator" }
 dependencies = [
     { name = "colortrace-fixture" },
     { name = "colortrace-response-plans" },
+    { name = "colortrace-validator" },
     { name = "jsonschema" },
+    { name = "opencolorio" },
+]
+
+[package.optional-dependencies]
+reference-worker = [
+    { name = "openimageio" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "colortrace-fixture", editable = "packages/fixture-generator" },
     { name = "colortrace-response-plans", editable = "packages/response-plans" },
+    { name = "colortrace-validator", editable = "packages/validators" },
     { name = "jsonschema", specifier = "==4.25.1" },
+    { name = "opencolorio", specifier = "==2.5.2" },
+    { name = "openimageio", marker = "extra == 'reference-worker'", specifier = "==3.1.17.0" },
 ]
+provides-extras = ["reference-worker"]
 
 [[package]]
 name = "colortrace-telemetry"
@@ -944,6 +957,25 @@ wheels = [
 ]
 
 [[package]]
+name = "numpy"
+version = "2.5.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9a/80/db0b4559e57ec36362bedbb05530a87fafbcb6067708c946967a41d449e7/numpy-2.5.2.tar.gz", hash = "sha256:d482d171c406ae88c5b19cad3b6a1c4c5209f886ab74bc44c2c865c23f52d860", size = 20773161, upload-time = "2026-08-09T13:48:27.962Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/69/72/dccb0aaf40972777283303919f613964227266d0c13adebb79ac124f1c3e/numpy-2.5.2-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:14e373cfc6387177e8409dac3c7159be8eb05cd77096cd7c950268b86f62831c", size = 16891693, upload-time = "2026-08-09T13:44:51.702Z" },
+    { url = "https://files.pythonhosted.org/packages/60/2e/b5aee50a1f74ac815cf8331812cb8251e29024025de462e0c047641c614c/numpy-2.5.2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:4bbd96c833ecc8cc069ce518078fc8c60cb9cbfb0fea5b7a803ad65035596d03", size = 11903109, upload-time = "2026-08-09T13:44:55.501Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/f4/29e78102a80601cf034d4e9767022cffeca2c3b4c926e1754572ca95593d/numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:6e8172ddfcf5cf74b811d372b570b83c60bd2de87a6fbfbebdadb4a9bd9c6cbb", size = 5350202, upload-time = "2026-08-09T13:44:58.401Z" },
+    { url = "https://files.pythonhosted.org/packages/11/4b/dcd3b7eadaf4035d2c7a4289d232523a6964f602598ef7674e4bd7291f93/numpy-2.5.2-cp312-cp312-macosx_14_0_x86_64.whl", hash = "sha256:65f188481f1669e26f62b701e8205d19e460fa4a9b52a1414ba382330e4a3414", size = 6687736, upload-time = "2026-08-09T13:45:00.813Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/21/4947e0e9d6c9fc2e2ff15b8949049ee44f63adb9cacc729ab8793f97e712/numpy-2.5.2-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8ee9c4eeb8454b3660a8b53493563c3e121c2fc94fbd72b848ef814ed7b676a9", size = 15612696, upload-time = "2026-08-09T13:45:04.151Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/5f/62d28cf019460c7f1394105b4d49d9911a9c444cb77ab0bd95a204c5a6de/numpy-2.5.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3cdec01fa790a186d430433fdd4d4ffb70eed6f0eeb4bf05c8dbe2dce0a9bcb8", size = 16722264, upload-time = "2026-08-09T13:45:07.714Z" },
+    { url = "https://files.pythonhosted.org/packages/14/25/3f0be4c1b9fdf5dd5e708a6806978564d7c46a055c000496309ff2a2f8af/numpy-2.5.2-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:7999d4ddb0c4025018373fd787510d46e04c769467af22869707b3c1cfd459ab", size = 16974396, upload-time = "2026-08-09T13:45:11.316Z" },
+    { url = "https://files.pythonhosted.org/packages/22/72/6262cbdeeb45da9d971e40715f579d791603ba8ec0b5e2db1ac55454421d/numpy-2.5.2-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:c1f017dc0875c9209d219f97feceb7d54c2661bb243deb4114478e1295808af7", size = 18476044, upload-time = "2026-08-09T13:45:14.869Z" },
+    { url = "https://files.pythonhosted.org/packages/36/33/29208b8b075bde62d26a81d14b358c42b0f69b6cabd98d4ff97f37f22b05/numpy-2.5.2-cp312-cp312-win32.whl", hash = "sha256:d6a48072864e3324e194a8fbb3c657bcc5b5c869dbc64c9537b1d5c862572c0a", size = 6072817, upload-time = "2026-08-09T13:45:17.867Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/b9/87fea2769fe1c47c1b5b01d8310772c9d1a85d485de7cf386ef7a3332b02/numpy-2.5.2-cp312-cp312-win_amd64.whl", hash = "sha256:28ac63476ec7651484215ee7fa15a1f78b57c14621f01e392afe17b9a1390ce4", size = 12464674, upload-time = "2026-08-09T13:45:20.734Z" },
+    { url = "https://files.pythonhosted.org/packages/14/52/032b97e00461ab0809bbe4c588b035620e5a14b8cdee47ecddefc7b17d33/numpy-2.5.2-cp312-cp312-win_arm64.whl", hash = "sha256:27650bb0e7140fa3d37b9923b4803645e0b125d190f326eecfd3f4dad8e8ade1", size = 10397131, upload-time = "2026-08-09T13:45:23.73Z" },
+]
+
+[[package]]
 name = "opencolorio"
 version = "2.5.2"
 source = { registry = "https://pypi.org/simple" }
@@ -955,6 +987,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/63/a5/ea77ac1f8ba17503b113b4334d3b1f10cba32104d0f741d6694e8ee2564a/opencolorio-2.5.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:cc34db609bd91fb43747d2f425d020d6d17afed406669703bab2af08c149ddac", size = 6828941, upload-time = "2026-05-13T18:49:14.594Z" },
     { url = "https://files.pythonhosted.org/packages/c2/57/29ffadf7bf9c6a65a884be18933864a1a3e6ff165127bf1acff9930b97ee/opencolorio-2.5.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3d0ab1c398d560513c651c7b9c676e68f264a63b97e29fec21722d4270f865aa", size = 6932093, upload-time = "2026-05-13T18:49:16.252Z" },
     { url = "https://files.pythonhosted.org/packages/5a/1d/1f1f5ce05a55168d0528ed0fdc89dd60a82664fff0cbc4061a05689406cf/opencolorio-2.5.2-cp312-cp312-win_amd64.whl", hash = "sha256:96b0b01713d759c2ddc0f57229a1bb599d72298746cdeff9512abc46a079494f", size = 3865142, upload-time = "2026-05-13T18:49:17.57Z" },
+]
+
+[[package]]
+name = "openimageio"
+version = "3.1.17.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/19/a5/77381af9b6c79d06e4f54354e97e36edcad86cb8469615f73f814c139739/openimageio-3.1.17.0.tar.gz", hash = "sha256:d537d2f96b553e263fcdad3c4c1887b0d49b32a5527bdb2a7697fdf97a326f3b", size = 6672501, upload-time = "2026-08-31T23:11:00.968Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f1/61/90ddd518c778cf20bd0ff92d7df28204cc85e3d95d265f332421b4b12551/openimageio-3.1.17.0-cp312-cp312-macosx_10_15_x86_64.whl", hash = "sha256:38fb9a526725c2918ab451aed8b9f72b18b30b999a601af4d976f50b2098900a", size = 7055424, upload-time = "2026-08-31T23:10:26.939Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/47/3b802fa6914f781c0517e5138ada5ca9ff8142b93d0112ef46b9f9e57b1c/openimageio-3.1.17.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:53a84dae31c3ff9ecf4ec7e76a7747adf26816d6808cb781ef8830f8f25721aa", size = 6641876, upload-time = "2026-08-31T23:10:28.663Z" },
+    { url = "https://files.pythonhosted.org/packages/97/9d/4e09706787285de5aca607c9e3c8622f79fe9d495caac11c00cce0746dc9/openimageio-3.1.17.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:498655564d474b2146e2ccd9c709dfe34351e830671bdceac95fb9c16dd93b9b", size = 6628711, upload-time = "2026-08-31T23:10:30.258Z" },
+    { url = "https://files.pythonhosted.org/packages/90/64/14c51f85a75908bbb29d4f9cde07f0d7d6b5897aa2e874ba688db61ba3a1/openimageio-3.1.17.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d601d0e539c43a552815356c1c826d8e4ab48c24254f1f958798fb04249591eb", size = 6918931, upload-time = "2026-08-31T23:10:31.86Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/ea/7c3b11fc0906ff045aedc2486130c13e6b3a341eac6fb5a2c18a300ec9c4/openimageio-3.1.17.0-cp312-cp312-win_amd64.whl", hash = "sha256:e8fc1a5edafc971d9131035d6bf5d2aa14c06be492eedefd9c59c72159f54e1f", size = 7706139, upload-time = "2026-08-31T23:10:33.529Z" },
 ]
 
 [[package]]

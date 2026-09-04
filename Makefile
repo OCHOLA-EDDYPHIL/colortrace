@@ -110,17 +110,17 @@ build-quality-tools: ensure-tool-image ensure-gitleaks-image ensure-telemetry-im
 build-security-tools: ensure-tool-image ensure-gitleaks-image ensure-trivy-image
 
 bootstrap: prepare-cache build-tools
-	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
+	$(TOOL_RUN) uv sync --locked --all-groups --all-packages --all-extras
 	$(TOOL_RUN) pnpm install --frozen-lockfile --store-dir $(PNPM_STORE)
 	$(TOOL_RUN) terraform -chdir=infra/single-host init -backend=false -input=false
 
 bootstrap-quality: prepare-cache build-quality-tools
-	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
+	$(TOOL_RUN) uv sync --locked --all-groups --all-packages --all-extras
 	$(TOOL_RUN) pnpm install --frozen-lockfile --store-dir $(PNPM_STORE)
 	$(TOOL_RUN) terraform -chdir=infra/single-host init -backend=false -input=false
 
 bootstrap-security: prepare-cache build-security-tools
-	$(TOOL_RUN) uv sync --locked --all-groups --all-packages
+	$(TOOL_RUN) uv sync --locked --all-groups --all-packages --all-extras
 
 format: prepare-cache
 	$(TOOL_RUN) uv run ruff format .

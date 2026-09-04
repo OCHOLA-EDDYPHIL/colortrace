@@ -19,3 +19,7 @@ packages = ["src/colortrace_fixture"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "../../LICENSE" = "colortrace_fixture/LICENSE"
+"THIRD_PARTY_NOTICES" = "colortrace_fixture/THIRD_PARTY_NOTICES"
+"fixtures/tears-of-steel-reference.json" = "colortrace_fixture/reference/manifest.json"
+"fixtures/tears-of-steel/03_2a.frames.tsv" = "colortrace_fixture/reference/tears-of-steel/03_2a.frames.tsv"
+"fixtures/tears-of-steel/04_5f.frames.tsv" = "colortrace_fixture/reference/tears-of-steel/04_5f.frames.tsv"

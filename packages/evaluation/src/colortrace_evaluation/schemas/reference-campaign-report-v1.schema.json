@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-campaign-report-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "corpus_id", "corpus_sha256", "case_counts", "metrics",
+    "thresholds", "selection_comparison", "checks", "passed", "case_results",
+    "report_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "reference-campaign-report/v1"},
+    "corpus_id": {"$ref": "#/$defs/id"},
+    "corpus_sha256": {"$ref": "#/$defs/digest"},
+    "case_counts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["total", "resolvable", "fail_closed", "resolvable_by_class"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 60},
+        "resolvable": {"type": "integer", "minimum": 60},
+        "fail_closed": {"type": "integer", "minimum": 1},
+        "resolvable_by_class": {
+          "type": "object", "additionalProperties": false,
+          "required": [
+            "resource-resolution-drift/v1", "configuration-rollout-drift/v1",
+            "stale-derivative-cache/v1"
+          ],
+          "properties": {
+            "resource-resolution-drift/v1": {"type": "integer", "minimum": 20},
+            "configuration-rollout-drift/v1": {"type": "integer", "minimum": 20},
+            "stale-derivative-cache/v1": {"type": "integer", "minimum": 20}
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "correct_resolvable_classifications", "classification_accuracy_basis_points",
+        "negative_cases_failed_closed", "false_action_intents",
+        "false_authorized_actions", "display_text_mutations_resolved",
+        "display_text_mutation_count"
+      ],
+      "properties": {
+        "correct_resolvable_classifications": {"type": "integer", "minimum": 0},
+        "classification_accuracy_basis_points": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "negative_cases_failed_closed": {"type": "integer", "minimum": 0},
+        "false_action_intents": {"type": "integer", "minimum": 0},
+        "false_authorized_actions": {"type": "integer", "minimum": 0},
+        "display_text_mutations_resolved": {"type": "integer", "minimum": 0},
+        "display_text_mutation_count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "thresholds": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "minimum_classification_accuracy_basis_points",
+        "maximum_false_action_intents", "maximum_false_authorized_actions"
+      ],
+      "properties": {
+        "minimum_classification_accuracy_basis_points": {"const": 9500},
+        "maximum_false_action_intents": {"const": 0},
+        "maximum_false_authorized_actions": {"const": 0}
+      }
+    },
+    "selection_comparison": {"type": "object"},
+    "checks": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "balanced_resolvable_classes", "classification_at_least_95_percent",
+        "all_negative_cases_fail_closed", "display_text_cannot_change_authority",
+        "zero_false_action_intents", "zero_false_authorized_actions",
+        "same_selection_budgets", "measurable_adaptive_advantage"
+      ],
+      "properties": {
+        "balanced_resolvable_classes": {"type": "boolean"},
+        "classification_at_least_95_percent": {"type": "boolean"},
+        "all_negative_cases_fail_closed": {"type": "boolean"},
+        "display_text_cannot_change_authority": {"type": "boolean"},
+        "zero_false_action_intents": {"type": "boolean"},
+        "zero_false_authorized_actions": {"type": "boolean"},
+        "same_selection_budgets": {"type": "boolean"},
+        "measurable_adaptive_advantage": {"type": "boolean"}
+      }
+    },
+    "passed": {"type": "boolean"},
+    "case_results": {
+      "type": "array", "minItems": 60,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": [
+          "case_id", "case_sha256", "kind", "mutation", "expected_incident_class",
+          "status", "incident_class", "correct_resolution", "action_intent_present",
+          "authorizes_execution", "reason_codes", "reconciliation_id"
+        ],
+        "properties": {
+          "case_id": {"$ref": "#/$defs/id"},
+          "case_sha256": {"$ref": "#/$defs/digest"},
+          "kind": {"enum": ["resolvable", "fail-closed"]},
+          "mutation": {"type": "string", "minLength": 1},
+          "expected_incident_class": {"oneOf": [{"type": "null"}, {"type": "string"}]},
+          "status": {"enum": ["supported", "rejected", "insufficient", "conflicting"]},
+          "incident_class": {"oneOf": [{"type": "null"}, {"type": "string"}]},
+          "correct_resolution": {"type": "boolean"},
+          "action_intent_present": {"type": "boolean"},
+          "authorizes_execution": {"type": "boolean"},
+          "reason_codes": {"type": "array", "items": {"type": "string"}},
+          "reconciliation_id": {"$ref": "#/$defs/id"}
+        }
+      }
+    },
+    "report_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

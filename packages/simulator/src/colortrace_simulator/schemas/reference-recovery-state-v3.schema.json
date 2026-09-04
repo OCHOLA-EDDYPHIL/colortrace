@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-recovery-state-v3.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "scenario_id", "incident_class", "generation", "scope", "jobs",
+    "protected_state_sha256", "state_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "reference-recovery-state/v3"},
+    "scenario_id": {"$ref": "#/$defs/id"},
+    "incident_class": {"$ref": "#/$defs/incident"},
+    "generation": {"type": "integer", "minimum": 1},
+    "scope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["affected_job_ids", "protected_job_ids"],
+      "properties": {
+        "affected_job_ids": {"$ref": "#/$defs/idList"},
+        "protected_job_ids": {"$ref": "#/$defs/idList"}
+      }
+    },
+    "jobs": {
+      "type": "array", "minItems": 2, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/job"}
+    },
+    "protected_state_sha256": {"$ref": "#/$defs/digest"},
+    "state_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "incident": {
+      "enum": [
+        "resource-resolution-drift/v1", "configuration-rollout-drift/v1",
+        "stale-derivative-cache/v1"
+      ]
+    },
+    "idList": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/id"}
+    },
+    "job": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "schema", "job_id", "effective_resource_sha256",
+        "effective_config_sha256", "config_generation", "frame_sha256",
+        "derivative_parent_sha256", "derivative_generation", "cache_key",
+        "derivative_sha256", "job_state_sha256"
+      ],
+      "properties": {
+        "schema": {"const": "reference-job-state/v3"},
+        "job_id": {"$ref": "#/$defs/id"},
+        "effective_resource_sha256": {"$ref": "#/$defs/digest"},
+        "effective_config_sha256": {"$ref": "#/$defs/digest"},
+        "config_generation": {"type": "integer", "minimum": 1},
+        "frame_sha256": {"$ref": "#/$defs/digest"},
+        "derivative_parent_sha256": {"$ref": "#/$defs/digest"},
+        "derivative_generation": {"type": "integer", "minimum": 1},
+        "cache_key": {"$ref": "#/$defs/id"},
+        "derivative_sha256": {"$ref": "#/$defs/digest"},
+        "job_state_sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

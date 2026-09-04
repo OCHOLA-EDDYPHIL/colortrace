@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-recorded-model-selection-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "selection_input_sha256", "selected_query_key"],
+  "properties": {
+    "schema": {"const": "reference-recorded-model-selection/v1"},
+    "selection_input_sha256": {"$ref": "#/$defs/digest"},
+    "selected_query_key": {"enum": ["log.correlated-events", "trace.by-id"]}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

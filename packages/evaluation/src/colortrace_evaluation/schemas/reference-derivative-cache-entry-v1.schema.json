@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-derivative-cache-entry-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "scenario_id",
+    "artifact_id",
+    "cache_key",
+    "state",
+    "derivative_generation",
+    "parent_output_sha256",
+    "derivative_output_sha256",
+    "canonical_pixel_sha256",
+    "byte_length",
+    "blob_relative_path",
+    "source_receipt_sha256",
+    "entry_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "reference-derivative-cache-entry/v1"},
+    "scenario_id": {"$ref": "#/$defs/id"},
+    "artifact_id": {"$ref": "#/$defs/id"},
+    "cache_key": {"$ref": "#/$defs/id"},
+    "state": {"enum": ["current", "stale"]},
+    "derivative_generation": {"type": "integer", "minimum": 1},
+    "parent_output_sha256": {"$ref": "#/$defs/digest"},
+    "derivative_output_sha256": {"$ref": "#/$defs/digest"},
+    "canonical_pixel_sha256": {"$ref": "#/$defs/digest"},
+    "byte_length": {"type": "integer", "minimum": 1},
+    "blob_relative_path": {"type": "string", "minLength": 1, "maxLength": 512},
+    "source_receipt_sha256": {"$ref": "#/$defs/digest"},
+    "entry_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
