@@ -2335,6 +2335,33 @@ h4 {
   overflow-wrap: anywhere;
 }
 
+.reference-live__conclusion {
+  display: grid;
+  gap: 0.35rem;
+  border-left: 2px solid var(--shot-cyan);
+  padding: 0.65rem 0.8rem;
+  background: rgb(17 23 34 / 78%);
+}
+
+.reference-live__conclusion span {
+  color: var(--shot-muted);
+  font-size: 0.63rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.reference-live__conclusion strong {
+  font-size: 0.86rem;
+}
+
+.reference-live__conclusion p {
+  margin: 0;
+  color: var(--shot-muted);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
 .reference-live__trace,
 .reference-live__spans,
 .reference-live__intent,

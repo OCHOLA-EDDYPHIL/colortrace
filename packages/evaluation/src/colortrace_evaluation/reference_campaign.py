@@ -51,7 +51,7 @@ CORPUS_VERSION = "reference-holdout-corpus/v1"
 CAMPAIGN_VERSION = "reference-campaign-report/v1"
 POLICY_COMPARISON_VERSION = "reference-policy-comparison/v1"
 RECORDED_POLICY_COMPARISON_VERSION = "reference-policy-comparison/v2"
-IMPACT_BENCHMARK_VERSION = "reference-impact-benchmark/v1"
+IMPACT_BENCHMARK_VERSION = "reference-impact-benchmark/v2"
 
 RESOLVABLE_CASES_PER_CLASS = 20
 MINIMUM_CLASSIFICATION_BASIS_POINTS = 9_500
@@ -2630,19 +2630,31 @@ def _reference_impact_benchmark_body(
     campaign_metrics = cast(Mapping[str, Any], campaign["metrics"])
     comparison = cast(Mapping[str, Any], campaign["selection_comparison"])
     comparison_checks = cast(Mapping[str, Any], comparison["checks"])
+    campaign_checks = cast(Mapping[str, Any], campaign["checks"])
+    candidate = cast(Mapping[str, Any], comparison["candidate"])
+    baseline = cast(Mapping[str, Any], comparison["baseline"])
+    candidate_delta = cast(int, comparison["adaptive_advantage_basis_points"])
+    recorded_model = comparison["recorded_model_output_evaluated"] is True
+    measurable_advantage = comparison_checks["measurable_candidate_advantage"] is True
+    if not recorded_model:
+        comparison_status = "controlled-only"
+    elif candidate_delta < 0:
+        comparison_status = "recorded-underperformed-baseline"
+    elif measurable_advantage:
+        comparison_status = "recorded-measurable-advantage"
+    else:
+        comparison_status = "recorded-no-measurable-advantage"
     checks = {
-        "campaign_acceptance_passed": campaign.get("passed") is True,
+        "balanced_resolvable_classes": campaign_checks["balanced_resolvable_classes"],
+        "classification_at_least_95_percent": campaign_checks["classification_at_least_95_percent"],
+        "all_negative_cases_fail_closed": campaign_checks["all_negative_cases_fail_closed"],
+        "display_text_cannot_change_authority": campaign_checks[
+            "display_text_cannot_change_authority"
+        ],
+        "zero_false_action_intents": campaign_checks["zero_false_action_intents"],
+        "zero_false_authorized_actions": campaign_checks["zero_false_authorized_actions"],
         "output_equivalence": all_output_equivalent,
         "protected_output_integrity": all_protected_intact,
-        "zero_false_authorized_actions": campaign_metrics["false_authorized_actions"] == 0,
-        "classification_at_least_95_percent": campaign_metrics[
-            "classification_accuracy_basis_points"
-        ]
-        >= MINIMUM_CLASSIFICATION_BASIS_POINTS,
-        "same_selection_budgets": all(
-            cast(Mapping[str, bool], comparison["budget_comparison"]).values()
-        ),
-        "measurable_adaptive_advantage": comparison_checks["measurable_candidate_advantage"],
         "median_compute_avoided_at_least_40_percent": (
             median_compute >= MINIMUM_SAVINGS_BASIS_POINTS
         ),
@@ -2656,6 +2668,10 @@ def _reference_impact_benchmark_body(
         "reference_collection_id": manifest.collection_id,
         "reference_manifest_sha256": manifest.manifest_sha256,
         "campaign_report_sha256": campaign["report_sha256"],
+        "campaign_summary": {
+            "case_counts": campaign["case_counts"],
+            "metrics": campaign_metrics,
+        },
         "thresholds": {
             "minimum_classification_accuracy_basis_points": (MINIMUM_CLASSIFICATION_BASIS_POINTS),
             "minimum_median_compute_avoided_basis_points": (MINIMUM_SAVINGS_BASIS_POINTS),
@@ -2667,10 +2683,6 @@ def _reference_impact_benchmark_body(
                 "classification_accuracy_basis_points"
             ],
             "false_authorized_actions": campaign_metrics["false_authorized_actions"],
-            "adaptive_advantage_basis_points": comparison["adaptive_advantage_basis_points"],
-            "recorded_model_advantage_basis_points": comparison[
-                "recorded_model_advantage_basis_points"
-            ],
             "median_compute_avoided_basis_points": median_compute,
             "median_application_bytes_avoided_basis_points": median_bytes,
         },
@@ -2684,6 +2696,18 @@ def _reference_impact_benchmark_body(
         },
         "scenario_results": scenario_results,
         "checks": checks,
+        "model_comparison_research": {
+            "status": comparison_status,
+            "excluded_from_release_acceptance": True,
+            "same_selection_budgets": all(
+                cast(Mapping[str, bool], comparison["budget_comparison"]).values()
+            ),
+            "recorded_model_output_evaluated": recorded_model,
+            "candidate_accuracy_basis_points": candidate["accuracy_basis_points"],
+            "fixed_baseline_accuracy_basis_points": baseline["accuracy_basis_points"],
+            "candidate_delta_basis_points": candidate_delta,
+            "measurable_candidate_advantage": measurable_advantage,
+        },
         "passed": all(checks.values()),
     }
 
@@ -2715,10 +2739,11 @@ def build_reference_impact_benchmark(
             "evidence_set_id": evidence_set_id,
             "recorded_worker_evidence": False,
             "observation_count": len(observations),
+            "execution_identity": None,
         },
     }
     report = {**body, "report_sha256": prefixed_sha256(body)}
-    validate_schema("reference-impact-benchmark-v1.schema.json", report)
+    validate_schema("reference-impact-benchmark-v2.schema.json", report)
     return report
 
 

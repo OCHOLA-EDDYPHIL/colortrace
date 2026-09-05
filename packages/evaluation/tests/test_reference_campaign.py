@@ -12,7 +12,7 @@ from functools import cache
 from typing import Any, cast
 
 import pytest
-from colortrace_evaluation.contracts import prefixed_sha256
+from colortrace_evaluation.contracts import prefixed_sha256, validate_schema
 from colortrace_evaluation.reference_campaign import (
     RECORDED_SELECTION_MAXIMUM_RESPONSE_BYTES,
     BenchmarkArtifactObservation,
@@ -1044,12 +1044,66 @@ def test_impact_benchmark_proves_equivalence_integrity_and_avoided_work() -> Non
         "evidence_set_id": _digest("controlled-reference-receipts"),
         "recorded_worker_evidence": False,
         "observation_count": 720,
+        "execution_identity": None,
     }
     assert report["metrics"]["median_compute_avoided_basis_points"] == 7_000
     assert report["metrics"]["median_application_bytes_avoided_basis_points"] > 4_000
     assert report["timing"]["informational_only"] is True
     assert report["timing"]["excluded_from_acceptance"] is True
     assert all(report["checks"].values())
+
+
+def test_impact_benchmark_excludes_optional_selector_comparison_from_acceptance() -> None:
+    campaign = run_reference_campaign()
+
+    assert campaign["passed"] is False
+    assert campaign["checks"]["measurable_adaptive_advantage"] is False
+    report = build_reference_impact_benchmark(
+        _benchmark_observations(),
+        campaign,
+        evidence_source="controlled-receipt-set",
+        evidence_set_id=_digest("controlled-reference-receipts-with-negative-research"),
+    )
+
+    assert report["passed"] is True
+    assert all(report["checks"].values())
+    assert report["model_comparison_research"] == {
+        "status": "controlled-only",
+        "excluded_from_release_acceptance": True,
+        "same_selection_budgets": True,
+        "recorded_model_output_evaluated": False,
+        "candidate_accuracy_basis_points": 10_000,
+        "fixed_baseline_accuracy_basis_points": 6_666,
+        "candidate_delta_basis_points": 3_334,
+        "measurable_candidate_advantage": False,
+    }
+
+
+@pytest.mark.parametrize("mode", ("container", "google-cloud-batch"))
+def test_impact_benchmark_schema_accepts_canonical_image_execution_modes(mode: str) -> None:
+    report = build_reference_impact_benchmark(
+        _benchmark_observations(),
+        run_reference_campaign(),
+        evidence_source="controlled-receipt-set",
+        evidence_set_id=_digest("controlled-reference-receipts"),
+    )
+    body = {key: value for key, value in report.items() if key != "report_sha256"}
+    body["evidence"] = {
+        "source": "recorded-worker-receipts",
+        "evidence_set_id": _digest("recorded-reference-receipts"),
+        "recorded_worker_evidence": True,
+        "observation_count": 720,
+        "execution_identity": {
+            "mode": mode,
+            "source_revision": "1" * 40,
+            "source_tree": "2" * 40,
+            "container_image_digest": _digest("image"),
+            "identity_sha256": _digest("identity"),
+        },
+    }
+    candidate = {**body, "report_sha256": prefixed_sha256(body)}
+
+    validate_schema("reference-impact-benchmark-v2.schema.json", candidate)
 
 
 def test_impact_benchmark_reports_scenario_overhead_without_hiding_median_savings() -> None:

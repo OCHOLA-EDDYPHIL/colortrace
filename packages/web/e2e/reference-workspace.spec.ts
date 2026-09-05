@@ -21,6 +21,12 @@ import {
 } from "../src/reference-demo-api.ts";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
+const DIGEST_B = `sha256:${"b".repeat(64)}`;
+const DIGEST_C = `sha256:${"c".repeat(64)}`;
+const REQUEST_ID = "123e4567-e89b-12d3-a456-426614174000";
+const APPROVAL_NONCE = "123e4567-e89b-12d3-a456-426614174099";
+const RUN_INCIDENT_ID = `reference-incident-${"a".repeat(24)}`;
+const RUN_ID = `reference-run-${"a".repeat(24)}`;
 const PREVIEW_ROOT = fileURLToPath(
   new URL("../../api/src/colortrace_api/reference_previews/", import.meta.url),
 );
@@ -254,6 +260,440 @@ function benchmarkSuite(): ReferenceBenchmarkSuite {
   return { ...body, suite_sha256: digest(canonicalJson(body)) };
 }
 
+function runtimeObservation(
+  queryKey: "metric.worker-cohort" | "log.config-cohort",
+  role: "affected" | "protected",
+): Readonly<Record<string, unknown>> {
+  const affected = role === "affected";
+  const metric = queryKey === "metric.worker-cohort";
+  const evidenceId = metric ? DIGEST_B : DIGEST_C;
+  const attributes = metric
+    ? {
+        "declared_reference.state": affected ? "reference_mismatch" : "reference_match",
+        "declared_reference.approved_state_sha256": DIGEST,
+        "declared_reference.effective_resource_matches_approved": String(!affected),
+        "declared_reference.effective_config_matches_approved": "true",
+        "declared_reference.config_generation_matches_approved": "true",
+        "declared_reference.frame_pipeline_matches_approved": String(!affected),
+        "declared_reference.derivative_parent_matches_approved": "true",
+        "declared_reference.derivative_generation_matches_approved": "true",
+        "declared_reference.cache_key_matches_approved": "true",
+        "reference.evidence_scope": "representative",
+        "reference.affected_representative_count": "1",
+        "reference.protected_representative_count": "1",
+        "reference.population_affected_artifact_count": "72",
+        "reference.population_protected_artifact_count": "168",
+      }
+    : {
+        "runtime.effective_resource_sha256": affected ? DIGEST_B : DIGEST,
+        "runtime.effective_config_sha256": DIGEST,
+        "runtime.config_generation": "7",
+        "runtime.frame_pipeline_sha256": affected ? DIGEST_B : DIGEST,
+        "cache.key": "cache:03_2a:00003:g7",
+      };
+  return {
+    schema: "normalized-runtime-observation/v1",
+    request_id: "evidence-request-001",
+    incident_id: RUN_INCIDENT_ID,
+    event_id: `event-${metric ? 0 : 1}-${role}`,
+    signal: metric ? "metric" : "log",
+    fixture_id: "tears-of-steel-linear-exr-240-v1",
+    run_id: RUN_ID,
+    job_id: affected ? "job-affected-001" : "job-safe-001",
+    worker_id: `worker-${role}`,
+    trace_id: affected ? "1".repeat(32) : "2".repeat(32),
+    artifact_id: affected ? "frame:03_2a:00000" : "frame:04_5f:00108",
+    config_sha256: "a".repeat(64),
+    resource_sha256: metric ? "none" : (affected ? DIGEST_B : DIGEST).slice("sha256:".length),
+    transform_id: "display-transform-reference",
+    observed_at: "2026-09-04T12:01:00.000Z",
+    emitted_at: "2026-09-04T12:01:01.000Z",
+    retrieved_at: "2026-09-04T12:05:00.000Z",
+    attributes,
+    provenance: {
+      query_key: queryKey,
+      evidence_id: evidenceId,
+      event_sha256: evidenceId,
+      content_sha256: DIGEST,
+      catalog_version: "grafana-evidence-query-catalog/v2",
+      catalog_sha256: DIGEST,
+      tool: metric ? "query_prometheus" : "query_loki_logs",
+      normalized_arguments: { query: queryKey, provider_payload: "not retained" },
+    },
+    fact_id: `runtime-fact:${(metric ? (affected ? "d" : "e") : affected ? "f" : "9").repeat(64)}`,
+    fact_sha256: `sha256:${(metric ? (affected ? "d" : "e") : affected ? "f" : "9").repeat(64)}`,
+  };
+}
+
+function rawReferenceRun(): Readonly<Record<string, unknown>> {
+  const expectedAssessmentId = `expected-assessment:${"a".repeat(64)}`;
+  const operationalAssessmentId = `operational-assessment:${"b".repeat(64)}`;
+  const reconciliationId = `diagnosis-reconciliation:${"c".repeat(64)}`;
+  const evidenceFactIds = ["9", "d", "e", "f"].map((value) => `runtime-fact:${value.repeat(64)}`);
+  const actionIntent = {
+    schema: "simulator-action-intent/v1",
+    reconciliation_id: reconciliationId,
+    incident_class: "resource-resolution-drift/v1",
+    command: "reconcile-resource",
+    target: "simulator",
+    requires_human_approval: true,
+    authorizes_execution: false,
+    affected_job_ids: ["job-affected-001"],
+    evidence_fact_ids: evidenceFactIds,
+    parameters: {
+      changed_fields: ["effective_resource_sha256"],
+      expected: { effective_resource_sha256: DIGEST },
+      observed: { effective_resource_sha256: DIGEST_B },
+    },
+    action_intent_id: `action-intent:${"e".repeat(64)}`,
+    derivation_sha256: `sha256:${"e".repeat(64)}`,
+  };
+  const queryKeys = ["metric.worker-cohort", "log.config-cohort"] as const;
+  const evidenceIds = [DIGEST, DIGEST_B, DIGEST_C];
+  const projection = {
+    schema: "runtime-evidence-projection/v1",
+    request_id: "evidence-request-001",
+    incident_id: RUN_INCIDENT_ID,
+    query_keys: queryKeys,
+    evidence_ids: evidenceIds.slice(1),
+    observations: queryKeys.flatMap((queryKey) => [
+      runtimeObservation(queryKey, "affected"),
+      runtimeObservation(queryKey, "protected"),
+    ]),
+    projection_sha256: DIGEST,
+  };
+  const classAssessments = [
+    "resource-resolution-drift/v1",
+    "configuration-rollout-drift/v1",
+    "stale-derivative-cache/v1",
+  ].map((incidentClass, index) => {
+    const supported = index === 0;
+    const hex = ["1", "2", "3"][index] ?? "1";
+    return {
+      schema: "incident-class-assessment/v1",
+      status: supported ? "supported" : "rejected",
+      incident_class: incidentClass,
+      expected_state_assessment_id: expectedAssessmentId,
+      operational_evidence_assessment_id: operationalAssessmentId,
+      scope: { affected_job_ids: ["job-affected-001"], safe_job_ids: ["job-safe-001"] },
+      evidence_fact_ids: evidenceFactIds,
+      cause: supported ? { changed_fields: ["effective_resource_sha256"] } : {},
+      reason_codes: [supported ? "incident-class-supported" : "incident-class-not-supported"],
+      assessment_id: `class-assessment:${hex.repeat(64)}`,
+      derivation_sha256: `sha256:${hex.repeat(64)}`,
+    };
+  });
+  return {
+    schema: "response-packet/v3",
+    packet_id: `response-packet:${"a".repeat(64)}`,
+    version: 3,
+    status: "resolved",
+    incident_id: RUN_INCIDENT_ID,
+    scenario_id: "tos-resource-resolution-drift-v1",
+    fixture_id: "tears-of-steel-linear-exr-240-v1",
+    run_id: RUN_ID,
+    policy_binding: { version: "reference-investigation/v1", sha256: DIGEST },
+    fixed_window: { start: "2026-09-04T12:00:00.000Z", end: "2026-09-04T12:05:00.000Z" },
+    evidence_ids: evidenceIds,
+    reference_evidence: {
+      schema: "reference-evidence/v3",
+      evidence_bundle_id: `reference-evidence:${"a".repeat(64)}`,
+      request_id: "evidence-request-001",
+      incident_id: RUN_INCIDENT_ID,
+      scenario_id: "tos-resource-resolution-drift-v1",
+      fixture_id: "tears-of-steel-linear-exr-240-v1",
+      run_id: RUN_ID,
+      source: "grafana-mcp",
+      structured_only: true,
+      query_keys: ["alert.rule", ...queryKeys],
+      evidence_ids: evidenceIds,
+      expected_state_sha256: DIGEST,
+      runtime_projection: projection,
+      derivation_sha256: DIGEST,
+    },
+    runtime_evidence_projection: projection,
+    expected_state_assessment: {
+      schema: "expected-state-assessment/v1",
+      status: "supported",
+      expected_state_id: `expected-state:${"a".repeat(64)}`,
+      expected_state_sha256: DIGEST,
+      scenario_id: "tos-resource-resolution-drift-v1",
+      fixture_id: "tears-of-steel-linear-exr-240-v1",
+      run_id: RUN_ID,
+      evidence_window: {
+        start: "2026-09-04T12:00:00.000Z",
+        end: "2026-09-04T12:05:00.000Z",
+      },
+      approved: {
+        resource_sha256: DIGEST,
+        config_sha256: DIGEST,
+        config_generation: 7,
+        frame_pipeline_sha256: DIGEST,
+        derivative_parent_sha256: DIGEST,
+        derivative_generation: 7,
+        cache_key: "cache:03_2a:00003:g7",
+      },
+      scope: { affected_job_ids: ["job-affected-001"], safe_job_ids: ["job-safe-001"] },
+      reason_codes: ["expected-state-supported"],
+      assessment_id: expectedAssessmentId,
+      derivation_sha256: DIGEST,
+    },
+    operational_evidence_assessment: {
+      schema: "operational-evidence-assessment/v1",
+      status: "supported",
+      expected_state_assessment_id: expectedAssessmentId,
+      request_id: "evidence-request-001",
+      incident_id: RUN_INCIDENT_ID,
+      fixture_id: "tears-of-steel-linear-exr-240-v1",
+      run_id: RUN_ID,
+      job_facts: { "job-affected-001": { signals: ["log", "metric"] } },
+      fact_ids: evidenceFactIds,
+      evidence_ids: evidenceIds.slice(1),
+      reason_codes: ["operational-evidence-supported"],
+      assessment_id: operationalAssessmentId,
+      derivation_sha256: DIGEST_B,
+    },
+    incident_class_assessments: classAssessments,
+    diagnosis_reconciliation: {
+      schema: "diagnosis-reconciliation/v1",
+      reconciliation_id: reconciliationId,
+      status: "supported",
+      incident_class: "resource-resolution-drift/v1",
+      expected_state_assessment_id: expectedAssessmentId,
+      operational_evidence_assessment_id: operationalAssessmentId,
+      class_assessment_ids: classAssessments.map((item) => item.assessment_id),
+      scope: { affected_job_ids: ["job-affected-001"], safe_job_ids: ["job-safe-001"] },
+      evidence_fact_ids: evidenceFactIds,
+      reason_codes: ["diagnosis-supported"],
+      action_intent: actionIntent,
+      derivation_sha256: DIGEST_C,
+    },
+    selection_trace: ["alert.rule", ...queryKeys].map((queryKey, index) => ({
+      sequence: index,
+      selected_by: index === 0 ? "policy" : "model",
+      query_key: queryKey,
+      evidence_id: evidenceIds[index],
+      disposition: index === 2 ? "resolved" : "continue",
+      reason_codes: [index === 2 ? "sufficient-evidence" : "evidence-collected"],
+      operational_assessment_id: operationalAssessmentId,
+      reconciliation_id: reconciliationId,
+    })),
+    model_selection: {
+      schema: "model-selection/v3",
+      trust: "untrusted-model-output",
+      hypotheses: [
+        {
+          ordinal: 1,
+          incident_class: "resource-resolution-drift/v1",
+          evidence_ids: evidenceIds.slice(1),
+        },
+      ],
+      query_keys: ["alert.rule", ...queryKeys],
+      stop_reason: "sufficient-evidence",
+      output_sha256: DIGEST_B,
+    },
+    model_invocation: {
+      schema: "model-tool-invocation/v3",
+      provider: "vertex-ai",
+      model: "gemini-3.5-flash",
+      prompt_version: "evidence-selection/v3",
+      request_sha256: DIGEST,
+      output_sha256: DIGEST_B,
+      input_tokens: 720,
+      output_tokens: 96,
+      model_calls: 3,
+      unobserved_model_calls: 0,
+      status: "accepted",
+    },
+    agent_trace: {
+      schema: "agent-trace/v2",
+      trace_id: "1".repeat(32),
+      spans: [
+        ["grafana", "ok", "alert.rule", 12, 1, null, null, null],
+        ["gemini", "ok", null, 38, 3, null, 720, 96],
+        ["grafana", "ok", "metric.worker-cohort", 18, 1, null, null, null],
+        ["validator", "unresolved", "metric.worker-cohort", 2, 0, null, null, null],
+        [
+          "reconciliation",
+          "unresolved",
+          "metric.worker-cohort",
+          1,
+          0,
+          "incomplete-evidence",
+          null,
+          null,
+        ],
+        ["grafana", "ok", "log.config-cohort", 18, 1, null, null, null],
+        ["validator", "ok", "log.config-cohort", 2, 0, null, null, null],
+        ["reconciliation", "ok", "log.config-cohort", 1, 0, null, null, null],
+      ].map(
+        (
+          [
+            stage,
+            status,
+            query_key,
+            duration_ms,
+            attempts,
+            error_code,
+            input_tokens,
+            output_tokens,
+          ],
+          sequence,
+        ) => ({
+          sequence,
+          stage,
+          status,
+          duration_ms,
+          query_key,
+          input_tokens,
+          output_tokens,
+          attempts,
+          attempts_complete: true,
+          unobserved_model_calls: 0,
+          error_code,
+        }),
+      ),
+    },
+    authority_policy: [
+      "gemini-query-selection-only",
+      "grafana-read-only-evidence",
+      "deterministic-validators-authoritative",
+      "human-approval-required-for-action",
+    ],
+    action_intent: actionIntent,
+    no_action_reason: null,
+    finalized_at: "2026-09-04T12:05:00.000Z",
+    derivation_sha256: DIGEST,
+  };
+}
+
+function rawRecoveryDecision(requestId: string): Readonly<Record<string, unknown>> {
+  const before = { generation: 1, state_sha256: DIGEST_B, protected_state_sha256: DIGEST_C };
+  const after = { generation: 2, state_sha256: DIGEST, protected_state_sha256: DIGEST_C };
+  const actionIntentId = `action-intent:${"e".repeat(64)}`;
+  const reconciliationId = `diagnosis-reconciliation:${"c".repeat(64)}`;
+  const approval = {
+    schema: "reference-human-approval/v3",
+    decision: "approved",
+    approver: {
+      audience: "colortrace-simulator",
+      kind: "human",
+      identity_verified: false,
+      identity_assurance: "unverified-public-demo-gesture",
+      gesture: "explicit-phrase-and-nonce",
+    },
+    approval_nonce: APPROVAL_NONCE,
+    issued_at: "2026-09-04T12:05:01.000Z",
+    expires_at: "2026-09-04T12:10:01.000Z",
+    action_intent_id: actionIntentId,
+    action_intent_sha256: `sha256:${"e".repeat(64)}`,
+    reconciliation_id: reconciliationId,
+    scenario_id: "tos-resource-resolution-drift-v1",
+    incident_class: "resource-resolution-drift/v1",
+    command: "reconcile-resource",
+    affected_job_ids: ["job-affected-001"],
+    state_generation: 1,
+    state_sha256: DIGEST_B,
+    protected_state_sha256: DIGEST_C,
+    approval_id: `reference-approval:${"a".repeat(64)}`,
+    approval_sha256: DIGEST,
+  };
+  const verification = {
+    schema: "reference-recovery-verification/v1",
+    verifier: "deterministic-simulator-state",
+    result: "verified",
+    scenario_id: "tos-resource-resolution-drift-v1",
+    incident_class: "resource-resolution-drift/v1",
+    action_intent_id: actionIntentId,
+    action_intent_sha256: `sha256:${"e".repeat(64)}`,
+    reconciliation_id: reconciliationId,
+    before,
+    after,
+    affected_job_ids: ["job-affected-001"],
+    affected_expected_field_checks: [
+      {
+        field: "effective_resource_sha256",
+        expected_value: DIGEST,
+        matched_job_ids: ["job-affected-001"],
+      },
+    ],
+    checks: {
+      generation_advanced_exactly_once: true,
+      all_affected_expected_fields_match: true,
+      protected_state_unchanged: true,
+      receipt_state_bindings_match: true,
+    },
+    establishes_pixel_output: false,
+    establishes_full_population_scope: false,
+    production_evidence: false,
+    verification_sha256: DIGEST,
+  };
+  const receipt = {
+    schema: "reference-recovery-receipt/v3",
+    approval_id: approval.approval_id,
+    approval_sha256: approval.approval_sha256,
+    action_intent_id: actionIntentId,
+    action_intent_sha256: `sha256:${"e".repeat(64)}`,
+    reconciliation_id: reconciliationId,
+    scenario_id: "tos-resource-resolution-drift-v1",
+    incident_class: "resource-resolution-drift/v1",
+    command: "reconcile-resource",
+    before,
+    after,
+    affected_job_ids: ["job-affected-001"],
+    protected_job_ids: ["job-safe-001"],
+    mutations: [
+      {
+        job_id: "job-affected-001",
+        before_job_state_sha256: DIGEST_B,
+        after_job_state_sha256: DIGEST_C,
+        changed_components: ["frame", "derivative"],
+      },
+    ],
+    protected_state_unchanged: true,
+    action_intent_requires_human_approval: true,
+    action_intent_authorizes_execution: false,
+    verification,
+    result: "applied",
+    receipt_id: `reference-recovery:${"a".repeat(64)}`,
+    receipt_sha256: DIGEST,
+  };
+  return {
+    schema: "reference-recovery-decision/v1",
+    scenario_id: "tos-resource-resolution-drift-v1",
+    request_id: requestId,
+    run_id: RUN_ID,
+    packet_id: `response-packet:${"a".repeat(64)}`,
+    packet_sha256: DIGEST,
+    decision: "approved",
+    outcome: "applied",
+    approval,
+    before,
+    after,
+    protected_state_unchanged: true,
+    receipt,
+    verification,
+    scope: {
+      kind: "representative-simulator-state",
+      affected_job_count: 1,
+      protected_job_count: 1,
+      establishes_full_population_scope: false,
+    },
+    execution_boundary: {
+      approval_actor_kind: "human",
+      approval_gesture: "explicit-phrase-and-nonce",
+      identity_verified: false,
+      identity_assurance: "unverified-public-demo-gesture",
+      execution_target: "colortrace-simulator",
+      simulator_state_changed: true,
+      production_access_used: false,
+      production_state_changed: false,
+      production_claim: "none",
+    },
+    decision_sha256: DIGEST,
+  };
+}
+
 function isScenarioId(value: string): value is ReferenceScenarioId {
   return REFERENCE_SCENARIO_IDS.some((scenarioId) => scenarioId === value);
 }
@@ -310,6 +750,70 @@ async function installReferenceApi(page: Page, mutations: string[]) {
   });
 }
 
+async function installReferenceV3Flow(page: Page, requests: unknown[]) {
+  await installReferenceApi(page, []);
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname === "/v1/benchmarks/reference-suite") {
+      await route.fulfill({ json: { ...benchmarkSuite(), suite_sha256: DIGEST } });
+      return;
+    }
+    if (
+      request.method() === "POST" &&
+      url.pathname === "/v1/demo/scenarios/tos-resource-resolution-drift-v1/runs"
+    ) {
+      requests.push(request.postDataJSON());
+      await route.fulfill({ json: rawReferenceRun() });
+      return;
+    }
+    if (
+      request.method() === "POST" &&
+      url.pathname ===
+        `/v1/demo/scenarios/tos-resource-resolution-drift-v1/runs/${REQUEST_ID}/decision`
+    ) {
+      const body = request.postDataJSON() as Readonly<Record<string, unknown>>;
+      requests.push(body);
+      await route.fulfill({
+        headers: {
+          "X-ColorTrace-Execution-Target": "colortrace-simulator",
+          "X-ColorTrace-Production-State-Changed": "false",
+        },
+        json: rawRecoveryDecision(String(body.request_id)),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+}
+
+async function installDeterministicReferenceCrypto(page: Page) {
+  await page.addInitScript(
+    ({ approvalNonce, requestId }) => {
+      const nativeDigest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
+      let identifierIndex = 0;
+      Object.defineProperty(globalThis.crypto, "randomUUID", {
+        configurable: true,
+        value: () => (identifierIndex++ === 0 ? requestId : approvalNonce),
+      });
+      Object.defineProperty(globalThis.crypto.subtle, "digest", {
+        configurable: true,
+        value: async (algorithm: AlgorithmIdentifier, data: BufferSource) => {
+          const bytes = ArrayBuffer.isView(data)
+            ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+            : new Uint8Array(data);
+          const pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
+          if (pngSignature.every((byte, index) => bytes[index] === byte)) {
+            return nativeDigest(algorithm, data);
+          }
+          return new Uint8Array(32).fill(0xaa).buffer;
+        },
+      });
+    },
+    { approvalNonce: APPROVAL_NONCE, requestId: REQUEST_ID },
+  );
+}
+
 test("loads verified reference pixels and switches evidence contracts without mutating", async ({
   page,
 }) => {
@@ -357,4 +861,80 @@ test("loads verified reference pixels and switches evidence contracts without mu
   await expect(workspace.getByText("runtime.config_generation")).toBeVisible();
   await expect(workspace.getByRole("button", { name: "Run live investigation" })).toBeEnabled();
   expect(mutations).toEqual([]);
+});
+
+test("completes the reference v3 Detect, Explain, Approve, Verify path", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const requests: unknown[] = [];
+  await installDeterministicReferenceCrypto(page);
+  await installReferenceV3Flow(page, requests);
+
+  await page.goto("/");
+
+  const workspace = page.getByRole("region", {
+    name: "Three ways a successful render can still be wrong",
+  });
+  await expect(
+    workspace.getByRole("heading", {
+      name: "A successful render resolved the wrong look resource",
+    }),
+  ).toBeVisible();
+  await expect(workspace.getByText("PNG hash verified · pixel evidence")).toHaveCount(3);
+
+  await workspace.getByRole("button", { name: "Run live investigation" }).click();
+
+  await expect(workspace.getByText("Response packet v3")).toBeVisible();
+  await expect(workspace.getByRole("heading", { name: "Investigation resolved" })).toBeVisible();
+  await expect(
+    workspace
+      .getByRole("region", { name: "Returned investigation conclusion" })
+      .getByText(
+        /Grafana MCP supplied 4 bound structured facts.*Gemini only selected read-only queries/iu,
+      ),
+  ).toBeVisible();
+  await expect(workspace.getByText("Gemini selected queries")).toBeVisible();
+  await expect(workspace.getByRole("heading", { name: "Correlated Grafana facts" })).toBeVisible();
+  await expect(workspace.getByRole("heading", { name: "reconcile-resource" })).toBeVisible();
+  await expect(
+    workspace.getByText(/validators decided.*human approval still required/iu),
+  ).toBeVisible();
+
+  await workspace.getByRole("button", { name: "Approve simulator action" }).click();
+
+  await expect(
+    workspace.getByRole("heading", { name: "Representative simulator recovery applied" }),
+  ).toBeVisible();
+  await expect(
+    workspace.getByText("Fresh simulator state verified", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    workspace
+      .locator(".reference-live__authority")
+      .filter({ hasText: /human demo gesture recorded.*fresh simulator state verified/iu }),
+  ).toBeVisible();
+  await expect(
+    workspace.getByText(/Production untouched: no production access was used/iu),
+  ).toBeVisible();
+
+  expect(requests).toHaveLength(2);
+  expect(requests[0]).toEqual({
+    schema: "reference-scenario-run-request/v1",
+    request_id: REQUEST_ID,
+  });
+  expect(requests[1]).toMatchObject({
+    schema: "reference-recovery-decision-request/v1",
+    request_id: REQUEST_ID,
+    decision: "approved",
+    approval_nonce: APPROVAL_NONCE,
+    packet_id: `response-packet:${"a".repeat(64)}`,
+    packet_sha256: DIGEST,
+  });
+
+  if (process.env.COLORTRACE_CAPTURE_SHOT_SAFE_SCREENSHOT === "1") {
+    await page.screenshot({
+      animations: "disabled",
+      fullPage: true,
+      path: "../../.cache/playwright/reference-v3-verified.png",
+    });
+  }
 });

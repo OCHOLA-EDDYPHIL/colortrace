@@ -639,18 +639,23 @@ def test_reference_catalog_rejects_unknown_scenarios_and_visuals() -> None:
         catalog.scenario_visual("tos-resource-resolution-drift-v1", "unknown")
 
 
-def test_reference_benchmark_suite_separates_scope_math_from_measured_results() -> None:
+def test_reference_benchmark_suite_reports_source_bound_recorded_results() -> None:
     suite = ReferenceDemoCatalog().benchmark_suite()
 
     assert suite["schema"] == "reference-benchmark-suite/v1"
     assert suite["definition_state"] == "sealed"
-    assert suite["result_state"] == "not-reported"
-    assert suite["result"] is None
+    assert suite["result_state"] == "recorded"
+    assert suite["result"]["schema"] == "reference-impact-benchmark/v2"
+    assert suite["result"]["passed"] is True
+    assert suite["result"]["evidence"]["execution_identity"]["source_revision"] == (
+        "db6832bce8adf5b0f62527202cbd388fa1f18e70"
+    )
+    assert suite["result"]["model_comparison_research"]["excluded_from_release_acceptance"] is True
     assert {scenario["scope_reduction_basis_points"] for scenario in suite["scenarios"]} == {7_000}
     assert suite["measurement_boundary"] == {
         "scope_reduction_is_measured_result": False,
         "reported_results_require_recorded_evaluator_output": True,
-        "catalog_claims_observed_savings": False,
+        "catalog_claims_observed_savings": True,
         "live_run_scope": "representative-evidence-only",
     }
     assert suite["authority"]["benchmark_result_authority"] == "recorded-evaluator-output"

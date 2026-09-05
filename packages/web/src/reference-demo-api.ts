@@ -151,7 +151,9 @@ export type ReferenceBenchmarkSuite = {
   readonly suite_sha256: string;
 };
 
-export type ReferenceImpactBenchmark = {
+export type ReferenceImpactBenchmark = ReferenceImpactBenchmarkV1 | ReferenceImpactBenchmarkV2;
+
+export type ReferenceImpactBenchmarkV1 = {
   readonly schema: "reference-impact-benchmark/v1";
   readonly reference_collection_id: string;
   readonly reference_manifest_sha256: string;
@@ -185,7 +187,66 @@ export type ReferenceImpactBenchmark = {
     readonly selective_wall_nanoseconds: number;
   };
   readonly scenario_results: readonly ReferenceImpactScenarioResult[];
-  readonly checks: ReferenceImpactChecks;
+  readonly checks: ReferenceImpactChecksV1;
+  readonly passed: boolean;
+  readonly report_sha256: string;
+};
+
+export type ReferenceImpactBenchmarkV2 = {
+  readonly schema: "reference-impact-benchmark/v2";
+  readonly reference_collection_id: string;
+  readonly reference_manifest_sha256: string;
+  readonly campaign_report_sha256: string;
+  readonly campaign_summary: {
+    readonly case_counts: {
+      readonly total: 99;
+      readonly resolvable: 60;
+      readonly fail_closed: 39;
+      readonly resolvable_by_class: Readonly<Record<ReferenceIncidentClass, 20>>;
+    };
+    readonly metrics: {
+      readonly correct_resolvable_classifications: number;
+      readonly classification_accuracy_basis_points: number;
+      readonly negative_cases_failed_closed: number;
+      readonly false_action_intents: number;
+      readonly false_authorized_actions: number;
+      readonly display_text_mutations_resolved: number;
+      readonly display_text_mutation_count: 3;
+    };
+  };
+  readonly evidence: ReferenceImpactBenchmarkV1["evidence"] & {
+    readonly execution_identity: {
+      readonly mode: "host-python-module" | "container" | "google-cloud-batch";
+      readonly source_revision: string;
+      readonly source_tree: string;
+      readonly container_image_digest: string | null;
+      readonly identity_sha256: string;
+    };
+  };
+  readonly thresholds: ReferenceImpactBenchmarkV1["thresholds"];
+  readonly metrics: {
+    readonly classification_accuracy_basis_points: number;
+    readonly false_authorized_actions: number;
+    readonly median_compute_avoided_basis_points: number;
+    readonly median_application_bytes_avoided_basis_points: number;
+  };
+  readonly timing: ReferenceImpactBenchmarkV1["timing"];
+  readonly scenario_results: readonly ReferenceImpactScenarioResult[];
+  readonly checks: ReferenceImpactChecksV2;
+  readonly model_comparison_research: {
+    readonly status:
+      | "controlled-only"
+      | "recorded-underperformed-baseline"
+      | "recorded-no-measurable-advantage"
+      | "recorded-measurable-advantage";
+    readonly excluded_from_release_acceptance: true;
+    readonly same_selection_budgets: boolean;
+    readonly recorded_model_output_evaluated: boolean;
+    readonly candidate_accuracy_basis_points: number;
+    readonly fixed_baseline_accuracy_basis_points: number;
+    readonly candidate_delta_basis_points: number;
+    readonly measurable_candidate_advantage: boolean;
+  };
   readonly passed: boolean;
   readonly report_sha256: string;
 };
@@ -209,7 +270,7 @@ export type ReferenceImpactWork = {
   readonly application_bytes: number;
 };
 
-export type ReferenceImpactChecks = {
+export type ReferenceImpactChecksV1 = {
   readonly campaign_acceptance_passed: boolean;
   readonly output_equivalence: boolean;
   readonly protected_output_integrity: boolean;
@@ -220,6 +281,21 @@ export type ReferenceImpactChecks = {
   readonly median_compute_avoided_at_least_40_percent: boolean;
   readonly median_application_bytes_avoided_at_least_40_percent: boolean;
 };
+
+export type ReferenceImpactChecksV2 = {
+  readonly balanced_resolvable_classes: boolean;
+  readonly classification_at_least_95_percent: boolean;
+  readonly all_negative_cases_fail_closed: boolean;
+  readonly display_text_cannot_change_authority: boolean;
+  readonly zero_false_action_intents: boolean;
+  readonly zero_false_authorized_actions: boolean;
+  readonly output_equivalence: boolean;
+  readonly protected_output_integrity: boolean;
+  readonly median_compute_avoided_at_least_40_percent: boolean;
+  readonly median_application_bytes_avoided_at_least_40_percent: boolean;
+};
+
+export type ReferenceImpactChecks = ReferenceImpactChecksV1 | ReferenceImpactChecksV2;
 
 export type ReferenceDemoAdapter = {
   readonly listScenarios: (signal?: AbortSignal) => Promise<ReferenceScenarioList>;
@@ -269,6 +345,7 @@ export type VerifiedReferenceVisual = {
 };
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
+const GIT_OBJECT = /^[0-9a-f]{40}$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
 const REFERENCE_SCENARIO_ID_SET = new Set<string>(REFERENCE_SCENARIO_IDS);
 const INCIDENT_CLASSES = new Set<ReferenceIncidentClass>([
@@ -348,7 +425,7 @@ const BENCHMARK_AUTHORITY_KEYS = new Set([
   "action_execution_target",
   "benchmark_result_authority",
 ]);
-const IMPACT_BENCHMARK_KEYS = new Set([
+const IMPACT_BENCHMARK_V1_KEYS = new Set([
   "schema",
   "reference_collection_id",
   "reference_manifest_sha256",
@@ -362,11 +439,45 @@ const IMPACT_BENCHMARK_KEYS = new Set([
   "passed",
   "report_sha256",
 ]);
-const IMPACT_EVIDENCE_KEYS = new Set([
+const IMPACT_BENCHMARK_V2_KEYS = new Set([
+  ...IMPACT_BENCHMARK_V1_KEYS,
+  "campaign_summary",
+  "model_comparison_research",
+]);
+const IMPACT_EVIDENCE_V1_KEYS = new Set([
   "source",
   "evidence_set_id",
   "recorded_worker_evidence",
   "observation_count",
+]);
+const IMPACT_EVIDENCE_V2_KEYS = new Set([...IMPACT_EVIDENCE_V1_KEYS, "execution_identity"]);
+const IMPACT_EXECUTION_IDENTITY_KEYS = new Set([
+  "mode",
+  "source_revision",
+  "source_tree",
+  "container_image_digest",
+  "identity_sha256",
+]);
+const IMPACT_CAMPAIGN_SUMMARY_KEYS = new Set(["case_counts", "metrics"]);
+const IMPACT_CAMPAIGN_CASE_COUNT_KEYS = new Set([
+  "total",
+  "resolvable",
+  "fail_closed",
+  "resolvable_by_class",
+]);
+const IMPACT_CAMPAIGN_CLASS_COUNT_KEYS = new Set([
+  "configuration-rollout-drift/v1",
+  "resource-resolution-drift/v1",
+  "stale-derivative-cache/v1",
+]);
+const IMPACT_CAMPAIGN_METRIC_KEYS = new Set([
+  "correct_resolvable_classifications",
+  "classification_accuracy_basis_points",
+  "negative_cases_failed_closed",
+  "false_action_intents",
+  "false_authorized_actions",
+  "display_text_mutations_resolved",
+  "display_text_mutation_count",
 ]);
 const IMPACT_THRESHOLD_KEYS = new Set([
   "minimum_classification_accuracy_basis_points",
@@ -374,11 +485,17 @@ const IMPACT_THRESHOLD_KEYS = new Set([
   "minimum_median_application_bytes_avoided_basis_points",
   "maximum_false_authorized_actions",
 ]);
-const IMPACT_METRIC_KEYS = new Set([
+const IMPACT_METRIC_V1_KEYS = new Set([
   "classification_accuracy_basis_points",
   "false_authorized_actions",
   "adaptive_advantage_basis_points",
   "recorded_model_advantage_basis_points",
+  "median_compute_avoided_basis_points",
+  "median_application_bytes_avoided_basis_points",
+]);
+const IMPACT_METRIC_V2_KEYS = new Set([
+  "classification_accuracy_basis_points",
+  "false_authorized_actions",
   "median_compute_avoided_basis_points",
   "median_application_bytes_avoided_basis_points",
 ]);
@@ -404,7 +521,7 @@ const IMPACT_SCENARIO_KEYS = new Set([
   "protected_output_integrity",
 ]);
 const IMPACT_WORK_KEYS = new Set(["pixel_work", "application_bytes"]);
-const IMPACT_CHECK_KEYS = new Set([
+const IMPACT_CHECK_V1_KEYS = new Set([
   "campaign_acceptance_passed",
   "output_equivalence",
   "protected_output_integrity",
@@ -414,6 +531,28 @@ const IMPACT_CHECK_KEYS = new Set([
   "measurable_adaptive_advantage",
   "median_compute_avoided_at_least_40_percent",
   "median_application_bytes_avoided_at_least_40_percent",
+]);
+const IMPACT_CHECK_V2_KEYS = new Set([
+  "balanced_resolvable_classes",
+  "classification_at_least_95_percent",
+  "all_negative_cases_fail_closed",
+  "display_text_cannot_change_authority",
+  "zero_false_action_intents",
+  "zero_false_authorized_actions",
+  "output_equivalence",
+  "protected_output_integrity",
+  "median_compute_avoided_at_least_40_percent",
+  "median_application_bytes_avoided_at_least_40_percent",
+]);
+const IMPACT_MODEL_RESEARCH_KEYS = new Set([
+  "status",
+  "excluded_from_release_acceptance",
+  "same_selection_budgets",
+  "recorded_model_output_evaluated",
+  "candidate_accuracy_basis_points",
+  "fixed_baseline_accuracy_basis_points",
+  "candidate_delta_basis_points",
+  "measurable_candidate_advantage",
 ]);
 const MAX_VISUAL_BYTES = 2 * 1024 * 1024;
 
@@ -838,13 +977,19 @@ async function parseImpactBenchmark(
   sha256: ReferencePacketSha256,
 ): Promise<ReferenceImpactBenchmark> {
   if (!isRecord(value)) throw invalidResponse();
-  exactKeys(value, IMPACT_BENCHMARK_KEYS);
+  const schema = value.schema;
   if (
-    value.schema !== "reference-impact-benchmark/v1" ||
+    (schema !== "reference-impact-benchmark/v1" && schema !== "reference-impact-benchmark/v2") ||
     stringField(value, "reference_collection_id") !== "tears-of-steel-linear-exr-240-v1"
   ) {
     throw invalidResponse();
   }
+  exactKeys(
+    value,
+    schema === "reference-impact-benchmark/v1"
+      ? IMPACT_BENCHMARK_V1_KEYS
+      : IMPACT_BENCHMARK_V2_KEYS,
+  );
   const referenceManifestSha256 = stringField(value, "reference_manifest_sha256");
   const campaignReportSha256 = stringField(value, "campaign_report_sha256");
   if (!DIGEST.test(referenceManifestSha256) || !DIGEST.test(campaignReportSha256)) {
@@ -852,7 +997,10 @@ async function parseImpactBenchmark(
   }
 
   const evidence = recordField(value, "evidence");
-  exactKeys(evidence, IMPACT_EVIDENCE_KEYS);
+  exactKeys(
+    evidence,
+    schema === "reference-impact-benchmark/v1" ? IMPACT_EVIDENCE_V1_KEYS : IMPACT_EVIDENCE_V2_KEYS,
+  );
   const evidenceSetId = stringField(evidence, "evidence_set_id");
   if (
     evidence.source !== "recorded-worker-receipts" ||
@@ -861,6 +1009,107 @@ async function parseImpactBenchmark(
     !DIGEST.test(evidenceSetId)
   ) {
     throw invalidResponse();
+  }
+  let executionIdentity: ReferenceImpactBenchmarkV2["evidence"]["execution_identity"] | null = null;
+  if (schema === "reference-impact-benchmark/v2") {
+    const identity = recordField(evidence, "execution_identity");
+    exactKeys(identity, IMPACT_EXECUTION_IDENTITY_KEYS);
+    const mode = stringField(identity, "mode");
+    const sourceRevision = stringField(identity, "source_revision");
+    const sourceTree = stringField(identity, "source_tree");
+    const containerImageDigest = identity.container_image_digest;
+    if (
+      (mode !== "host-python-module" && mode !== "container" && mode !== "google-cloud-batch") ||
+      !GIT_OBJECT.test(sourceRevision) ||
+      !GIT_OBJECT.test(sourceTree) ||
+      (containerImageDigest !== null &&
+        (typeof containerImageDigest !== "string" || !DIGEST.test(containerImageDigest))) ||
+      (mode === "host-python-module" && containerImageDigest !== null) ||
+      ((mode === "container" || mode === "google-cloud-batch") && containerImageDigest === null)
+    ) {
+      throw invalidResponse();
+    }
+    executionIdentity = {
+      mode,
+      source_revision: sourceRevision,
+      source_tree: sourceTree,
+      container_image_digest: containerImageDigest,
+      identity_sha256: await verifyJsonDigest(identity, "identity_sha256", sha256),
+    };
+  }
+
+  let campaignSummary: ReferenceImpactBenchmarkV2["campaign_summary"] | null = null;
+  if (schema === "reference-impact-benchmark/v2") {
+    const summary = recordField(value, "campaign_summary");
+    exactKeys(summary, IMPACT_CAMPAIGN_SUMMARY_KEYS);
+    const counts = recordField(summary, "case_counts");
+    exactKeys(counts, IMPACT_CAMPAIGN_CASE_COUNT_KEYS);
+    const classCounts = recordField(counts, "resolvable_by_class");
+    exactKeys(classCounts, IMPACT_CAMPAIGN_CLASS_COUNT_KEYS);
+    const configurationCount = integerField(classCounts, "configuration-rollout-drift/v1");
+    const resourceCount = integerField(classCounts, "resource-resolution-drift/v1");
+    const cacheCount = integerField(classCounts, "stale-derivative-cache/v1");
+    const campaignMetrics = recordField(summary, "metrics");
+    exactKeys(campaignMetrics, IMPACT_CAMPAIGN_METRIC_KEYS);
+    const correctResolvable = boundedIntegerField(
+      campaignMetrics,
+      "correct_resolvable_classifications",
+      0,
+      60,
+    );
+    const campaignClassification = boundedIntegerField(
+      campaignMetrics,
+      "classification_accuracy_basis_points",
+      0,
+      10_000,
+    );
+    const negativeFailedClosed = boundedIntegerField(
+      campaignMetrics,
+      "negative_cases_failed_closed",
+      0,
+      39,
+    );
+    const falseActionIntents = integerField(campaignMetrics, "false_action_intents");
+    const campaignFalseAuthorized = integerField(campaignMetrics, "false_authorized_actions");
+    const displayTextResolved = boundedIntegerField(
+      campaignMetrics,
+      "display_text_mutations_resolved",
+      0,
+      3,
+    );
+    if (
+      counts.total !== 99 ||
+      counts.resolvable !== 60 ||
+      counts.fail_closed !== 39 ||
+      configurationCount !== 20 ||
+      resourceCount !== 20 ||
+      cacheCount !== 20 ||
+      campaignMetrics.display_text_mutation_count !== 3 ||
+      campaignClassification !== Math.floor((correctResolvable * 10_000) / 60)
+    ) {
+      throw invalidResponse();
+    }
+    campaignSummary = {
+      case_counts: {
+        total: 99,
+        resolvable: 60,
+        fail_closed: 39,
+        resolvable_by_class: {
+          "configuration-rollout-drift/v1": 20,
+          "resource-resolution-drift/v1": 20,
+          "stale-derivative-cache/v1": 20,
+        },
+      },
+      metrics: {
+        correct_resolvable_classifications: correctResolvable,
+        classification_accuracy_basis_points: campaignClassification,
+        negative_cases_failed_closed: negativeFailedClosed,
+        false_action_intents: falseActionIntents,
+        false_authorized_actions: campaignFalseAuthorized,
+        display_text_mutations_resolved: displayTextResolved,
+        display_text_mutation_count: 3,
+      },
+    };
   }
 
   const thresholds = recordField(value, "thresholds");
@@ -882,8 +1131,11 @@ async function parseImpactBenchmark(
   }
 
   const metricsSource = recordField(value, "metrics");
-  exactKeys(metricsSource, IMPACT_METRIC_KEYS);
-  const metrics: ReferenceImpactBenchmark["metrics"] = {
+  exactKeys(
+    metricsSource,
+    schema === "reference-impact-benchmark/v1" ? IMPACT_METRIC_V1_KEYS : IMPACT_METRIC_V2_KEYS,
+  );
+  const commonMetrics = {
     classification_accuracy_basis_points: boundedIntegerField(
       metricsSource,
       "classification_accuracy_basis_points",
@@ -891,14 +1143,6 @@ async function parseImpactBenchmark(
       10_000,
     ),
     false_authorized_actions: integerField(metricsSource, "false_authorized_actions"),
-    adaptive_advantage_basis_points: signedBasisPoints(
-      metricsSource,
-      "adaptive_advantage_basis_points",
-    ),
-    recorded_model_advantage_basis_points: signedBasisPoints(
-      metricsSource,
-      "recorded_model_advantage_basis_points",
-    ),
     median_compute_avoided_basis_points: signedScenarioBasisPoints(
       metricsSource,
       "median_compute_avoided_basis_points",
@@ -908,7 +1152,25 @@ async function parseImpactBenchmark(
       "median_application_bytes_avoided_basis_points",
     ),
   };
-  if (metrics.recorded_model_advantage_basis_points !== metrics.adaptive_advantage_basis_points) {
+  const legacyMetrics =
+    schema === "reference-impact-benchmark/v1"
+      ? {
+          ...commonMetrics,
+          adaptive_advantage_basis_points: signedBasisPoints(
+            metricsSource,
+            "adaptive_advantage_basis_points",
+          ),
+          recorded_model_advantage_basis_points: signedBasisPoints(
+            metricsSource,
+            "recorded_model_advantage_basis_points",
+          ),
+        }
+      : null;
+  if (
+    legacyMetrics !== null &&
+    legacyMetrics.recorded_model_advantage_basis_points !==
+      legacyMetrics.adaptive_advantage_basis_points
+  ) {
     throw invalidResponse();
   }
 
@@ -917,7 +1179,7 @@ async function parseImpactBenchmark(
   if (timingSource.informational_only !== true || timingSource.excluded_from_acceptance !== true) {
     throw invalidResponse();
   }
-  const timing: ReferenceImpactBenchmark["timing"] = {
+  const timing: ReferenceImpactBenchmarkV1["timing"] = {
     informational_only: true,
     excluded_from_acceptance: true,
     baseline_cpu_nanoseconds: integerField(timingSource, "baseline_cpu_nanoseconds"),
@@ -982,18 +1244,111 @@ async function parseImpactBenchmark(
   }
 
   const checksSource = recordField(value, "checks");
-  exactKeys(checksSource, IMPACT_CHECK_KEYS);
-  const checks: ReferenceImpactChecks = {
-    campaign_acceptance_passed: booleanField(checksSource, "campaign_acceptance_passed"),
-    output_equivalence: booleanField(checksSource, "output_equivalence"),
-    protected_output_integrity: booleanField(checksSource, "protected_output_integrity"),
-    zero_false_authorized_actions: booleanField(checksSource, "zero_false_authorized_actions"),
+  const passed = booleanField(value, "passed");
+  const outputEquivalent = scenarioResults.every((item) => item.output_equivalence);
+  const protectedOutputIntegrity = scenarioResults.every((item) => item.protected_output_integrity);
+  if (
+    commonMetrics.median_compute_avoided_basis_points !==
+      median(scenarioResults.map((item) => item.compute_avoided_basis_points)) ||
+    commonMetrics.median_application_bytes_avoided_basis_points !==
+      median(scenarioResults.map((item) => item.application_bytes_avoided_basis_points))
+  ) {
+    throw invalidResponse();
+  }
+
+  const reportSha256 = await verifyJsonDigest(value, "report_sha256", sha256);
+  const commonEvidence: ReferenceImpactBenchmarkV1["evidence"] = {
+    source: "recorded-worker-receipts",
+    evidence_set_id: evidenceSetId,
+    recorded_worker_evidence: true,
+    observation_count: 720,
+  };
+  const commonThresholds: ReferenceImpactBenchmarkV1["thresholds"] = {
+    minimum_classification_accuracy_basis_points: 9500,
+    minimum_median_compute_avoided_basis_points: 4000,
+    minimum_median_application_bytes_avoided_basis_points: 4000,
+    maximum_false_authorized_actions: 0,
+  };
+  const common = {
+    reference_collection_id: "tears-of-steel-linear-exr-240-v1",
+    reference_manifest_sha256: referenceManifestSha256,
+    campaign_report_sha256: campaignReportSha256,
+    evidence: commonEvidence,
+    thresholds: commonThresholds,
+    timing,
+    scenario_results: scenarioResults,
+    passed,
+    report_sha256: reportSha256,
+  };
+  if (schema === "reference-impact-benchmark/v1") {
+    if (legacyMetrics === null) throw invalidResponse();
+    exactKeys(checksSource, IMPACT_CHECK_V1_KEYS);
+    const checks: ReferenceImpactChecksV1 = {
+      campaign_acceptance_passed: booleanField(checksSource, "campaign_acceptance_passed"),
+      output_equivalence: booleanField(checksSource, "output_equivalence"),
+      protected_output_integrity: booleanField(checksSource, "protected_output_integrity"),
+      zero_false_authorized_actions: booleanField(checksSource, "zero_false_authorized_actions"),
+      classification_at_least_95_percent: booleanField(
+        checksSource,
+        "classification_at_least_95_percent",
+      ),
+      same_selection_budgets: booleanField(checksSource, "same_selection_budgets"),
+      measurable_adaptive_advantage: booleanField(checksSource, "measurable_adaptive_advantage"),
+      median_compute_avoided_at_least_40_percent: booleanField(
+        checksSource,
+        "median_compute_avoided_at_least_40_percent",
+      ),
+      median_application_bytes_avoided_at_least_40_percent: booleanField(
+        checksSource,
+        "median_application_bytes_avoided_at_least_40_percent",
+      ),
+    };
+    if (
+      checks.output_equivalence !== outputEquivalent ||
+      checks.protected_output_integrity !== protectedOutputIntegrity ||
+      checks.zero_false_authorized_actions !==
+        (legacyMetrics.false_authorized_actions ===
+          requirements.maximum_false_authorized_actions) ||
+      checks.classification_at_least_95_percent !==
+        legacyMetrics.classification_accuracy_basis_points >=
+          requirements.minimum_resolvable_holdout_accuracy_basis_points ||
+      checks.measurable_adaptive_advantage !==
+        legacyMetrics.recorded_model_advantage_basis_points >= 1 ||
+      checks.median_compute_avoided_at_least_40_percent !==
+        legacyMetrics.median_compute_avoided_basis_points >=
+          requirements.minimum_median_compute_avoided_basis_points ||
+      checks.median_application_bytes_avoided_at_least_40_percent !==
+        legacyMetrics.median_application_bytes_avoided_basis_points >=
+          requirements.minimum_median_bytes_avoided_basis_points ||
+      passed !== Object.values(checks).every(Boolean)
+    ) {
+      throw invalidResponse();
+    }
+    return {
+      ...common,
+      schema,
+      metrics: legacyMetrics,
+      checks,
+    };
+  }
+
+  exactKeys(checksSource, IMPACT_CHECK_V2_KEYS);
+  if (campaignSummary === null) throw invalidResponse();
+  const checks: ReferenceImpactChecksV2 = {
+    balanced_resolvable_classes: booleanField(checksSource, "balanced_resolvable_classes"),
     classification_at_least_95_percent: booleanField(
       checksSource,
       "classification_at_least_95_percent",
     ),
-    same_selection_budgets: booleanField(checksSource, "same_selection_budgets"),
-    measurable_adaptive_advantage: booleanField(checksSource, "measurable_adaptive_advantage"),
+    all_negative_cases_fail_closed: booleanField(checksSource, "all_negative_cases_fail_closed"),
+    display_text_cannot_change_authority: booleanField(
+      checksSource,
+      "display_text_cannot_change_authority",
+    ),
+    zero_false_action_intents: booleanField(checksSource, "zero_false_action_intents"),
+    zero_false_authorized_actions: booleanField(checksSource, "zero_false_authorized_actions"),
+    output_equivalence: booleanField(checksSource, "output_equivalence"),
+    protected_output_integrity: booleanField(checksSource, "protected_output_integrity"),
     median_compute_avoided_at_least_40_percent: booleanField(
       checksSource,
       "median_compute_avoided_at_least_40_percent",
@@ -1003,56 +1358,86 @@ async function parseImpactBenchmark(
       "median_application_bytes_avoided_at_least_40_percent",
     ),
   };
-  const passed = booleanField(value, "passed");
+  const researchSource = recordField(value, "model_comparison_research");
+  exactKeys(researchSource, IMPACT_MODEL_RESEARCH_KEYS);
+  const status = stringField(researchSource, "status");
+  const recordedModel = booleanField(researchSource, "recorded_model_output_evaluated");
+  const candidateAccuracy = boundedIntegerField(
+    researchSource,
+    "candidate_accuracy_basis_points",
+    0,
+    10_000,
+  );
+  const baselineAccuracy = boundedIntegerField(
+    researchSource,
+    "fixed_baseline_accuracy_basis_points",
+    0,
+    10_000,
+  );
+  const candidateDelta = signedBasisPoints(researchSource, "candidate_delta_basis_points");
+  const measurableAdvantage = booleanField(researchSource, "measurable_candidate_advantage");
+  const expectedStatus = !recordedModel
+    ? "controlled-only"
+    : candidateDelta < 0
+      ? "recorded-underperformed-baseline"
+      : candidateDelta >= 1
+        ? "recorded-measurable-advantage"
+        : "recorded-no-measurable-advantage";
+  const campaignMetrics = campaignSummary.metrics;
   if (
-    checks.output_equivalence !== scenarioResults.every((item) => item.output_equivalence) ||
-    checks.protected_output_integrity !==
-      scenarioResults.every((item) => item.protected_output_integrity) ||
+    researchSource.excluded_from_release_acceptance !== true ||
+    typeof researchSource.same_selection_budgets !== "boolean" ||
+    candidateDelta !== candidateAccuracy - baselineAccuracy ||
+    measurableAdvantage !== (recordedModel && candidateDelta >= 1) ||
+    status !== expectedStatus ||
+    commonMetrics.classification_accuracy_basis_points !==
+      campaignMetrics.classification_accuracy_basis_points ||
+    commonMetrics.false_authorized_actions !== campaignMetrics.false_authorized_actions ||
+    checks.balanced_resolvable_classes !== true ||
+    checks.all_negative_cases_fail_closed !==
+      (campaignMetrics.negative_cases_failed_closed === campaignSummary.case_counts.fail_closed) ||
+    checks.display_text_cannot_change_authority !==
+      (campaignMetrics.display_text_mutations_resolved ===
+        campaignMetrics.display_text_mutation_count) ||
+    checks.zero_false_action_intents !== (campaignMetrics.false_action_intents === 0) ||
+    checks.output_equivalence !== outputEquivalent ||
+    checks.protected_output_integrity !== protectedOutputIntegrity ||
     checks.zero_false_authorized_actions !==
-      (metrics.false_authorized_actions === requirements.maximum_false_authorized_actions) ||
+      (commonMetrics.false_authorized_actions === requirements.maximum_false_authorized_actions) ||
     checks.classification_at_least_95_percent !==
-      metrics.classification_accuracy_basis_points >=
+      commonMetrics.classification_accuracy_basis_points >=
         requirements.minimum_resolvable_holdout_accuracy_basis_points ||
-    checks.measurable_adaptive_advantage !== metrics.recorded_model_advantage_basis_points >= 1 ||
-    metrics.median_compute_avoided_basis_points !==
-      median(scenarioResults.map((item) => item.compute_avoided_basis_points)) ||
-    metrics.median_application_bytes_avoided_basis_points !==
-      median(scenarioResults.map((item) => item.application_bytes_avoided_basis_points)) ||
     checks.median_compute_avoided_at_least_40_percent !==
-      metrics.median_compute_avoided_basis_points >=
+      commonMetrics.median_compute_avoided_basis_points >=
         requirements.minimum_median_compute_avoided_basis_points ||
     checks.median_application_bytes_avoided_at_least_40_percent !==
-      metrics.median_application_bytes_avoided_basis_points >=
+      commonMetrics.median_application_bytes_avoided_basis_points >=
         requirements.minimum_median_bytes_avoided_basis_points ||
     passed !== Object.values(checks).every(Boolean)
   ) {
     throw invalidResponse();
   }
-
-  const reportSha256 = await verifyJsonDigest(value, "report_sha256", sha256);
+  if (executionIdentity === null) throw invalidResponse();
   return {
-    schema: "reference-impact-benchmark/v1",
-    reference_collection_id: "tears-of-steel-linear-exr-240-v1",
-    reference_manifest_sha256: referenceManifestSha256,
-    campaign_report_sha256: campaignReportSha256,
+    ...common,
+    schema,
+    campaign_summary: campaignSummary,
     evidence: {
-      source: "recorded-worker-receipts",
-      evidence_set_id: evidenceSetId,
-      recorded_worker_evidence: true,
-      observation_count: 720,
+      ...common.evidence,
+      execution_identity: executionIdentity,
     },
-    thresholds: {
-      minimum_classification_accuracy_basis_points: 9500,
-      minimum_median_compute_avoided_basis_points: 4000,
-      minimum_median_application_bytes_avoided_basis_points: 4000,
-      maximum_false_authorized_actions: 0,
-    },
-    metrics,
-    timing,
-    scenario_results: scenarioResults,
+    metrics: commonMetrics,
     checks,
-    passed,
-    report_sha256: reportSha256,
+    model_comparison_research: {
+      status: expectedStatus,
+      excluded_from_release_acceptance: true,
+      same_selection_budgets: researchSource.same_selection_budgets,
+      recorded_model_output_evaluated: recordedModel,
+      candidate_accuracy_basis_points: candidateAccuracy,
+      fixed_baseline_accuracy_basis_points: baselineAccuracy,
+      candidate_delta_basis_points: candidateDelta,
+      measurable_candidate_advantage: measurableAdvantage,
+    },
   };
 }
 

@@ -220,15 +220,43 @@ function benchmarkSuite(): ReferenceBenchmarkSuite {
 function recordedBenchmarkSuite(passed = true): ReferenceBenchmarkSuite {
   const suite = benchmarkSuite();
   const result: NonNullable<ReferenceBenchmarkSuite["result"]> = {
-    schema: "reference-impact-benchmark/v1",
+    schema: "reference-impact-benchmark/v2",
     reference_collection_id: "tears-of-steel-linear-exr-240-v1",
     reference_manifest_sha256: DIGEST,
     campaign_report_sha256: DIGEST_B,
+    campaign_summary: {
+      case_counts: {
+        total: 99,
+        resolvable: 60,
+        fail_closed: 39,
+        resolvable_by_class: {
+          "configuration-rollout-drift/v1": 20,
+          "resource-resolution-drift/v1": 20,
+          "stale-derivative-cache/v1": 20,
+        },
+      },
+      metrics: {
+        correct_resolvable_classifications: 60,
+        classification_accuracy_basis_points: 10_000,
+        negative_cases_failed_closed: 39,
+        false_action_intents: 0,
+        false_authorized_actions: 0,
+        display_text_mutations_resolved: 3,
+        display_text_mutation_count: 3,
+      },
+    },
     evidence: {
       source: "recorded-worker-receipts",
       evidence_set_id: DIGEST_C,
       recorded_worker_evidence: true,
       observation_count: 720,
+      execution_identity: {
+        mode: "host-python-module",
+        source_revision: "d".repeat(40),
+        source_tree: "e".repeat(40),
+        container_image_digest: null,
+        identity_sha256: DIGEST,
+      },
     },
     thresholds: {
       minimum_classification_accuracy_basis_points: 9500,
@@ -239,8 +267,6 @@ function recordedBenchmarkSuite(passed = true): ReferenceBenchmarkSuite {
     metrics: {
       classification_accuracy_basis_points: 10_000,
       false_authorized_actions: 0,
-      adaptive_advantage_basis_points: 3334,
-      recorded_model_advantage_basis_points: 3334,
       median_compute_avoided_basis_points: 7000,
       median_application_bytes_avoided_basis_points: 6500,
     },
@@ -266,15 +292,26 @@ function recordedBenchmarkSuite(passed = true): ReferenceBenchmarkSuite {
       protected_output_integrity: true,
     })),
     checks: {
-      campaign_acceptance_passed: true,
+      balanced_resolvable_classes: true,
+      classification_at_least_95_percent: true,
+      all_negative_cases_fail_closed: true,
+      display_text_cannot_change_authority: true,
+      zero_false_action_intents: true,
+      zero_false_authorized_actions: true,
       output_equivalence: passed,
       protected_output_integrity: true,
-      zero_false_authorized_actions: true,
-      classification_at_least_95_percent: true,
-      same_selection_budgets: true,
-      measurable_adaptive_advantage: true,
       median_compute_avoided_at_least_40_percent: true,
       median_application_bytes_avoided_at_least_40_percent: true,
+    },
+    model_comparison_research: {
+      status: "recorded-underperformed-baseline",
+      excluded_from_release_acceptance: true,
+      same_selection_budgets: true,
+      recorded_model_output_evaluated: true,
+      candidate_accuracy_basis_points: 666,
+      fixed_baseline_accuracy_basis_points: 6666,
+      candidate_delta_basis_points: -6000,
+      measurable_candidate_advantage: false,
     },
     passed,
     report_sha256: DIGEST,
@@ -292,7 +329,9 @@ function recordedBenchmarkSuite(passed = true): ReferenceBenchmarkSuite {
 
 function recordedSavingsMissSuite(): ReferenceBenchmarkSuite {
   const suite = recordedBenchmarkSuite();
-  if (suite.result === null) throw new Error("missing recorded benchmark result");
+  if (suite.result?.schema !== "reference-impact-benchmark/v2") {
+    throw new Error("missing current recorded benchmark result");
+  }
   return {
     ...suite,
     result: {
@@ -475,9 +514,15 @@ function rawResponsePacket(
   const traceQueryKeys = ["alert.rule", ...runtimeQueryKeys];
   const representativeAffectedJobIds = ["job-affected-001"];
   const representativeSafeJobIds = ["job-safe-001"];
-  const affectedJobIds = status === "resolved" ? representativeAffectedJobIds : [];
-  const safeJobIds = status === "resolved" ? representativeSafeJobIds : [];
-  const evidenceFactIds = status === "resolved" ? [`runtime-fact:${"d".repeat(64)}`] : [];
+  const affectedJobIds = representativeAffectedJobIds;
+  const safeJobIds = representativeSafeJobIds;
+  const evidenceFactIds =
+    status === "resolved"
+      ? ["d", "e", "f", "9"]
+          .slice(0, runtimeQueryKeys.length * 2)
+          .map((value) => `runtime-fact:${value.repeat(64)}`)
+          .sort()
+      : [];
   const actionIntent =
     status === "resolved"
       ? {
@@ -768,9 +813,30 @@ function rawPartialUsagePacket(): Record<string, unknown> {
   const raw = rawResponsePacket("tos-resource-resolution-drift-v1", "unresolved");
   const trace = raw.agent_trace as Readonly<Record<string, unknown>>;
   const spans = trace.spans as readonly Readonly<Record<string, unknown>>[];
+  const selectionTrace = raw.selection_trace as readonly Readonly<Record<string, unknown>>[];
   return {
     ...raw,
+    evidence_ids: [DIGEST],
     no_action_reason: "model-unavailable",
+    selection_trace: selectionTrace.map((entry, index) =>
+      index === selectionTrace.length - 1
+        ? {
+            ...entry,
+            evidence_id: DIGEST,
+            disposition: "continue",
+            reason_codes: ["baseline-collected"],
+          }
+        : entry,
+    ),
+    reference_evidence: {
+      ...(raw.reference_evidence as Readonly<Record<string, unknown>>),
+      evidence_ids: [DIGEST],
+    },
+    operational_evidence_assessment: {
+      ...(raw.operational_evidence_assessment as Readonly<Record<string, unknown>>),
+      request_id: "evidence-request-001",
+      incident_id: RUN_INCIDENT_ID,
+    },
     model_invocation: {
       schema: "model-tool-invocation/v3",
       provider: "vertex-ai",
@@ -787,7 +853,13 @@ function rawPartialUsagePacket(): Record<string, unknown> {
     agent_trace: {
       ...trace,
       spans: [
-        { ...spans[0], attempts: 1, attempts_complete: false },
+        {
+          ...spans[0],
+          status: "ok",
+          attempts: 1,
+          attempts_complete: true,
+          error_code: null,
+        },
         {
           sequence: 1,
           stage: "gemini",
@@ -813,6 +885,29 @@ async function parsedPartialUsagePacket(): Promise<ReferenceResponsePacket> {
     REQUEST_ID,
     async () => DIGEST,
   );
+}
+
+function rawInvalidModelOutputPacket(): Record<string, unknown> {
+  const raw = rawResponsePacket("tos-resource-resolution-drift-v1", "resolved");
+  const invocation = raw.model_invocation as Readonly<Record<string, unknown>>;
+  const trace = raw.agent_trace as Readonly<Record<string, unknown>>;
+  const spans = trace.spans as readonly Readonly<Record<string, unknown>>[];
+  return {
+    ...raw,
+    status: "unresolved",
+    model_selection: null,
+    model_invocation: { ...invocation, status: "invalid" },
+    agent_trace: {
+      ...trace,
+      spans: spans.map((span) =>
+        span.stage === "gemini"
+          ? { ...span, status: "error", error_code: "model-output-invalid" }
+          : span,
+      ),
+    },
+    action_intent: null,
+    no_action_reason: "model-output-invalid",
+  };
 }
 
 function rawRecoveryDecision(
@@ -1103,13 +1198,8 @@ describe("reference scenario experience", () => {
   });
 
   it.each([
-    [true, "Core mission gates passed", "Impact target passed", "Full impact benchmark · passed"],
-    [
-      false,
-      "Core mission gates failed",
-      "Core mission failed",
-      "Full impact benchmark · not passed",
-    ],
+    [true, "Product gates passed", "Impact target passed", "Full impact benchmark · passed"],
+    [false, "Product gates failed", "Product gates failed", "Full impact benchmark · not passed"],
   ])(
     "renders a strictly recorded benchmark result when passed=%s",
     async (passed, heading, badge, fullStatus) => {
@@ -1130,11 +1220,11 @@ describe("reference scenario experience", () => {
         screen.getByText(/recorded worker receipts · 720 artifact observations/iu),
       ).toBeVisible();
       expect(
-        screen.getByText(/60 model-output receipts replayed against sealed holdouts/iu),
+        screen.getByText(/60 no-retry model-call receipts replayed against sealed holdouts/iu),
       ).toBeVisible();
       expect(screen.getByText(/provider execution is not independently attested/iu)).toBeVisible();
       expect(
-        screen.getByText(/compute and byte avoidance are separate impact targets/iu),
+        screen.getByText(/controlled-workload impact targets, not the mission itself/iu),
       ).toBeVisible();
       expect(screen.getByText(/recorded evaluator output/iu)).toBeVisible();
       expect(
@@ -1150,7 +1240,10 @@ describe("reference scenario experience", () => {
       expect(screen.queryByText(/attested evaluator output/iu)).not.toBeInTheDocument();
       expect(screen.getByText("100%")).toBeVisible();
       expect(screen.getByText("0")).toBeVisible();
-      expect(screen.getByText("+33.34%")).toBeVisible();
+      expect(screen.getByText("-60%")).toBeVisible();
+      expect(
+        screen.getByText(/research result only.*excluded from release acceptance/iu),
+      ).toBeVisible();
       expect(screen.getAllByText("70%")).toHaveLength(4);
       expect(screen.getAllByText("65%")).toHaveLength(3);
       expect(screen.getByText("-10.32%")).toBeVisible();
@@ -1161,6 +1254,12 @@ describe("reference scenario experience", () => {
       ).toBeVisible();
       expect(screen.getAllByText("Intact")).toHaveLength(3);
       expect(screen.getByText(/timing \(excluded from acceptance\)/iu)).toBeVisible();
+      expect(
+        screen.getByText(/model comparison and timing are excluded from product acceptance/iu),
+      ).toBeVisible();
+      expect(
+        screen.queryByText(/model advantage, and efficiency above are recorded measurements/iu),
+      ).not.toBeInTheDocument();
       expect(screen.queryByText("No measured result")).not.toBeInTheDocument();
     },
   );
@@ -1174,7 +1273,7 @@ describe("reference scenario experience", () => {
       />,
     );
 
-    expect(await screen.findByRole("heading", { name: "Core mission gates passed" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Product gates passed" })).toBeVisible();
     expect(
       screen.getByText("Impact target not met", {
         selector: ".reference-benchmark__heading > span",
@@ -1182,7 +1281,7 @@ describe("reference scenario experience", () => {
     ).toBeVisible();
     expect(screen.getByText("Full impact benchmark · not passed")).toBeVisible();
     expect(
-      screen.getByText(/compute and byte avoidance are separate impact targets/iu),
+      screen.getByText(/controlled-workload impact targets, not the mission itself/iu),
     ).toBeVisible();
   });
 
@@ -1198,6 +1297,17 @@ describe("reference scenario experience", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run live investigation" }));
 
     expect(await screen.findByRole("heading", { name: "Investigation resolved" })).toBeVisible();
+    const conclusion = screen.getByRole("region", { name: "Returned investigation conclusion" });
+    expect(
+      within(conclusion).getByText(
+        "The worker resolved a different LUT than the approved reference.",
+      ),
+    ).toBeVisible();
+    expect(
+      within(conclusion).getByText(
+        /Grafana MCP supplied 4 bound structured facts.*Deterministic reconciliation scoped 1 affected and 1 protected job.*Gemini only selected read-only queries/iu,
+      ),
+    ).toBeVisible();
     expect(runScenario).toHaveBeenCalledWith(
       "tos-resource-resolution-drift-v1",
       expect.any(AbortSignal),
@@ -1268,8 +1378,14 @@ describe("reference scenario experience", () => {
         "2 model calls · partial usage observed; exact token totals unavailable (1 call unobserved)",
       ),
     ).toBeVisible();
-    expect(screen.getByText("at least 1 attempt")).toBeVisible();
+    expect(screen.getByText("1 attempt")).toBeVisible();
+    expect(screen.getByText("2 attempts")).toBeVisible();
     expect(screen.queryByText("0 in / 0 out")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Gemini invocation failed → Grafana returned evidence → validators reported insufficient evidence → no action available for approval.",
+      ),
+    ).toBeVisible();
   });
 
   it("records approval and shows only the verified representative simulator result", async () => {
@@ -1399,6 +1515,7 @@ describe("reference scenario experience", () => {
       await screen.findByRole("heading", { name: "Investigation remains unresolved" }),
     ).toBeVisible();
     expect(screen.getByText("No action intent")).toBeVisible();
+    expect(screen.getByText("No supported cause was returned.")).toBeVisible();
     expect(screen.getAllByText("evidence-unavailable").length).toBeGreaterThan(0);
     expect(screen.getByText(/No approval was requested, and no recovery ran/iu)).toBeVisible();
     expect(screen.queryByRole("heading", { name: "reconcile-resource" })).not.toBeInTheDocument();
@@ -1464,6 +1581,48 @@ describe("reference scenario experience", () => {
 });
 
 describe("reference demo API adapter", () => {
+  it("accepts backend-shaped fail-closed packets after invalid model output", async () => {
+    const packet = await parseReferenceResponsePacket(
+      rawInvalidModelOutputPacket(),
+      "tos-resource-resolution-drift-v1",
+      REQUEST_ID,
+      async () => DIGEST,
+    );
+
+    expect(packet).toMatchObject({
+      status: "unresolved",
+      model_selection: null,
+      model_invocation: { status: "invalid" },
+      action_intent: null,
+      no_action_reason: "model-output-invalid",
+    });
+    expect(packet.selection_trace.at(-1)?.disposition).toBe("resolved");
+  });
+
+  it("rejects an internally consistent action chain citing facts absent from the projection", async () => {
+    const raw = structuredClone(
+      rawResponsePacket("tos-resource-resolution-drift-v1", "resolved"),
+    ) as Record<string, unknown>;
+    const unrelatedFactIds = [`runtime-fact:${"8".repeat(64)}`];
+    const operational = raw.operational_evidence_assessment as Record<string, unknown>;
+    operational.fact_ids = unrelatedFactIds;
+    const assessments = raw.incident_class_assessments as Record<string, unknown>[];
+    for (const assessment of assessments) assessment.evidence_fact_ids = unrelatedFactIds;
+    const reconciliation = raw.diagnosis_reconciliation as Record<string, unknown>;
+    reconciliation.evidence_fact_ids = unrelatedFactIds;
+    (reconciliation.action_intent as Record<string, unknown>).evidence_fact_ids = unrelatedFactIds;
+    (raw.action_intent as Record<string, unknown>).evidence_fact_ids = unrelatedFactIds;
+
+    await expect(
+      parseReferenceResponsePacket(
+        raw,
+        "tos-resource-resolution-drift-v1",
+        REQUEST_ID,
+        async () => DIGEST,
+      ),
+    ).rejects.toThrow("reference-response-invalid");
+  });
+
   it.each([
     ["unobserved calls above the total", { unobserved_model_calls: 3 }],
     ["exact tokens for incomplete usage", { input_tokens: 321, output_tokens: 17 }],
@@ -1892,7 +2051,11 @@ describe("reference demo API adapter", () => {
       },
       metrics: {
         false_authorized_actions: 0,
-        recorded_model_advantage_basis_points: 3334,
+      },
+      model_comparison_research: {
+        status: "recorded-underperformed-baseline",
+        candidate_delta_basis_points: -6000,
+        excluded_from_release_acceptance: true,
       },
     });
   });

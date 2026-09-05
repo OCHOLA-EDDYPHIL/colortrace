@@ -303,6 +303,7 @@ class _VerifiedReferenceWorkerEvidence:
     _source: BenchmarkEvidenceSource
     _evidence_set_id: str
     _observations: tuple[BenchmarkArtifactObservation, ...]
+    _execution_identity: ReferenceExecutionIdentity
 
     def __init__(self) -> None:
         raise ReferenceWorkerBenchmarkError("reference-benchmark-evidence-unverified")
@@ -314,6 +315,7 @@ class _VerifiedReferenceWorkerEvidence:
         source: BenchmarkEvidenceSource,
         evidence_set_id: str,
         observations: tuple[BenchmarkArtifactObservation, ...],
+        execution_identity: ReferenceExecutionIdentity,
         verification_token: object,
     ) -> _VerifiedReferenceWorkerEvidence:
         if verification_token is not _VERIFIED_EVIDENCE_TOKEN:
@@ -346,6 +348,7 @@ class _VerifiedReferenceWorkerEvidence:
         object.__setattr__(value, "_source", source)
         object.__setattr__(value, "_evidence_set_id", evidence_set_id)
         object.__setattr__(value, "_observations", observations)
+        object.__setattr__(value, "_execution_identity", execution_identity)
         return value
 
     @property
@@ -359,6 +362,10 @@ class _VerifiedReferenceWorkerEvidence:
     @property
     def observations(self) -> tuple[BenchmarkArtifactObservation, ...]:
         return self._observations
+
+    @property
+    def execution_identity(self) -> ReferenceExecutionIdentity:
+        return self._execution_identity
 
 
 @dataclass(frozen=True, slots=True)
@@ -1961,6 +1968,7 @@ def _verify_reference_worker_evidence_set(
         source=source,
         evidence_set_id=cast(str, document["evidence_set_id"]),
         observations=selected,
+        execution_identity=expected_execution_identity,
         verification_token=_VERIFIED_EVIDENCE_TOKEN,
     )
 
@@ -2013,10 +2021,14 @@ def _build_verified_recorded_reference_impact_benchmark(
             "evidence_set_id": evidence.evidence_set_id,
             "recorded_worker_evidence": True,
             "observation_count": len(evidence.observations),
+            "execution_identity": {
+                **evidence.execution_identity.to_dict(),
+                "identity_sha256": evidence.execution_identity.sha256,
+            },
         },
     }
     report = {**body, "report_sha256": prefixed_sha256(body)}
-    validate_schema("reference-impact-benchmark-v1.schema.json", report)
+    validate_schema("reference-impact-benchmark-v2.schema.json", report)
     return report
 
 

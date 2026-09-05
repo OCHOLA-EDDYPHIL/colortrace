@@ -742,6 +742,19 @@ function LiveInvestigationResult({
   const reconciliation = packet.diagnosis_reconciliation;
   const invocation = packet.model_invocation;
   const resolved = packet.status === "resolved";
+  const diagnosis =
+    reconciliation.status !== "supported" || reconciliation.incident_class === null
+      ? null
+      : INCIDENT_PRESENTATION[reconciliation.incident_class];
+  const decisiveFields = [
+    ...new Set(
+      packet.runtime_evidence_projection.observations.flatMap((observation) =>
+        observation.decisive_values.map(({ field }) => field),
+      ),
+    ),
+  ];
+  const affectedCount = reconciliation.scope.affected_job_ids.length;
+  const protectedCount = reconciliation.scope.safe_job_ids.length;
 
   return (
     <div className="reference-live__result">
@@ -752,6 +765,25 @@ function LiveInvestigationResult({
         </div>
         <strong data-run-status={packet.status}>{packet.status}</strong>
       </div>
+
+      <section
+        aria-label="Returned investigation conclusion"
+        className="reference-live__conclusion"
+      >
+        <span>{resolved ? "Returned cause" : "Fail-closed conclusion"}</span>
+        <strong>{diagnosis?.explanation ?? "No supported cause was returned."}</strong>
+        <p>
+          {resolved
+            ? `Grafana MCP supplied ${packet.runtime_evidence_projection.observations.length} bound structured facts${
+                decisiveFields.length === 0 ? "" : ` across ${decisiveFields.join(", ")}`
+              }. Deterministic reconciliation scoped ${affectedCount} affected and ${protectedCount} protected ${
+                protectedCount === 1 ? "job" : "jobs"
+              }; Gemini only selected read-only queries.`
+            : `Grafana MCP supplied ${packet.runtime_evidence_projection.observations.length} bound structured facts. Deterministic reconciliation ended ${reconciliation.status} (${reconciliation.reason_codes.join(
+                ", ",
+              )}); no recovery action was made available.`}
+        </p>
+      </section>
 
       <div className="reference-live__summary-grid">
         <section>
@@ -1164,14 +1196,23 @@ function BenchmarkState({
         </section>
       );
     }
-    const coreMissionPassed =
-      result.checks.campaign_acceptance_passed &&
-      result.checks.output_equivalence &&
-      result.checks.protected_output_integrity &&
-      result.checks.zero_false_authorized_actions &&
-      result.checks.classification_at_least_95_percent &&
-      result.checks.same_selection_budgets &&
-      result.checks.measurable_adaptive_advantage;
+    const currentBenchmark = result.schema === "reference-impact-benchmark/v2";
+    const coreMissionPassed = currentBenchmark
+      ? result.checks.balanced_resolvable_classes &&
+        result.checks.classification_at_least_95_percent &&
+        result.checks.all_negative_cases_fail_closed &&
+        result.checks.display_text_cannot_change_authority &&
+        result.checks.zero_false_action_intents &&
+        result.checks.zero_false_authorized_actions &&
+        result.checks.output_equivalence &&
+        result.checks.protected_output_integrity
+      : result.checks.campaign_acceptance_passed &&
+        result.checks.output_equivalence &&
+        result.checks.protected_output_integrity &&
+        result.checks.zero_false_authorized_actions &&
+        result.checks.classification_at_least_95_percent &&
+        result.checks.same_selection_budgets &&
+        result.checks.measurable_adaptive_advantage;
     const impactTargetsPassed =
       result.checks.median_compute_avoided_at_least_40_percent &&
       result.checks.median_application_bytes_avoided_at_least_40_percent;
@@ -1184,7 +1225,7 @@ function BenchmarkState({
           <div>
             <p className="shot-eyebrow">Recorded benchmark</p>
             <h3 id="reference-benchmark-title">
-              {coreMissionPassed ? "Core mission gates passed" : "Core mission gates failed"}
+              {coreMissionPassed ? "Product gates passed" : "Product gates failed"}
             </h3>
           </div>
           <span data-result-state={coreMissionPassed && impactTargetsPassed ? "passed" : "failed"}>
@@ -1192,7 +1233,7 @@ function BenchmarkState({
               ? impactTargetsPassed
                 ? "Impact target passed"
                 : "Impact target not met"
-              : "Core mission failed"}
+              : "Product gates failed"}
           </span>
         </div>
         <p className="reference-benchmark__source">
@@ -1203,16 +1244,24 @@ function BenchmarkState({
           observations · recorded evaluator output · 39 fail-closed control cases tested separately,
           including explicitly approved state transitions and insufficient or ambiguous evidence
         </p>
+        {currentBenchmark ? (
+          <p className="reference-benchmark__source">
+            Source-bound worker evidence · revision{" "}
+            {result.evidence.execution_identity.source_revision.slice(0, 8)} · tree{" "}
+            {result.evidence.execution_identity.source_tree.slice(0, 8)}
+          </p>
+        ) : null}
         <p className="reference-benchmark__source">
-          Model boundary · 60 model-output receipts replayed against sealed holdouts · hashes,
-          corpus/input bindings, budgets, and deterministic scoring verified locally · provider
-          execution is not independently attested
+          {currentBenchmark
+            ? result.model_comparison_research.recorded_model_output_evaluated
+              ? `Model boundary · ${result.campaign_summary.case_counts.resolvable} no-retry model-call receipts replayed against sealed holdouts · hashes, corpus/input bindings, budgets, and deterministic scoring verified locally · provider execution is not independently attested`
+              : "Model boundary · controlled selector comparison only · no provider-output claim"
+            : "Model boundary · legacy recorded comparison · provider execution is not independently attested"}
         </p>
         <p>
-          Core mission success requires correct diagnosis, equivalent recovery, intact protected
-          outputs, zero false-authorized actions, and measurable adaptive selection under the same
-          evidence budget. Compute and byte avoidance are separate impact targets that count only
-          after those gates pass.
+          Product success requires correct diagnosis, fail-closed controls, equivalent recovery,
+          intact protected outputs, and zero false-authorized actions. Compute and byte avoidance
+          are separate controlled-workload impact targets, not the mission itself.
         </p>
         <section aria-label="Recorded benchmark metrics" className="reference-benchmark__metrics">
           <div>
@@ -1226,12 +1275,24 @@ function BenchmarkState({
             <strong>{result.metrics.false_authorized_actions}</strong>
             <span>false-authorized actions · required 0</span>
           </div>
-          <div>
-            <strong>
-              {signedBasisPoints(result.metrics.recorded_model_advantage_basis_points)}
-            </strong>
-            <span>recorded Gemini advantage over fixed query order</span>
-          </div>
+          {currentBenchmark ? (
+            <div>
+              <strong>
+                {signedBasisPoints(result.model_comparison_research.candidate_delta_basis_points)}
+              </strong>
+              <span>
+                advisory Gemini selector delta vs fixed order · research result only · excluded from
+                release acceptance
+              </span>
+            </div>
+          ) : (
+            <div>
+              <strong>
+                {signedBasisPoints(result.metrics.recorded_model_advantage_basis_points)}
+              </strong>
+              <span>legacy recorded Gemini comparison</span>
+            </div>
+          )}
           <div>
             <strong>{basisPoints(result.metrics.median_compute_avoided_basis_points)}</strong>
             <span>median net compute avoided · threshold ≥40%</span>
@@ -1305,8 +1366,9 @@ function BenchmarkState({
           </dl>
         </details>
         <p>
-          Correctness, safety, model advantage, and efficiency above are recorded measurements.
-          Timing is informational only and is excluded from acceptance.
+          {currentBenchmark
+            ? "Correctness, safety, the model comparison result, and controlled-workload efficiency above are recorded measurements. The model comparison and timing are excluded from product acceptance."
+            : "Correctness, safety, model advantage, and efficiency above are legacy recorded measurements. Timing is informational only and is excluded from acceptance."}
         </p>
       </section>
     );

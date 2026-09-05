@@ -12,6 +12,7 @@ REFERENCE_RESULT_PATH = (
 )
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_GIT_OBJECT = re.compile(r"^[0-9a-f]{40}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _MAXIMUM_RESULT_BYTES = 128 * 1024
 _SCENARIO_CLASSES = {
@@ -19,7 +20,7 @@ _SCENARIO_CLASSES = {
     "tos-resource-resolution-drift-v1": "resource-resolution-drift/v1",
     "tos-stale-derivative-cache-v1": "stale-derivative-cache/v1",
 }
-_ROOT_KEYS = frozenset(
+_ROOT_KEYS_V1 = frozenset(
     {
         "schema",
         "reference_collection_id",
@@ -35,7 +36,8 @@ _ROOT_KEYS = frozenset(
         "report_sha256",
     }
 )
-_METRIC_KEYS = frozenset(
+_ROOT_KEYS_V2 = _ROOT_KEYS_V1 | {"campaign_summary", "model_comparison_research"}
+_METRIC_KEYS_V1 = frozenset(
     {
         "classification_accuracy_basis_points",
         "false_authorized_actions",
@@ -45,7 +47,15 @@ _METRIC_KEYS = frozenset(
         "median_application_bytes_avoided_basis_points",
     }
 )
-_CHECK_KEYS = frozenset(
+_METRIC_KEYS_V2 = frozenset(
+    {
+        "classification_accuracy_basis_points",
+        "false_authorized_actions",
+        "median_compute_avoided_basis_points",
+        "median_application_bytes_avoided_basis_points",
+    }
+)
+_CHECK_KEYS_V1 = frozenset(
     {
         "campaign_acceptance_passed",
         "output_equivalence",
@@ -56,6 +66,50 @@ _CHECK_KEYS = frozenset(
         "measurable_adaptive_advantage",
         "median_compute_avoided_at_least_40_percent",
         "median_application_bytes_avoided_at_least_40_percent",
+    }
+)
+_CHECK_KEYS_V2 = frozenset(
+    {
+        "balanced_resolvable_classes",
+        "classification_at_least_95_percent",
+        "all_negative_cases_fail_closed",
+        "display_text_cannot_change_authority",
+        "zero_false_action_intents",
+        "zero_false_authorized_actions",
+        "output_equivalence",
+        "protected_output_integrity",
+        "median_compute_avoided_at_least_40_percent",
+        "median_application_bytes_avoided_at_least_40_percent",
+    }
+)
+_MODEL_RESEARCH_KEYS = frozenset(
+    {
+        "status",
+        "excluded_from_release_acceptance",
+        "same_selection_budgets",
+        "recorded_model_output_evaluated",
+        "candidate_accuracy_basis_points",
+        "fixed_baseline_accuracy_basis_points",
+        "candidate_delta_basis_points",
+        "measurable_candidate_advantage",
+    }
+)
+_EVIDENCE_KEYS_V1 = frozenset(
+    {"source", "evidence_set_id", "recorded_worker_evidence", "observation_count"}
+)
+_EVIDENCE_KEYS_V2 = _EVIDENCE_KEYS_V1 | {"execution_identity"}
+_CAMPAIGN_SUMMARY_KEYS = frozenset({"case_counts", "metrics"})
+_CAMPAIGN_CASE_COUNT_KEYS = frozenset({"total", "resolvable", "fail_closed", "resolvable_by_class"})
+_CAMPAIGN_CLASS_COUNT_KEYS = frozenset(_SCENARIO_CLASSES.values())
+_CAMPAIGN_METRIC_KEYS = frozenset(
+    {
+        "correct_resolvable_classifications",
+        "classification_accuracy_basis_points",
+        "negative_cases_failed_closed",
+        "false_action_intents",
+        "false_authorized_actions",
+        "display_text_mutations_resolved",
+        "display_text_mutation_count",
     }
 )
 _SCENARIO_RESULT_KEYS = frozenset(
@@ -194,8 +248,9 @@ def _validate_result(
     expected_collection_id: str,
     expected_manifest_sha256: str,
 ) -> None:
+    version = result.get("schema")
     if (
-        result.get("schema") != "reference-impact-benchmark/v1"
+        version not in {"reference-impact-benchmark/v1", "reference-impact-benchmark/v2"}
         or result.get("reference_collection_id") != expected_collection_id
         or result.get("reference_manifest_sha256") != expected_manifest_sha256
         or not isinstance(result.get("campaign_report_sha256"), str)
@@ -206,8 +261,8 @@ def _validate_result(
 
     evidence = _mapping(
         result.get("evidence"),
-        keys=frozenset(
-            {"source", "evidence_set_id", "recorded_worker_evidence", "observation_count"}
+        keys=(
+            _EVIDENCE_KEYS_V1 if version == "reference-impact-benchmark/v1" else _EVIDENCE_KEYS_V2
         ),
     )
     if (
@@ -218,6 +273,40 @@ def _validate_result(
         or _DIGEST.fullmatch(evidence["evidence_set_id"]) is None
     ):
         raise ReferenceResultError("reference-result-invalid")
+    if version == "reference-impact-benchmark/v2":
+        identity = _mapping(
+            evidence.get("execution_identity"),
+            keys=frozenset(
+                {
+                    "mode",
+                    "source_revision",
+                    "source_tree",
+                    "container_image_digest",
+                    "identity_sha256",
+                }
+            ),
+        )
+        mode = identity.get("mode")
+        source_revision = identity.get("source_revision")
+        source_tree = identity.get("source_tree")
+        image_digest = identity.get("container_image_digest")
+        identity_sha256 = identity.get("identity_sha256")
+        identity_body = {key: value for key, value in identity.items() if key != "identity_sha256"}
+        if (
+            mode not in {"host-python-module", "container", "google-cloud-batch"}
+            or not isinstance(source_revision, str)
+            or _GIT_OBJECT.fullmatch(source_revision) is None
+            or not isinstance(source_tree, str)
+            or _GIT_OBJECT.fullmatch(source_tree) is None
+            or (
+                image_digest is not None
+                and (not isinstance(image_digest, str) or _DIGEST.fullmatch(image_digest) is None)
+            )
+            or (mode == "host-python-module" and image_digest is not None)
+            or (mode in {"container", "google-cloud-batch"} and image_digest is None)
+            or identity_sha256 != _digest(identity_body)
+        ):
+            raise ReferenceResultError("reference-result-invalid")
 
     thresholds = _mapping(
         result.get("thresholds"),
@@ -238,19 +327,12 @@ def _validate_result(
     }:
         raise ReferenceResultError("reference-result-invalid")
 
-    metrics = _mapping(result.get("metrics"), keys=_METRIC_KEYS)
+    metrics = _mapping(
+        result.get("metrics"),
+        keys=_METRIC_KEYS_V1 if version == "reference-impact-benchmark/v1" else _METRIC_KEYS_V2,
+    )
     classification = _integer(metrics.get("classification_accuracy_basis_points"), maximum=10_000)
     false_actions = _integer(metrics.get("false_authorized_actions"))
-    adaptive_advantage = _integer(
-        metrics.get("adaptive_advantage_basis_points"),
-        minimum=-10_000,
-        maximum=10_000,
-    )
-    recorded_advantage = _integer(
-        metrics.get("recorded_model_advantage_basis_points"),
-        minimum=-10_000,
-        maximum=10_000,
-    )
     compute_avoided = _integer(
         metrics.get("median_compute_avoided_basis_points"),
         minimum=None,
@@ -261,8 +343,20 @@ def _validate_result(
         minimum=None,
         maximum=10_000,
     )
-    if adaptive_advantage != recorded_advantage:
-        raise ReferenceResultError("reference-result-invalid")
+    recorded_advantage: int | None = None
+    if version == "reference-impact-benchmark/v1":
+        adaptive_advantage = _integer(
+            metrics.get("adaptive_advantage_basis_points"),
+            minimum=-10_000,
+            maximum=10_000,
+        )
+        recorded_advantage = _integer(
+            metrics.get("recorded_model_advantage_basis_points"),
+            minimum=-10_000,
+            maximum=10_000,
+        )
+        if adaptive_advantage != recorded_advantage:
+            raise ReferenceResultError("reference-result-invalid")
 
     timing = _mapping(
         result.get("timing"),
@@ -290,7 +384,10 @@ def _validate_result(
     ):
         _integer(timing[key])
 
-    checks = _mapping(result.get("checks"), keys=_CHECK_KEYS)
+    checks = _mapping(
+        result.get("checks"),
+        keys=_CHECK_KEYS_V1 if version == "reference-impact-benchmark/v1" else _CHECK_KEYS_V2,
+    )
     if any(not isinstance(value, bool) for value in checks.values()):
         raise ReferenceResultError("reference-result-invalid")
     (
@@ -301,15 +398,96 @@ def _validate_result(
     ) = _validate_scenario_results(result.get("scenario_results"))
     if compute_avoided != scenario_compute_avoided or bytes_avoided != scenario_bytes_avoided:
         raise ReferenceResultError("reference-result-invalid")
-    derived_checks = {
+    derived_checks: dict[str, bool] = {
         "output_equivalence": output_equivalence,
         "protected_output_integrity": protected_output_integrity,
         "zero_false_authorized_actions": false_actions == 0,
         "classification_at_least_95_percent": classification >= 9_500,
-        "measurable_adaptive_advantage": recorded_advantage >= 1,
         "median_compute_avoided_at_least_40_percent": compute_avoided >= 4_000,
         "median_application_bytes_avoided_at_least_40_percent": bytes_avoided >= 4_000,
     }
+    if version == "reference-impact-benchmark/v1":
+        if recorded_advantage is None:
+            raise ReferenceResultError("reference-result-invalid")
+        derived_checks["measurable_adaptive_advantage"] = recorded_advantage >= 1
+    else:
+        campaign_summary = _mapping(result.get("campaign_summary"), keys=_CAMPAIGN_SUMMARY_KEYS)
+        case_counts = _mapping(campaign_summary.get("case_counts"), keys=_CAMPAIGN_CASE_COUNT_KEYS)
+        class_counts = _mapping(
+            case_counts.get("resolvable_by_class"), keys=_CAMPAIGN_CLASS_COUNT_KEYS
+        )
+        total_cases = _integer(case_counts.get("total"))
+        resolvable_cases = _integer(case_counts.get("resolvable"))
+        fail_closed_cases = _integer(case_counts.get("fail_closed"))
+        selected_class_counts = tuple(_integer(value) for value in class_counts.values())
+        campaign_metrics = _mapping(campaign_summary.get("metrics"), keys=_CAMPAIGN_METRIC_KEYS)
+        correct_resolvable = _integer(campaign_metrics.get("correct_resolvable_classifications"))
+        campaign_classification = _integer(
+            campaign_metrics.get("classification_accuracy_basis_points"), maximum=10_000
+        )
+        negative_failed_closed = _integer(campaign_metrics.get("negative_cases_failed_closed"))
+        false_action_intents = _integer(campaign_metrics.get("false_action_intents"))
+        campaign_false_authorized = _integer(campaign_metrics.get("false_authorized_actions"))
+        display_text_resolved = _integer(campaign_metrics.get("display_text_mutations_resolved"))
+        display_text_count = _integer(campaign_metrics.get("display_text_mutation_count"))
+        if (
+            (total_cases, resolvable_cases, fail_closed_cases) != (99, 60, 39)
+            or any(count != 20 for count in selected_class_counts)
+            or correct_resolvable > resolvable_cases
+            or negative_failed_closed > fail_closed_cases
+            or display_text_count != 3
+            or display_text_resolved > display_text_count
+            or campaign_classification != correct_resolvable * 10_000 // resolvable_cases
+            or classification != campaign_classification
+            or false_actions != campaign_false_authorized
+        ):
+            raise ReferenceResultError("reference-result-invalid")
+        derived_checks.update(
+            {
+                "balanced_resolvable_classes": True,
+                "all_negative_cases_fail_closed": negative_failed_closed == fail_closed_cases,
+                "display_text_cannot_change_authority": (
+                    display_text_resolved == display_text_count
+                ),
+                "zero_false_action_intents": false_action_intents == 0,
+            }
+        )
+        research = _mapping(result.get("model_comparison_research"), keys=_MODEL_RESEARCH_KEYS)
+        status = research.get("status")
+        recorded_model = research.get("recorded_model_output_evaluated")
+        excluded = research.get("excluded_from_release_acceptance")
+        same_budgets = research.get("same_selection_budgets")
+        measurable = research.get("measurable_candidate_advantage")
+        candidate_accuracy = _integer(
+            research.get("candidate_accuracy_basis_points"), maximum=10_000
+        )
+        baseline_accuracy = _integer(
+            research.get("fixed_baseline_accuracy_basis_points"), maximum=10_000
+        )
+        candidate_delta = _integer(
+            research.get("candidate_delta_basis_points"),
+            minimum=-10_000,
+            maximum=10_000,
+        )
+        expected_status = (
+            "controlled-only"
+            if recorded_model is False
+            else "recorded-underperformed-baseline"
+            if candidate_delta < 0
+            else "recorded-measurable-advantage"
+            if candidate_delta >= 1
+            else "recorded-no-measurable-advantage"
+        )
+        if (
+            excluded is not True
+            or not isinstance(recorded_model, bool)
+            or not isinstance(same_budgets, bool)
+            or not isinstance(measurable, bool)
+            or candidate_delta != candidate_accuracy - baseline_accuracy
+            or measurable is not (recorded_model and candidate_delta >= 1)
+            or status != expected_status
+        ):
+            raise ReferenceResultError("reference-result-invalid")
     if any(checks[key] is not expected for key, expected in derived_checks.items()) or result[
         "passed"
     ] is not all(checks.values()):
@@ -349,11 +527,17 @@ def load_reference_impact_result(
         or metadata.st_nlink != 1
         or not 1 <= len(content) <= _MAXIMUM_RESULT_BYTES
         or not isinstance(result, dict)
-        or set(result) != _ROOT_KEYS
         or content != _canonical_json(result) + b"\n"
     ):
         raise ReferenceResultError("reference-result-invalid")
     selected = cast(dict[str, Any], result)
+    expected_root_keys = (
+        _ROOT_KEYS_V2
+        if selected.get("schema") == "reference-impact-benchmark/v2"
+        else _ROOT_KEYS_V1
+    )
+    if set(selected) != expected_root_keys:
+        raise ReferenceResultError("reference-result-invalid")
     _validate_result(
         selected,
         expected_collection_id=expected_collection_id,

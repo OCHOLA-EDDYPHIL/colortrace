@@ -148,6 +148,86 @@ function failedSavingsSuite(negativeMedian = false): ReferenceBenchmarkSuite {
   };
 }
 
+function passingV2Suite(): ReferenceBenchmarkSuite {
+  const suite = failedSavingsSuite();
+  if (suite.result?.schema !== "reference-impact-benchmark/v1") {
+    throw new Error("missing legacy result fixture");
+  }
+  const scenarioResults = suite.result.scenario_results.map((item) => ({
+    ...item,
+    selective: { ...item.selective, application_bytes: 500 },
+    application_bytes_avoided_basis_points: 5_000,
+  }));
+  return {
+    ...suite,
+    result: {
+      ...suite.result,
+      schema: "reference-impact-benchmark/v2",
+      campaign_summary: {
+        case_counts: {
+          total: 99,
+          resolvable: 60,
+          fail_closed: 39,
+          resolvable_by_class: {
+            "configuration-rollout-drift/v1": 20,
+            "resource-resolution-drift/v1": 20,
+            "stale-derivative-cache/v1": 20,
+          },
+        },
+        metrics: {
+          correct_resolvable_classifications: 60,
+          classification_accuracy_basis_points: 10_000,
+          negative_cases_failed_closed: 39,
+          false_action_intents: 0,
+          false_authorized_actions: 0,
+          display_text_mutations_resolved: 3,
+          display_text_mutation_count: 3,
+        },
+      },
+      evidence: {
+        ...suite.result.evidence,
+        execution_identity: {
+          mode: "host-python-module",
+          source_revision: "b".repeat(40),
+          source_tree: "c".repeat(40),
+          container_image_digest: null,
+          identity_sha256: DIGEST,
+        },
+      },
+      metrics: {
+        classification_accuracy_basis_points: 10_000,
+        false_authorized_actions: 0,
+        median_compute_avoided_basis_points: 7_000,
+        median_application_bytes_avoided_basis_points: 5_000,
+      },
+      scenario_results: scenarioResults,
+      checks: {
+        balanced_resolvable_classes: true,
+        classification_at_least_95_percent: true,
+        all_negative_cases_fail_closed: true,
+        display_text_cannot_change_authority: true,
+        zero_false_action_intents: true,
+        zero_false_authorized_actions: true,
+        output_equivalence: true,
+        protected_output_integrity: true,
+        median_compute_avoided_at_least_40_percent: true,
+        median_application_bytes_avoided_at_least_40_percent: true,
+      },
+      model_comparison_research: {
+        status: "recorded-underperformed-baseline",
+        excluded_from_release_acceptance: true,
+        same_selection_budgets: true,
+        recorded_model_output_evaluated: true,
+        candidate_accuracy_basis_points: 666,
+        fixed_baseline_accuracy_basis_points: 6_666,
+        candidate_delta_basis_points: -6_000,
+        measurable_candidate_advantage: false,
+      },
+      passed: true,
+    },
+  };
+}
+
 function adapterFor(suite: ReferenceBenchmarkSuite) {
   return createReferenceDemoAdapter({
     baseUrl: "https://colortrace.example",
@@ -157,6 +237,69 @@ function adapterFor(suite: ReferenceBenchmarkSuite) {
 }
 
 describe("reference benchmark adapter", () => {
+  it("accepts a passing product benchmark with negative model research excluded", async () => {
+    const suite = await adapterFor(passingV2Suite()).benchmarkSuite();
+
+    expect(suite.result).toMatchObject({
+      schema: "reference-impact-benchmark/v2",
+      passed: true,
+      checks: { zero_false_authorized_actions: true },
+      model_comparison_research: {
+        status: "recorded-underperformed-baseline",
+        excluded_from_release_acceptance: true,
+        candidate_delta_basis_points: -6_000,
+        measurable_candidate_advantage: false,
+      },
+    });
+  });
+
+  it.each(["container", "google-cloud-batch"] as const)(
+    "accepts canonical %s worker evidence",
+    async (mode) => {
+      const fixture = passingV2Suite();
+      if (fixture.result?.schema !== "reference-impact-benchmark/v2") {
+        throw new Error("missing current result fixture");
+      }
+      const suite = await adapterFor({
+        ...fixture,
+        result: {
+          ...fixture.result,
+          evidence: {
+            ...fixture.result.evidence,
+            execution_identity: {
+              ...fixture.result.evidence.execution_identity,
+              mode,
+              container_image_digest: DIGEST,
+            },
+          },
+        },
+      }).benchmarkSuite();
+
+      expect(suite.result?.evidence).toMatchObject({
+        execution_identity: { mode, container_image_digest: DIGEST },
+      });
+    },
+  );
+
+  it("rejects a resigned v2 release check that contradicts its campaign summary", async () => {
+    const fixture = passingV2Suite();
+    if (fixture.result?.schema !== "reference-impact-benchmark/v2") {
+      throw new Error("missing current result fixture");
+    }
+    const malformed: ReferenceBenchmarkSuite = {
+      ...fixture,
+      result: {
+        ...fixture.result,
+        checks: { ...fixture.result.checks, all_negative_cases_fail_closed: false },
+        passed: false,
+      },
+    };
+
+    await expect(adapterFor(malformed).benchmarkSuite()).rejects.toMatchObject({
+      code: "reference-response-invalid",
+    });
+  });
+
   it("accepts a consistent recorded savings-only failure", async () => {
     const suite = await adapterFor(failedSavingsSuite()).benchmarkSuite();
 
@@ -184,7 +327,9 @@ describe("reference benchmark adapter", () => {
 
   it("rejects a recorded failure whose threshold check contradicts its metric", async () => {
     const suite = failedSavingsSuite();
-    if (suite.result === null) throw new Error("missing result fixture");
+    if (suite.result?.schema !== "reference-impact-benchmark/v1") {
+      throw new Error("missing legacy result fixture");
+    }
     const malformed: ReferenceBenchmarkSuite = {
       ...suite,
       result: {

@@ -724,6 +724,7 @@ def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Pat
         "evidence_set_id": first["evidence"]["evidence_set_id"],
         "recorded_worker_evidence": False,
         "observation_count": 720,
+        "execution_identity": None,
     }
     assert first["passed"] is True
     assert worker.calls == 720 + (72 * 6)
@@ -946,8 +947,10 @@ def test_verifier_rejects_tampered_complete_controlled_evidence(tmp_path: Path) 
         "evidence_set_id": verified.evidence_set_id,
         "recorded_worker_evidence": False,
         "observation_count": 720,
+        "execution_identity": None,
     }
     assert verified.source == "controlled-receipt-set"
+    assert verified.execution_identity == INJECTED_IDENTITY
     assert len(verified.observations) == 720
     with pytest.raises(
         ReferenceWorkerBenchmarkError,

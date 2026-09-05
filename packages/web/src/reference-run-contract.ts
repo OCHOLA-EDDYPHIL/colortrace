@@ -783,8 +783,7 @@ function parseSelectionTrace(
     entries[0]?.selected_by !== "policy" ||
     entries[0].query_key !== "alert.rule" ||
     entries.slice(1).some(({ selected_by }) => selected_by !== "model") ||
-    new Set(entries.map(({ query_key }) => query_key)).size !== entries.length ||
-    entries.at(-1)?.disposition === "continue"
+    new Set(entries.map(({ query_key }) => query_key)).size !== entries.length
   ) {
     throw invalidPacket();
   }
@@ -1192,6 +1191,7 @@ function parseProjection(
 ): {
   readonly source: Readonly<Record<string, unknown>>;
   readonly requestId: string;
+  readonly factIds: readonly string[];
   readonly signalClasses: readonly ReferenceSignalClass[];
   readonly projection: ReferenceRuntimeEvidenceProjection;
 } {
@@ -1342,6 +1342,7 @@ function parseProjection(
   return {
     source,
     requestId,
+    factIds: Object.freeze([...observedFactIds].sort()),
     signalClasses: Object.freeze(signalClasses),
     projection: Object.freeze({
       request_id: requestId,
@@ -1546,7 +1547,8 @@ export async function parseReferenceResponsePacket(
   ) {
     throw invalidPacket();
   }
-  stringArray(operational.fact_ids, RUNTIME_FACT_ID, 0, 2048);
+  const operationalFactIds = stringArray(operational.fact_ids, RUNTIME_FACT_ID, 0, 2048);
+  const operationalEvidenceIds = stringArray(operational.evidence_ids, DIGEST, 0, 8);
   stringArray(operational.reason_codes, REASON_CODE, 1, 16);
 
   if (
@@ -1564,19 +1566,21 @@ export async function parseReferenceResponsePacket(
     const assessmentDerivation = stringValue(assessment.derivation_sha256, DIGEST);
     assertIdentityDigest(assessmentId, assessmentDerivation, "class-assessment");
     const cause = record(assessment.cause);
+    const assessmentScope = parseScope(assessment.scope);
     if (
       assessment.schema !== "incident-class-assessment/v1" ||
       className !== REFERENCE_INCIDENT_CLASSES[index] ||
       assessment.expected_state_assessment_id !== expectedAssessmentId ||
       assessment.operational_evidence_assessment_id !== operationalAssessmentId ||
+      !sameStrings(assessmentScope.affected_job_ids, expectedScope.affected_job_ids) ||
+      !sameStrings(assessmentScope.safe_job_ids, expectedScope.safe_job_ids) ||
       (classStatus === "supported") !== Object.keys(cause).length > 0
     ) {
       throw invalidPacket();
     }
-    parseScope(assessment.scope);
-    stringArray(assessment.evidence_fact_ids, RUNTIME_FACT_ID, 0, 2048);
+    const evidenceFactIds = stringArray(assessment.evidence_fact_ids, RUNTIME_FACT_ID, 0, 2048);
     stringArray(assessment.reason_codes, REASON_CODE, 1, 16);
-    return { assessmentId, className, classStatus };
+    return { assessmentId, className, classStatus, evidenceFactIds };
   });
 
   const reconciliation = record(source.diagnosis_reconciliation);
@@ -1656,6 +1660,21 @@ export async function parseReferenceResponsePacket(
   if (operationalRequestId !== null && operationalRequestId !== projection.requestId) {
     throw invalidPacket();
   }
+  const expectedOperationalFactIds =
+    operationalStatus === "supported" ? projection.factIds : Object.freeze([]);
+  const expectedOperationalEvidenceIds =
+    operationalStatus === "supported" ? projection.projection.evidence_ids : Object.freeze([]);
+  if (
+    !sameStrings([...operationalFactIds].sort(), expectedOperationalFactIds) ||
+    !sameStrings([...operationalEvidenceIds].sort(), [...expectedOperationalEvidenceIds].sort()) ||
+    classAssessments.some(
+      ({ evidenceFactIds }) =>
+        !sameStrings([...evidenceFactIds].sort(), expectedOperationalFactIds),
+    ) ||
+    !sameStrings([...reconciliationFactIds].sort(), expectedOperationalFactIds)
+  ) {
+    throw invalidPacket();
+  }
   const referenceEvidence = parseReferenceEvidence(source.reference_evidence, {
     incidentId,
     scenarioId: expectedScenarioId,
@@ -1683,6 +1702,11 @@ export async function parseReferenceResponsePacket(
     source.action_intent === null ? null : parseActionIntent(source.action_intent);
   const noActionReason =
     source.no_action_reason === null ? null : stringValue(source.no_action_reason, REASON_CODE);
+  const terminalDisposition = trace.at(-1)?.disposition;
+  const modelBoundaryFailedClosed =
+    modelSelection === null &&
+    ((modelInvocation?.status === "failed" && noActionReason === "model-unavailable") ||
+      (modelInvocation?.status === "invalid" && noActionReason === "model-output-invalid"));
   if (
     (status === "resolved" &&
       (reconciliationStatus !== "supported" ||
@@ -1693,12 +1717,12 @@ export async function parseReferenceResponsePacket(
         noActionReason !== null ||
         modelSelection?.stop_reason !== "sufficient-evidence" ||
         modelInvocation?.status !== "accepted" ||
-        trace.at(-1)?.disposition !== "resolved" ||
+        terminalDisposition !== "resolved" ||
         referenceEvidence.signal_classes.length < 2)) ||
     (status === "unresolved" &&
       (actionIntent !== null ||
         noActionReason === null ||
-        trace.at(-1)?.disposition !== "unresolved"))
+        (terminalDisposition !== "unresolved" && !modelBoundaryFailedClosed)))
   ) {
     throw invalidPacket();
   }
@@ -1719,9 +1743,8 @@ export async function parseReferenceResponsePacket(
     throw invalidPacket();
   }
   if (
-    reconciliationStatus === "supported" &&
-    (!sameStrings(reconciliationScope.affected_job_ids, expectedScope.affected_job_ids) ||
-      !sameStrings(reconciliationScope.safe_job_ids, expectedScope.safe_job_ids))
+    !sameStrings(reconciliationScope.affected_job_ids, expectedScope.affected_job_ids) ||
+    !sameStrings(reconciliationScope.safe_job_ids, expectedScope.safe_job_ids)
   ) {
     throw invalidPacket();
   }
