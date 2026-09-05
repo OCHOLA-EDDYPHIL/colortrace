@@ -9,6 +9,7 @@ import {
   REFERENCE_SCENARIO_IDS,
   type ReferenceAuthority,
   type ReferenceBenchmarkSuite,
+  type ReferenceImpactBenchmark,
   type ReferenceIncidentClass,
   type ReferenceRecoveryKind,
   type ReferenceScenarioDetail,
@@ -29,6 +30,12 @@ const RUN_INCIDENT_ID = `reference-incident-${"a".repeat(24)}`;
 const RUN_ID = `reference-run-${"a".repeat(24)}`;
 const PREVIEW_ROOT = fileURLToPath(
   new URL("../../api/src/colortrace_api/reference_previews/", import.meta.url),
+);
+const RECORDED_BENCHMARK_PATH = fileURLToPath(
+  new URL(
+    "../../api/src/colortrace_api/reference_results/reference-impact-benchmark.json",
+    import.meta.url,
+  ),
 );
 const VISUAL_KINDS = ["expected", "observed", "recovered", "diff"] as const;
 
@@ -63,6 +70,9 @@ type PreviewManifest = {
 const previewManifest = JSON.parse(
   await readFile(path.join(PREVIEW_ROOT, "manifest.json"), "utf8"),
 ) as PreviewManifest;
+const recordedBenchmarkResult = JSON.parse(
+  await readFile(RECORDED_BENCHMARK_PATH, "utf8"),
+) as ReferenceImpactBenchmark;
 
 const AUTHORITY: ReferenceAuthority = {
   schema: "reference-authority-boundary/v1",
@@ -256,6 +266,26 @@ function benchmarkSuite(): ReferenceBenchmarkSuite {
       ...AUTHORITY,
       benchmark_result_authority: "recorded-evaluator-output",
     },
+  };
+  return { ...body, suite_sha256: digest(canonicalJson(body)) };
+}
+
+function recordedBenchmarkSuite(): ReferenceBenchmarkSuite {
+  const suite = benchmarkSuite();
+  const body: Omit<ReferenceBenchmarkSuite, "suite_sha256"> = {
+    schema: suite.schema,
+    suite_id: suite.suite_id,
+    definition_state: suite.definition_state,
+    result_state: "recorded",
+    scenarios: suite.scenarios,
+    acceptance_requirements: suite.acceptance_requirements,
+    measurement_boundary: {
+      ...suite.measurement_boundary,
+      catalog_claims_observed_savings: true,
+    },
+    result: recordedBenchmarkResult,
+    provenance: suite.provenance,
+    authority: suite.authority,
   };
   return { ...body, suite_sha256: digest(canonicalJson(body)) };
 }
@@ -702,7 +732,11 @@ function isVisualKind(value: string): value is ReferenceVisualKind {
   return VISUAL_KINDS.some((kind) => kind === value);
 }
 
-async function installReferenceApi(page: Page, mutations: string[]) {
+async function installReferenceApi(
+  page: Page,
+  mutations: string[],
+  benchmark: ReferenceBenchmarkSuite = benchmarkSuite(),
+) {
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -716,7 +750,7 @@ async function installReferenceApi(page: Page, mutations: string[]) {
       return;
     }
     if (url.pathname === "/v1/benchmarks/reference-suite") {
-      await route.fulfill({ json: benchmarkSuite() });
+      await route.fulfill({ json: benchmark });
       return;
     }
     const visualMatch = url.pathname.match(/^\/v1\/demo\/scenarios\/([^/]+)\/visuals\/([^/]+)$/u);
@@ -861,6 +895,52 @@ test("loads verified reference pixels and switches evidence contracts without mu
   await expect(workspace.getByText("runtime.config_generation")).toBeVisible();
   await expect(workspace.getByRole("button", { name: "Run live investigation" })).toBeEnabled();
   expect(mutations).toEqual([]);
+});
+
+test("renders the recorded reference impact v3 benchmark without comparison claims", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const mutations: string[] = [];
+  await installReferenceApi(page, mutations, recordedBenchmarkSuite());
+
+  await page.goto("/");
+
+  const benchmark = page.getByRole("region", { name: "Product gates passed" });
+  await expect(benchmark).toBeVisible();
+  await expect(benchmark.locator('[data-result-state="passed"]')).toHaveText(
+    "Impact target passed",
+  );
+  await expect(
+    benchmark.getByText("Full impact benchmark · passed", { exact: true }),
+  ).toBeVisible();
+
+  const metricValues = benchmark
+    .getByRole("region", { name: "Recorded benchmark metrics" })
+    .locator("strong");
+  await expect(metricValues).toHaveCount(4);
+  for (const [index, expected] of ["100%", "0", "70%", "41.67%"].entries()) {
+    await expect(metricValues.nth(index)).toBeVisible();
+    await expect(metricValues.nth(index)).toHaveText(expected);
+  }
+
+  const scenarioRows = benchmark.locator("tbody tr");
+  await expect(scenarioRows).toHaveCount(3);
+  for (let index = 0; index < 3; index += 1) {
+    await expect(scenarioRows.nth(index).locator('td[data-check="true"]')).toHaveCount(2);
+  }
+  await expect(benchmark).not.toContainText(
+    /model boundary|model-call receipts|selector delta|fixed order|model comparison|model advantage/iu,
+  );
+  expect(mutations).toEqual([]);
+
+  if (process.env.COLORTRACE_CAPTURE_SHOT_SAFE_SCREENSHOT === "1") {
+    await page.screenshot({
+      animations: "disabled",
+      fullPage: true,
+      path: "../../.cache/playwright/reference-v3-recorded-benchmark.png",
+    });
+  }
 });
 
 test("completes the reference v3 Detect, Explain, Approve, Verify path", async ({ page }) => {

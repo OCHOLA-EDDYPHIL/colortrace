@@ -645,12 +645,16 @@ def test_reference_benchmark_suite_reports_source_bound_recorded_results() -> No
     assert suite["schema"] == "reference-benchmark-suite/v1"
     assert suite["definition_state"] == "sealed"
     assert suite["result_state"] == "recorded"
-    assert suite["result"]["schema"] == "reference-impact-benchmark/v2"
+    assert suite["result"]["schema"] == "reference-impact-benchmark/v3"
     assert suite["result"]["passed"] is True
     assert suite["result"]["evidence"]["execution_identity"]["source_revision"] == (
         "db6832bce8adf5b0f62527202cbd388fa1f18e70"
     )
-    assert suite["result"]["model_comparison_research"]["excluded_from_release_acceptance"] is True
+    assert "model_comparison_research" not in suite["result"]
+    assert suite["result"]["checks"]["output_equivalence"] is True
+    assert suite["result"]["checks"]["protected_output_integrity"] is True
+    assert suite["result"]["metrics"]["median_compute_avoided_basis_points"] == 7_000
+    assert suite["result"]["metrics"]["median_application_bytes_avoided_basis_points"] == 4_167
     assert {scenario["scope_reduction_basis_points"] for scenario in suite["scenarios"]} == {7_000}
     assert suite["measurement_boundary"] == {
         "scope_reduction_is_measured_result": False,

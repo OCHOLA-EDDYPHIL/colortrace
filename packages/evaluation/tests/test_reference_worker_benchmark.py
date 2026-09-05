@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import subprocess
 from collections.abc import Mapping
 from copy import deepcopy
-from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 from typing import Any, cast
@@ -16,11 +14,8 @@ import pytest
 from colortrace_evaluation import canonical_json_bytes, prefixed_sha256
 from colortrace_evaluation.reference_campaign import (
     BenchmarkArtifactObservation,
-    RecordedSelectionReceiptSet,
     build_reference_impact_benchmark,
-    record_reference_model_selections,
-    run_recorded_reference_campaign,
-    sealed_reference_holdouts,
+    run_reference_campaign,
 )
 from colortrace_evaluation.reference_worker_benchmark import (
     PreparedReferenceBenchmarkSuite,
@@ -45,7 +40,6 @@ from colortrace_fixture import (
     reference_render_job,
     reference_scenarios,
 )
-from colortrace_investigation import ModelCall, ModelOutput
 from colortrace_simulator.reference_worker import ReferenceExecutionIdentity
 
 SOURCE_REVISION = "1" * 40
@@ -83,52 +77,9 @@ def _digest(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode()).hexdigest()}"
 
 
-class _RecordedSelectionModel:
-    async def generate(self, call: ModelCall) -> ModelOutput:
-        initial = cast(Mapping[str, Any], call.payload["initial_query"])
-        observations = cast(list[Mapping[str, Any]], initial["observations"])
-        affected = next(
-            item
-            for item in observations
-            if cast(Mapping[str, str], item["attributes"])["declared_reference.state"]
-            == "reference_mismatch"
-        )
-        attributes = cast(Mapping[str, str], affected["attributes"])
-        derivative_changed = (
-            attributes["declared_reference.derivative_parent_matches_approved"] == "false"
-            or attributes["declared_reference.derivative_generation_matches_approved"] == "false"
-        )
-        content = json.dumps(
-            {
-                "schema": "reference-recorded-model-selection/v1",
-                "selection_input_sha256": call.payload["input_sha256"],
-                "selected_query_key": (
-                    "trace.by-id" if derivative_changed else "log.correlated-events"
-                ),
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode()
-        return ModelOutput(
-            content=content,
-            input_tokens=700,
-            output_tokens=32,
-            provider_request_id=cast(str, call.payload["input_sha256"]),
-            provider_model_version="gemini-3.5-flash-20260904",
-        )
-
-
 @cache
-def _recorded_campaign() -> tuple[RecordedSelectionReceiptSet, Mapping[str, Any]]:
-    corpus = sealed_reference_holdouts()
-    receipts = asyncio.run(
-        record_reference_model_selections(
-            model=_RecordedSelectionModel(),
-            corpus=corpus,
-            clock=lambda: datetime(2026, 9, 4, 12, 0, tzinfo=UTC),
-        )
-    )
-    return receipts, run_recorded_reference_campaign(receipts, corpus)
+def _campaign() -> Mapping[str, Any]:
+    return run_reference_campaign()
 
 
 def _suite(source_root: Path) -> PreparedReferenceBenchmarkSuite:
@@ -705,14 +656,13 @@ def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Pat
     suite = _suite(source_root)
     preparer = _PreparedSuite(suite)
     worker = _FakeWorker()
-    campaign_receipts, campaign = _recorded_campaign()
+    campaign = _campaign()
 
     first = run_reference_worker_benchmark(
         source_root=source_root,
         config_root=config_root,
         output_root=output_root,
         campaign_report=campaign,
-        campaign_receipt_set=campaign_receipts.to_dict(),
         report_relative_path="reports/impact.json",
         worker=worker,
         suite_preparer=preparer,
@@ -858,7 +808,6 @@ def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Pat
         campaign,
         evidence_source=evidence_index["source"],
         evidence_set_id=evidence_index["evidence_set_id"],
-        campaign_receipt_set=campaign_receipts.to_dict(),
     )
     for key in ("metrics", "timing", "scenario_results", "checks", "passed"):
         assert recomputed[key] == first[key]
@@ -868,7 +817,6 @@ def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Pat
         config_root=config_root,
         output_root=output_root,
         campaign_report=campaign,
-        campaign_receipt_set=campaign_receipts.to_dict(),
         report_relative_path="reports/impact.json",
         worker=worker,
         suite_preparer=preparer,
@@ -890,7 +838,6 @@ def test_benchmark_executes_complete_scope_and_resumes_exact_pairs(tmp_path: Pat
             config_root=config_root,
             output_root=output_root,
             campaign_report=campaign,
-            campaign_receipt_set=campaign_receipts.to_dict(),
             worker=worker,
             suite_preparer=preparer,
             execution_identity=INJECTED_IDENTITY,
@@ -903,14 +850,13 @@ def test_verifier_rejects_tampered_complete_controlled_evidence(tmp_path: Path) 
     suite = _suite(source_root)
     preparer = _PreparedSuite(suite)
     worker = _FakeWorker()
-    campaign_receipts, campaign = _recorded_campaign()
+    campaign = _campaign()
 
     report = run_reference_worker_benchmark(
         source_root=source_root,
         config_root=config_root,
         output_root=output_root,
         campaign_report=campaign,
-        campaign_receipt_set=campaign_receipts,
         worker=worker,
         suite_preparer=preparer,
         execution_identity=INJECTED_IDENTITY,
@@ -1238,7 +1184,7 @@ def test_partial_resume_pair_fails_before_worker_execution(tmp_path: Path) -> No
 def test_injected_worker_requires_explicit_execution_identity(tmp_path: Path) -> None:
     source_root, config_root, output_root = _roots(tmp_path)
     worker = _FakeWorker()
-    campaign_receipts, campaign = _recorded_campaign()
+    campaign = _campaign()
 
     with pytest.raises(
         ReferenceWorkerBenchmarkError,
@@ -1249,7 +1195,6 @@ def test_injected_worker_requires_explicit_execution_identity(tmp_path: Path) ->
             config_root=config_root,
             output_root=output_root,
             campaign_report=campaign,
-            campaign_receipt_set=campaign_receipts.to_dict(),
             worker=worker,
             suite_preparer=_PreparedSuite(_suite(source_root)),
         )

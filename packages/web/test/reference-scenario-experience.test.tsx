@@ -220,7 +220,7 @@ function benchmarkSuite(): ReferenceBenchmarkSuite {
 function recordedBenchmarkSuite(passed = true): ReferenceBenchmarkSuite {
   const suite = benchmarkSuite();
   const result: NonNullable<ReferenceBenchmarkSuite["result"]> = {
-    schema: "reference-impact-benchmark/v2",
+    schema: "reference-impact-benchmark/v3",
     reference_collection_id: "tears-of-steel-linear-exr-240-v1",
     reference_manifest_sha256: DIGEST,
     campaign_report_sha256: DIGEST_B,
@@ -303,16 +303,6 @@ function recordedBenchmarkSuite(passed = true): ReferenceBenchmarkSuite {
       median_compute_avoided_at_least_40_percent: true,
       median_application_bytes_avoided_at_least_40_percent: true,
     },
-    model_comparison_research: {
-      status: "recorded-underperformed-baseline",
-      excluded_from_release_acceptance: true,
-      same_selection_budgets: true,
-      recorded_model_output_evaluated: true,
-      candidate_accuracy_basis_points: 666,
-      fixed_baseline_accuracy_basis_points: 6666,
-      candidate_delta_basis_points: -6000,
-      measurable_candidate_advantage: false,
-    },
     passed,
     report_sha256: DIGEST,
   };
@@ -329,7 +319,7 @@ function recordedBenchmarkSuite(passed = true): ReferenceBenchmarkSuite {
 
 function recordedSavingsMissSuite(): ReferenceBenchmarkSuite {
   const suite = recordedBenchmarkSuite();
-  if (suite.result?.schema !== "reference-impact-benchmark/v2") {
+  if (suite.result?.schema !== "reference-impact-benchmark/v3") {
     throw new Error("missing current recorded benchmark result");
   }
   return {
@@ -1230,10 +1220,6 @@ describe("reference scenario experience", () => {
         screen.getByText(/recorded worker receipts · 720 artifact observations/iu),
       ).toBeVisible();
       expect(
-        screen.getByText(/60 no-retry model-call receipts replayed against sealed holdouts/iu),
-      ).toBeVisible();
-      expect(screen.getByText(/provider execution is not independently attested/iu)).toBeVisible();
-      expect(
         screen.getByText(/controlled-workload impact targets, not the mission itself/iu),
       ).toBeVisible();
       expect(screen.getByText(/recorded evaluator output/iu)).toBeVisible();
@@ -1250,10 +1236,13 @@ describe("reference scenario experience", () => {
       expect(screen.queryByText(/attested evaluator output/iu)).not.toBeInTheDocument();
       expect(screen.getByText("100%")).toBeVisible();
       expect(screen.getByText("0")).toBeVisible();
-      expect(screen.getByText("-60%")).toBeVisible();
+      const metrics = screen.getByRole("region", { name: "Recorded benchmark metrics" });
+      expect(metrics.children).toHaveLength(4);
       expect(
-        screen.getByText(/research result only.*excluded from release acceptance/iu),
-      ).toBeVisible();
+        within(screen.getByRole("region", { name: heading })).queryByText(
+          /model boundary|model-call receipts|selector delta|fixed order|model comparison|model advantage/iu,
+        ),
+      ).not.toBeInTheDocument();
       expect(screen.getAllByText("70%")).toHaveLength(4);
       expect(screen.getAllByText("65%")).toHaveLength(3);
       expect(screen.getByText("-10.32%")).toBeVisible();
@@ -1265,11 +1254,10 @@ describe("reference scenario experience", () => {
       expect(screen.getAllByText("Intact")).toHaveLength(3);
       expect(screen.getByText(/timing \(excluded from acceptance\)/iu)).toBeVisible();
       expect(
-        screen.getByText(/model comparison and timing are excluded from product acceptance/iu),
+        screen.getByText(
+          /correctness, safety, output integrity, and controlled-workload efficiency above are recorded measurements.*timing is informational only and excluded from acceptance/iu,
+        ),
       ).toBeVisible();
-      expect(
-        screen.queryByText(/model advantage, and efficiency above are recorded measurements/iu),
-      ).not.toBeInTheDocument();
       expect(screen.queryByText("No measured result")).not.toBeInTheDocument();
     },
   );
@@ -2054,6 +2042,7 @@ describe("reference demo API adapter", () => {
 
     expect(suite.result_state).toBe("recorded");
     expect(suite.result).toMatchObject({
+      schema: "reference-impact-benchmark/v3",
       passed: true,
       evidence: {
         source: "recorded-worker-receipts",
@@ -2061,11 +2050,6 @@ describe("reference demo API adapter", () => {
       },
       metrics: {
         false_authorized_actions: 0,
-      },
-      model_comparison_research: {
-        status: "recorded-underperformed-baseline",
-        candidate_delta_basis_points: -6000,
-        excluded_from_release_acceptance: true,
       },
     });
   });

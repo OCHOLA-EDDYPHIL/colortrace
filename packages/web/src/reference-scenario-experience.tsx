@@ -71,10 +71,6 @@ function basisPoints(value: number): string {
   return `${String(value / 100)}%`;
 }
 
-function signedBasisPoints(value: number): string {
-  return `${value > 0 ? "+" : ""}${basisPoints(value)}`;
-}
-
 function milliseconds(nanoseconds: number): string {
   return `${(nanoseconds / 1_000_000).toFixed(2)} ms`;
 }
@@ -1196,23 +1192,15 @@ function BenchmarkState({
         </section>
       );
     }
-    const currentBenchmark = result.schema === "reference-impact-benchmark/v2";
-    const coreMissionPassed = currentBenchmark
-      ? result.checks.balanced_resolvable_classes &&
-        result.checks.classification_at_least_95_percent &&
-        result.checks.all_negative_cases_fail_closed &&
-        result.checks.display_text_cannot_change_authority &&
-        result.checks.zero_false_action_intents &&
-        result.checks.zero_false_authorized_actions &&
-        result.checks.output_equivalence &&
-        result.checks.protected_output_integrity
-      : result.checks.campaign_acceptance_passed &&
-        result.checks.output_equivalence &&
-        result.checks.protected_output_integrity &&
-        result.checks.zero_false_authorized_actions &&
-        result.checks.classification_at_least_95_percent &&
-        result.checks.same_selection_budgets &&
-        result.checks.measurable_adaptive_advantage;
+    const coreMissionPassed =
+      result.checks.balanced_resolvable_classes &&
+      result.checks.classification_at_least_95_percent &&
+      result.checks.all_negative_cases_fail_closed &&
+      result.checks.display_text_cannot_change_authority &&
+      result.checks.zero_false_action_intents &&
+      result.checks.zero_false_authorized_actions &&
+      result.checks.output_equivalence &&
+      result.checks.protected_output_integrity;
     const impactTargetsPassed =
       result.checks.median_compute_avoided_at_least_40_percent &&
       result.checks.median_application_bytes_avoided_at_least_40_percent;
@@ -1244,19 +1232,10 @@ function BenchmarkState({
           observations · recorded evaluator output · 39 fail-closed control cases tested separately,
           including explicitly approved state transitions and insufficient or ambiguous evidence
         </p>
-        {currentBenchmark ? (
-          <p className="reference-benchmark__source">
-            Source-bound worker evidence · revision{" "}
-            {result.evidence.execution_identity.source_revision.slice(0, 8)} · tree{" "}
-            {result.evidence.execution_identity.source_tree.slice(0, 8)}
-          </p>
-        ) : null}
         <p className="reference-benchmark__source">
-          {currentBenchmark
-            ? result.model_comparison_research.recorded_model_output_evaluated
-              ? `Model boundary · ${result.campaign_summary.case_counts.resolvable} no-retry model-call receipts replayed against sealed holdouts · hashes, corpus/input bindings, budgets, and deterministic scoring verified locally · provider execution is not independently attested`
-              : "Model boundary · controlled selector comparison only · no provider-output claim"
-            : "Model boundary · legacy recorded comparison · provider execution is not independently attested"}
+          Source-bound worker evidence · revision{" "}
+          {result.evidence.execution_identity.source_revision.slice(0, 8)} · tree{" "}
+          {result.evidence.execution_identity.source_tree.slice(0, 8)}
         </p>
         <p>
           Product success requires correct diagnosis, fail-closed controls, equivalent recovery,
@@ -1275,24 +1254,6 @@ function BenchmarkState({
             <strong>{result.metrics.false_authorized_actions}</strong>
             <span>false-authorized actions · required 0</span>
           </div>
-          {currentBenchmark ? (
-            <div>
-              <strong>
-                {signedBasisPoints(result.model_comparison_research.candidate_delta_basis_points)}
-              </strong>
-              <span>
-                advisory Gemini selector delta vs fixed order · research result only · excluded from
-                release acceptance
-              </span>
-            </div>
-          ) : (
-            <div>
-              <strong>
-                {signedBasisPoints(result.metrics.recorded_model_advantage_basis_points)}
-              </strong>
-              <span>legacy recorded Gemini comparison</span>
-            </div>
-          )}
           <div>
             <strong>{basisPoints(result.metrics.median_compute_avoided_basis_points)}</strong>
             <span>median net compute avoided · threshold ≥40%</span>
@@ -1366,9 +1327,8 @@ function BenchmarkState({
           </dl>
         </details>
         <p>
-          {currentBenchmark
-            ? "Correctness, safety, the model comparison result, and controlled-workload efficiency above are recorded measurements. The model comparison and timing are excluded from product acceptance."
-            : "Correctness, safety, model advantage, and efficiency above are legacy recorded measurements. Timing is informational only and is excluded from acceptance."}
+          Correctness, safety, output integrity, and controlled-workload efficiency above are
+          recorded measurements. Timing is informational only and excluded from acceptance.
         </p>
       </section>
     );

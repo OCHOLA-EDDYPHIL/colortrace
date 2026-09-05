@@ -18,8 +18,6 @@ from colortrace_fixture import CANONICAL_SEED, build_scenario
 from colortrace_fixture.fixture import PERMUTED_SEED
 from colortrace_grafana_mcp import adapter as mcp_subject
 from colortrace_investigation import (
-    RECORDED_REFERENCE_SELECTION_PROMPT_VERSION,
-    RECORDED_REFERENCE_SELECTION_TURN_KIND,
     AdkVertexGateway,
     ContractError,
     InvestigationPolicy,
@@ -29,7 +27,6 @@ from colortrace_investigation import (
     ModelOutput,
     ModelSelection,
     WorkflowError,
-    model_execution_profile,
     validate_response_packet,
 )
 from colortrace_investigation import contracts as investigation_contracts
@@ -1792,90 +1789,6 @@ def test_vertex_gateway_registers_typed_bounded_grafana_function_tool() -> None:
     assert output.input_tokens == 130
     assert output.output_tokens == 26
     assert output.model_calls == 4
-
-
-def test_vertex_gateway_records_one_tool_free_reference_selection_call() -> None:
-    observed: dict[str, Any] = {}
-
-    class FakeRunner:
-        def __init__(self, *, agent: Any, **_: Any) -> None:
-            observed["instruction"] = agent.instruction
-            observed["tool_count"] = len(agent.tools)
-            observed["response_json_schema"] = agent.generate_content_config.response_json_schema
-
-        async def run_async(self, *, run_config: Any, **_: Any) -> AsyncIterator[Any]:
-            observed["maximum_calls"] = run_config.max_llm_calls
-            yield SimpleNamespace(
-                usage_metadata=SimpleNamespace(
-                    prompt_token_count=42,
-                    candidates_token_count=7,
-                    thoughts_token_count=0,
-                ),
-                error_code=None,
-                finish_reason=None,
-                model_version="gemini-3.5-flash-001",
-                custom_metadata={"response_id": "provider-response-001"},
-                content=SimpleNamespace(
-                    parts=[
-                        SimpleNamespace(
-                            text=(
-                                '{"schema":"reference-recorded-model-selection/v1",'
-                                '"selection_input_sha256":"sha256:'
-                                + "a" * 64
-                                + '","selected_query_key":"metric.worker-cohort"}'
-                            ),
-                            thought=False,
-                        )
-                    ]
-                ),
-                is_final_response=lambda: True,
-            )
-            yield SimpleNamespace(
-                usage_metadata=None,
-                error_code=None,
-                finish_reason=None,
-                content=SimpleNamespace(
-                    parts=[SimpleNamespace(text='{"ignored":"non-final"}', thought=False)]
-                ),
-                is_final_response=lambda: False,
-            )
-
-        async def close(self) -> None:
-            return
-
-    response_schema = {
-        "type": "object",
-        "properties": {
-            "schema": {"const": "reference-recorded-model-selection/v1"},
-        },
-    }
-    call = ModelCall(
-        RECORDED_REFERENCE_SELECTION_TURN_KIND,
-        {"input_sha256": "sha256:" + "a" * 64},
-        response_schema,
-        128,
-    )
-    with patch("colortrace_investigation.model.Runner", FakeRunner):
-        output = asyncio.run(AdkVertexGateway(project_id="colortrace-test").generate(call))
-
-    profile = model_execution_profile(
-        prompt_version=RECORDED_REFERENCE_SELECTION_PROMPT_VERSION,
-        maximum_output_tokens=128,
-        uses_evidence_tool=False,
-    )
-    assert "blinded holdout" in observed["instruction"]
-    assert observed["tool_count"] == 0
-    assert observed["maximum_calls"] == 1
-    assert observed["response_json_schema"] == response_schema
-    assert profile["transport_attempts"] == 1
-    assert profile["maximum_llm_calls"] == 1
-    assert profile["uses_evidence_tool"] is False
-    assert output.input_tokens == 42
-    assert output.output_tokens == 7
-    assert output.model_calls == 1
-    assert output.content.startswith(b'{"schema":"reference-recorded-model-selection/v1"')
-    assert output.provider_request_id == "provider-response-001"
-    assert output.provider_model_version == "gemini-3.5-flash-001"
 
 
 def test_pinned_adk_runner_executes_the_three_tool_calls_in_sequence() -> None:

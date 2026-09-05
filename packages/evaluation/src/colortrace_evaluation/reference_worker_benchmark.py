@@ -48,13 +48,11 @@ from .contracts import (
 from .reference_campaign import (
     BenchmarkArtifactObservation,
     BenchmarkEvidenceSource,
-    RecordedSelectionReceiptSet,
     ReferenceCampaignError,
     _receipt_equivalent,
     _reference_impact_benchmark_body,
     _validate_receipt,
     build_reference_impact_benchmark,
-    run_recorded_reference_campaign,
     run_reference_campaign,
     verify_reference_campaign_report,
 )
@@ -2001,18 +1999,13 @@ def verify_reference_worker_evidence_set(
 def _build_verified_recorded_reference_impact_benchmark(
     evidence: _VerifiedReferenceWorkerEvidence,
     campaign_report: Mapping[str, Any],
-    *,
-    campaign_receipt_set: RecordedSelectionReceiptSet | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if (
         type(evidence) is not _VerifiedReferenceWorkerEvidence
         or evidence.source != "recorded-worker-receipts"
     ):
         raise ReferenceWorkerBenchmarkError("reference-benchmark-recorded-evidence-unverified")
-    campaign = verify_reference_campaign_report(
-        campaign_report,
-        receipt_set=campaign_receipt_set,
-    )
+    campaign = verify_reference_campaign_report(campaign_report)
     measurements = _reference_impact_benchmark_body(evidence.observations, campaign)
     body = {
         **measurements,
@@ -2028,27 +2021,17 @@ def _build_verified_recorded_reference_impact_benchmark(
         },
     }
     report = {**body, "report_sha256": prefixed_sha256(body)}
-    validate_schema("reference-impact-benchmark-v2.schema.json", report)
+    validate_schema("reference-impact-benchmark-v3.schema.json", report)
     return report
 
 
 def _verified_campaign_report(
     *,
     campaign_report: Mapping[str, Any] | None,
-    campaign_receipt_set: RecordedSelectionReceiptSet | Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    if campaign_receipt_set is None:
-        if campaign_report is not None:
-            return verify_reference_campaign_report(campaign_report)
-        return run_reference_campaign()
-
-    recomputed = run_recorded_reference_campaign(campaign_receipt_set)
     if campaign_report is not None:
-        verify_reference_campaign_report(
-            campaign_report,
-            receipt_set=campaign_receipt_set,
-        )
-    return recomputed
+        return verify_reference_campaign_report(campaign_report)
+    return run_reference_campaign()
 
 
 def run_reference_worker_benchmark(
@@ -2057,7 +2040,6 @@ def run_reference_worker_benchmark(
     config_root: Path,
     output_root: Path,
     campaign_report: Mapping[str, Any] | None = None,
-    campaign_receipt_set: RecordedSelectionReceiptSet | Mapping[str, Any] | None = None,
     report_relative_path: str | None = None,
     evidence_index_relative_path: str | None = ("reports/reference-worker-evidence-index.json"),
     worker: ReferenceWorkerCallable | None = None,
@@ -2126,7 +2108,6 @@ def run_reference_worker_benchmark(
         ) from error
     verified_campaign = _verified_campaign_report(
         campaign_report=campaign_report,
-        campaign_receipt_set=campaign_receipt_set,
     )
     evidence_source: BenchmarkEvidenceSource = (
         "recorded-worker-receipts" if recorded else "controlled-receipt-set"
@@ -2317,7 +2298,6 @@ def run_reference_worker_benchmark(
         report = _build_verified_recorded_reference_impact_benchmark(
             verified_evidence,
             verified_campaign,
-            campaign_receipt_set=campaign_receipt_set,
         )
     else:
         report = build_reference_impact_benchmark(
@@ -2325,7 +2305,6 @@ def run_reference_worker_benchmark(
             verified_campaign,
             evidence_source=verified_evidence.source,
             evidence_set_id=verified_evidence.evidence_set_id,
-            campaign_receipt_set=campaign_receipt_set,
         )
     if report_relative_path is not None:
         report_path = _target(output, report_relative_path)
@@ -2341,7 +2320,6 @@ def main() -> None:
     parser.add_argument("--expected-source-revision", required=True)
     parser.add_argument("--expected-source-tree", required=True)
     parser.add_argument("--campaign-report", type=Path)
-    parser.add_argument("--campaign-receipt-set", type=Path)
     parser.add_argument(
         "--report-relative-path",
         default="reports/reference-impact-benchmark.json",
@@ -2357,17 +2335,11 @@ def main() -> None:
             if arguments.campaign_report is not None
             else None
         )
-        campaign_receipt_set = (
-            strict_json_file(arguments.campaign_receipt_set)
-            if arguments.campaign_receipt_set is not None
-            else None
-        )
         report = run_reference_worker_benchmark(
             source_root=arguments.source_root,
             config_root=arguments.config_root,
             output_root=arguments.output_root,
             campaign_report=campaign_report,
-            campaign_receipt_set=campaign_receipt_set,
             report_relative_path=arguments.report_relative_path,
             evidence_index_relative_path=arguments.evidence_index_relative_path,
             expected_source_revision=arguments.expected_source_revision,

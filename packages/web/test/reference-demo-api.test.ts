@@ -64,15 +64,43 @@ function failedSavingsSuite(negativeMedian = false): ReferenceBenchmarkSuite {
       live_run_scope: "representative-evidence-only",
     },
     result: {
-      schema: "reference-impact-benchmark/v1",
+      schema: "reference-impact-benchmark/v3",
       reference_collection_id: "tears-of-steel-linear-exr-240-v1",
       reference_manifest_sha256: DIGEST,
       campaign_report_sha256: DIGEST,
+      campaign_summary: {
+        case_counts: {
+          total: 99,
+          resolvable: 60,
+          fail_closed: 39,
+          resolvable_by_class: {
+            "configuration-rollout-drift/v1": 20,
+            "resource-resolution-drift/v1": 20,
+            "stale-derivative-cache/v1": 20,
+          },
+        },
+        metrics: {
+          correct_resolvable_classifications: 60,
+          classification_accuracy_basis_points: 10_000,
+          negative_cases_failed_closed: 39,
+          false_action_intents: 0,
+          false_authorized_actions: 0,
+          display_text_mutations_resolved: 3,
+          display_text_mutation_count: 3,
+        },
+      },
       evidence: {
         source: "recorded-worker-receipts",
         evidence_set_id: DIGEST,
         recorded_worker_evidence: true,
         observation_count: 720,
+        execution_identity: {
+          mode: "host-python-module",
+          source_revision: "b".repeat(40),
+          source_tree: "c".repeat(40),
+          container_image_digest: null,
+          identity_sha256: DIGEST,
+        },
       },
       thresholds: {
         minimum_classification_accuracy_basis_points: 9_500,
@@ -83,8 +111,6 @@ function failedSavingsSuite(negativeMedian = false): ReferenceBenchmarkSuite {
       metrics: {
         classification_accuracy_basis_points: 10_000,
         false_authorized_actions: 0,
-        adaptive_advantage_basis_points: 3_334,
-        recorded_model_advantage_basis_points: 3_334,
         median_compute_avoided_basis_points: 7_000,
         median_application_bytes_avoided_basis_points: medianApplicationBytes,
       },
@@ -114,13 +140,14 @@ function failedSavingsSuite(negativeMedian = false): ReferenceBenchmarkSuite {
         };
       }),
       checks: {
-        campaign_acceptance_passed: true,
+        balanced_resolvable_classes: true,
+        classification_at_least_95_percent: true,
+        all_negative_cases_fail_closed: true,
+        display_text_cannot_change_authority: true,
+        zero_false_action_intents: true,
+        zero_false_authorized_actions: true,
         output_equivalence: true,
         protected_output_integrity: true,
-        zero_false_authorized_actions: true,
-        classification_at_least_95_percent: true,
-        same_selection_budgets: true,
-        measurable_adaptive_advantage: true,
         median_compute_avoided_at_least_40_percent: true,
         median_application_bytes_avoided_at_least_40_percent: false,
       },
@@ -148,10 +175,10 @@ function failedSavingsSuite(negativeMedian = false): ReferenceBenchmarkSuite {
   };
 }
 
-function passingV2Suite(): ReferenceBenchmarkSuite {
+function passingV3Suite(): ReferenceBenchmarkSuite {
   const suite = failedSavingsSuite();
-  if (suite.result?.schema !== "reference-impact-benchmark/v1") {
-    throw new Error("missing legacy result fixture");
+  if (suite.result?.schema !== "reference-impact-benchmark/v3") {
+    throw new Error("missing current result fixture");
   }
   const scenarioResults = suite.result.scenario_results.map((item) => ({
     ...item,
@@ -162,38 +189,6 @@ function passingV2Suite(): ReferenceBenchmarkSuite {
     ...suite,
     result: {
       ...suite.result,
-      schema: "reference-impact-benchmark/v2",
-      campaign_summary: {
-        case_counts: {
-          total: 99,
-          resolvable: 60,
-          fail_closed: 39,
-          resolvable_by_class: {
-            "configuration-rollout-drift/v1": 20,
-            "resource-resolution-drift/v1": 20,
-            "stale-derivative-cache/v1": 20,
-          },
-        },
-        metrics: {
-          correct_resolvable_classifications: 60,
-          classification_accuracy_basis_points: 10_000,
-          negative_cases_failed_closed: 39,
-          false_action_intents: 0,
-          false_authorized_actions: 0,
-          display_text_mutations_resolved: 3,
-          display_text_mutation_count: 3,
-        },
-      },
-      evidence: {
-        ...suite.result.evidence,
-        execution_identity: {
-          mode: "host-python-module",
-          source_revision: "b".repeat(40),
-          source_tree: "c".repeat(40),
-          container_image_digest: null,
-          identity_sha256: DIGEST,
-        },
-      },
       metrics: {
         classification_accuracy_basis_points: 10_000,
         false_authorized_actions: 0,
@@ -213,22 +208,12 @@ function passingV2Suite(): ReferenceBenchmarkSuite {
         median_compute_avoided_at_least_40_percent: true,
         median_application_bytes_avoided_at_least_40_percent: true,
       },
-      model_comparison_research: {
-        status: "recorded-underperformed-baseline",
-        excluded_from_release_acceptance: true,
-        same_selection_budgets: true,
-        recorded_model_output_evaluated: true,
-        candidate_accuracy_basis_points: 666,
-        fixed_baseline_accuracy_basis_points: 6_666,
-        candidate_delta_basis_points: -6_000,
-        measurable_candidate_advantage: false,
-      },
       passed: true,
     },
   };
 }
 
-function adapterFor(suite: ReferenceBenchmarkSuite) {
+function adapterFor(suite: unknown) {
   return createReferenceDemoAdapter({
     baseUrl: "https://colortrace.example",
     fetch: async () => Response.json(suite),
@@ -237,27 +222,70 @@ function adapterFor(suite: ReferenceBenchmarkSuite) {
 }
 
 describe("reference benchmark adapter", () => {
-  it("accepts a passing product benchmark with negative model research excluded", async () => {
-    const suite = await adapterFor(passingV2Suite()).benchmarkSuite();
+  it("accepts a passing v3 product benchmark", async () => {
+    const suite = await adapterFor(passingV3Suite()).benchmarkSuite();
 
     expect(suite.result).toMatchObject({
-      schema: "reference-impact-benchmark/v2",
+      schema: "reference-impact-benchmark/v3",
       passed: true,
       checks: { zero_false_authorized_actions: true },
-      model_comparison_research: {
-        status: "recorded-underperformed-baseline",
-        excluded_from_release_acceptance: true,
-        candidate_delta_basis_points: -6_000,
-        measurable_candidate_advantage: false,
+    });
+  });
+
+  it.each(["v1", "v2"] as const)("rejects an old %s benchmark report", async (version) => {
+    const fixture = passingV3Suite();
+    if (fixture.result === null) throw new Error("missing current result fixture");
+    const oldReport = {
+      ...fixture,
+      result: {
+        ...fixture.result,
+        schema: `reference-impact-benchmark/${version}`,
+        ...(version === "v2"
+          ? {
+              model_comparison_research: {
+                status: "recorded-underperformed-baseline",
+                excluded_from_release_acceptance: true,
+                same_selection_budgets: true,
+                recorded_model_output_evaluated: true,
+                candidate_accuracy_basis_points: 666,
+                fixed_baseline_accuracy_basis_points: 6_666,
+                candidate_delta_basis_points: -6_000,
+                measurable_candidate_advantage: false,
+              },
+            }
+          : {}),
       },
+    };
+
+    await expect(adapterFor(oldReport).benchmarkSuite()).rejects.toMatchObject({
+      code: "reference-response-invalid",
+    });
+  });
+
+  it("rejects comparison research added to a v3 report", async () => {
+    const fixture = passingV3Suite();
+    if (fixture.result === null) throw new Error("missing current result fixture");
+    const comparisonBearing = {
+      ...fixture,
+      result: {
+        ...fixture.result,
+        model_comparison_research: {
+          status: "recorded-underperformed-baseline",
+          excluded_from_release_acceptance: true,
+        },
+      },
+    };
+
+    await expect(adapterFor(comparisonBearing).benchmarkSuite()).rejects.toMatchObject({
+      code: "reference-response-invalid",
     });
   });
 
   it.each(["container", "google-cloud-batch"] as const)(
     "accepts canonical %s worker evidence",
     async (mode) => {
-      const fixture = passingV2Suite();
-      if (fixture.result?.schema !== "reference-impact-benchmark/v2") {
+      const fixture = passingV3Suite();
+      if (fixture.result?.schema !== "reference-impact-benchmark/v3") {
         throw new Error("missing current result fixture");
       }
       const suite = await adapterFor({
@@ -281,9 +309,9 @@ describe("reference benchmark adapter", () => {
     },
   );
 
-  it("rejects a resigned v2 release check that contradicts its campaign summary", async () => {
-    const fixture = passingV2Suite();
-    if (fixture.result?.schema !== "reference-impact-benchmark/v2") {
+  it("rejects a resigned v3 release check that contradicts its campaign summary", async () => {
+    const fixture = passingV3Suite();
+    if (fixture.result?.schema !== "reference-impact-benchmark/v3") {
       throw new Error("missing current result fixture");
     }
     const malformed: ReferenceBenchmarkSuite = {
@@ -327,8 +355,8 @@ describe("reference benchmark adapter", () => {
 
   it("rejects a recorded failure whose threshold check contradicts its metric", async () => {
     const suite = failedSavingsSuite();
-    if (suite.result?.schema !== "reference-impact-benchmark/v1") {
-      throw new Error("missing legacy result fixture");
+    if (suite.result?.schema !== "reference-impact-benchmark/v3") {
+      throw new Error("missing current result fixture");
     }
     const malformed: ReferenceBenchmarkSuite = {
       ...suite,

@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
-from base64 import b64decode, b64encode
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import PurePosixPath
 from types import MappingProxyType
@@ -20,15 +17,6 @@ from colortrace_fixture import (
 from colortrace_grafana_mcp import (
     NormalizedRuntimeObservation,
 )
-from colortrace_investigation import (
-    MODEL_PROVIDER,
-    RECORDED_REFERENCE_SELECTION_PROMPT_VERSION,
-    RECORDED_REFERENCE_SELECTION_TURN_KIND,
-    ModelCall,
-    ModelFailure,
-    ModelGateway,
-    model_execution_profile,
-)
 from colortrace_validator import (
     AssessmentStatus,
     DiagnosisReconciliation,
@@ -40,49 +28,27 @@ from colortrace_validator import (
 )
 
 from .contracts import (
-    SCHEMA_ROOT,
-    ContractError,
     canonical_json_bytes,
     prefixed_sha256,
     validate_schema,
 )
 
 CORPUS_VERSION = "reference-holdout-corpus/v1"
-CAMPAIGN_VERSION = "reference-campaign-report/v1"
-POLICY_COMPARISON_VERSION = "reference-policy-comparison/v1"
-RECORDED_POLICY_COMPARISON_VERSION = "reference-policy-comparison/v2"
-IMPACT_BENCHMARK_VERSION = "reference-impact-benchmark/v2"
+CAMPAIGN_VERSION = "reference-campaign-report/v2"
+IMPACT_BENCHMARK_VERSION = "reference-impact-benchmark/v3"
 
 RESOLVABLE_CASES_PER_CLASS = 20
 MINIMUM_CLASSIFICATION_BASIS_POINTS = 9_500
 MINIMUM_SAVINGS_BASIS_POINTS = 4_000
-DEFAULT_QUERY_BUDGET = 2
-DEFAULT_NORMALIZED_BYTE_BUDGET = 65_536
-MINIMUM_RECORDED_MODEL_ADVANTAGE_BASIS_POINTS = 1
-RECORDED_SELECTION_MAXIMUM_OUTPUT_TOKENS = 128
-RECORDED_SELECTION_MAXIMUM_RESPONSE_BYTES = 576
-RECORDED_SELECTION_GATEWAY_MAXIMUM_RESPONSE_BYTES = 65_536
-RECORDED_SELECTION_MAXIMUM_FAILURE_RESPONSE_BYTES = 1_048_576
-RECORDED_SELECTION_RESPONSE_VERSION = "reference-recorded-model-selection/v1"
-RECORDED_SELECTION_RECEIPT_V1_VERSION = "reference-recorded-model-selection-receipt/v1"
-RECORDED_SELECTION_SET_V1_VERSION = "reference-recorded-model-selection-set/v1"
-RECORDED_SELECTION_RECEIPT_VERSION = "reference-recorded-model-selection-receipt/v2"
-RECORDED_SELECTION_SET_VERSION = "reference-recorded-model-selection-set/v2"
 
 QueryKey = Literal[
     "metric.correlated-observations",
     "log.correlated-events",
     "trace.by-id",
 ]
-SelectionSource = Literal["controlled-policy", "recorded-model-output"]
 BenchmarkEvidenceSource = Literal[
     "controlled-receipt-set",
     "recorded-worker-receipts",
-]
-RecordedSelectionOutcome = Literal[
-    "accepted-query",
-    "domain-rejection",
-    "model-failure",
 ]
 
 _QUERY_KEYS: tuple[QueryKey, ...] = (
@@ -205,8 +171,6 @@ _RECEIPT_V2_KEYS = _RECEIPT_V1_KEYS | {
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _GIT_OBJECT = re.compile(r"^[0-9a-f]{40}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
-_PROVIDER_IDENTIFIER = re.compile(r"^[^\x00-\x1f\x7f]{1,512}$")
-_RECORDED_TRACE_TOKEN = object()
 
 
 class ReferenceCampaignError(ValueError):
@@ -386,155 +350,6 @@ class ReferenceHoldoutCorpus:
         result = {**self._body(), "corpus_sha256": self.corpus_sha256}
         validate_schema("reference-holdout-corpus-v1.schema.json", result)
         return result
-
-
-@dataclass(frozen=True, slots=True)
-class SelectionBudget:
-    max_queries_per_case: int = DEFAULT_QUERY_BUDGET
-    max_normalized_bytes_per_case: int = DEFAULT_NORMALIZED_BYTE_BUDGET
-
-    def __post_init__(self) -> None:
-        if self.max_queries_per_case < 2 or self.max_normalized_bytes_per_case < 1:
-            raise ReferenceCampaignError("reference-selection-budget-invalid")
-
-    def to_dict(self) -> dict[str, int]:
-        return {
-            "max_queries_per_case": self.max_queries_per_case,
-            "max_normalized_bytes_per_case": self.max_normalized_bytes_per_case,
-        }
-
-
-@dataclass(frozen=True, slots=True, init=False)
-class SelectionTrace:
-    case_id: str
-    policy_id: str
-    source: SelectionSource
-    selected_query_keys: tuple[QueryKey, ...]
-    selection_input_sha256: str
-    provider_trace_id: str | None = None
-    recorded_receipt_sha256: str | None = None
-    recorded_receipt_set_sha256: str | None = None
-    trace_sha256: str = field(init=False)
-
-    def __init__(
-        self,
-        *,
-        case_id: str,
-        policy_id: str,
-        source: SelectionSource,
-        selected_query_keys: tuple[QueryKey, ...],
-        selection_input_sha256: str,
-        provider_trace_id: str | None = None,
-    ) -> None:
-        self._initialize(
-            case_id=case_id,
-            policy_id=policy_id,
-            source=source,
-            selected_query_keys=selected_query_keys,
-            selection_input_sha256=selection_input_sha256,
-            provider_trace_id=provider_trace_id,
-            recorded_receipt_sha256=None,
-            recorded_receipt_set_sha256=None,
-            verification_token=None,
-        )
-
-    @classmethod
-    def _from_verified_recording(
-        cls,
-        *,
-        case_id: str,
-        policy_id: str,
-        selected_query_keys: tuple[QueryKey, ...],
-        selection_input_sha256: str,
-        provider_trace_id: str | None,
-        recorded_receipt_sha256: str,
-        recorded_receipt_set_sha256: str,
-        verification_token: object,
-    ) -> SelectionTrace:
-        value = object.__new__(cls)
-        value._initialize(
-            case_id=case_id,
-            policy_id=policy_id,
-            source="recorded-model-output",
-            selected_query_keys=selected_query_keys,
-            selection_input_sha256=selection_input_sha256,
-            provider_trace_id=provider_trace_id,
-            recorded_receipt_sha256=recorded_receipt_sha256,
-            recorded_receipt_set_sha256=recorded_receipt_set_sha256,
-            verification_token=verification_token,
-        )
-        return value
-
-    def _initialize(
-        self,
-        *,
-        case_id: str,
-        policy_id: str,
-        source: SelectionSource,
-        selected_query_keys: tuple[QueryKey, ...],
-        selection_input_sha256: str,
-        provider_trace_id: str | None,
-        recorded_receipt_sha256: str | None,
-        recorded_receipt_set_sha256: str | None,
-        verification_token: object | None,
-    ) -> None:
-        if source == "recorded-model-output" and verification_token is not _RECORDED_TRACE_TOKEN:
-            raise ReferenceCampaignError("reference-recorded-selection-unverified")
-        object.__setattr__(self, "case_id", case_id)
-        object.__setattr__(self, "policy_id", policy_id)
-        object.__setattr__(self, "source", source)
-        object.__setattr__(self, "selected_query_keys", tuple(selected_query_keys))
-        object.__setattr__(self, "selection_input_sha256", selection_input_sha256)
-        object.__setattr__(self, "provider_trace_id", provider_trace_id)
-        object.__setattr__(self, "recorded_receipt_sha256", recorded_receipt_sha256)
-        object.__setattr__(self, "recorded_receipt_set_sha256", recorded_receipt_set_sha256)
-        keys = tuple(selected_query_keys)
-        if (
-            _IDENTIFIER.fullmatch(case_id) is None
-            or _IDENTIFIER.fullmatch(policy_id) is None
-            or not keys
-            or len(keys) != len(set(keys))
-            or any(key not in _QUERY_KEYS for key in keys)
-            or _DIGEST.fullmatch(selection_input_sha256) is None
-            or (
-                source == "recorded-model-output"
-                and (
-                    recorded_receipt_sha256 is None
-                    or _DIGEST.fullmatch(recorded_receipt_sha256) is None
-                    or recorded_receipt_set_sha256 is None
-                    or _DIGEST.fullmatch(recorded_receipt_set_sha256) is None
-                    or (
-                        provider_trace_id is not None
-                        and _DIGEST.fullmatch(provider_trace_id) is None
-                    )
-                )
-            )
-            or (
-                source == "controlled-policy"
-                and (
-                    provider_trace_id is not None
-                    or recorded_receipt_sha256 is not None
-                    or recorded_receipt_set_sha256 is not None
-                )
-            )
-        ):
-            raise ReferenceCampaignError("reference-selection-trace-invalid")
-        object.__setattr__(self, "trace_sha256", prefixed_sha256(self._body()))
-
-    def _body(self) -> dict[str, Any]:
-        return {
-            "case_id": self.case_id,
-            "policy_id": self.policy_id,
-            "source": self.source,
-            "selected_query_keys": list(self.selected_query_keys),
-            "selection_input_sha256": self.selection_input_sha256,
-            "provider_trace_id": self.provider_trace_id,
-            "recorded_receipt_sha256": self.recorded_receipt_sha256,
-            "recorded_receipt_set_sha256": self.recorded_receipt_set_sha256,
-        }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._body(), "trace_sha256": self.trace_sha256}
 
 
 def _expected_state(
@@ -1153,643 +968,6 @@ def sealed_reference_holdouts() -> ReferenceHoldoutCorpus:
     )
 
 
-def _digest_bytes(value: bytes) -> str:
-    return f"sha256:{hashlib.sha256(value).hexdigest()}"
-
-
-def _recorded_selection_response_schema() -> dict[str, Any]:
-    try:
-        value = json.loads(
-            (SCHEMA_ROOT / "reference-recorded-model-selection-v1.schema.json").read_text(
-                encoding="utf-8"
-            )
-        )
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ReferenceCampaignError("reference-recorded-selection-schema-invalid") from error
-    if not isinstance(value, dict):
-        raise ReferenceCampaignError("reference-recorded-selection-schema-invalid")
-    return value
-
-
-def _model_response_object(raw: bytes) -> dict[str, Any]:
-    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, child in pairs:
-            if key in result:
-                raise ValueError("duplicate JSON key")
-            result[key] = child
-        return result
-
-    try:
-        value = json.loads(
-            raw.decode("utf-8"),
-            object_pairs_hook=unique_object,
-            parse_float=lambda _value: (_ for _ in ()).throw(ValueError("floating point")),
-            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("non-finite")),
-        )
-    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
-        raise ReferenceCampaignError("reference-recorded-selection-response-invalid") from error
-    if not isinstance(value, dict):
-        raise ReferenceCampaignError("reference-recorded-selection-response-invalid")
-    return value
-
-
-def _strict_model_response(raw: bytes) -> dict[str, Any]:
-    if not 1 <= len(raw) <= RECORDED_SELECTION_GATEWAY_MAXIMUM_RESPONSE_BYTES:
-        raise ReferenceCampaignError("reference-recorded-selection-response-invalid")
-    value = _model_response_object(raw)
-    try:
-        validate_schema("reference-recorded-model-selection-v1.schema.json", value)
-    except ContractError as error:
-        raise ReferenceCampaignError("reference-recorded-selection-response-invalid") from error
-    return value
-
-
-def _valid_positive_integer(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
-
-
-def _valid_provider_value(value: Any) -> bool:
-    return value is None or (
-        isinstance(value, str) and _PROVIDER_IDENTIFIER.fullmatch(value) is not None
-    )
-
-
-def _model_output_invocation_valid(output: Any) -> bool:
-    return bool(
-        output.model_calls == 1
-        and _valid_positive_integer(output.input_tokens)
-        and _valid_positive_integer(output.output_tokens)
-        and _valid_provider_value(output.provider_request_id)
-        and _valid_provider_value(output.provider_model_version)
-    )
-
-
-def _raw_response_evidence(raw: bytes | None) -> dict[str, Any]:
-    if raw is None:
-        return {
-            "response_content": None,
-            "response_content_base64": None,
-            "response_sha256": None,
-            "response_byte_length": None,
-        }
-    response_content: str | None
-    response_content_base64: str | None
-    try:
-        response_content = raw.decode("utf-8")
-        response_content_base64 = None
-    except UnicodeError:
-        response_content = None
-        response_content_base64 = b64encode(raw).decode("ascii")
-    return {
-        "response_content": response_content,
-        "response_content_base64": response_content_base64,
-        "response_sha256": _digest_bytes(raw),
-        "response_byte_length": len(raw),
-    }
-
-
-def _response_domain_audit(raw: bytes, authoritative_input_sha256: str) -> dict[str, Any]:
-    raw_evidence = _raw_response_evidence(raw)
-    response_content = cast(str | None, raw_evidence["response_content"])
-
-    echo: str | None = None
-    selected_query_key: str | None = None
-    rejection_code: str | None = None
-    value: dict[str, Any] | None = None
-    if response_content is None:
-        rejection_code = "response-not-utf8"
-    else:
-        try:
-            value = _model_response_object(raw)
-        except ReferenceCampaignError:
-            rejection_code = "response-invalid-json"
-        if value is not None:
-            raw_echo = value.get("selection_input_sha256")
-            raw_query = value.get("selected_query_key")
-            echo = raw_echo if isinstance(raw_echo, str) else None
-            selected_query_key = raw_query if isinstance(raw_query, str) else None
-            try:
-                validate_schema("reference-recorded-model-selection-v1.schema.json", value)
-            except ContractError:
-                query_only_invalid = (
-                    set(value) == {"schema", "selection_input_sha256", "selected_query_key"}
-                    and value.get("schema") == RECORDED_SELECTION_RESPONSE_VERSION
-                    and isinstance(raw_echo, str)
-                    and _DIGEST.fullmatch(raw_echo) is not None
-                    and isinstance(raw_query, str)
-                    and raw_query not in ("log.correlated-events", "trace.by-id")
-                )
-                rejection_code = (
-                    "query-not-permitted" if query_only_invalid else "response-schema-invalid"
-                )
-            if rejection_code is None and echo != authoritative_input_sha256:
-                rejection_code = "input-binding-mismatch"
-    if len(raw) > RECORDED_SELECTION_MAXIMUM_RESPONSE_BYTES:
-        rejection_code = "response-oversize"
-
-    return {
-        **raw_evidence,
-        "model_selection_input_sha256": echo,
-        "model_selection_input_matches_request": echo == authoritative_input_sha256,
-        "selected_query_key": selected_query_key,
-        "outcome": "domain-rejection" if rejection_code is not None else "accepted-query",
-        "outcome_code": rejection_code or "accepted-query",
-    }
-
-
-def _model_output_audit(output: Any, authoritative_input_sha256: str) -> dict[str, Any]:
-    audit = _response_domain_audit(output.content, authoritative_input_sha256)
-    if not _model_output_invocation_valid(output):
-        audit["outcome"] = "domain-rejection"
-        audit["outcome_code"] = "invocation-invalid"
-    return audit
-
-
-def _recorded_model_profile() -> dict[str, Any]:
-    try:
-        profile = model_execution_profile(
-            prompt_version=RECORDED_REFERENCE_SELECTION_PROMPT_VERSION,
-            maximum_output_tokens=RECORDED_SELECTION_MAXIMUM_OUTPUT_TOKENS,
-            uses_evidence_tool=False,
-        )
-    except ModelFailure as error:  # pragma: no cover - pinned internal configuration
-        raise ReferenceCampaignError("reference-recorded-selection-profile-invalid") from error
-    return cast(dict[str, Any], _plain(profile))
-
-
-def _resolvable_selection_cases(
-    corpus: ReferenceHoldoutCorpus,
-) -> tuple[ReferenceHoldoutCase, ...]:
-    sealed = sealed_reference_holdouts()
-    cases = tuple(
-        sorted(
-            (case for case in corpus.cases if case.kind is CaseKind.RESOLVABLE),
-            key=lambda case: case.case_id,
-        )
-    )
-    by_class = {
-        incident_class: sum(case.source_incident_class is incident_class for case in cases)
-        for incident_class in IncidentClass
-    }
-    if (
-        corpus.corpus_id != sealed.corpus_id
-        or corpus.corpus_sha256 != sealed.corpus_sha256
-        or len(cases) != RESOLVABLE_CASES_PER_CLASS * len(IncidentClass)
-        or any(count != RESOLVABLE_CASES_PER_CLASS for count in by_class.values())
-    ):
-        raise ReferenceCampaignError("reference-recorded-selection-corpus-invalid")
-    return cases
-
-
-def _resolvable_case_set_sha256(
-    corpus: ReferenceHoldoutCorpus,
-    cases: Sequence[ReferenceHoldoutCase],
-    budget: SelectionBudget,
-) -> str:
-    return prefixed_sha256(
-        {
-            "schema": "reference-resolvable-selection-cases/v1",
-            "corpus_id": corpus.corpus_id,
-            "corpus_sha256": corpus.corpus_sha256,
-            "budget": budget.to_dict(),
-            "cases": [
-                {
-                    "case_id": case.case_id,
-                    "case_sha256": case.case_sha256,
-                    "selection_input_sha256": reference_selection_input(case, budget=budget)[
-                        "input_sha256"
-                    ],
-                }
-                for case in cases
-            ],
-        }
-    )
-
-
-def _recorded_timestamp(value: datetime) -> str:
-    if value.tzinfo is None:
-        raise ReferenceCampaignError("reference-recorded-selection-clock-invalid")
-    return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-@dataclass(frozen=True, slots=True)
-class RecordedSelectionReceiptSet:
-    document: Mapping[str, Any]
-
-    def __post_init__(self) -> None:
-        selected = cast(dict[str, Any], _plain(self.document))
-        schema_version = selected.get("schema")
-        schema_name = {
-            RECORDED_SELECTION_SET_V1_VERSION: (
-                "reference-recorded-model-selection-set-v1.schema.json"
-            ),
-            RECORDED_SELECTION_SET_VERSION: (
-                "reference-recorded-model-selection-set-v2.schema.json"
-            ),
-        }.get(schema_version if isinstance(schema_version, str) else "")
-        if schema_name is None:
-            raise ReferenceCampaignError("reference-recorded-selection-set-invalid")
-        try:
-            validate_schema(schema_name, selected)
-        except ContractError as error:
-            raise ReferenceCampaignError("reference-recorded-selection-set-invalid") from error
-        body = {key: child for key, child in selected.items() if key != "receipt_set_sha256"}
-        if selected["receipt_set_sha256"] != prefixed_sha256(body):
-            raise ReferenceCampaignError("reference-recorded-selection-set-digest-invalid")
-        for receipt in cast(list[dict[str, Any]], selected["receipts"]):
-            receipt_body = {key: child for key, child in receipt.items() if key != "receipt_sha256"}
-            if receipt["receipt_sha256"] != prefixed_sha256(receipt_body):
-                raise ReferenceCampaignError("reference-recorded-selection-receipt-digest-invalid")
-        object.__setattr__(self, "document", cast(Mapping[str, Any], _freeze(selected)))
-
-    @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> RecordedSelectionReceiptSet:
-        return cls(document=value)
-
-    @property
-    def receipt_set_sha256(self) -> str:
-        return cast(str, self.document["receipt_set_sha256"])
-
-    def to_dict(self) -> dict[str, Any]:
-        return cast(dict[str, Any], _plain(self.document))
-
-
-async def record_reference_model_selections(
-    *,
-    model: ModelGateway,
-    corpus: ReferenceHoldoutCorpus | None = None,
-    budget: SelectionBudget | None = None,
-    clock: Callable[[], datetime] | None = None,
-    receipt_callback: Callable[[Mapping[str, Any]], None] | None = None,
-) -> RecordedSelectionReceiptSet:
-    selected = corpus or sealed_reference_holdouts()
-    selected_budget = budget or SelectionBudget()
-    if selected_budget.max_queries_per_case != DEFAULT_QUERY_BUDGET:
-        raise ReferenceCampaignError("reference-recorded-selection-budget-invalid")
-    cases = _resolvable_selection_cases(selected)
-    case_set_sha256 = _resolvable_case_set_sha256(selected, cases, selected_budget)
-    response_schema = _recorded_selection_response_schema()
-    response_schema_sha256 = _digest_bytes(canonical_json_bytes(response_schema))
-    profile = _recorded_model_profile()
-    profile_sha256 = prefixed_sha256(profile)
-    prompt_sha256 = cast(str, profile["prompt_sha256"])
-    now = clock or (lambda: datetime.now(UTC))
-    receipts: list[dict[str, Any]] = []
-    for case in cases:
-        selection_input = reference_selection_input(case, budget=selected_budget)
-        request_content = canonical_json_bytes(selection_input)
-        output: Any | None = None
-        failure: ModelFailure | None = None
-        try:
-            output = await model.generate(
-                ModelCall(
-                    turn_kind=RECORDED_REFERENCE_SELECTION_TURN_KIND,
-                    payload=selection_input,
-                    response_schema=response_schema,
-                    maximum_output_tokens=RECORDED_SELECTION_MAXIMUM_OUTPUT_TOKENS,
-                )
-            )
-        except ModelFailure as error:
-            failure = error
-        if failure is None:
-            assert output is not None
-            audit = _model_output_audit(output, cast(str, selection_input["input_sha256"]))
-            provider_request_id = output.provider_request_id
-            provider_model_version = output.provider_model_version
-            input_tokens = output.input_tokens
-            output_tokens = output.output_tokens
-            model_calls = output.model_calls
-            unobserved_model_calls = 0
-            model_failure_code = None
-            model_failure_transient = None
-        else:
-            raw_evidence = _raw_response_evidence(failure.content)
-            audit = {
-                **raw_evidence,
-                "model_selection_input_sha256": None,
-                "model_selection_input_matches_request": False,
-                "selected_query_key": None,
-                "outcome": "model-failure",
-                "outcome_code": "model-failure",
-            }
-            provider_request_id = failure.provider_request_id
-            provider_model_version = failure.provider_model_version
-            input_tokens = failure.input_tokens
-            output_tokens = failure.output_tokens
-            model_calls = failure.model_calls
-            unobserved_model_calls = failure.unobserved_model_calls
-            model_failure_code = failure.code
-            model_failure_transient = failure.transient
-        receipt_body = {
-            "schema": RECORDED_SELECTION_RECEIPT_VERSION,
-            "corpus_id": selected.corpus_id,
-            "corpus_sha256": selected.corpus_sha256,
-            "resolvable_case_set_sha256": case_set_sha256,
-            "case_id": case.case_id,
-            "case_sha256": case.case_sha256,
-            "selection_input_sha256": selection_input["input_sha256"],
-            "request_content": request_content.decode("utf-8"),
-            "request_sha256": _digest_bytes(request_content),
-            "request_byte_length": len(request_content),
-            "response_schema_sha256": response_schema_sha256,
-            **audit,
-            "provider": MODEL_PROVIDER,
-            "model": profile["model"],
-            "location": profile["location"],
-            "model_profile_sha256": profile_sha256,
-            "prompt_version": RECORDED_REFERENCE_SELECTION_PROMPT_VERSION,
-            "prompt_sha256": prompt_sha256,
-            "provider_request_id": provider_request_id,
-            "provider_model_version": provider_model_version,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "model_calls": model_calls,
-            "unobserved_model_calls": unobserved_model_calls,
-            "model_failure_code": model_failure_code,
-            "model_failure_transient": model_failure_transient,
-            "attempt_count": 1,
-            "retry_count": 0,
-            "recorded_at": _recorded_timestamp(now()),
-        }
-        receipt = {**receipt_body, "receipt_sha256": prefixed_sha256(receipt_body)}
-        receipts.append(receipt)
-        if receipt_callback is not None:
-            receipt_callback(cast(Mapping[str, Any], _plain(receipt)))
-    outcome_counts = {
-        outcome: sum(receipt["outcome"] == outcome for receipt in receipts)
-        for outcome in ("accepted-query", "domain-rejection", "model-failure")
-    }
-    body = {
-        "schema": RECORDED_SELECTION_SET_VERSION,
-        "corpus_id": selected.corpus_id,
-        "corpus_sha256": selected.corpus_sha256,
-        "resolvable_case_count": len(cases),
-        "resolvable_case_set_sha256": case_set_sha256,
-        "budget": selected_budget.to_dict(),
-        "model_profile": profile,
-        "model_profile_sha256": profile_sha256,
-        "response_schema_sha256": response_schema_sha256,
-        "maximum_response_bytes": RECORDED_SELECTION_MAXIMUM_RESPONSE_BYTES,
-        "maximum_failure_response_bytes": (RECORDED_SELECTION_MAXIMUM_FAILURE_RESPONSE_BYTES),
-        "outcome_counts": outcome_counts,
-        "receipts": receipts,
-    }
-    return RecordedSelectionReceiptSet(
-        document={**body, "receipt_set_sha256": prefixed_sha256(body)}
-    )
-
-
-def verified_recorded_selection_traces(
-    corpus: ReferenceHoldoutCorpus,
-    receipt_set: RecordedSelectionReceiptSet | Mapping[str, Any],
-    *,
-    budget: SelectionBudget | None = None,
-) -> tuple[SelectionTrace, ...]:
-    selected_budget = budget or SelectionBudget()
-    if selected_budget.max_queries_per_case != DEFAULT_QUERY_BUDGET:
-        raise ReferenceCampaignError("reference-recorded-selection-budget-invalid")
-    selected_receipts = (
-        receipt_set
-        if isinstance(receipt_set, RecordedSelectionReceiptSet)
-        else RecordedSelectionReceiptSet.from_mapping(receipt_set)
-    )
-    document = selected_receipts.document
-    cases = _resolvable_selection_cases(corpus)
-    case_set_sha256 = _resolvable_case_set_sha256(corpus, cases, selected_budget)
-    response_schema_sha256 = _digest_bytes(
-        canonical_json_bytes(_recorded_selection_response_schema())
-    )
-    profile = _recorded_model_profile()
-    profile_sha256 = prefixed_sha256(profile)
-    if (
-        document["corpus_id"] != corpus.corpus_id
-        or document["corpus_sha256"] != corpus.corpus_sha256
-        or document["resolvable_case_count"] != len(cases)
-        or document["resolvable_case_set_sha256"] != case_set_sha256
-        or document["budget"] != selected_budget.to_dict()
-        or document["model_profile"] != profile
-        or document["model_profile_sha256"] != profile_sha256
-        or document["response_schema_sha256"] != response_schema_sha256
-    ):
-        raise ReferenceCampaignError("reference-recorded-selection-set-binding-invalid")
-    raw_receipts = cast(Sequence[Mapping[str, Any]], document["receipts"])
-    if [receipt["case_id"] for receipt in raw_receipts] != [case.case_id for case in cases]:
-        raise ReferenceCampaignError("reference-recorded-selection-set-incomplete")
-    is_v2 = document["schema"] == RECORDED_SELECTION_SET_VERSION
-    if is_v2:
-        expected_counts = {
-            outcome: sum(receipt["outcome"] == outcome for receipt in raw_receipts)
-            for outcome in ("accepted-query", "domain-rejection", "model-failure")
-        }
-        if (
-            document["maximum_response_bytes"] != RECORDED_SELECTION_MAXIMUM_RESPONSE_BYTES
-            or document["maximum_failure_response_bytes"]
-            != RECORDED_SELECTION_MAXIMUM_FAILURE_RESPONSE_BYTES
-            or document["outcome_counts"] != expected_counts
-        ):
-            raise ReferenceCampaignError("reference-recorded-selection-set-binding-invalid")
-    traces: list[SelectionTrace] = []
-    for case, receipt in zip(cases, raw_receipts, strict=True):
-        selection_input = reference_selection_input(case, budget=selected_budget)
-        request_content = canonical_json_bytes(selection_input)
-        if (
-            receipt["corpus_id"] != corpus.corpus_id
-            or receipt["corpus_sha256"] != corpus.corpus_sha256
-            or receipt["resolvable_case_set_sha256"] != case_set_sha256
-            or receipt["case_id"] != case.case_id
-            or receipt["case_sha256"] != case.case_sha256
-            or receipt["selection_input_sha256"] != selection_input["input_sha256"]
-            or receipt["request_content"] != request_content.decode("utf-8")
-            or receipt["request_sha256"] != _digest_bytes(request_content)
-            or receipt["response_schema_sha256"] != response_schema_sha256
-            or receipt["provider"] != MODEL_PROVIDER
-            or receipt["model"] != profile["model"]
-            or receipt["location"] != profile["location"]
-            or receipt["model_profile_sha256"] != profile_sha256
-            or receipt["prompt_version"] != RECORDED_REFERENCE_SELECTION_PROMPT_VERSION
-            or receipt["prompt_sha256"] != profile["prompt_sha256"]
-            or receipt["model_calls"] != 1
-            or receipt["attempt_count"] != 1
-            or receipt["retry_count"] != 0
-        ):
-            raise ReferenceCampaignError("reference-recorded-selection-receipt-binding-invalid")
-        if not is_v2:
-            response_content = cast(str, receipt["response_content"]).encode("utf-8")
-            response = _strict_model_response(response_content)
-            selected_query_key = cast(str, response["selected_query_key"])
-            if (
-                receipt["schema"] != RECORDED_SELECTION_RECEIPT_V1_VERSION
-                or receipt["response_sha256"] != _digest_bytes(response_content)
-                or receipt["selected_query_key"] != selected_query_key
-                or response["selection_input_sha256"] != selection_input["input_sha256"]
-                or selected_query_key not in selection_input["permitted_next_query_keys"]
-            ):
-                raise ReferenceCampaignError("reference-recorded-selection-receipt-binding-invalid")
-            selected_query_keys: tuple[QueryKey, ...] = (
-                "metric.correlated-observations",
-                cast(QueryKey, selected_query_key),
-            )
-            policy_id = "gemini-recorded-selection-v1"
-        else:
-            if (
-                receipt["schema"] != RECORDED_SELECTION_RECEIPT_VERSION
-                or receipt["request_byte_length"] != len(request_content)
-                or not isinstance(receipt["unobserved_model_calls"], int)
-                or isinstance(receipt["unobserved_model_calls"], bool)
-                or not 0 <= receipt["unobserved_model_calls"] <= receipt["model_calls"]
-            ):
-                raise ReferenceCampaignError("reference-recorded-selection-receipt-binding-invalid")
-            response_text = cast(str | None, receipt["response_content"])
-            response_base64 = cast(str | None, receipt["response_content_base64"])
-            recorded_response_content: bytes | None
-            try:
-                if response_text is not None and response_base64 is None:
-                    recorded_response_content = response_text.encode("utf-8")
-                elif response_text is None and response_base64 is not None:
-                    recorded_response_content = b64decode(response_base64, validate=True)
-                elif response_text is None and response_base64 is None:
-                    recorded_response_content = None
-                else:
-                    raise ValueError("ambiguous response encoding")
-            except (ValueError, UnicodeError) as error:
-                raise ReferenceCampaignError(
-                    "reference-recorded-selection-receipt-binding-invalid"
-                ) from error
-
-            outcome = cast(RecordedSelectionOutcome, receipt["outcome"])
-            if outcome == "model-failure":
-                input_tokens = receipt["input_tokens"]
-                output_tokens = receipt["output_tokens"]
-                usage_unknown = input_tokens is None and output_tokens is None
-                usage_known = (
-                    isinstance(input_tokens, int)
-                    and not isinstance(input_tokens, bool)
-                    and input_tokens >= 0
-                    and isinstance(output_tokens, int)
-                    and not isinstance(output_tokens, bool)
-                    and output_tokens >= 0
-                )
-                if recorded_response_content is None:
-                    raw_response_binding_valid = (
-                        receipt["response_sha256"] is None
-                        and receipt["response_byte_length"] is None
-                    )
-                else:
-                    raw_response_binding_valid = (
-                        len(recorded_response_content)
-                        <= RECORDED_SELECTION_MAXIMUM_FAILURE_RESPONSE_BYTES
-                        and receipt["response_sha256"] == _digest_bytes(recorded_response_content)
-                        and receipt["response_byte_length"] == len(recorded_response_content)
-                    )
-                if (
-                    not raw_response_binding_valid
-                    or receipt["model_selection_input_sha256"] is not None
-                    or receipt["model_selection_input_matches_request"] is not False
-                    or receipt["selected_query_key"] is not None
-                    or receipt["outcome_code"] != "model-failure"
-                    or not _valid_provider_value(receipt["provider_request_id"])
-                    or not _valid_provider_value(receipt["provider_model_version"])
-                    or receipt["model_failure_code"] is None
-                    or receipt["model_failure_transient"] is None
-                    or not (usage_unknown or usage_known)
-                    or (receipt["unobserved_model_calls"] > 0) != usage_unknown
-                ):
-                    raise ReferenceCampaignError(
-                        "reference-recorded-selection-receipt-binding-invalid"
-                    )
-                selected_query_keys = ("metric.correlated-observations",)
-            else:
-                if (
-                    recorded_response_content is None
-                    or len(recorded_response_content)
-                    > RECORDED_SELECTION_GATEWAY_MAXIMUM_RESPONSE_BYTES
-                    or receipt["response_sha256"] != _digest_bytes(recorded_response_content)
-                    or receipt["response_byte_length"] != len(recorded_response_content)
-                    or receipt["model_failure_code"] is not None
-                    or receipt["model_failure_transient"] is not None
-                    or receipt["unobserved_model_calls"] != 0
-                ):
-                    raise ReferenceCampaignError(
-                        "reference-recorded-selection-receipt-binding-invalid"
-                    )
-                audit = _response_domain_audit(
-                    recorded_response_content,
-                    cast(str, selection_input["input_sha256"]),
-                )
-                invocation_valid = (
-                    receipt["model_calls"] == 1
-                    and _valid_positive_integer(receipt["input_tokens"])
-                    and _valid_positive_integer(receipt["output_tokens"])
-                    and _valid_provider_value(receipt["provider_request_id"])
-                    and _valid_provider_value(receipt["provider_model_version"])
-                )
-                if not invocation_valid:
-                    audit["outcome"] = "domain-rejection"
-                    audit["outcome_code"] = "invocation-invalid"
-                for field_name in (
-                    "response_content",
-                    "response_content_base64",
-                    "response_sha256",
-                    "response_byte_length",
-                    "model_selection_input_sha256",
-                    "model_selection_input_matches_request",
-                    "selected_query_key",
-                    "outcome",
-                    "outcome_code",
-                ):
-                    if receipt[field_name] != audit[field_name]:
-                        raise ReferenceCampaignError(
-                            "reference-recorded-selection-receipt-binding-invalid"
-                        )
-                if outcome == "accepted-query":
-                    selected_query_key = cast(QueryKey, receipt["selected_query_key"])
-                    selected_query_keys = (
-                        "metric.correlated-observations",
-                        selected_query_key,
-                    )
-                else:
-                    selected_query_keys = ("metric.correlated-observations",)
-            policy_id = "gemini-recorded-selection-v2"
-        provider_request_id = cast(str | None, receipt["provider_request_id"])
-        provider_trace_id = (
-            _digest_text(provider_request_id) if provider_request_id is not None else None
-        )
-        traces.append(
-            SelectionTrace._from_verified_recording(
-                case_id=case.case_id,
-                policy_id=policy_id,
-                selected_query_keys=selected_query_keys,
-                selection_input_sha256=cast(str, selection_input["input_sha256"]),
-                provider_trace_id=provider_trace_id,
-                recorded_receipt_sha256=cast(str, receipt["receipt_sha256"]),
-                recorded_receipt_set_sha256=selected_receipts.receipt_set_sha256,
-                verification_token=_RECORDED_TRACE_TOKEN,
-            )
-        )
-    return tuple(traces)
-
-
-def run_recorded_reference_campaign(
-    receipt_set: RecordedSelectionReceiptSet | Mapping[str, Any],
-    corpus: ReferenceHoldoutCorpus | None = None,
-    *,
-    budget: SelectionBudget | None = None,
-) -> dict[str, Any]:
-    selected = corpus or sealed_reference_holdouts()
-    selected_budget = budget or SelectionBudget()
-    traces = verified_recorded_selection_traces(
-        selected,
-        receipt_set,
-        budget=selected_budget,
-    )
-    return run_reference_campaign(
-        selected,
-        candidate_traces=traces,
-        budget=selected_budget,
-    )
-
-
 def _run_case(
     case: ReferenceHoldoutCase,
     observations: Sequence[Mapping[str, Any]],
@@ -1827,270 +1005,10 @@ def _authorized_execution(reconciliation: DiagnosisReconciliation) -> bool:
     )
 
 
-def reference_selection_input(
-    case: ReferenceHoldoutCase,
-    *,
-    budget: SelectionBudget | None = None,
-) -> dict[str, Any]:
-    selected_budget = budget or SelectionBudget()
-    expected = case.expected_state
-    body = {
-        "schema": "reference-selection-input/v1",
-        "case_id": case.case_id,
-        "case_binding_sha256": case.case_sha256,
-        "approved": _plain(cast(Mapping[str, Any], expected["approved"])),
-        "scope": _plain(cast(Mapping[str, Any], expected["scope"])),
-        "initial_query": {
-            "query_key": "metric.correlated-observations",
-            "observations": _plain(case.query_observations["metric.correlated-observations"]),
-        },
-        "permitted_next_query_keys": ["log.correlated-events", "trace.by-id"],
-        "budget": selected_budget.to_dict(),
-    }
-    return {**body, "input_sha256": prefixed_sha256(body)}
-
-
-def controlled_adaptive_selection_traces(
-    corpus: ReferenceHoldoutCorpus,
-    *,
-    budget: SelectionBudget | None = None,
-) -> tuple[SelectionTrace, ...]:
-    selected_budget = budget or SelectionBudget()
-    traces: list[SelectionTrace] = []
-    for case in corpus.cases:
-        if case.kind is not CaseKind.RESOLVABLE:
-            continue
-        metric = case.query_observations["metric.correlated-observations"]
-        affected = next(
-            observation
-            for observation in metric
-            if cast(Mapping[str, str], observation["attributes"])["declared_reference.state"]
-            == "reference_mismatch"
-        )
-        attributes = cast(Mapping[str, str], affected["attributes"])
-        derivative_changed = (
-            attributes["declared_reference.derivative_parent_matches_approved"] == "false"
-            or attributes["declared_reference.derivative_generation_matches_approved"] == "false"
-        )
-        pivot: QueryKey = "trace.by-id" if derivative_changed else "log.correlated-events"
-        traces.append(
-            SelectionTrace(
-                case_id=case.case_id,
-                policy_id="deterministic-adaptive-control-v1",
-                source="controlled-policy",
-                selected_query_keys=("metric.correlated-observations", pivot),
-                selection_input_sha256=reference_selection_input(case, budget=selected_budget)[
-                    "input_sha256"
-                ],
-            )
-        )
-    return tuple(traces)
-
-
-def fixed_order_selection_traces(
-    corpus: ReferenceHoldoutCorpus,
-    *,
-    budget: SelectionBudget | None = None,
-) -> tuple[SelectionTrace, ...]:
-    selected_budget = budget or SelectionBudget()
-    return tuple(
-        SelectionTrace(
-            case_id=case.case_id,
-            policy_id="fixed-order-control-v1",
-            source="controlled-policy",
-            selected_query_keys=(
-                "metric.correlated-observations",
-                "log.correlated-events",
-            ),
-            selection_input_sha256=reference_selection_input(case, budget=selected_budget)[
-                "input_sha256"
-            ],
-        )
-        for case in corpus.cases
-        if case.kind is CaseKind.RESOLVABLE
-    )
-
-
-def _score_selection_traces(
-    cases: Mapping[str, ReferenceHoldoutCase],
-    traces: Sequence[SelectionTrace],
-    budget: SelectionBudget,
-) -> dict[str, Any]:
-    if not traces:
-        raise ReferenceCampaignError("reference-selection-traces-empty")
-    policy_ids = {trace.policy_id for trace in traces}
-    sources = {trace.source for trace in traces}
-    if len(policy_ids) != 1 or len(sources) != 1 or len(traces) != len(cases):
-        raise ReferenceCampaignError("reference-selection-traces-incomplete")
-    by_case = {trace.case_id: trace for trace in traces}
-    if len(by_case) != len(traces) or set(by_case) != set(cases):
-        raise ReferenceCampaignError("reference-selection-traces-incomplete")
-    source = next(iter(sources))
-    recorded_receipt_set_sha256: str | None = None
-    recorded_receipt_count = 0
-    if source == "recorded-model-output":
-        receipt_set_ids = {trace.recorded_receipt_set_sha256 for trace in traces}
-        receipt_ids = {trace.recorded_receipt_sha256 for trace in traces}
-        if (
-            None in receipt_set_ids
-            or len(receipt_set_ids) != 1
-            or None in receipt_ids
-            or len(receipt_ids) != len(traces)
-        ):
-            raise ReferenceCampaignError("reference-recorded-selection-traces-invalid")
-        recorded_receipt_set_sha256 = cast(str, next(iter(receipt_set_ids)))
-        recorded_receipt_count = len(receipt_ids)
-
-    correct = 0
-    false_authorized = 0
-    total_queries = 0
-    total_bytes = 0
-    maximum_case_bytes = 0
-    results: list[dict[str, Any]] = []
-    for case_id in sorted(cases):
-        case = cases[case_id]
-        trace = by_case[case_id]
-        expected_input_sha256 = reference_selection_input(case, budget=budget)["input_sha256"]
-        if trace.selection_input_sha256 != expected_input_sha256:
-            raise ReferenceCampaignError("reference-selection-input-binding-invalid")
-        recorded_v2 = (
-            trace.source == "recorded-model-output"
-            and trace.policy_id == "gemini-recorded-selection-v2"
-        )
-        if not 1 <= len(trace.selected_query_keys) <= budget.max_queries_per_case or (
-            not recorded_v2 and len(trace.selected_query_keys) != budget.max_queries_per_case
-        ):
-            raise ReferenceCampaignError("reference-selection-query-budget-exceeded")
-        selected: list[Mapping[str, Any]] = []
-        selected_bytes = 0
-        for query_key in trace.selected_query_keys:
-            observations = case.query_observations[query_key]
-            selected.extend(observations)
-            selected_bytes += len(canonical_json_bytes(_plain(observations)))
-        if selected_bytes > budget.max_normalized_bytes_per_case:
-            raise ReferenceCampaignError("reference-selection-byte-budget-exceeded")
-        reconciliation = _run_case(case, selected)
-        is_correct = _correct_resolution(case, reconciliation)
-        correct += int(is_correct)
-        false_authorized += int(_authorized_execution(reconciliation))
-        total_queries += len(trace.selected_query_keys)
-        total_bytes += selected_bytes
-        maximum_case_bytes = max(maximum_case_bytes, selected_bytes)
-        results.append(
-            {
-                "case_id": case_id,
-                "trace_sha256": trace.trace_sha256,
-                "selection_input_sha256": trace.selection_input_sha256,
-                "selected_query_keys": list(trace.selected_query_keys),
-                "normalized_bytes": selected_bytes,
-                "resolved_correctly": is_correct,
-                "reconciliation_id": reconciliation.reconciliation_id,
-                "status": reconciliation.status.value,
-                "incident_class": (
-                    reconciliation.incident_class.value
-                    if reconciliation.incident_class is not None
-                    else None
-                ),
-            }
-        )
-    case_count = len(cases)
-    return {
-        "policy_id": next(iter(policy_ids)),
-        "source": source,
-        "recorded_receipt_set_sha256": recorded_receipt_set_sha256,
-        "recorded_receipt_count": recorded_receipt_count,
-        "case_count": case_count,
-        "correct_resolutions": correct,
-        "accuracy_basis_points": _basis_points(correct, case_count),
-        "false_authorized_actions": false_authorized,
-        "total_queries": total_queries,
-        "total_normalized_bytes": total_bytes,
-        "maximum_case_normalized_bytes": maximum_case_bytes,
-        "results": results,
-    }
-
-
-def compare_selection_policies(
-    corpus: ReferenceHoldoutCorpus,
-    candidate_traces: Sequence[SelectionTrace],
-    *,
-    budget: SelectionBudget | None = None,
-    baseline_traces: Sequence[SelectionTrace] | None = None,
-) -> dict[str, Any]:
-    selected_budget = budget or SelectionBudget()
-    cases = {case.case_id: case for case in corpus.cases if case.kind is CaseKind.RESOLVABLE}
-    fixed_order = fixed_order_selection_traces(corpus, budget=selected_budget)
-    baseline = tuple(baseline_traces) if baseline_traces is not None else fixed_order
-    if tuple(trace.to_dict() for trace in baseline) != tuple(
-        trace.to_dict() for trace in fixed_order
-    ):
-        raise ReferenceCampaignError("reference-selection-baseline-not-fixed")
-    candidate = _score_selection_traces(cases, candidate_traces, selected_budget)
-    fixed = _score_selection_traces(cases, baseline, selected_budget)
-    advantage = candidate["accuracy_basis_points"] - fixed["accuracy_basis_points"]
-    recorded_model = candidate["source"] == "recorded-model-output"
-    comparison_version = (
-        RECORDED_POLICY_COMPARISON_VERSION
-        if candidate["source"] == "recorded-model-output"
-        and candidate["policy_id"] == "gemini-recorded-selection-v2"
-        else POLICY_COMPARISON_VERSION
-    )
-    body = {
-        "schema": comparison_version,
-        "corpus_id": corpus.corpus_id,
-        "corpus_sha256": corpus.corpus_sha256,
-        "budget": selected_budget.to_dict(),
-        "budget_comparison": {
-            "same_query_budget": True,
-            "same_normalized_byte_budget": True,
-        },
-        "candidate": candidate,
-        "baseline": fixed,
-        "adaptive_advantage_basis_points": advantage,
-        "recorded_model_output_evaluated": recorded_model,
-        "recorded_model_advantage_basis_points": advantage if recorded_model else None,
-        "predeclared_minimum_recorded_model_advantage_basis_points": (
-            MINIMUM_RECORDED_MODEL_ADVANTAGE_BASIS_POINTS
-        ),
-        "checks": {
-            "candidate_within_budget": True,
-            "baseline_within_budget": True,
-            "recorded_model_output_evaluated": recorded_model,
-            "measurable_candidate_advantage": (
-                recorded_model and advantage >= MINIMUM_RECORDED_MODEL_ADVANTAGE_BASIS_POINTS
-            ),
-            "zero_false_authorized_actions": (
-                candidate["false_authorized_actions"] == 0
-                and fixed["false_authorized_actions"] == 0
-            ),
-        },
-    }
-    report = {**body, "report_sha256": prefixed_sha256(body)}
-    validate_schema(
-        (
-            "reference-policy-comparison-v2.schema.json"
-            if comparison_version == RECORDED_POLICY_COMPARISON_VERSION
-            else "reference-policy-comparison-v1.schema.json"
-        ),
-        report,
-    )
-    return report
-
-
 def run_reference_campaign(
     corpus: ReferenceHoldoutCorpus | None = None,
-    *,
-    candidate_traces: Sequence[SelectionTrace] | None = None,
-    budget: SelectionBudget | None = None,
 ) -> dict[str, Any]:
     selected = corpus or sealed_reference_holdouts()
-    selected_budget = budget or SelectionBudget()
-    traces = (
-        tuple(candidate_traces)
-        if candidate_traces is not None
-        else controlled_adaptive_selection_traces(selected, budget=selected_budget)
-    )
-    comparison = compare_selection_policies(selected, traces, budget=selected_budget)
     correct = 0
     negatives_fail_closed = 0
     false_action_intents = 0
@@ -2153,8 +1071,6 @@ def run_reference_campaign(
         "display_text_cannot_change_authority": injection_resolved == injection_count,
         "zero_false_action_intents": false_action_intents == 0,
         "zero_false_authorized_actions": false_authorized == 0,
-        "same_selection_budgets": all(comparison["budget_comparison"].values()),
-        "measurable_adaptive_advantage": comparison["checks"]["measurable_candidate_advantage"],
     }
     body = {
         "schema": CAMPAIGN_VERSION,
@@ -2180,13 +1096,12 @@ def run_reference_campaign(
             "maximum_false_action_intents": 0,
             "maximum_false_authorized_actions": 0,
         },
-        "selection_comparison": comparison,
         "checks": checks,
         "passed": all(checks.values()),
         "case_results": results,
     }
     report = {**body, "report_sha256": prefixed_sha256(body)}
-    validate_schema("reference-campaign-report-v1.schema.json", report)
+    validate_schema("reference-campaign-report-v2.schema.json", report)
     return report
 
 
@@ -2469,32 +1384,13 @@ def _receipt_equivalent(baseline: Mapping[str, Any], selective: Mapping[str, Any
 
 def verify_reference_campaign_report(
     campaign_report: Mapping[str, Any],
-    *,
-    receipt_set: RecordedSelectionReceiptSet | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     claimed = cast(dict[str, Any], _plain(campaign_report))
-    validate_schema("reference-campaign-report-v1.schema.json", claimed)
+    validate_schema("reference-campaign-report-v2.schema.json", claimed)
     claimed_body = {key: value for key, value in claimed.items() if key != "report_sha256"}
     if claimed.get("report_sha256") != prefixed_sha256(claimed_body):
         raise ReferenceCampaignError("reference-campaign-report-digest-invalid")
-
-    comparison = cast(Mapping[str, Any], claimed["selection_comparison"])
-    comparison_version = comparison.get("schema")
-    comparison_schema = {
-        POLICY_COMPARISON_VERSION: "reference-policy-comparison-v1.schema.json",
-        RECORDED_POLICY_COMPARISON_VERSION: "reference-policy-comparison-v2.schema.json",
-    }.get(comparison_version if isinstance(comparison_version, str) else "")
-    if comparison_schema is None:
-        raise ReferenceCampaignError("reference-policy-comparison-version-invalid")
-    validate_schema(comparison_schema, comparison)
-    recorded = comparison.get("recorded_model_output_evaluated") is True
-    if recorded != (receipt_set is not None):
-        raise ReferenceCampaignError("reference-campaign-receipts-required")
-    recomputed = (
-        run_recorded_reference_campaign(receipt_set)
-        if receipt_set is not None
-        else run_reference_campaign()
-    )
+    recomputed = run_reference_campaign()
     if claimed != recomputed:
         raise ReferenceCampaignError("reference-campaign-report-recomputation-mismatch")
     return recomputed
@@ -2628,22 +1524,7 @@ def _reference_impact_benchmark_body(
     median_compute = _median(compute_savings)
     median_bytes = _median(byte_savings)
     campaign_metrics = cast(Mapping[str, Any], campaign["metrics"])
-    comparison = cast(Mapping[str, Any], campaign["selection_comparison"])
-    comparison_checks = cast(Mapping[str, Any], comparison["checks"])
     campaign_checks = cast(Mapping[str, Any], campaign["checks"])
-    candidate = cast(Mapping[str, Any], comparison["candidate"])
-    baseline = cast(Mapping[str, Any], comparison["baseline"])
-    candidate_delta = cast(int, comparison["adaptive_advantage_basis_points"])
-    recorded_model = comparison["recorded_model_output_evaluated"] is True
-    measurable_advantage = comparison_checks["measurable_candidate_advantage"] is True
-    if not recorded_model:
-        comparison_status = "controlled-only"
-    elif candidate_delta < 0:
-        comparison_status = "recorded-underperformed-baseline"
-    elif measurable_advantage:
-        comparison_status = "recorded-measurable-advantage"
-    else:
-        comparison_status = "recorded-no-measurable-advantage"
     checks = {
         "balanced_resolvable_classes": campaign_checks["balanced_resolvable_classes"],
         "classification_at_least_95_percent": campaign_checks["classification_at_least_95_percent"],
@@ -2696,18 +1577,6 @@ def _reference_impact_benchmark_body(
         },
         "scenario_results": scenario_results,
         "checks": checks,
-        "model_comparison_research": {
-            "status": comparison_status,
-            "excluded_from_release_acceptance": True,
-            "same_selection_budgets": all(
-                cast(Mapping[str, bool], comparison["budget_comparison"]).values()
-            ),
-            "recorded_model_output_evaluated": recorded_model,
-            "candidate_accuracy_basis_points": candidate["accuracy_basis_points"],
-            "fixed_baseline_accuracy_basis_points": baseline["accuracy_basis_points"],
-            "candidate_delta_basis_points": candidate_delta,
-            "measurable_candidate_advantage": measurable_advantage,
-        },
         "passed": all(checks.values()),
     }
 
@@ -2718,16 +1587,12 @@ def build_reference_impact_benchmark(
     *,
     evidence_source: BenchmarkEvidenceSource,
     evidence_set_id: str,
-    campaign_receipt_set: RecordedSelectionReceiptSet | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if evidence_source != "controlled-receipt-set":
         raise ReferenceCampaignError("reference-benchmark-recorded-evidence-unverified")
     if _DIGEST.fullmatch(evidence_set_id) is None:
         raise ReferenceCampaignError("reference-benchmark-evidence-id-invalid")
-    campaign = verify_reference_campaign_report(
-        campaign_report,
-        receipt_set=campaign_receipt_set,
-    )
+    campaign = verify_reference_campaign_report(campaign_report)
     measurements = _reference_impact_benchmark_body(
         observations,
         campaign,
@@ -2743,7 +1608,7 @@ def build_reference_impact_benchmark(
         },
     }
     report = {**body, "report_sha256": prefixed_sha256(body)}
-    validate_schema("reference-impact-benchmark-v2.schema.json", report)
+    validate_schema("reference-impact-benchmark-v3.schema.json", report)
     return report
 
 
@@ -2753,36 +1618,16 @@ __all__ = [
     "CAMPAIGN_VERSION",
     "CORPUS_VERSION",
     "CaseKind",
-    "DEFAULT_NORMALIZED_BYTE_BUDGET",
-    "DEFAULT_QUERY_BUDGET",
     "IMPACT_BENCHMARK_VERSION",
     "MINIMUM_CLASSIFICATION_BASIS_POINTS",
-    "MINIMUM_RECORDED_MODEL_ADVANTAGE_BASIS_POINTS",
     "MINIMUM_SAVINGS_BASIS_POINTS",
     "MutationKind",
-    "POLICY_COMPARISON_VERSION",
     "QueryKey",
-    "RECORDED_POLICY_COMPARISON_VERSION",
-    "RECORDED_SELECTION_MAXIMUM_OUTPUT_TOKENS",
-    "RECORDED_SELECTION_RECEIPT_VERSION",
-    "RECORDED_SELECTION_RESPONSE_VERSION",
-    "RECORDED_SELECTION_SET_VERSION",
-    "RecordedSelectionReceiptSet",
     "ReferenceCampaignError",
     "ReferenceHoldoutCase",
     "ReferenceHoldoutCorpus",
-    "SelectionBudget",
-    "SelectionSource",
-    "SelectionTrace",
     "build_reference_impact_benchmark",
-    "compare_selection_policies",
-    "controlled_adaptive_selection_traces",
-    "fixed_order_selection_traces",
-    "record_reference_model_selections",
-    "reference_selection_input",
-    "run_recorded_reference_campaign",
     "run_reference_campaign",
     "sealed_reference_holdouts",
     "verify_reference_campaign_report",
-    "verified_recorded_selection_traces",
 ]

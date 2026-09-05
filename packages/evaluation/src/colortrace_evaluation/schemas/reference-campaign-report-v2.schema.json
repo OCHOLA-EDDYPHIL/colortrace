@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://colortrace.dev/schemas/reference-campaign-report-v1.schema.json",
+  "$id": "https://colortrace.dev/schemas/reference-campaign-report-v2.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema", "corpus_id", "corpus_sha256", "case_counts", "metrics",
-    "thresholds", "selection_comparison", "checks", "passed", "case_results",
+    "thresholds", "checks", "passed", "case_results",
     "report_sha256"
   ],
   "properties": {
-    "schema": {"const": "reference-campaign-report/v1"},
+    "schema": {"const": "reference-campaign-report/v2"},
     "corpus_id": {"$ref": "#/$defs/id"},
     "corpus_sha256": {"$ref": "#/$defs/digest"},
     "case_counts": {
@@ -63,14 +63,12 @@
         "maximum_false_authorized_actions": {"const": 0}
       }
     },
-    "selection_comparison": {"type": "object"},
     "checks": {
       "type": "object", "additionalProperties": false,
       "required": [
         "balanced_resolvable_classes", "classification_at_least_95_percent",
         "all_negative_cases_fail_closed", "display_text_cannot_change_authority",
-        "zero_false_action_intents", "zero_false_authorized_actions",
-        "same_selection_budgets", "measurable_adaptive_advantage"
+        "zero_false_action_intents", "zero_false_authorized_actions"
       ],
       "properties": {
         "balanced_resolvable_classes": {"type": "boolean"},
@@ -78,9 +76,7 @@
         "all_negative_cases_fail_closed": {"type": "boolean"},
         "display_text_cannot_change_authority": {"type": "boolean"},
         "zero_false_action_intents": {"type": "boolean"},
-        "zero_false_authorized_actions": {"type": "boolean"},
-        "same_selection_budgets": {"type": "boolean"},
-        "measurable_adaptive_advantage": {"type": "boolean"}
+        "zero_false_authorized_actions": {"type": "boolean"}
       }
     },
     "passed": {"type": "boolean"},

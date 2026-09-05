@@ -43,8 +43,14 @@ def _result() -> dict[str, Any]:
         "tos-resource-resolution-drift-v1": "resource-resolution-drift/v1",
         "tos-stale-derivative-cache-v1": "stale-derivative-cache/v1",
     }
+    identity = {
+        "mode": "host-python-module",
+        "source_revision": "d" * 40,
+        "source_tree": "e" * 40,
+        "container_image_digest": None,
+    }
     body: dict[str, Any] = {
-        "schema": "reference-impact-benchmark/v1",
+        "schema": "reference-impact-benchmark/v3",
         "reference_collection_id": COLLECTION_ID,
         "reference_manifest_sha256": MANIFEST_SHA256,
         "campaign_report_sha256": "sha256:" + "b" * 64,
@@ -53,6 +59,31 @@ def _result() -> dict[str, Any]:
             "evidence_set_id": "sha256:" + "c" * 64,
             "recorded_worker_evidence": True,
             "observation_count": 720,
+            "execution_identity": {
+                **identity,
+                "identity_sha256": (f"sha256:{hashlib.sha256(_canonical(identity)).hexdigest()}"),
+            },
+        },
+        "campaign_summary": {
+            "case_counts": {
+                "total": 99,
+                "resolvable": 60,
+                "fail_closed": 39,
+                "resolvable_by_class": {
+                    "configuration-rollout-drift/v1": 20,
+                    "resource-resolution-drift/v1": 20,
+                    "stale-derivative-cache/v1": 20,
+                },
+            },
+            "metrics": {
+                "correct_resolvable_classifications": 60,
+                "classification_accuracy_basis_points": 10_000,
+                "negative_cases_failed_closed": 39,
+                "false_action_intents": 0,
+                "false_authorized_actions": 0,
+                "display_text_mutations_resolved": 3,
+                "display_text_mutation_count": 3,
+            },
         },
         "thresholds": {
             "minimum_classification_accuracy_basis_points": 9_500,
@@ -63,8 +94,6 @@ def _result() -> dict[str, Any]:
         "metrics": {
             "classification_accuracy_basis_points": 10_000,
             "false_authorized_actions": 0,
-            "adaptive_advantage_basis_points": 3_334,
-            "recorded_model_advantage_basis_points": 3_334,
             "median_compute_avoided_basis_points": 7_000,
             "median_application_bytes_avoided_basis_points": 4_500,
         },
@@ -93,13 +122,14 @@ def _result() -> dict[str, Any]:
             for scenario_id, incident_class in scenario_classes.items()
         ],
         "checks": {
-            "campaign_acceptance_passed": True,
+            "balanced_resolvable_classes": True,
+            "classification_at_least_95_percent": True,
+            "all_negative_cases_fail_closed": True,
+            "display_text_cannot_change_authority": True,
+            "zero_false_action_intents": True,
+            "zero_false_authorized_actions": True,
             "output_equivalence": True,
             "protected_output_integrity": True,
-            "zero_false_authorized_actions": True,
-            "classification_at_least_95_percent": True,
-            "same_selection_budgets": True,
-            "measurable_adaptive_advantage": True,
             "median_compute_avoided_at_least_40_percent": True,
             "median_application_bytes_avoided_at_least_40_percent": True,
         },
@@ -114,69 +144,6 @@ def _result() -> dict[str, Any]:
     stale["selective"]["application_bytes"] = 2_201
     stale["application_bytes_avoided_basis_points"] = _signed_savings(2_201, 2_001)
     result = dict(body)
-    _resign(result)
-    return result
-
-
-def _v2_result() -> dict[str, Any]:
-    result = _result()
-    result["schema"] = "reference-impact-benchmark/v2"
-    result["campaign_summary"] = {
-        "case_counts": {
-            "total": 99,
-            "resolvable": 60,
-            "fail_closed": 39,
-            "resolvable_by_class": {
-                "configuration-rollout-drift/v1": 20,
-                "resource-resolution-drift/v1": 20,
-                "stale-derivative-cache/v1": 20,
-            },
-        },
-        "metrics": {
-            "correct_resolvable_classifications": 60,
-            "classification_accuracy_basis_points": 10_000,
-            "negative_cases_failed_closed": 39,
-            "false_action_intents": 0,
-            "false_authorized_actions": 0,
-            "display_text_mutations_resolved": 3,
-            "display_text_mutation_count": 3,
-        },
-    }
-    result["metrics"].pop("adaptive_advantage_basis_points")
-    result["metrics"].pop("recorded_model_advantage_basis_points")
-    result["checks"] = {
-        "balanced_resolvable_classes": True,
-        "classification_at_least_95_percent": True,
-        "all_negative_cases_fail_closed": True,
-        "display_text_cannot_change_authority": True,
-        "zero_false_action_intents": True,
-        "zero_false_authorized_actions": True,
-        "output_equivalence": True,
-        "protected_output_integrity": True,
-        "median_compute_avoided_at_least_40_percent": True,
-        "median_application_bytes_avoided_at_least_40_percent": True,
-    }
-    identity = {
-        "mode": "host-python-module",
-        "source_revision": "d" * 40,
-        "source_tree": "e" * 40,
-        "container_image_digest": None,
-    }
-    result["evidence"]["execution_identity"] = {
-        **identity,
-        "identity_sha256": f"sha256:{hashlib.sha256(_canonical(identity)).hexdigest()}",
-    }
-    result["model_comparison_research"] = {
-        "status": "recorded-underperformed-baseline",
-        "excluded_from_release_acceptance": True,
-        "same_selection_budgets": True,
-        "recorded_model_output_evaluated": True,
-        "candidate_accuracy_basis_points": 666,
-        "fixed_baseline_accuracy_basis_points": 6_666,
-        "candidate_delta_basis_points": -6_000,
-        "measurable_candidate_advantage": False,
-    }
-    result["passed"] = True
     _resign(result)
     return result
 
@@ -219,14 +186,14 @@ def test_recorded_impact_result_is_strictly_bound_and_defensively_copied(
 
     assert second["passed"] is True
     assert second["evidence"]["recorded_worker_evidence"] is True
-    assert second["metrics"]["recorded_model_advantage_basis_points"] == 3_334
+    assert second["schema"] == "reference-impact-benchmark/v3"
+    assert second["metrics"]["median_compute_avoided_basis_points"] == 7_000
+    assert "model_comparison_research" not in second
 
 
-def test_v2_product_result_passes_without_rewriting_negative_model_research(
-    tmp_path: Path,
-) -> None:
+def test_v3_product_result_preserves_only_release_acceptance_evidence(tmp_path: Path) -> None:
     path = tmp_path / "result.json"
-    _write(path, _v2_result())
+    _write(path, _result())
 
     loaded = load_reference_impact_result(
         expected_collection_id=COLLECTION_ID,
@@ -236,33 +203,18 @@ def test_v2_product_result_passes_without_rewriting_negative_model_research(
 
     assert loaded["passed"] is True
     assert all(loaded["checks"].values())
-    assert loaded["model_comparison_research"] == {
-        "status": "recorded-underperformed-baseline",
-        "excluded_from_release_acceptance": True,
-        "same_selection_budgets": True,
-        "recorded_model_output_evaluated": True,
-        "candidate_accuracy_basis_points": 666,
-        "fixed_baseline_accuracy_basis_points": 6_666,
-        "candidate_delta_basis_points": -6_000,
-        "measurable_candidate_advantage": False,
+    assert loaded["metrics"] == {
+        "classification_accuracy_basis_points": 10_000,
+        "false_authorized_actions": 0,
+        "median_compute_avoided_basis_points": 7_000,
+        "median_application_bytes_avoided_basis_points": 4_500,
     }
+    assert "model_comparison_research" not in loaded
 
 
 @pytest.mark.parametrize(
     "mutation",
     (
-        lambda value: value["model_comparison_research"].update(
-            {"excluded_from_release_acceptance": False}
-        ),
-        lambda value: value["model_comparison_research"].update(
-            {"candidate_delta_basis_points": -5_999}
-        ),
-        lambda value: value["model_comparison_research"].update(
-            {"status": "recorded-measurable-advantage"}
-        ),
-        lambda value: value["model_comparison_research"].update(
-            {"measurable_candidate_advantage": True}
-        ),
         lambda value: value["checks"].update({"all_negative_cases_fail_closed": False}),
         lambda value: value["checks"].update({"display_text_cannot_change_authority": False}),
         lambda value: value["checks"].update({"zero_false_action_intents": False}),
@@ -281,11 +233,58 @@ def test_v2_product_result_passes_without_rewriting_negative_model_research(
         lambda value: value["evidence"]["execution_identity"].update({"source_revision": "f" * 40}),
     ),
 )
-def test_v2_result_rejects_resigned_model_research_misrepresentation(
+def test_v3_result_rejects_resigned_acceptance_misrepresentation(
     tmp_path: Path,
     mutation: Any,
 ) -> None:
-    result = _v2_result()
+    result = _result()
+    mutation(result)
+    _resign(result)
+    path = tmp_path / "result.json"
+    _write(path, result)
+
+    with pytest.raises(ReferenceResultError, match="reference-result-invalid"):
+        load_reference_impact_result(
+            expected_collection_id=COLLECTION_ID,
+            expected_manifest_sha256=MANIFEST_SHA256,
+            path=path,
+        )
+
+
+@pytest.mark.parametrize(
+    "legacy_schema",
+    ("reference-impact-benchmark/v1", "reference-impact-benchmark/v2"),
+)
+def test_result_rejects_resigned_legacy_schema(tmp_path: Path, legacy_schema: str) -> None:
+    result = _result()
+    result["schema"] = legacy_schema
+    _resign(result)
+    path = tmp_path / "result.json"
+    _write(path, result)
+
+    with pytest.raises(ReferenceResultError, match="reference-result-invalid"):
+        load_reference_impact_result(
+            expected_collection_id=COLLECTION_ID,
+            expected_manifest_sha256=MANIFEST_SHA256,
+            path=path,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda value: value.update({"model_comparison_research": {}}),
+        lambda value: value["metrics"].update({"adaptive_advantage_basis_points": 1}),
+        lambda value: value["metrics"].update({"recorded_model_advantage_basis_points": 1}),
+        lambda value: value["checks"].update({"same_selection_budgets": True}),
+        lambda value: value["checks"].update({"measurable_adaptive_advantage": True}),
+    ),
+)
+def test_v3_result_rejects_resigned_comparison_fields(
+    tmp_path: Path,
+    mutation: Any,
+) -> None:
+    result = _result()
     mutation(result)
     _resign(result)
     path = tmp_path / "result.json"
@@ -307,12 +306,12 @@ def test_v2_result_rejects_resigned_model_research_misrepresentation(
         ("google-cloud-batch", DIGEST),
     ),
 )
-def test_v2_result_accepts_canonical_recorded_worker_execution_modes(
+def test_v3_result_accepts_canonical_recorded_worker_execution_modes(
     tmp_path: Path,
     mode: str,
     image_digest: str | None,
 ) -> None:
-    result = _v2_result()
+    result = _result()
     identity = result["evidence"]["execution_identity"]
     identity.update({"mode": mode, "container_image_digest": image_digest})
     identity_body = {key: value for key, value in identity.items() if key != "identity_sha256"}
@@ -405,13 +404,14 @@ def test_recorded_result_accepts_internally_consistent_savings_only_failure(
     assert loaded["passed"] is False
     assert loaded["metrics"]["median_application_bytes_avoided_basis_points"] == 3_500
     assert loaded["checks"] == {
-        "campaign_acceptance_passed": True,
+        "balanced_resolvable_classes": True,
+        "classification_at_least_95_percent": True,
+        "all_negative_cases_fail_closed": True,
+        "display_text_cannot_change_authority": True,
+        "zero_false_action_intents": True,
+        "zero_false_authorized_actions": True,
         "output_equivalence": True,
         "protected_output_integrity": True,
-        "zero_false_authorized_actions": True,
-        "classification_at_least_95_percent": True,
-        "same_selection_budgets": True,
-        "measurable_adaptive_advantage": True,
         "median_compute_avoided_at_least_40_percent": True,
         "median_application_bytes_avoided_at_least_40_percent": False,
     }
@@ -495,11 +495,8 @@ def test_recorded_result_rejects_false_outcome_when_every_check_passes(
         lambda value: value["scenario_results"][0].update({"protected_output_integrity": False}),
         lambda value: value["metrics"].update({"false_authorized_actions": 1}),
         lambda value: value["metrics"].update({"classification_accuracy_basis_points": 9_499}),
-        lambda value: value["metrics"].update(
-            {
-                "adaptive_advantage_basis_points": 0,
-                "recorded_model_advantage_basis_points": 0,
-            }
+        lambda value: value["campaign_summary"]["metrics"].update(
+            {"display_text_mutations_resolved": 2}
         ),
     ),
 )
@@ -586,7 +583,7 @@ def test_recorded_result_rejects_resigned_summary_median_tamper(
     "mutation",
     (
         lambda value: value["evidence"].update({"source": "controlled-receipt-set"}),
-        lambda value: value["metrics"].update({"recorded_model_advantage_basis_points": None}),
+        lambda value: value["metrics"].update({"median_compute_avoided_basis_points": None}),
         lambda value: value["checks"].update({"output_equivalence": False}),
         lambda value: value["scenario_results"][0].update({"protected_output_integrity": False}),
         lambda value: value.update({"report_sha256": "sha256:" + "0" * 64}),
