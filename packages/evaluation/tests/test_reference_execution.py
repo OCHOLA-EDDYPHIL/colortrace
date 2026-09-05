@@ -428,6 +428,70 @@ def test_submission_is_idempotent_and_accepts_output_only_remote_fields() -> Non
     assert len(batch.create_calls) == 1
 
 
+def test_submission_accepts_exact_google_batch_response_normalization() -> None:
+    spec = _spec()
+    submitter, batch, _objects = _submitter()
+
+    first = submitter.submit(spec)
+    remote = batch.jobs[first.job_resource]
+    remote["allocationPolicy"]["labels"] = {"batch-job-id": first.job_id}
+    remote["allocationPolicy"]["location"]["allowedLocations"] = [
+        f"regions/{REGION}",
+        f"zones/{REGION}-a",
+        f"zones/{REGION}-b",
+        f"zones/{REGION}-c",
+        f"zones/{REGION}-f",
+    ]
+
+    duplicate = submitter.submit(spec)
+
+    assert duplicate.duplicate is True
+    assert duplicate.job_resource == first.job_resource
+    assert len(batch.create_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("provider_labels", "allowed_locations"),
+    (
+        ({"batch-job-id": "different-job"}, [f"zones/{REGION}-a"]),
+        (None, [f"zones/{REGION}-a"]),
+        (
+            {"batch-job-id": "placeholder", "unexpected": "label"},
+            [f"zones/{REGION}-a"],
+        ),
+        ({"batch-job-id": "placeholder"}, ["regions/us-east1"]),
+        ({"batch-job-id": "placeholder"}, ["zones/us-east1-b"]),
+        (
+            {"batch-job-id": "placeholder"},
+            [f"zones/{REGION}-a", f"zones/{REGION}-a"],
+        ),
+    ),
+)
+def test_submission_rejects_foreign_or_malformed_batch_normalization(
+    provider_labels: dict[str, str] | None,
+    allowed_locations: list[str],
+) -> None:
+    spec = _spec()
+    submitter, batch, _objects = _submitter()
+    first = submitter.submit(spec)
+    remote = batch.jobs[first.job_resource]
+    remote["allocationPolicy"]["labels"] = (
+        None
+        if provider_labels is None
+        else {
+            key: first.job_id if value == "placeholder" else value
+            for key, value in provider_labels.items()
+        }
+    )
+    remote["allocationPolicy"]["location"]["allowedLocations"] = allowed_locations
+
+    with pytest.raises(ReferenceExecutionError) as raised:
+        submitter.submit(spec)
+
+    assert raised.value.code == "batch-job-identity-conflict"
+    assert len(batch.create_calls) == 1
+
+
 def test_already_exists_race_reconciles_the_created_job() -> None:
     batch = FakeBatch()
     batch.race = True

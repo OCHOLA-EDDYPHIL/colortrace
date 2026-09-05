@@ -630,6 +630,60 @@ def _expected_projection(
     return remote
 
 
+def _normalized_batch_job_response(
+    plan: GoogleBatchExecutionPlan,
+    expected_request: Mapping[str, Any],
+    value: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    remote = dict(value)
+    allocation_value = value.get("allocationPolicy")
+    expected_allocation_value = expected_request.get("allocationPolicy")
+    if not isinstance(allocation_value, Mapping) or not isinstance(
+        expected_allocation_value, Mapping
+    ):
+        raise ReferenceExecutionError("batch-job-identity-conflict")
+    allocation = dict(allocation_value)
+
+    if "labels" in allocation:
+        provider_labels = allocation.pop("labels")
+        if not isinstance(provider_labels, Mapping) or dict(provider_labels) != {
+            "batch-job-id": plan.job_id
+        }:
+            raise ReferenceExecutionError("batch-job-identity-conflict")
+
+    location_value = allocation.get("location")
+    expected_location_value = expected_allocation_value.get("location")
+    if not isinstance(location_value, Mapping) or not isinstance(expected_location_value, Mapping):
+        raise ReferenceExecutionError("batch-job-identity-conflict")
+    location = dict(location_value)
+    observed_locations = location.get("allowedLocations")
+    expected_locations = expected_location_value.get("allowedLocations")
+    if observed_locations != expected_locations:
+        if (
+            not isinstance(expected_locations, Sequence)
+            or isinstance(expected_locations, (str, bytes, bytearray))
+            or len(expected_locations) != 1
+            or not isinstance(expected_locations[0], str)
+            or not expected_locations[0].startswith("regions/")
+            or not isinstance(observed_locations, list)
+            or not observed_locations
+        ):
+            raise ReferenceExecutionError("batch-job-identity-conflict")
+        region = expected_locations[0].removeprefix("regions/")
+        zone = re.compile(rf"^zones/{re.escape(region)}-[a-z]$")
+        if any(
+            not isinstance(item, str)
+            or (item != expected_locations[0] and zone.fullmatch(item) is None)
+            for item in observed_locations
+        ) or len(set(observed_locations)) != len(observed_locations):
+            raise ReferenceExecutionError("batch-job-identity-conflict")
+        location["allowedLocations"] = list(expected_locations)
+
+    allocation["location"] = location
+    remote["allocationPolicy"] = allocation
+    return remote
+
+
 @dataclass(frozen=True, slots=True)
 class GoogleBatchPlanner:
     project_id: str
@@ -814,7 +868,8 @@ class GoogleBatchSubmitter:
         spec_hex = plan.spec_sha256.removeprefix("sha256:")
         try:
             expected_request = _plain_json(plan.request)
-            remote_request = _expected_projection(expected_request, value)
+            normalized = _normalized_batch_job_response(plan, expected_request, value)
+            remote_request = _expected_projection(expected_request, normalized)
         except (KeyError, TypeError, ValueError) as error:
             raise ReferenceExecutionError("batch-job-identity-conflict") from error
         if (
