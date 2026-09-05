@@ -1471,17 +1471,17 @@ function ReferenceScenarioPanel({
         </p>
       ) : null}
 
-      <ReferenceLiveInvestigation
-        adapter={adapter}
-        key={`live-${summary.scenario_id}`}
-        summary={summary}
-      />
-
       <SupportingPixelEvidence
         adapter={adapter}
         key={`supporting-${summary.scenario_id}`}
         scenarioSha256={summary.scenario_sha256}
         scenarioTitle={summary.title}
+        summary={summary}
+      />
+
+      <ReferenceLiveInvestigation
+        adapter={adapter}
+        key={`live-${summary.scenario_id}`}
         summary={summary}
       />
 

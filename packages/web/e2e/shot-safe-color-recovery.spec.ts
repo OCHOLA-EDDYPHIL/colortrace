@@ -62,6 +62,15 @@ const REFERENCE_SCENARIOS = {
   >
 >;
 
+const COMPATIBILITY_DISCLOSURE_LABEL =
+  "Optional compatibility fixture — approval and recovery loop";
+
+async function openCompatibilityWorkflow(page: Page): Promise<void> {
+  const disclosure = page.getByText(COMPATIBILITY_DISCLOSURE_LABEL, { exact: true });
+  await expect(disclosure).toBeVisible();
+  await disclosure.click();
+}
+
 type ReferencePreviewManifest = {
   readonly scenarios: Readonly<
     Record<
@@ -384,6 +393,7 @@ test("completes the visual-first recovery flow with exact bound approval", async
   ).toBeVisible();
   const firstFold = page.locator('[data-first-fold="comparison-and-action"]');
   const openFilmAction = page.getByRole("link", { name: "Explore the open-film proof" });
+  const compatibilityDisclosure = page.getByText(COMPATIBILITY_DISCLOSURE_LABEL, { exact: true });
   const compatibilityLabel = page.getByText("Secondary compatibility workflow", {
     exact: true,
   });
@@ -394,9 +404,14 @@ test("completes the visual-first recovery flow with exact bound approval", async
   await expect(openFilmObserved).toHaveJSProperty("naturalWidth", 960);
   await expect(firstFold.getByText("PNG hash verified · pixel evidence")).toHaveCount(2);
   await expect(syntheticExpected).toHaveJSProperty("naturalWidth", 160);
-  const callToAction = page.getByRole("button", { name: "Investigate the color fault" });
+  const callToAction = page
+    .locator(".shot-landing__legacy-action button")
+    .filter({ hasText: "Investigate the color fault" });
   await expect(openFilmAction).toHaveAttribute("href", "#reference-suite-title");
-  await expect(compatibilityLabel).toBeVisible();
+  await expect(compatibilityDisclosure).toBeVisible();
+  await expect(compatibilityLabel).toBeHidden();
+  await expect(syntheticExpected).toBeHidden();
+  await expect(callToAction).toBeHidden();
   expect(
     await syntheticExpected.evaluate(
       (element) => element.closest('[data-first-fold="comparison-and-action"]') === null,
@@ -407,9 +422,6 @@ test("completes the visual-first recovery flow with exact bound approval", async
       (element) => element.closest('[data-first-fold="comparison-and-action"]') === null,
     ),
   ).toBe(true);
-  const syntheticBox = await syntheticExpected.boundingBox();
-  expect(syntheticBox).not.toBeNull();
-  expect(syntheticBox?.y ?? 0).toBeGreaterThanOrEqual(900);
   for (const locator of [firstFold, openFilmAction, openFilmExpected, openFilmObserved]) {
     const box = await locator.boundingBox();
     expect(box).not.toBeNull();
@@ -428,6 +440,13 @@ test("completes the visual-first recovery flow with exact bound approval", async
       path: "../../.cache/playwright/shot-safe-preview-1440x900.png",
     });
   }
+  await compatibilityDisclosure.click();
+  await expect(compatibilityLabel).toBeVisible();
+  await expect(syntheticExpected).toBeVisible();
+  await expect(callToAction).toBeVisible();
+  const syntheticBox = await syntheticExpected.boundingBox();
+  expect(syntheticBox).not.toBeNull();
+  expect(syntheticBox?.y ?? 0).toBeGreaterThanOrEqual(900);
   await page.getByRole("button", { name: "Investigate the color fault" }).click();
 
   await expect(page.getByRole("heading", { name: "Expected versus observed" })).toBeFocused();
@@ -587,13 +606,17 @@ test("keeps the clean-session flow usable on a small reduced-motion viewport", a
     name: /both renders succeeded.*look different/iu,
   });
   const mobileOpenFilmAction = page.getByRole("link", { name: "Explore the open-film proof" });
-  const mobileCallToAction = page.getByRole("button", { name: "Investigate the color fault" });
+  const mobileCallToAction = page
+    .locator(".shot-landing__legacy-action button")
+    .filter({ hasText: "Investigate the color fault" });
   const mobileExpected = mobileFirstFold.getByAltText(/Expected state open-film pixel preview/iu);
   const mobileObserved = mobileFirstFold.getByAltText(/Observed failure open-film pixel preview/iu);
   const mobileSyntheticExpected = page.getByAltText(/Expected cinematic soundstage portrait/u);
   await expect(mobileExpected).toHaveJSProperty("naturalWidth", 960);
   await expect(mobileObserved).toHaveJSProperty("naturalWidth", 960);
   await expect(mobileSyntheticExpected).toHaveJSProperty("naturalWidth", 160);
+  await expect(mobileSyntheticExpected).toBeHidden();
+  await expect(mobileCallToAction).toBeHidden();
   expect(
     await mobileSyntheticExpected.evaluate(
       (element) => element.closest('[data-first-fold="comparison-and-action"]') === null,
@@ -604,9 +627,6 @@ test("keeps the clean-session flow usable on a small reduced-motion viewport", a
       (element) => element.closest('[data-first-fold="comparison-and-action"]') === null,
     ),
   ).toBe(true);
-  const mobileSyntheticBox = await mobileSyntheticExpected.boundingBox();
-  expect(mobileSyntheticBox).not.toBeNull();
-  expect(mobileSyntheticBox?.y ?? 0).toBeGreaterThanOrEqual(844);
   for (const locator of [
     mobileFirstFold,
     mobileHook,
@@ -624,7 +644,13 @@ test("keeps the clean-session flow usable on a small reduced-motion viewport", a
       path: "../../.cache/playwright/shot-safe-preview-390x844.png",
     });
   }
-  await page.getByRole("button", { name: "Investigate the color fault" }).click();
+  await openCompatibilityWorkflow(page);
+  await expect(mobileSyntheticExpected).toBeVisible();
+  await expect(mobileCallToAction).toBeVisible();
+  const mobileSyntheticBox = await mobileSyntheticExpected.boundingBox();
+  expect(mobileSyntheticBox).not.toBeNull();
+  expect(mobileSyntheticBox?.y ?? 0).toBeGreaterThanOrEqual(844);
+  await mobileCallToAction.click();
   await expect(page.getByRole("heading", { name: "Expected versus observed" })).toBeFocused();
   const expectedVisual = page.getByAltText("Declared expected output");
   const observedVisual = page.getByAltText(/Observed output with a visible color shift/u);
@@ -659,6 +685,7 @@ test("replays the persisted start request after response loss and reload", async
   });
   await page.goto("/");
 
+  await openCompatibilityWorkflow(page);
   await page.getByRole("button", { name: "Investigate the color fault" }).click();
   await expect(page.getByText(/The recovery service is unavailable/iu)).toBeVisible();
   const pending = await page.evaluate(() => ({
@@ -709,6 +736,7 @@ test("replays the persisted reset after response loss and reload", async ({ page
 
   await page.reload();
 
+  await openCompatibilityWorkflow(page);
   await expect(page.getByText(/reset to authored generation 1/u)).toBeVisible();
   expect(mutations.length).toBeGreaterThanOrEqual(2);
   expect(mutations.length).toBeLessThanOrEqual(3);
@@ -726,6 +754,7 @@ test("recovers an active conflict without inheriting an approval nonce", async (
   await installDemoApi(page, { startConflict: "demo-active-run-exists" });
   await page.goto("/");
 
+  await openCompatibilityWorkflow(page);
   await page.getByRole("button", { name: "Investigate the color fault" }).click();
 
   await expect(
@@ -747,6 +776,7 @@ test("recovers a reset-required conflict to its terminal receipt", async ({ page
   });
   await page.goto("/");
 
+  await openCompatibilityWorkflow(page);
   await page.getByRole("button", { name: "Investigate the color fault" }).click();
 
   await expect(page.getByRole("heading", { name: /verified receipt/u })).toBeVisible();
@@ -757,6 +787,7 @@ test("recovers a reset-required conflict to its terminal receipt", async ({ page
 test("resumes with the session nonce without leaking or reusing it", async ({ page }) => {
   const { mutations } = await installDemoApi(page);
   await page.goto("/");
+  await openCompatibilityWorkflow(page);
   await page.getByRole("button", { name: "Investigate the color fault" }).click();
 
   expect(await page.evaluate(() => sessionStorage.getItem("colortrace.demo.approval-nonce"))).toBe(

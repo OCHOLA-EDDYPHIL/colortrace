@@ -1127,6 +1127,16 @@ describe("reference scenario experience", () => {
     expect(await screen.findAllByText("PNG hash verified · pixel evidence")).toHaveLength(3);
     expect(await screen.findByAltText(/Expected state open-film pixel preview/iu)).toBeVisible();
     expect(screen.getByText(/absolute display-pixel difference is amplified 8×/iu)).toBeVisible();
+    const supportingEvidence = screen.getByRole("region", {
+      name: "Inspect difference or recovered output",
+    });
+    const liveInvestigation = screen.getByRole("region", {
+      name: "Query the evidence, then reconcile it",
+    });
+    expect(
+      supportingEvidence.compareDocumentPosition(liveInvestigation) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
     const expectedProvenanceSummary = screen.getAllByText("Pixel provenance")[0] as HTMLElement;
     fireEvent.click(expectedProvenanceSummary);
     const expectedProvenance = expectedProvenanceSummary.closest("details");

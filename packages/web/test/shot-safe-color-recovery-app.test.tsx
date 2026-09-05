@@ -177,7 +177,7 @@ afterEach(() => {
 });
 
 describe("shot-safe color recovery", () => {
-  it("presents verified open-film pixels and action in the first fold before compatibility", async () => {
+  it("presents verified open-film pixels first and collapses compatibility by default", async () => {
     const referenceAdapter = referenceAdapterFixture();
     render(
       <ShotSafeColorRecoveryApp
@@ -200,18 +200,29 @@ describe("shot-safe color recovery", () => {
     });
     const secondaryWorkflow = screen.getByRole("heading", {
       name: "Canonical approval and recovery loop",
+      hidden: true,
     });
+    const compatibilityDisclosure = screen.getByText(
+      "Optional compatibility fixture — approval and recovery loop",
+    );
+    const compatibilityDetails = compatibilityDisclosure.closest("details");
+    if (compatibilityDetails === null) throw new Error("missing compatibility disclosure");
 
     expect(document.querySelectorAll("h1")).toHaveLength(1);
     const primaryAction = screen.getByRole("link", { name: "Explore the open-film proof" });
     const compatibilityAction = screen.getByRole("button", {
       name: "Investigate the color fault",
+      hidden: true,
     });
     const syntheticExpected = await screen.findByAltText(
       "Expected cinematic soundstage portrait with a cool teal color grade",
     );
     expect(screen.getByText("Primary proof · open-film reference suite")).toBeVisible();
-    expect(screen.getByText("Secondary · synthetic compatibility preview")).toBeVisible();
+    expect(compatibilityDisclosure).toBeVisible();
+    expect(compatibilityDetails).not.toHaveAttribute("open");
+    expect(secondaryWorkflow).not.toBeVisible();
+    expect(screen.getByText("Secondary · synthetic compatibility preview")).not.toBeVisible();
+    expect(compatibilityAction).not.toBeVisible();
     expect(firstFold).toContainElement(primaryExpected);
     expect(firstFold).toContainElement(primaryObserved);
     expect(firstFold).not.toContainElement(syntheticExpected);
@@ -225,7 +236,11 @@ describe("shot-safe color recovery", () => {
     expect(
       primaryProof.compareDocumentPosition(secondaryWorkflow) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
+    fireEvent.click(compatibilityDisclosure);
+    expect(compatibilityDetails).toHaveAttribute("open");
+    expect(secondaryWorkflow).toBeVisible();
     expect(screen.getByText("Secondary compatibility workflow")).toBeVisible();
+    expect(compatibilityAction).toBeVisible();
     expect(referenceAdapter.loadVisual).toHaveBeenCalledTimes(2);
   });
 

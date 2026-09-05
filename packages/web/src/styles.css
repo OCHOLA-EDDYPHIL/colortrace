@@ -244,6 +244,25 @@ h4 {
   padding-top: clamp(2.5rem, 5vw, 4.5rem);
 }
 
+.shot-landing__legacy-summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--shot-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.shot-landing__legacy-summary::marker {
+  color: var(--shot-amber);
+}
+
+.shot-landing__legacy-summary:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
 .shot-landing__legacy .shot-landing__copy > h2 {
   max-width: 36rem;
   font-size: clamp(2rem, 3.8vw, 3.8rem);

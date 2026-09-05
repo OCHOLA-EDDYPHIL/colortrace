@@ -2885,7 +2885,13 @@ export function ShotSafeColorRecoveryApp({
             {referenceAdapter === undefined ? null : (
               <ReferenceScenarioExperience adapter={referenceAdapter} />
             )}
-            <section aria-labelledby="canonical-recovery-title" className="shot-landing__legacy">
+            <details
+              className="shot-landing__legacy"
+              open={referenceAdapter === undefined ? true : undefined}
+            >
+              <summary className="shot-landing__legacy-summary">
+                Optional compatibility fixture — approval and recovery loop
+              </summary>
               <div className="shot-landing__copy">
                 <p className="shot-eyebrow">Compatibility workflow details</p>
                 <h2 id="canonical-recovery-title">Canonical approval and recovery loop</h2>
@@ -2963,7 +2969,7 @@ export function ShotSafeColorRecoveryApp({
                   decide facts and scope. A human decides whether the simulator may act.
                 </p>
               </div>
-            </section>
+            </details>
           </section>
         ) : (
           <div className="shot-workspace">
