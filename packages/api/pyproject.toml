@@ -41,3 +41,4 @@ packages = ["src/colortrace_api"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "../../LICENSE" = "colortrace_api/LICENSE"
+"../fixture-generator/THIRD_PARTY_NOTICES" = "colortrace_api/THIRD_PARTY_NOTICES"

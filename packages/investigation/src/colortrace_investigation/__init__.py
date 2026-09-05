@@ -7,7 +7,12 @@ from .contracts import (
     InvestigationPolicy,
     ModelAdvisory,
     ModelSelection,
+    ReferenceModelSelection,
+    finalize_reference_evidence,
+    finalize_reference_response_packet,
     validate_adaptive_response_packet,
+    validate_reference_evidence,
+    validate_reference_response_packet,
     validate_response_packet,
 )
 from .model import (
@@ -17,6 +22,12 @@ from .model import (
     ModelFailure,
     ModelGateway,
     ModelOutput,
+)
+from .reference_workflow import (
+    ReferenceEvidenceAdapter,
+    ReferenceEvidenceCollection,
+    ReferenceInvestigationError,
+    ReferenceInvestigationWorkflow,
 )
 from .workflow import (
     ColorStateValidatorGateway,
@@ -41,9 +52,18 @@ __all__ = [
     "ModelGateway",
     "ModelOutput",
     "ModelSelection",
+    "ReferenceEvidenceAdapter",
+    "ReferenceEvidenceCollection",
+    "ReferenceInvestigationError",
+    "ReferenceInvestigationWorkflow",
+    "ReferenceModelSelection",
     "TrackedSemaphore",
     "WorkflowProgress",
     "WorkflowError",
     "validate_response_packet",
     "validate_adaptive_response_packet",
+    "finalize_reference_evidence",
+    "finalize_reference_response_packet",
+    "validate_reference_evidence",
+    "validate_reference_response_packet",
 ]

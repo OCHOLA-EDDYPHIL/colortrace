@@ -1905,7 +1905,9 @@ def test_vertex_gateway_preserves_partial_usage_on_mid_loop_provider_failure() -
                 ),
                 error_code=None,
                 finish_reason=None,
-                content=None,
+                model_version="gemini-3.5-flash-001",
+                custom_metadata={"response_id": "provider-response-failed-001"},
+                content=SimpleNamespace(parts=[SimpleNamespace(text='{"partial":', thought=False)]),
                 is_final_response=lambda: False,
             )
             raise genai_errors.ServerError(503, {"error": {"message": "untrusted"}})
@@ -1932,6 +1934,9 @@ def test_vertex_gateway_preserves_partial_usage_on_mid_loop_provider_failure() -
     assert caught.value.output_tokens == 2
     assert caught.value.model_calls == 2
     assert caught.value.unobserved_model_calls == 1
+    assert caught.value.content == b'{"partial":'
+    assert caught.value.provider_request_id == "provider-response-failed-001"
+    assert caught.value.provider_model_version == "gemini-3.5-flash-001"
     assert "untrusted" not in str(caught.value)
 
 

@@ -42,6 +42,8 @@ MCP_SDK_VERSION = "1.29.0"
 MCP_SDK_WHEEL_SHA256 = "f5a075bb611f23d6f4d080c6a1699fa62772eebc562ba9e66b306ddde1c755f7"
 MCP_PROTOCOL_VERSION = "2025-06-18"
 PRODUCER_VERSION = "grafana-mcp-evidence-adapter/v1"
+NORMALIZED_RUNTIME_OBSERVATION_VERSION = "normalized-runtime-observation/v1"
+RUNTIME_EVIDENCE_PROJECTION_VERSION = "runtime-evidence-projection/v1"
 LEGACY_QUERY_CATALOG_VERSION = "grafana-evidence-query-catalog/v1"
 QUERY_CATALOG_VERSION = "grafana-evidence-query-catalog/v2"
 LEGACY_EVIDENCE_REQUEST_VERSION = "grafana-evidence-request/v1"
@@ -2607,6 +2609,629 @@ class EvidenceCollectionSession:
         self._closed = True
 
 
+_RUNTIME_REQUIRED_BINDING_ATTRIBUTES = (
+    "fixture_id",
+    "run_id",
+    "job_id",
+    "worker_id",
+    "trace_id",
+    "resource_sha256",
+)
+_RUNTIME_OPTIONAL_CORRELATION_ATTRIBUTES = (
+    "artifact_id",
+    "config_sha256",
+    "transform_id",
+)
+_RUNTIME_FACT_ATTRIBUTES = frozenset(
+    {
+        "declared_reference.state",
+        "declared_reference.approved_state_sha256",
+        "declared_reference.effective_resource_matches_approved",
+        "declared_reference.effective_config_matches_approved",
+        "declared_reference.config_generation_matches_approved",
+        "declared_reference.frame_pipeline_matches_approved",
+        "declared_reference.derivative_parent_matches_approved",
+        "declared_reference.derivative_generation_matches_approved",
+        "declared_reference.cache_key_matches_approved",
+        "runtime.effective_resource_sha256",
+        "runtime.effective_config_sha256",
+        "runtime.config_generation",
+        "runtime.frame_pipeline_sha256",
+        "derivative.parent_sha256",
+        "derivative.generation",
+        "cache.generation",
+        "cache.key",
+        "reference.evidence_scope",
+        "reference.affected_representative_count",
+        "reference.protected_representative_count",
+        "reference.population_affected_artifact_count",
+        "reference.population_protected_artifact_count",
+    }
+)
+_RUNTIME_NORMALIZED_PREFIXES = (
+    "telemetry",
+    "declared_reference",
+    "runtime",
+    "reference",
+    "derivative",
+    "cache",
+)
+
+
+def _runtime_observation_body(
+    *,
+    request_id: str,
+    incident_id: str,
+    event_id: str,
+    signal: str,
+    fixture_id: str,
+    run_id: str,
+    job_id: str,
+    worker_id: str,
+    trace_id: str,
+    artifact_id: str | None,
+    config_sha256: str | None,
+    resource_sha256: str,
+    transform_id: str | None,
+    observed_at: str,
+    emitted_at: str,
+    retrieved_at: str,
+    attributes: Mapping[str, str],
+    provenance: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema": NORMALIZED_RUNTIME_OBSERVATION_VERSION,
+        "request_id": request_id,
+        "incident_id": incident_id,
+        "event_id": event_id,
+        "signal": signal,
+        "fixture_id": fixture_id,
+        "run_id": run_id,
+        "job_id": job_id,
+        "worker_id": worker_id,
+        "trace_id": trace_id,
+        "artifact_id": artifact_id,
+        "config_sha256": config_sha256,
+        "resource_sha256": resource_sha256,
+        "transform_id": transform_id,
+        "observed_at": observed_at,
+        "emitted_at": emitted_at,
+        "retrieved_at": retrieved_at,
+        "attributes": _plain_json(attributes),
+        "provenance": _plain_json(provenance),
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedRuntimeObservation(Mapping[str, Any]):
+    request_id: str
+    incident_id: str
+    event_id: str
+    signal: Literal["metric", "log", "trace"]
+    fixture_id: str
+    run_id: str
+    job_id: str
+    worker_id: str
+    trace_id: str
+    artifact_id: str | None
+    config_sha256: str | None
+    resource_sha256: str
+    transform_id: str | None
+    observed_at: str
+    emitted_at: str
+    retrieved_at: str
+    attributes: Mapping[str, str]
+    provenance: Mapping[str, Any]
+    fact_id: str = field(init=False)
+    fact_sha256: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        attributes = _plain_json(self.attributes)
+        provenance = _plain_json(self.provenance)
+        if (
+            not isinstance(attributes, dict)
+            or not _string_map(attributes)
+            or not isinstance(provenance, dict)
+        ):
+            raise AdapterError("runtime_observation_malformed")
+        object.__setattr__(self, "attributes", _freeze_json(attributes))
+        object.__setattr__(self, "provenance", _freeze_json(provenance))
+        body = _runtime_observation_body(
+            request_id=self.request_id,
+            incident_id=self.incident_id,
+            event_id=self.event_id,
+            signal=self.signal,
+            fixture_id=self.fixture_id,
+            run_id=self.run_id,
+            job_id=self.job_id,
+            worker_id=self.worker_id,
+            trace_id=self.trace_id,
+            artifact_id=self.artifact_id,
+            config_sha256=self.config_sha256,
+            resource_sha256=self.resource_sha256,
+            transform_id=self.transform_id,
+            observed_at=self.observed_at,
+            emitted_at=self.emitted_at,
+            retrieved_at=self.retrieved_at,
+            attributes=self.attributes,
+            provenance=self.provenance,
+        )
+        digest = _prefixed_sha256(canonical_json_bytes(body))
+        object.__setattr__(self, "fact_sha256", digest)
+        object.__setattr__(self, "fact_id", f"runtime-fact:{digest.removeprefix('sha256:')}")
+
+    def _semantic_dict(self) -> dict[str, Any]:
+        value = _runtime_observation_body(
+            request_id=self.request_id,
+            incident_id=self.incident_id,
+            event_id=self.event_id,
+            signal=self.signal,
+            fixture_id=self.fixture_id,
+            run_id=self.run_id,
+            job_id=self.job_id,
+            worker_id=self.worker_id,
+            trace_id=self.trace_id,
+            artifact_id=self.artifact_id,
+            config_sha256=self.config_sha256,
+            resource_sha256=self.resource_sha256,
+            transform_id=self.transform_id,
+            observed_at=self.observed_at,
+            emitted_at=self.emitted_at,
+            retrieved_at=self.retrieved_at,
+            attributes=self.attributes,
+            provenance={},
+        )
+        value.pop("provenance")
+        value.pop("retrieved_at")
+        return value
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **_runtime_observation_body(
+                request_id=self.request_id,
+                incident_id=self.incident_id,
+                event_id=self.event_id,
+                signal=self.signal,
+                fixture_id=self.fixture_id,
+                run_id=self.run_id,
+                job_id=self.job_id,
+                worker_id=self.worker_id,
+                trace_id=self.trace_id,
+                artifact_id=self.artifact_id,
+                config_sha256=self.config_sha256,
+                resource_sha256=self.resource_sha256,
+                transform_id=self.transform_id,
+                observed_at=self.observed_at,
+                emitted_at=self.emitted_at,
+                retrieved_at=self.retrieved_at,
+                attributes=self.attributes,
+                provenance=self.provenance,
+            ),
+            "fact_id": self.fact_id,
+            "fact_sha256": self.fact_sha256,
+        }
+
+    def __getitem__(self, key: str) -> Any:
+        try:
+            return self.to_dict()[key]
+        except KeyError:
+            raise KeyError(key) from None
+
+    def __iter__(self) -> Any:
+        return iter(self.to_dict())
+
+    def __len__(self) -> int:
+        return 21
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeEvidenceProjection(Mapping[str, Any]):
+    request_id: str
+    incident_id: str
+    observations: tuple[NormalizedRuntimeObservation, ...]
+    projection_sha256: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        observations = tuple(self.observations)
+        if any(
+            observation.request_id != self.request_id or observation.incident_id != self.incident_id
+            for observation in observations
+        ):
+            raise AdapterError("runtime_evidence_binding_invalid")
+        if len({observation.fact_id for observation in observations}) != len(observations):
+            raise AdapterError("runtime_observation_event_conflict")
+        object.__setattr__(self, "observations", observations)
+        body = self._body()
+        object.__setattr__(
+            self,
+            "projection_sha256",
+            _prefixed_sha256(canonical_json_bytes(body)),
+        )
+
+    @property
+    def evidence_ids(self) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(cast(str, value.provenance["evidence_id"]) for value in self.observations)
+        )
+
+    @property
+    def query_keys(self) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(cast(str, value.provenance["query_key"]) for value in self.observations)
+        )
+
+    def _body(self) -> dict[str, Any]:
+        return {
+            "schema": RUNTIME_EVIDENCE_PROJECTION_VERSION,
+            "request_id": self.request_id,
+            "incident_id": self.incident_id,
+            "query_keys": list(self.query_keys),
+            "evidence_ids": list(self.evidence_ids),
+            "observations": [value.to_dict() for value in self.observations],
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self._body(), "projection_sha256": self.projection_sha256}
+
+    def __getitem__(self, key: str) -> Any:
+        try:
+            return self.to_dict()[key]
+        except KeyError:
+            raise KeyError(key) from None
+
+    def __iter__(self) -> Any:
+        return iter(self.to_dict())
+
+    def __len__(self) -> int:
+        return 7
+
+
+def _runtime_attribute_text(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return value
+    raise AdapterError("runtime_observation_malformed")
+
+
+def _runtime_attribute_name(name: str, *, normalized: bool) -> str:
+    if not normalized or "." in name:
+        return name
+    for prefix in _RUNTIME_NORMALIZED_PREFIXES:
+        marker = f"{prefix}_"
+        if name.startswith(marker):
+            return f"{prefix}.{name.removeprefix(marker)}"
+    return name
+
+
+def _runtime_attributes(value: Mapping[str, Any], *, normalized: bool) -> Mapping[str, str]:
+    result: dict[str, str] = {}
+    for raw_name, raw_value in value.items():
+        if not isinstance(raw_name, str):
+            raise AdapterError("runtime_observation_malformed")
+        name = _runtime_attribute_name(raw_name, normalized=normalized)
+        child = _runtime_attribute_text(raw_value)
+        previous = result.get(name)
+        if previous is not None and not hmac.compare_digest(previous, child):
+            raise AdapterError("runtime_observation_malformed")
+        result[name] = child
+    return MappingProxyType(result)
+
+
+def _merge_runtime_attributes(*values: Mapping[str, str]) -> Mapping[str, str]:
+    result: dict[str, str] = {}
+    for value in values:
+        for name, child in value.items():
+            previous = result.get(name)
+            if previous is not None and not hmac.compare_digest(previous, child):
+                raise AdapterError("runtime_observation_malformed")
+            result[name] = child
+    return MappingProxyType(result)
+
+
+def _runtime_required_attribute(attributes: Mapping[str, str], name: str) -> str:
+    value = attributes.get(name)
+    if not isinstance(value, str) or not value:
+        raise AdapterError("runtime_observation_malformed")
+    return value
+
+
+def _runtime_optional_attribute(attributes: Mapping[str, str], name: str) -> str | None:
+    value = attributes.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise AdapterError("runtime_observation_malformed")
+    return value
+
+
+def _project_runtime_attributes(
+    *,
+    signal: Literal["metric", "log", "trace"],
+    attributes: Mapping[str, str],
+    envelope: Mapping[str, Any],
+    batch: EvidenceBatch,
+) -> NormalizedRuntimeObservation:
+    event_id = _runtime_required_attribute(attributes, "telemetry.event_id")
+    values = {
+        name: _runtime_required_attribute(attributes, name)
+        for name in _RUNTIME_REQUIRED_BINDING_ATTRIBUTES
+    }
+    optional = {
+        name: _runtime_optional_attribute(attributes, name)
+        for name in _RUNTIME_OPTIONAL_CORRELATION_ATTRIBUTES
+    }
+    if (
+        _IDENTIFIER.fullmatch(event_id) is None
+        or any(
+            _IDENTIFIER.fullmatch(values[name]) is None
+            for name in ("fixture_id", "run_id", "job_id", "worker_id")
+        )
+        or _TRACE_ID.fullmatch(values["trace_id"]) is None
+        or values["resource_sha256"] != "none"
+        and _DIGEST.fullmatch(values["resource_sha256"]) is None
+        or optional["artifact_id"] is not None
+        and _IDENTIFIER.fullmatch(optional["artifact_id"]) is None
+        or optional["transform_id"] is not None
+        and _IDENTIFIER.fullmatch(optional["transform_id"]) is None
+        or optional["config_sha256"] is not None
+        and _DIGEST.fullmatch(optional["config_sha256"]) is None
+    ):
+        raise AdapterError("runtime_observation_malformed")
+
+    try:
+        envelope_correlation = cast(Mapping[str, str], envelope["correlation_keys"])
+    except (KeyError, TypeError):
+        raise AdapterError("runtime_evidence_binding_invalid") from None
+    for name, expected in envelope_correlation.items():
+        actual = values.get(name, optional.get(name))
+        if actual is None or not hmac.compare_digest(actual, expected):
+            raise AdapterError("runtime_observation_correlation_mismatch")
+    if (
+        values["fixture_id"] != batch.correlation_keys["fixture_id"]
+        or values["run_id"] != batch.correlation_keys["run_id"]
+    ):
+        raise AdapterError("runtime_observation_correlation_mismatch")
+    if signal == "trace" and values["trace_id"] != batch.correlation_keys["trace_id"]:
+        raise AdapterError("runtime_observation_correlation_mismatch")
+
+    observed_value = (
+        attributes.get("runtime.observed_at")
+        or attributes.get("telemetry.observed_at")
+        or attributes.get("telemetry.scheduled_at")
+    )
+    emitted_value = attributes.get("telemetry.emitted_at")
+    if not isinstance(observed_value, str) or not isinstance(emitted_value, str):
+        raise AdapterError("runtime_observation_malformed")
+    try:
+        observed = _parse_timestamp(observed_value)
+        emitted = _parse_timestamp(emitted_value)
+        retrieved = _parse_timestamp(cast(str, envelope["timing"]["retrieved_at"]))
+    except (AdapterError, KeyError, TypeError):
+        raise AdapterError("runtime_observation_malformed") from None
+    if (
+        observed < batch.window_start
+        or observed > batch.window_end
+        or emitted < observed
+        or emitted > retrieved
+    ):
+        raise AdapterError("runtime_observation_time_invalid")
+
+    semantic_attributes = {
+        name: child for name, child in attributes.items() if name in _RUNTIME_FACT_ATTRIBUTES
+    }
+    try:
+        observation = cast(Mapping[str, Any], envelope["observation"])
+        source = cast(Mapping[str, Any], envelope["source"])
+        provenance = {
+            "query_key": observation["query_key"],
+            "evidence_id": envelope["evidence_id"],
+            "event_sha256": envelope["event_sha256"],
+            "content_sha256": envelope["content_sha256"],
+            "catalog_version": observation["catalog_version"],
+            "catalog_sha256": observation["catalog_sha256"],
+            "tool": source["tool"],
+            "normalized_arguments": _plain_json(observation["normalized_arguments"]),
+        }
+    except (KeyError, TypeError):
+        raise AdapterError("runtime_evidence_binding_invalid") from None
+    return NormalizedRuntimeObservation(
+        request_id=batch.request_id,
+        incident_id=batch.incident_id,
+        event_id=event_id,
+        signal=signal,
+        fixture_id=values["fixture_id"],
+        run_id=values["run_id"],
+        job_id=values["job_id"],
+        worker_id=values["worker_id"],
+        trace_id=values["trace_id"],
+        artifact_id=optional["artifact_id"],
+        config_sha256=optional["config_sha256"],
+        resource_sha256=values["resource_sha256"],
+        transform_id=optional["transform_id"],
+        observed_at=_timestamp(observed),
+        emitted_at=_timestamp(emitted),
+        retrieved_at=_timestamp(retrieved),
+        attributes=semantic_attributes,
+        provenance=provenance,
+    )
+
+
+def normalize_runtime_observations(
+    batch: EvidenceBatch,
+    envelopes: Sequence[Mapping[str, Any]],
+    *,
+    catalog: QueryCatalog,
+) -> tuple[NormalizedRuntimeObservation, ...]:
+    snapshot = _snapshot_batch(batch)
+    if snapshot.schema != EVIDENCE_REQUEST_VERSION or catalog.version != QUERY_CATALOG_VERSION:
+        raise AdapterError("runtime_evidence_binding_invalid")
+
+    predecessor = snapshot.predecessor_event_sha256
+    seen_queries: set[str] = set()
+    accepted: dict[tuple[str, str], tuple[bytes, NormalizedRuntimeObservation]] = {}
+    event_facts: dict[str, bytes] = {}
+    for envelope in envelopes:
+        if not isinstance(envelope, Mapping):
+            raise AdapterError("runtime_evidence_binding_invalid")
+        validate_evidence_envelope(envelope)
+        try:
+            if envelope["schema"] != EVIDENCE_ENVELOPE_VERSION:
+                raise AdapterError("runtime_evidence_binding_invalid")
+            observation = cast(Mapping[str, Any], envelope["observation"])
+            collection = cast(Mapping[str, Any], envelope["collection"])
+            source = cast(Mapping[str, Any], envelope["source"])
+            query_key = cast(str, observation["query_key"])
+            if query_key in seen_queries or query_key not in snapshot.query_keys:
+                raise AdapterError("runtime_evidence_binding_invalid")
+            bound = _bind_call(catalog, snapshot, query_key)
+            expected_correlation = dict(bound.correlation_keys or snapshot.correlation_keys)
+            if (
+                envelope["incident_id"] != snapshot.incident_id
+                or envelope["request_id"] != snapshot.request_id
+                or envelope["predecessor_event_sha256"] != predecessor
+                or envelope["correlation_keys"] != expected_correlation
+                or observation["catalog_version"] != catalog.version
+                or observation["catalog_sha256"] != catalog.digest
+                or observation["normalized_arguments"] != dict(bound.arguments)
+                or observation["fixed_time_range"]
+                != {
+                    "start": _timestamp(snapshot.window_start),
+                    "end": _timestamp(snapshot.window_end),
+                }
+                or source["tool"] != bound.spec.tool
+            ):
+                raise AdapterError("runtime_evidence_binding_invalid")
+            if collection["outcome"] != "collected" or collection["error"] is not None:
+                raise AdapterError("runtime_evidence_unresolved")
+            content = envelope["content"]
+            if not isinstance(content, Mapping):
+                raise AdapterError("runtime_evidence_unresolved")
+            content = _plain_json(content)
+            if not isinstance(content, dict):  # pragma: no cover - checked above
+                raise AdapterError("runtime_evidence_unresolved")
+            _validate_provider_payload(bound, content)
+        except KeyError:
+            raise AdapterError("runtime_evidence_binding_invalid") from None
+        seen_queries.add(query_key)
+        predecessor = cast(str, envelope["event_sha256"])
+
+        candidates: list[tuple[Literal["metric", "log", "trace"], Mapping[str, str]]] = []
+        if bound.spec.result_kind == "metric":
+            rows = content.get("data")
+            if not isinstance(rows, list):
+                raise AdapterError("runtime_observation_malformed")
+            for row in rows:
+                if not isinstance(row, Mapping) or not isinstance(row.get("metric"), Mapping):
+                    raise AdapterError("runtime_observation_malformed")
+                candidates.append(
+                    (
+                        "metric",
+                        _runtime_attributes(
+                            cast(Mapping[str, Any], row["metric"]), normalized=True
+                        ),
+                    )
+                )
+        elif bound.spec.result_kind == "log":
+            rows = content.get("data")
+            metadata = content.get("metadata")
+            if (
+                not isinstance(rows, list)
+                or not isinstance(metadata, Mapping)
+                or metadata.get("resultsTruncated") is not False
+            ):
+                raise AdapterError("runtime_observation_malformed")
+            for row in rows:
+                if not isinstance(row, Mapping) or not isinstance(
+                    row.get("structuredMetadata"), Mapping
+                ):
+                    raise AdapterError("runtime_observation_malformed")
+                candidates.append(
+                    (
+                        "log",
+                        _runtime_attributes(
+                            cast(Mapping[str, Any], row["structuredMetadata"]),
+                            normalized=True,
+                        ),
+                    )
+                )
+        elif bound.spec.result_kind == "trace":
+            trace = content.get("trace")
+            if (
+                not isinstance(trace, Mapping)
+                or trace.get("traceId") != bound.arguments["trace_id"]
+            ):
+                raise AdapterError("runtime_observation_malformed")
+            services = trace.get("services")
+            if not isinstance(services, list):
+                raise AdapterError("runtime_observation_malformed")
+            for service in services:
+                if (
+                    not isinstance(service, Mapping)
+                    or not isinstance(service.get("resource"), Mapping)
+                    or not isinstance(service.get("scopes"), list)
+                ):
+                    raise AdapterError("runtime_observation_malformed")
+                resource = _runtime_attributes(
+                    cast(Mapping[str, Any], service["resource"]), normalized=False
+                )
+                for scope in service["scopes"]:
+                    if not isinstance(scope, Mapping) or not isinstance(scope.get("spans"), list):
+                        raise AdapterError("runtime_observation_malformed")
+                    for span in scope["spans"]:
+                        if not isinstance(span, Mapping) or not isinstance(
+                            span.get("attributes"), Mapping
+                        ):
+                            raise AdapterError("runtime_observation_malformed")
+                        attributes = _merge_runtime_attributes(
+                            resource,
+                            _runtime_attributes(
+                                cast(Mapping[str, Any], span["attributes"]), normalized=False
+                            ),
+                        )
+                        if "telemetry.event_id" in attributes:
+                            candidates.append(("trace", attributes))
+        elif bound.spec.result_kind == "alert":
+            continue
+        else:  # pragma: no cover - the frozen catalog has no other result kinds
+            raise AdapterError("runtime_evidence_binding_invalid")
+
+        for signal, attributes in candidates:
+            projected = _project_runtime_attributes(
+                signal=signal,
+                attributes=attributes,
+                envelope=envelope,
+                batch=snapshot,
+            )
+            semantic = canonical_json_bytes(projected._semantic_dict())
+            previous_fact = event_facts.get(projected.event_id)
+            if previous_fact is None:
+                event_facts[projected.event_id] = semantic
+            elif not hmac.compare_digest(previous_fact, semantic):
+                raise AdapterError("runtime_observation_event_conflict")
+            key = (cast(str, envelope["evidence_id"]), projected.event_id)
+            encoded = canonical_json_bytes(projected)
+            previous = accepted.get(key)
+            if previous is None:
+                accepted[key] = (encoded, projected)
+            elif not hmac.compare_digest(previous[0], encoded):
+                raise AdapterError("runtime_observation_event_conflict")
+
+    return tuple(
+        child[1]
+        for child in sorted(
+            accepted.values(),
+            key=lambda child: (
+                child[1].event_id,
+                cast(str, child[1].provenance["query_key"]),
+                cast(str, child[1].provenance["evidence_id"]),
+            ),
+        )
+    )
+
+
 _ACTION_CORRELATION_ATTRIBUTES = (
     "outcome_id",
     "outcome_sha256",
@@ -3155,6 +3780,17 @@ class EvidenceAdapter:
         envelopes: Sequence[Mapping[str, Any]],
     ) -> tuple[NormalizedActionObservation, ...]:
         return normalize_simulator_action_observations(
+            batch,
+            envelopes,
+            catalog=self._catalog,
+        )
+
+    def normalize_runtime_observations(
+        self,
+        batch: EvidenceBatch,
+        envelopes: Sequence[Mapping[str, Any]],
+    ) -> tuple[NormalizedRuntimeObservation, ...]:
+        return normalize_runtime_observations(
             batch,
             envelopes,
             catalog=self._catalog,

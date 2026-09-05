@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-demonstration-telemetry-event-v1.schema.json",
+  "title": "Generated reference-pipeline telemetry event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "data_origin",
+    "scenario_id",
+    "incident_class",
+    "event_id",
+    "signal",
+    "event_name",
+    "observed_at",
+    "emitted_at",
+    "correlation",
+    "attributes"
+  ],
+  "properties": {
+    "schema": {"const": "reference-demonstration-telemetry-event/v1"},
+    "data_origin": {"const": "generated-demonstration-telemetry"},
+    "scenario_id": {"$ref": "#/$defs/scenario_id"},
+    "incident_class": {"$ref": "#/$defs/incident_class"},
+    "event_id": {"type": "string", "pattern": "^refevt-[0-9a-f]{24}$"},
+    "signal": {"enum": ["metric", "log", "trace"]},
+    "event_name": {
+      "enum": [
+        "colortrace.declared_reference.observed",
+        "colortrace.declared_reference.log",
+        "colortrace.declared_reference.trace"
+      ]
+    },
+    "observed_at": {"type": "string", "format": "date-time"},
+    "emitted_at": {"type": "string", "format": "date-time"},
+    "correlation": {"$ref": "#/$defs/correlation"},
+    "attributes": {"$ref": "#/$defs/attributes"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"signal": {"const": "metric"}}},
+      "then": {
+        "properties": {
+          "event_name": {"const": "colortrace.declared_reference.observed"},
+          "correlation": {
+            "properties": {"resource_sha256": {"const": "none"}}
+          },
+          "attributes": {
+            "required": [
+              "reference.data_origin",
+              "reference.scenario_id",
+              "reference.incident_class",
+              "reference.incident_id",
+              "reference.scope_role",
+              "declared_reference.state",
+              "declared_reference.approved_state_sha256",
+              "declared_reference.effective_resource_matches_approved",
+              "declared_reference.effective_config_matches_approved",
+              "declared_reference.config_generation_matches_approved",
+              "declared_reference.frame_pipeline_matches_approved",
+              "declared_reference.derivative_parent_matches_approved",
+              "declared_reference.derivative_generation_matches_approved",
+              "declared_reference.cache_key_matches_approved",
+              "reference.evidence_scope",
+              "reference.affected_representative_count",
+              "reference.protected_representative_count",
+              "reference.population_affected_artifact_count",
+              "reference.population_protected_artifact_count"
+            ],
+            "propertyNames": {
+              "enum": [
+                "reference.data_origin",
+                "reference.scenario_id",
+                "reference.incident_class",
+                "reference.incident_id",
+                "reference.scope_role",
+                "declared_reference.state",
+                "declared_reference.approved_state_sha256",
+                "declared_reference.effective_resource_matches_approved",
+                "declared_reference.effective_config_matches_approved",
+                "declared_reference.config_generation_matches_approved",
+                "declared_reference.frame_pipeline_matches_approved",
+                "declared_reference.derivative_parent_matches_approved",
+                "declared_reference.derivative_generation_matches_approved",
+                "declared_reference.cache_key_matches_approved",
+                "reference.evidence_scope",
+                "reference.affected_representative_count",
+                "reference.protected_representative_count",
+                "reference.population_affected_artifact_count",
+                "reference.population_protected_artifact_count"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"signal": {"const": "log"}}},
+      "then": {
+        "properties": {
+          "event_name": {"const": "colortrace.declared_reference.log"},
+          "correlation": {
+            "properties": {"resource_sha256": {"$ref": "#/$defs/digest"}}
+          },
+          "attributes": {
+            "required": [
+              "reference.data_origin",
+              "reference.scenario_id",
+              "reference.incident_class",
+              "reference.incident_id",
+              "reference.scope_role",
+              "runtime.effective_resource_sha256",
+              "runtime.effective_config_sha256",
+              "runtime.config_generation",
+              "runtime.frame_pipeline_sha256",
+              "cache.key"
+            ],
+            "propertyNames": {
+              "enum": [
+                "reference.data_origin",
+                "reference.scenario_id",
+                "reference.incident_class",
+                "reference.incident_id",
+                "reference.scope_role",
+                "runtime.effective_resource_sha256",
+                "runtime.effective_config_sha256",
+                "runtime.config_generation",
+                "runtime.frame_pipeline_sha256",
+                "cache.key"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"signal": {"const": "trace"}}},
+      "then": {
+        "properties": {
+          "event_name": {"const": "colortrace.declared_reference.trace"},
+          "correlation": {
+            "properties": {"resource_sha256": {"const": "none"}}
+          },
+          "attributes": {
+            "required": [
+              "reference.data_origin",
+              "reference.scenario_id",
+              "reference.incident_class",
+              "reference.incident_id",
+              "reference.scope_role",
+              "runtime.frame_pipeline_sha256",
+              "derivative.parent_sha256",
+              "cache.generation",
+              "cache.key"
+            ],
+            "propertyNames": {
+              "enum": [
+                "reference.data_origin",
+                "reference.scenario_id",
+                "reference.incident_class",
+                "reference.incident_id",
+                "reference.scope_role",
+                "runtime.frame_pipeline_sha256",
+                "derivative.parent_sha256",
+                "cache.generation",
+                "cache.key"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "prefixed_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "scenario_id": {
+      "enum": [
+        "tos-resource-resolution-drift-v1",
+        "tos-config-rollout-drift-v1",
+        "tos-stale-derivative-cache-v1"
+      ]
+    },
+    "incident_class": {
+      "enum": [
+        "resource-resolution-drift/v1",
+        "configuration-rollout-drift/v1",
+        "stale-derivative-cache/v1"
+      ]
+    },
+    "correlation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "incident_id",
+        "fixture_id",
+        "run_id",
+        "job_id",
+        "worker_id",
+        "artifact_id",
+        "trace_id",
+        "config_sha256",
+        "resource_sha256",
+        "transform_id"
+      ],
+      "properties": {
+        "incident_id": {"$ref": "#/$defs/identifier"},
+        "fixture_id": {"$ref": "#/$defs/identifier"},
+        "run_id": {"$ref": "#/$defs/identifier"},
+        "job_id": {"$ref": "#/$defs/identifier"},
+        "worker_id": {"$ref": "#/$defs/identifier"},
+        "artifact_id": {"$ref": "#/$defs/identifier"},
+        "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "config_sha256": {"$ref": "#/$defs/digest"},
+        "resource_sha256": {
+          "oneOf": [
+            {"$ref": "#/$defs/digest"},
+            {"const": "none"}
+          ]
+        },
+        "transform_id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "attributes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference.data_origin",
+        "reference.scenario_id",
+        "reference.incident_class",
+        "reference.incident_id",
+        "reference.scope_role"
+      ],
+      "properties": {
+        "declared_reference.state": {
+          "enum": ["reference_match", "reference_mismatch"]
+        },
+        "declared_reference.approved_state_sha256": {"$ref": "#/$defs/prefixed_digest"},
+        "declared_reference.effective_resource_matches_approved": {"$ref": "#/$defs/boolean_text"},
+        "declared_reference.effective_config_matches_approved": {"$ref": "#/$defs/boolean_text"},
+        "declared_reference.config_generation_matches_approved": {"$ref": "#/$defs/boolean_text"},
+        "declared_reference.frame_pipeline_matches_approved": {"$ref": "#/$defs/boolean_text"},
+        "declared_reference.derivative_parent_matches_approved": {"$ref": "#/$defs/boolean_text"},
+        "declared_reference.derivative_generation_matches_approved": {"$ref": "#/$defs/boolean_text"},
+        "declared_reference.cache_key_matches_approved": {"$ref": "#/$defs/boolean_text"},
+        "runtime.effective_resource_sha256": {"$ref": "#/$defs/prefixed_digest"},
+        "runtime.effective_config_sha256": {"$ref": "#/$defs/prefixed_digest"},
+        "runtime.config_generation": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+        "runtime.frame_pipeline_sha256": {"$ref": "#/$defs/prefixed_digest"},
+        "derivative.parent_sha256": {"$ref": "#/$defs/prefixed_digest"},
+        "cache.generation": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+        "cache.key": {"$ref": "#/$defs/identifier"},
+        "reference.data_origin": {"const": "generated-demonstration-telemetry"},
+        "reference.scenario_id": {"$ref": "#/$defs/scenario_id"},
+        "reference.incident_class": {"$ref": "#/$defs/incident_class"},
+        "reference.incident_id": {"$ref": "#/$defs/identifier"},
+        "reference.scope_role": {"enum": ["affected", "protected"]},
+        "reference.evidence_scope": {"const": "representative"},
+        "reference.affected_representative_count": {"const": "1"},
+        "reference.protected_representative_count": {"const": "1"},
+        "reference.population_affected_artifact_count": {"const": "72"},
+        "reference.population_protected_artifact_count": {"const": "168"}
+      }
+    },
+    "boolean_text": {"enum": ["true", "false"]}
+  }
+}

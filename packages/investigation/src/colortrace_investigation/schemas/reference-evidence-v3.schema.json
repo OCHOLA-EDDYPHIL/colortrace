@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-evidence-v3.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "evidence_bundle_id",
+    "request_id",
+    "incident_id",
+    "scenario_id",
+    "fixture_id",
+    "run_id",
+    "source",
+    "structured_only",
+    "query_keys",
+    "evidence_ids",
+    "expected_state_sha256",
+    "runtime_projection",
+    "derivation_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "reference-evidence/v3"},
+    "evidence_bundle_id": {
+      "type": "string",
+      "pattern": "^reference-evidence:[0-9a-f]{64}$"
+    },
+    "request_id": {"$ref": "#/$defs/identifier"},
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "scenario_id": {
+      "enum": [
+        "tos-resource-resolution-drift-v1",
+        "tos-config-rollout-drift-v1",
+        "tos-stale-derivative-cache-v1"
+      ]
+    },
+    "fixture_id": {"$ref": "#/$defs/identifier"},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "source": {"const": "grafana-mcp"},
+    "structured_only": {"const": true},
+    "query_keys": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "prefixItems": [{"const": "alert.rule"}],
+      "items": {
+        "enum": [
+          "alert.rule",
+          "log.correlated-events",
+          "metric.correlated-observations",
+          "trace.by-id",
+          "metric.worker-cohort",
+          "log.config-cohort"
+        ]
+      }
+    },
+    "evidence_ids": {
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/digest"}
+    },
+    "expected_state_sha256": {"$ref": "#/$defs/digest"},
+    "runtime_projection": {"type": "object"},
+    "derivation_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 256},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

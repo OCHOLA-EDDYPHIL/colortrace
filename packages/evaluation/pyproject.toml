@@ -16,14 +16,24 @@ dependencies = [
     "colortrace-investigation",
     "colortrace-recovery",
     "colortrace-response-plans",
-    "colortrace-simulator",
+    "colortrace-simulator[reference-worker]",
     "colortrace-telemetry",
+    "colortrace-validator",
     "colortrace-vertical-slice",
     "jsonschema==4.25.1",
 ]
 
+[project.optional-dependencies]
+reference-batch = [
+    "google-cloud-batch==0.22.3",
+    "google-cloud-storage==3.13.1",
+]
+
 [project.scripts]
 colortrace-evaluation = "colortrace_evaluation.cli:main"
+colortrace-reference-batch = "colortrace_evaluation.google_cloud_execution:main"
+colortrace-reference-benchmark = "colortrace_evaluation.reference_worker_benchmark:main"
+colortrace-reference-previews = "colortrace_evaluation.reference_preview_evidence:main"
 
 [tool.uv.sources]
 colortrace-api = { workspace = true }
@@ -34,6 +44,7 @@ colortrace-recovery = { workspace = true }
 colortrace-response-plans = { workspace = true }
 colortrace-simulator = { workspace = true }
 colortrace-telemetry = { workspace = true }
+colortrace-validator = { workspace = true }
 colortrace-vertical-slice = { workspace = true }
 
 [tool.hatch.build.targets.wheel]

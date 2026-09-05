@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-recovery-verification-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "verifier", "result", "scenario_id", "incident_class",
+    "action_intent_id", "action_intent_sha256", "reconciliation_id", "before",
+    "after", "affected_job_ids", "affected_expected_field_checks", "checks",
+    "establishes_pixel_output", "establishes_full_population_scope",
+    "production_evidence", "verification_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "reference-recovery-verification/v1"},
+    "verifier": {"const": "deterministic-simulator-state"},
+    "result": {"const": "verified"},
+    "scenario_id": {"$ref": "#/$defs/id"},
+    "incident_class": {"$ref": "#/$defs/incident"},
+    "action_intent_id": {"type": "string", "pattern": "^action-intent:[0-9a-f]{64}$"},
+    "action_intent_sha256": {"$ref": "#/$defs/digest"},
+    "reconciliation_id": {"type": "string", "pattern": "^diagnosis-reconciliation:[0-9a-f]{64}$"},
+    "before": {"$ref": "#/$defs/stateRef"},
+    "after": {"$ref": "#/$defs/stateRef"},
+    "affected_job_ids": {"$ref": "#/$defs/idList"},
+    "affected_expected_field_checks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "expected_value", "matched_job_ids"],
+        "properties": {
+          "field": {
+            "enum": [
+              "effective_resource_sha256", "effective_config_sha256",
+              "config_generation", "derivative_parent_sha256", "derivative_generation"
+            ]
+          },
+          "expected_value": {
+            "oneOf": [
+              {"$ref": "#/$defs/digest"},
+              {"type": "integer", "minimum": 1}
+            ]
+          },
+          "matched_job_ids": {"$ref": "#/$defs/idList"}
+        }
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation_advanced_exactly_once", "all_affected_expected_fields_match",
+        "protected_state_unchanged", "receipt_state_bindings_match"
+      ],
+      "properties": {
+        "generation_advanced_exactly_once": {"const": true},
+        "all_affected_expected_fields_match": {"const": true},
+        "protected_state_unchanged": {"const": true},
+        "receipt_state_bindings_match": {"const": true}
+      }
+    },
+    "establishes_pixel_output": {"const": false},
+    "establishes_full_population_scope": {"const": false},
+    "production_evidence": {"const": false},
+    "verification_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "incident": {
+      "enum": [
+        "resource-resolution-drift/v1", "configuration-rollout-drift/v1",
+        "stale-derivative-cache/v1"
+      ]
+    },
+    "idList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/id"}
+    },
+    "stateRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generation", "state_sha256", "protected_state_sha256"],
+      "properties": {
+        "generation": {"type": "integer", "minimum": 1},
+        "state_sha256": {"$ref": "#/$defs/digest"},
+        "protected_state_sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

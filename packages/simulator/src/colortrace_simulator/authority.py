@@ -41,6 +41,10 @@ _SCHEMA_FILES = (
     "simulator-publication-receipt-v1.schema.json",
     "simulator-action-outcome-v1.schema.json",
     "simulator-action-audit-event-v1.schema.json",
+    "reference-recovery-state-v3.schema.json",
+    "reference-human-approval-v3.schema.json",
+    "reference-recovery-receipt-v3.schema.json",
+    "reference-recovery-verification-v1.schema.json",
 )
 
 

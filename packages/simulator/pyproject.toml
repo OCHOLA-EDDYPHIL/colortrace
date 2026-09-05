@@ -12,12 +12,28 @@ requires-python = ">=3.12"
 dependencies = [
     "colortrace-fixture",
     "colortrace-response-plans",
+    "colortrace-validator",
     "jsonschema==4.25.1",
+    "OpenColorIO==2.5.2",
 ]
+
+[project.optional-dependencies]
+reference-batch = [
+    "google-cloud-storage==3.13.1",
+    "OpenImageIO==3.1.17.0",
+]
+reference-worker = [
+    "OpenImageIO==3.1.17.0",
+]
+
+[project.scripts]
+colortrace-reference-batch-worker = "colortrace_simulator.reference_batch_worker:main"
+colortrace-reference-worker = "colortrace_simulator.reference_worker:main"
 
 [tool.uv.sources]
 colortrace-fixture = { workspace = true }
 colortrace-response-plans = { workspace = true }
+colortrace-validator = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/colortrace_simulator"]

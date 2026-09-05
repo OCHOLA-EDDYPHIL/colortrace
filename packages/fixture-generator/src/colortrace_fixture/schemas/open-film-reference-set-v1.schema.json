@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/open-film-reference-set-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "collection_id",
+    "title",
+    "attribution",
+    "license",
+    "source_notice_url",
+    "source_notice_sha256",
+    "selection_policy",
+    "sequences"
+  ],
+  "properties": {
+    "schema": {"const": "open-film-reference-set/v1"},
+    "collection_id": {"const": "tears-of-steel-linear-exr-240-v1"},
+    "title": {"const": "Tears of Steel linear EXR reference set"},
+    "attribution": {"type": "string", "minLength": 1, "maxLength": 512},
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spdx", "url"],
+      "properties": {
+        "spdx": {"const": "CC-BY-3.0"},
+        "url": {"const": "https://creativecommons.org/licenses/by/3.0/"}
+      }
+    },
+    "source_notice_url": {
+      "const": "https://media.xiph.org/tearsofsteel/linear-exr/README.txt"
+    },
+    "source_notice_sha256": {
+      "const": "sha256:0c8a3646e33635297ee720d995d7701603916ce35240a384ae45e1ef9be3ce50"
+    },
+    "selection_policy": {
+      "const": "first-120-frames-per-sequence/v1"
+    },
+    "sequences": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sequence_id",
+          "base_url",
+          "first_frame",
+          "last_frame",
+          "frame_count",
+          "total_bytes",
+          "records_path",
+          "record_set_sha256",
+          "record_set_algorithm"
+        ],
+        "properties": {
+          "sequence_id": {"enum": ["03_2a", "04_5f"]},
+          "base_url": {"type": "string", "format": "uri"},
+          "first_frame": {"const": 0},
+          "last_frame": {"const": 119},
+          "frame_count": {"const": 120},
+          "total_bytes": {"type": "integer", "minimum": 1},
+          "records_path": {
+            "type": "string",
+            "pattern": "^tears-of-steel/(03_2a|04_5f)\\.frames\\.tsv$"
+          },
+          "record_set_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "record_set_algorithm": {
+            "const": "sha256-of-utf8-filename-tab-bytes-tab-file-sha256-lines/v1"
+          }
+        }
+      }
+    }
+  }
+}

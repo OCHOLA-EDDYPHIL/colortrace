@@ -226,6 +226,230 @@ def collect_with(
     return result
 
 
+def runtime_observation_attributes(
+    signal: str,
+    *,
+    event_id: str | None = None,
+    signal_specific: bool = False,
+    overrides: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    values = {
+        "fixture_id": "ct-shadowed-lut-v1",
+        "run_id": "run-001",
+        "job_id": "job-b-02",
+        "worker_id": "worker-b",
+        "artifact_id": "output-job-b-02",
+        "trace_id": "1" * 32,
+        "config_sha256": "2" * 64,
+        "resource_sha256": "3" * 64,
+        "transform_id": "look/main/v1",
+        "telemetry.event_id": event_id or f"evt-runtime-{signal}",
+        "telemetry.scheduled_at": "2026-08-13T00:01:00.000Z",
+        "telemetry.emitted_at": "2026-08-13T00:01:01.000Z",
+        "declared_reference.state": "reference_mismatch",
+        "runtime.effective_resource_sha256": "3" * 64,
+        "runtime.effective_config_sha256": "2" * 64,
+        "derivative.generation": "7",
+        "cache.key": "cache-job-b-02",
+        "reference.evidence_scope": "representative",
+        "reference.affected_representative_count": "1",
+        "reference.protected_representative_count": "1",
+        "reference.population_affected_artifact_count": "72",
+        "reference.population_protected_artifact_count": "168",
+    }
+    if signal_specific:
+        bindings = {
+            "fixture_id",
+            "run_id",
+            "job_id",
+            "worker_id",
+            "artifact_id",
+            "trace_id",
+            "config_sha256",
+            "resource_sha256",
+            "transform_id",
+            "telemetry.event_id",
+            "telemetry.scheduled_at",
+            "telemetry.emitted_at",
+        }
+        fields = {
+            "metric": {
+                "declared_reference.state",
+                "declared_reference.approved_state_sha256",
+                "declared_reference.effective_resource_matches_approved",
+                "declared_reference.effective_config_matches_approved",
+                "declared_reference.config_generation_matches_approved",
+                "declared_reference.frame_pipeline_matches_approved",
+                "declared_reference.derivative_parent_matches_approved",
+                "declared_reference.derivative_generation_matches_approved",
+                "declared_reference.cache_key_matches_approved",
+                "reference.evidence_scope",
+                "reference.affected_representative_count",
+                "reference.protected_representative_count",
+                "reference.population_affected_artifact_count",
+                "reference.population_protected_artifact_count",
+            },
+            "log": {
+                "runtime.effective_resource_sha256",
+                "runtime.effective_config_sha256",
+                "runtime.config_generation",
+                "runtime.frame_pipeline_sha256",
+                "cache.key",
+            },
+            "trace": {
+                "runtime.frame_pipeline_sha256",
+                "derivative.parent_sha256",
+                "cache.generation",
+                "cache.key",
+            },
+        }[signal]
+        values.update(
+            {
+                "declared_reference.approved_state_sha256": "sha256:" + "a" * 64,
+                "declared_reference.effective_resource_matches_approved": "false",
+                "declared_reference.effective_config_matches_approved": "true",
+                "declared_reference.config_generation_matches_approved": "true",
+                "declared_reference.frame_pipeline_matches_approved": "false",
+                "declared_reference.derivative_parent_matches_approved": "true",
+                "declared_reference.derivative_generation_matches_approved": "true",
+                "declared_reference.cache_key_matches_approved": "true",
+                "runtime.config_generation": "7",
+                "runtime.frame_pipeline_sha256": "4" * 64,
+                "derivative.parent_sha256": "5" * 64,
+                "cache.generation": "7",
+            }
+        )
+        if signal != "log":
+            values["resource_sha256"] = "none"
+        values = {name: value for name, value in values.items() if name in bindings | fields}
+    values.update(overrides or {})
+    if signal == "trace":
+        return values
+    return {name.replace(".", "_"): value for name, value in values.items()}
+
+
+def runtime_observation_payload(
+    tool: str,
+    arguments: Mapping[str, Any],
+    *,
+    log_line: str = "runtime observation",
+    signal_specific: bool = False,
+    overrides: Mapping[str, str] | None = None,
+    duplicate_overrides: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    signal = {
+        "query_prometheus": "metric",
+        "query_loki_logs": "log",
+        "tempo_get-trace": "trace",
+    }[tool]
+    attributes = runtime_observation_attributes(
+        signal,
+        signal_specific=signal_specific,
+        overrides=overrides,
+    )
+    if tool == "query_prometheus":
+        rows = [{"metric": attributes, "value": [1, "1"]}]
+        if duplicate_overrides is not None:
+            rows.append(
+                {
+                    "metric": runtime_observation_attributes(
+                        signal,
+                        signal_specific=signal_specific,
+                        overrides=duplicate_overrides,
+                    ),
+                    "value": [1, "1"],
+                }
+            )
+        return {"data": rows}
+    if tool == "query_loki_logs":
+        rows = [
+            {
+                "timestamp": "2026-08-13T00:01:01.000Z",
+                "line": log_line,
+                "labels": {
+                    "run_id": "forged-run",
+                    "resource_sha256": "f" * 64,
+                },
+                "structuredMetadata": attributes,
+            }
+        ]
+        return {
+            "data": rows,
+            "metadata": {
+                "linesReturned": len(rows),
+                "maxLinesAllowed": 200,
+                "resultsTruncated": False,
+                "totalLinesScanned": len(rows),
+                "startTime": arguments["startRfc3339"],
+                "endTime": arguments["endRfc3339"],
+            },
+        }
+    resource_names = {"fixture_id", "run_id", "telemetry.contract"}
+    resource = {name: value for name, value in attributes.items() if name in resource_names}
+    span_attributes = {
+        name: value for name, value in attributes.items() if name not in resource_names
+    }
+    return {
+        "trace": {
+            "traceId": arguments["trace_id"],
+            "services": [
+                {
+                    "serviceName": "colortrace-simulator",
+                    "resource": resource,
+                    "scopes": [
+                        {
+                            "name": "colortrace.telemetry",
+                            "spans": [
+                                {
+                                    "spanId": "2" * 16,
+                                    "name": "fixture.process",
+                                    "startTimeUnixNano": "1",
+                                    "endTimeUnixNano": "2",
+                                    "attributes": span_attributes,
+                                    "events": [
+                                        {
+                                            "name": "ignored.free.text",
+                                            "attributes": {
+                                                "resource_sha256": "f" * 64,
+                                            },
+                                        }
+                                    ],
+                                    "status": {},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+        "metrics": {"inspectedBytes": 1},
+        "status": "COMPLETE",
+    }
+
+
+def runtime_observation_result(
+    tool: str,
+    arguments: Mapping[str, Any],
+    **kwargs: Any,
+) -> types.CallToolResult:
+    return types.CallToolResult(
+        _meta=(
+            {"encoding": "json", "type": "trace", "version": "2"}
+            if tool == "tempo_get-trace"
+            else None
+        ),
+        content=[
+            types.TextContent(
+                type="text",
+                text=json.dumps(
+                    runtime_observation_payload(tool, arguments, **kwargs),
+                    sort_keys=True,
+                ),
+            )
+        ],
+    )
+
+
 def test_ordered_collection_uses_one_session_and_one_evidence_chain() -> None:
     session = FakeSession()
     factory = FakeFactory(session)
@@ -306,6 +530,245 @@ def test_ordered_collection_rejects_unknown_duplicate_and_parallel_queries() -> 
     assert factory.opened == factory.closed == 1
     assert result.tool_calls_used == 4
     assert result.maximum_calls_in_flight_observed == 1
+
+
+def test_runtime_observations_normalize_structured_signals_with_bound_provenance() -> None:
+    async def handler(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        if name == "alerting_manage_rules":
+            return success(name)
+        return runtime_observation_result(name, arguments)
+
+    value = adaptive_request(
+        "alert.rule",
+        "metric.correlated-observations",
+        "log.correlated-events",
+        "trace.by-id",
+    )
+    batch = subject.EvidenceBatch.from_mapping(value)
+    result = collect_with(FakeSession(handler), value)
+
+    observations = subject.normalize_runtime_observations(
+        batch,
+        result.envelopes,
+        catalog=catalog(),
+    )
+
+    assert [observation.signal for observation in observations] == ["log", "metric", "trace"]
+    assert {observation.resource_sha256 for observation in observations} == {"3" * 64}
+    assert all(observation.fixture_id == "ct-shadowed-lut-v1" for observation in observations)
+    assert all(observation.run_id == "run-001" for observation in observations)
+    assert all(observation.job_id == "job-b-02" for observation in observations)
+    assert all(observation.worker_id == "worker-b" for observation in observations)
+    assert all(observation.trace_id == "1" * 32 for observation in observations)
+    assert all(
+        observation.attributes["runtime.effective_resource_sha256"] == "3" * 64
+        for observation in observations
+    )
+    envelopes_by_query = {
+        envelope["observation"]["query_key"]: envelope for envelope in result.envelopes
+    }
+    for observation in observations:
+        document = observation.to_dict()
+        body = {
+            name: child
+            for name, child in document.items()
+            if name not in {"fact_id", "fact_sha256"}
+        }
+        assert observation.fact_sha256 == subject._prefixed_sha256(
+            subject.canonical_json_bytes(body)
+        )
+        assert observation.fact_id == (
+            f"runtime-fact:{observation.fact_sha256.removeprefix('sha256:')}"
+        )
+        query_key = observation.provenance["query_key"]
+        envelope = envelopes_by_query[query_key]
+        assert observation.provenance["evidence_id"] == envelope["evidence_id"]
+        assert observation.provenance["content_sha256"] == envelope["content_sha256"]
+        with pytest.raises(TypeError):
+            cast(dict[str, str], observation.attributes)["runtime.injected"] = "true"
+
+    projection = subject.RuntimeEvidenceProjection(
+        request_id=batch.request_id,
+        incident_id=batch.incident_id,
+        observations=observations,
+    )
+    projection_document = projection.to_dict()
+    projection_body = {
+        name: child for name, child in projection_document.items() if name != "projection_sha256"
+    }
+    assert projection.projection_sha256 == subject._prefixed_sha256(
+        subject.canonical_json_bytes(projection_body)
+    )
+    assert projection.query_keys == (
+        "log.correlated-events",
+        "metric.correlated-observations",
+        "trace.by-id",
+    )
+
+
+def test_runtime_observations_preserve_signal_specific_semantics() -> None:
+    async def handler(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        return runtime_observation_result(name, arguments, signal_specific=True)
+
+    value = adaptive_request(
+        "metric.correlated-observations",
+        "log.correlated-events",
+        "trace.by-id",
+    )
+    batch = subject.EvidenceBatch.from_mapping(value)
+    result = collect_with(FakeSession(handler), value)
+    observations = subject.normalize_runtime_observations(
+        batch,
+        result.envelopes,
+        catalog=catalog(),
+    )
+    by_signal = {observation.signal: observation for observation in observations}
+
+    assert by_signal["metric"].resource_sha256 == "none"
+    assert set(by_signal["metric"].attributes) == {
+        "declared_reference.state",
+        "declared_reference.approved_state_sha256",
+        "declared_reference.effective_resource_matches_approved",
+        "declared_reference.effective_config_matches_approved",
+        "declared_reference.config_generation_matches_approved",
+        "declared_reference.frame_pipeline_matches_approved",
+        "declared_reference.derivative_parent_matches_approved",
+        "declared_reference.derivative_generation_matches_approved",
+        "declared_reference.cache_key_matches_approved",
+        "reference.evidence_scope",
+        "reference.affected_representative_count",
+        "reference.protected_representative_count",
+        "reference.population_affected_artifact_count",
+        "reference.population_protected_artifact_count",
+    }
+    assert by_signal["log"].resource_sha256 == "3" * 64
+    assert set(by_signal["log"].attributes) == {
+        "runtime.effective_resource_sha256",
+        "runtime.effective_config_sha256",
+        "runtime.config_generation",
+        "runtime.frame_pipeline_sha256",
+        "cache.key",
+    }
+    assert by_signal["trace"].resource_sha256 == "none"
+    assert set(by_signal["trace"].attributes) == {
+        "runtime.frame_pipeline_sha256",
+        "derivative.parent_sha256",
+        "cache.generation",
+        "cache.key",
+    }
+
+
+def test_runtime_log_text_labels_and_display_excerpt_never_become_facts() -> None:
+    injection = "runtime_effective_resource_sha256=" + "f" * 64
+
+    async def injected(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        return runtime_observation_result(name, arguments, log_line=injection)
+
+    async def benign(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        return runtime_observation_result(name, arguments, log_line="benign message")
+
+    value = adaptive_request("log.correlated-events")
+    batch = subject.EvidenceBatch.from_mapping(value)
+    injected_result = collect_with(FakeSession(injected), value)
+    benign_result = collect_with(FakeSession(benign), value)
+    injected_fact = subject.normalize_runtime_observations(
+        batch,
+        injected_result.envelopes,
+        catalog=catalog(),
+    )[0]
+    benign_fact = subject.normalize_runtime_observations(
+        batch,
+        benign_result.envelopes,
+        catalog=catalog(),
+    )[0]
+
+    assert injected_fact.attributes == benign_fact.attributes
+    assert injected_fact.run_id == benign_fact.run_id == "run-001"
+    assert injected_fact.resource_sha256 == benign_fact.resource_sha256 == "3" * 64
+    assert injection.encode() not in subject.canonical_json_bytes(injected_fact.to_dict())
+    assert injected_fact.fact_sha256 != benign_fact.fact_sha256
+
+
+def test_runtime_normalization_excludes_cause_oracle_and_unknown_semantic_labels() -> None:
+    async def handler(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        return runtime_observation_result(
+            name,
+            arguments,
+            overrides={
+                "reference.scenario_id": "tos-resource-resolution-drift-v1",
+                "reference.incident_class": "resource-resolution-drift/v1",
+                "runtime.hidden_cause": "resource-resolution-drift/v1",
+            },
+        )
+
+    value = adaptive_request("metric.correlated-observations")
+    batch = subject.EvidenceBatch.from_mapping(value)
+    result = collect_with(FakeSession(handler), value)
+    observation = subject.normalize_runtime_observations(
+        batch,
+        result.envelopes,
+        catalog=catalog(),
+    )[0]
+
+    assert observation.attributes["runtime.effective_resource_sha256"] == "3" * 64
+    assert observation.attributes["reference.evidence_scope"] == "representative"
+    assert observation.attributes["reference.affected_representative_count"] == "1"
+    assert observation.attributes["reference.protected_representative_count"] == "1"
+    assert observation.attributes["reference.population_affected_artifact_count"] == "72"
+    assert observation.attributes["reference.population_protected_artifact_count"] == "168"
+    assert "reference.scenario_id" not in observation.attributes
+    assert "reference.incident_class" not in observation.attributes
+    assert "runtime.hidden_cause" not in observation.attributes
+
+
+@pytest.mark.parametrize(
+    ("mutation", "code"),
+    (
+        ({"run_id": "other-run"}, "runtime_observation_correlation_mismatch"),
+        ({"resource_sha256": ""}, "runtime_observation_malformed"),
+        ({"trace_id": "4" * 32}, "runtime_observation_correlation_mismatch"),
+    ),
+)
+def test_runtime_observations_reject_malformed_or_cross_bound_events(
+    mutation: Mapping[str, str], code: str
+) -> None:
+    async def handler(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        return runtime_observation_result(name, arguments, overrides=mutation)
+
+    value = adaptive_request("metric.correlated-observations")
+    batch = subject.EvidenceBatch.from_mapping(value)
+    result = collect_with(FakeSession(handler), value)
+
+    with pytest.raises(subject.AdapterError, match=code):
+        subject.normalize_runtime_observations(batch, result.envelopes, catalog=catalog())
+
+
+def test_runtime_observations_reject_conflicting_duplicate_event_ids() -> None:
+    async def handler(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        return runtime_observation_result(
+            name,
+            arguments,
+            duplicate_overrides={"resource_sha256": "4" * 64},
+        )
+
+    value = adaptive_request("metric.correlated-observations")
+    batch = subject.EvidenceBatch.from_mapping(value)
+    result = collect_with(FakeSession(handler), value)
+
+    with pytest.raises(subject.AdapterError, match="runtime_observation_event_conflict"):
+        subject.normalize_runtime_observations(batch, result.envelopes, catalog=catalog())
+
+
+def test_runtime_observations_require_v2_request_and_envelopes() -> None:
+    async def handler(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        return runtime_observation_result(name, arguments)
+
+    value = request("metric.correlated-observations")
+    batch = subject.EvidenceBatch.from_mapping(value)
+    result = collect_with(FakeSession(handler), value)
+
+    with pytest.raises(subject.AdapterError, match="runtime_evidence_binding_invalid"):
+        subject.normalize_runtime_observations(batch, result.envelopes, catalog=catalog())
 
 
 def _digest(character: str) -> str:

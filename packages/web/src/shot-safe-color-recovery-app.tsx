@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  DEMO_APPROVAL_PHRASE,
+  DEMO_REJECTION_REASONS,
   type DemoAdapter,
   DemoApiError,
   type DemoInvestigationProof,
   type DemoInvestigationProofV3,
   type DemoInvestigationProofV4,
+  type DemoPhase,
   type DemoPlanCommand,
   type DemoPlanTarget,
-  type DemoPhase,
   type DemoPreviewVisualKind,
   type DemoReceipt,
   type DemoRejectionReason,
@@ -17,11 +19,14 @@ import {
   type DemoScenarioPreview,
   type DemoTimelineItem,
   type DemoVisualKind,
-  DEMO_APPROVAL_PHRASE,
-  DEMO_REJECTION_REASONS,
   type VerifiedDemoVisual,
   verifyDemoReceiptIntegrity,
 } from "./demo-api.ts";
+import type { ReferenceDemoAdapter } from "./reference-demo-api.ts";
+import {
+  ReferencePrimaryEvidence,
+  ReferenceScenarioExperience,
+} from "./reference-scenario-experience.tsx";
 
 const SESSION_RUN_KEY = "colortrace.demo.run-id";
 const SESSION_NONCE_KEY = "colortrace.demo.approval-nonce";
@@ -40,6 +45,7 @@ type VisualFailure = {
 
 export type ShotSafeColorRecoveryAppProps = {
   readonly adapter: DemoAdapter;
+  readonly referenceAdapter?: ReferenceDemoAdapter;
   readonly storage?: DemoSessionStorage;
 };
 
@@ -384,6 +390,75 @@ function PreviewVisual({
       )}
     </figure>
   );
+}
+
+function SyntheticPreviewPanel({
+  error,
+  onVisualError,
+  preview,
+  secondary,
+  visuals,
+}: {
+  readonly error: string | null;
+  readonly onVisualError: (kind: DemoPreviewVisualKind) => void;
+  readonly preview: DemoScenarioPreview | null;
+  readonly secondary: boolean;
+  readonly visuals: Partial<Record<DemoPreviewVisualKind, VerifiedDemoVisual>>;
+}) {
+  return (
+    <div
+      className="shot-landing__visual"
+      data-evidence-tier={secondary ? "compatibility" : "primary"}
+    >
+      <div className="shot-preview-heading">
+        <div>
+          <p className="shot-eyebrow">
+            {secondary
+              ? "Secondary · synthetic compatibility preview"
+              : "Canonical scenario preview"}
+          </p>
+          <h3>Same frame. Different resolved color.</h3>
+        </div>
+        <span>{preview === null ? "Verifying fixture" : "2 renders · succeeded"}</span>
+      </div>
+      {error === null ? null : (
+        <p className="shot-alert shot-preview-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="shot-preview-comparison">
+        <PreviewVisual
+          alt="Expected cinematic soundstage portrait with a cool teal color grade"
+          kind="expected"
+          onError={() => onVisualError("expected")}
+          visual={visuals.expected}
+        />
+        <PreviewVisual
+          alt="Observed version of the same cinematic portrait with a warmer orange color grade"
+          kind="observed"
+          onError={() => onVisualError("observed")}
+          visual={visuals.observed}
+        />
+        <PreviewVisual
+          alt="Red heat-map view of the color difference across the cinematic frame"
+          kind="diff"
+          onError={() => onVisualError("diff")}
+          visual={visuals.diff}
+        />
+      </div>
+      <p className="shot-preview-note">
+        {error !== null
+          ? "Preview withheld · no live investigation yet"
+          : preview === null
+            ? "Build-time fixture · verification pending · no live investigation yet"
+            : "Build-time fixture · hash verified · no live investigation yet"}
+      </p>
+    </div>
+  );
+}
+
+function previewDecodeError(kind: DemoPreviewVisualKind): string {
+  return `The ${kind === "diff" ? "difference" : kind} preview image could not be decoded.`;
 }
 
 function LeaseStatus({ expiresAt }: { readonly expiresAt: string | null }) {
@@ -828,8 +903,20 @@ function EvidenceAuthorityReview({
         {adaptive === null ? null : (
           <div className="shot-adaptive-summary">
             <div className="shot-adaptive-outcome">
-              <span className="shot-adaptive-copy">Bounded adaptive policy</span>
-              <strong>{adaptive.stop_reason.replaceAll("-", " ")}</strong>
+              <div>
+                <span className="shot-adaptive-copy">Bounded adaptive policy</span>
+                <strong>{adaptive.stop_reason.replaceAll("-", " ")}</strong>
+              </div>
+              <dl aria-label="Adaptive investigation totals" className="shot-adaptive-totals">
+                <div>
+                  <dt>Total query path</dt>
+                  <dd>{adaptive.adaptive_trace.length} bounded Grafana reads</dd>
+                </div>
+                <div>
+                  <dt>Visible review surfaces</dt>
+                  <dd>{evidence.length + 1} current evidence views</dd>
+                </div>
+              </dl>
             </div>
             <ol aria-label="Adaptive evidence path" className="shot-adaptive-path">
               {adaptive.adaptive_trace.map((entry) => {
@@ -2002,7 +2089,11 @@ function TerminalPanel({
   );
 }
 
-export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorRecoveryAppProps) {
+export function ShotSafeColorRecoveryApp({
+  adapter,
+  referenceAdapter,
+  storage,
+}: ShotSafeColorRecoveryAppProps) {
   const sessionStorage = storage ?? window.sessionStorage;
   const resumed = useMemo(() => readSession(sessionStorage), [sessionStorage]);
   const [run, setRun] = useState<DemoRun | null>(null);
@@ -2682,7 +2773,11 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
           <span>ColorTrace</span>
         </a>
         {run === null ? (
-          <span className="shot-mode">Shot-safe recovery</span>
+          referenceAdapter === undefined ? (
+            <span className="shot-mode">Shot-safe recovery</span>
+          ) : (
+            <span className="shot-mode">Open-film reference proof</span>
+          )
         ) : (
           <div className="shot-run-chip">
             <span data-phase={run.phase}>{currentPhaseLabel(run)}</span>
@@ -2694,120 +2789,187 @@ export function ShotSafeColorRecoveryApp({ adapter, storage }: ShotSafeColorReco
       <main id="shot-main">
         {run === null ? (
           <section className="shot-landing">
-            <div className="shot-landing__above-fold" data-first-fold="comparison-and-action">
+            <div
+              className={`shot-landing__above-fold ${
+                referenceAdapter === undefined ? "" : "shot-landing__above-fold--reference"
+              }`}
+              data-first-fold="comparison-and-action"
+            >
               <div className="shot-landing__copy">
-                <p className="shot-eyebrow">Shot-Safe Color Recovery</p>
-                <h1>Both renders succeeded—why do they look different?</h1>
-                <p className="shot-lede">
-                  ColorTrace helps VFX pipeline technical directors trace successful renders with
-                  the wrong color, prove the affected outputs, and recover only that work while
-                  verified-safe outputs stay untouched.
-                </p>
+                <div className="shot-landing__primary-intro">
+                  <p className="shot-eyebrow">
+                    {referenceAdapter === undefined
+                      ? "Shot-Safe Color Recovery"
+                      : "Primary proof · open-film reference suite"}
+                  </p>
+                  <h1>Both renders succeeded—why do they look different?</h1>
+                  <p className="shot-lede">
+                    {referenceAdapter === undefined
+                      ? "ColorTrace helps VFX pipeline technical directors trace successful renders with the wrong color, prove the affected outputs, and recover only that work while verified-safe outputs stay untouched."
+                      : "ColorTrace traces successful-but-wrong color across checksum-pinned Tears of Steel frames, proves the affected outputs, and recovers only that work while verified-safe outputs stay untouched."}
+                  </p>
+                </div>
                 <div className="shot-landing__outcome">
                   <span>Expected</span>
-                  <strong>Cool teal</strong>
+                  <strong>
+                    {referenceAdapter === undefined ? "Cool teal" : "Approved pixel state"}
+                  </strong>
                   <span>Observed</span>
-                  <strong>Warm orange</strong>
+                  <strong>
+                    {referenceAdapter === undefined ? "Warm orange" : "Successful wrong look"}
+                  </strong>
                 </div>
-                {startError === null ? null : (
-                  <p className="shot-alert" role="alert">
-                    {startError}
-                  </p>
-                )}
-                {resetNotice !== null ? (
-                  <p className="shot-success" role="status">
-                    The prior run was reset to authored generation {resetNotice.generation}. Its
-                    receipt remains stored.
-                  </p>
+                {referenceAdapter === undefined ? (
+                  <>
+                    {startError === null ? null : (
+                      <p className="shot-alert" role="alert">
+                        {startError}
+                      </p>
+                    )}
+                    {resetNotice !== null ? (
+                      <p className="shot-success" role="status">
+                        The prior run was reset to authored generation {resetNotice.generation}. Its
+                        receipt remains stored.
+                      </p>
+                    ) : null}
+                  </>
                 ) : null}
-                <button
-                  className="shot-button shot-button--primary shot-button--large"
-                  disabled={busy}
-                  onClick={start}
-                  type="button"
-                >
-                  {busy ? "Preparing recovery…" : "Investigate the color fault"}
-                </button>
+                <div className="shot-landing__actions">
+                  {referenceAdapter === undefined ? (
+                    <div className="shot-landing__compatibility-action">
+                      <button
+                        className="shot-button shot-button--large shot-button--primary"
+                        disabled={busy}
+                        onClick={start}
+                        type="button"
+                      >
+                        {busy ? "Preparing recovery…" : "Investigate the color fault"}
+                      </button>
+                    </div>
+                  ) : (
+                    <a
+                      className="shot-button shot-button--primary shot-button--large"
+                      href="#reference-suite-title"
+                    >
+                      Explore the open-film proof
+                    </a>
+                  )}
+                </div>
                 <p aria-live="polite" className="shot-landing__note">
-                  {busy
-                    ? pendingStartKey.current === null
-                      ? "Loading the saved run and reconciling it with the service."
-                      : "Live investigation running: waiting for Grafana evidence and the bounded Gemini advisory before showing a result."
-                    : "No investigation has run yet · one active run · explicit human approval"}
+                  {referenceAdapter === undefined
+                    ? busy
+                      ? pendingStartKey.current === null
+                        ? "Loading the saved run and reconciling it with the service."
+                        : "Live investigation running: waiting for Grafana evidence and the bounded Gemini advisory before showing a result."
+                      : "No investigation has run yet · one active run · explicit human approval"
+                    : "Open-film pixels are shown only after their scenario and image checksums verify."}
                 </p>
               </div>
-              <div className="shot-landing__visual">
-                <div className="shot-preview-heading">
-                  <div>
-                    <p className="shot-eyebrow">Canonical scenario preview</p>
-                    <h2>Same frame. Different resolved color.</h2>
+              {referenceAdapter === undefined ? (
+                <SyntheticPreviewPanel
+                  error={previewError}
+                  onVisualError={(kind) => setPreviewError(previewDecodeError(kind))}
+                  preview={preview}
+                  secondary={false}
+                  visuals={previewVisuals}
+                />
+              ) : (
+                <div
+                  className="shot-landing__visual shot-landing__visual--reference"
+                  data-primary-evidence="open-film"
+                >
+                  <ReferencePrimaryEvidence adapter={referenceAdapter} />
+                </div>
+              )}
+            </div>
+            {referenceAdapter === undefined ? null : (
+              <ReferenceScenarioExperience adapter={referenceAdapter} />
+            )}
+            <details
+              className="shot-landing__legacy"
+              open={referenceAdapter === undefined ? true : undefined}
+            >
+              <summary className="shot-landing__legacy-summary">
+                Optional compatibility fixture — approval and recovery loop
+              </summary>
+              <div className="shot-landing__copy">
+                <p className="shot-eyebrow">Compatibility workflow details</p>
+                <h2 id="canonical-recovery-title">Canonical approval and recovery loop</h2>
+                <p className="shot-lede">
+                  One synthetic incident preserves the end-to-end human approval, simulator
+                  recovery, verification, and receipt workflow.
+                </p>
+              </div>
+              {referenceAdapter === undefined ? null : (
+                <div className="shot-landing__legacy-demo">
+                  <SyntheticPreviewPanel
+                    error={previewError}
+                    onVisualError={(kind) => setPreviewError(previewDecodeError(kind))}
+                    preview={preview}
+                    secondary
+                    visuals={previewVisuals}
+                  />
+                  <div className="shot-landing__legacy-action">
+                    <p className="shot-eyebrow">Secondary compatibility workflow</p>
+                    <h3>Run the canonical synthetic recovery loop</h3>
+                    <p>
+                      This compatibility fixture demonstrates the full approval and simulator
+                      workflow after the open-film proof above.
+                    </p>
+                    {startError === null ? null : (
+                      <p className="shot-alert" role="alert">
+                        {startError}
+                      </p>
+                    )}
+                    {resetNotice !== null ? (
+                      <p className="shot-success" role="status">
+                        The prior run was reset to authored generation {resetNotice.generation}. Its
+                        receipt remains stored.
+                      </p>
+                    ) : null}
+                    <button
+                      className="shot-button shot-button--large shot-button--secondary"
+                      disabled={busy}
+                      onClick={start}
+                      type="button"
+                    >
+                      {busy ? "Preparing recovery…" : "Investigate the color fault"}
+                    </button>
+                    <p aria-live="polite" className="shot-landing__note">
+                      {busy
+                        ? pendingStartKey.current === null
+                          ? "Loading the saved run and reconciling it with the service."
+                          : "Live investigation running: waiting for Grafana evidence and the bounded Gemini advisory before showing a result."
+                        : "No investigation has run yet · one active run · explicit human approval"}
+                    </p>
                   </div>
-                  <span>{preview === null ? "Verifying fixture" : "2 renders · succeeded"}</span>
                 </div>
-                {previewError === null ? null : (
-                  <p className="shot-alert shot-preview-error" role="alert">
-                    {previewError}
-                  </p>
-                )}
-                <div className="shot-preview-comparison">
-                  <PreviewVisual
-                    alt="Expected cinematic soundstage portrait with a cool teal color grade"
-                    kind="expected"
-                    onError={() =>
-                      setPreviewError("The expected preview image could not be decoded.")
-                    }
-                    visual={previewVisuals.expected}
-                  />
-                  <PreviewVisual
-                    alt="Observed version of the same cinematic portrait with a warmer orange color grade"
-                    kind="observed"
-                    onError={() =>
-                      setPreviewError("The observed preview image could not be decoded.")
-                    }
-                    visual={previewVisuals.observed}
-                  />
-                  <PreviewVisual
-                    alt="Red heat-map view of the color difference across the cinematic frame"
-                    kind="diff"
-                    onError={() =>
-                      setPreviewError("The difference preview image could not be decoded.")
-                    }
-                    visual={previewVisuals.diff}
-                  />
-                </div>
-                <p className="shot-preview-note">
-                  {previewError !== null
-                    ? "Preview withheld · no live investigation yet"
-                    : preview === null
-                      ? "Build-time fixture · verification pending · no live investigation yet"
-                      : "Build-time fixture · hash verified · no live investigation yet"}
+              )}
+              <div className="shot-landing__explain">
+                <ol className="shot-flow" aria-label="ColorTrace recovery flow">
+                  <li>
+                    <strong>Detect</strong>
+                    <span>Compare expected and observed output.</span>
+                  </li>
+                  <li>
+                    <strong>Explain</strong>
+                    <span>Read Grafana evidence; validate cause in deterministic code.</span>
+                  </li>
+                  <li>
+                    <strong>Approve</strong>
+                    <span>Review exact targets and protected work.</span>
+                  </li>
+                  <li>
+                    <strong>Verify</strong>
+                    <span>Confirm fresh recovery evidence and record the receipt.</span>
+                  </li>
+                </ol>
+                <p className="shot-landing__integration">
+                  Grafana supplies read-only evidence. Gemini advises. Deterministic validators
+                  decide facts and scope. A human decides whether the simulator may act.
                 </p>
               </div>
-            </div>
-            <div className="shot-landing__explain">
-              <ol className="shot-flow" aria-label="ColorTrace recovery flow">
-                <li>
-                  <strong>Detect</strong>
-                  <span>Compare expected and observed output.</span>
-                </li>
-                <li>
-                  <strong>Explain</strong>
-                  <span>Read Grafana evidence; validate cause in deterministic code.</span>
-                </li>
-                <li>
-                  <strong>Approve</strong>
-                  <span>Review exact targets and protected work.</span>
-                </li>
-                <li>
-                  <strong>Verify</strong>
-                  <span>Confirm fresh recovery evidence and record the receipt.</span>
-                </li>
-              </ol>
-              <p className="shot-landing__integration">
-                Grafana supplies read-only evidence. Gemini advises. Deterministic validators decide
-                facts and scope. A human decides whether the simulator may act.
-              </p>
-            </div>
+            </details>
           </section>
         ) : (
           <div className="shot-workspace">

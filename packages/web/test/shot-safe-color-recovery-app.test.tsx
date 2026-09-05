@@ -7,6 +7,11 @@ import {
   type DemoReceipt,
   type DemoVisualKind,
 } from "../src/demo-api.ts";
+import type {
+  ReferenceDemoAdapter,
+  ReferenceScenarioList,
+  ReferenceVisualKind,
+} from "../src/reference-demo-api.ts";
 import { ShotSafeColorRecoveryApp } from "../src/shot-safe-color-recovery-app.tsx";
 import {
   demoReceipt,
@@ -67,6 +72,88 @@ function adapterFixture() {
   return adapter;
 }
 
+const REFERENCE_DIGEST = `sha256:${"a".repeat(64)}`;
+
+function referenceAdapterFixture(): ReferenceDemoAdapter {
+  const scenarioId = "tos-resource-resolution-drift-v1" as const;
+  const visual = (kind: ReferenceVisualKind) => ({
+    kind,
+    href: `/v1/demo/scenarios/${scenarioId}/visuals/${kind}`,
+    content_sha256: REFERENCE_DIGEST,
+    representation:
+      kind === "diff"
+        ? ("open-film-difference-png/v1" as const)
+        : ("open-film-preview-png/v1" as const),
+    pixel_evidence: true as const,
+    width: 960 as const,
+    height: 506 as const,
+    served_artifact_id: "frame:03_2a:00000",
+    source_artifact_ids: ["frame:03_2a:00000"],
+    source_relation:
+      kind === "diff"
+        ? ("amplified-absolute-display-difference-8x" as const)
+        : ("current" as const),
+    source_receipt_sha256: [REFERENCE_DIGEST],
+    source_output_sha256: [REFERENCE_DIGEST],
+    source_canonical_pixel_sha256: [REFERENCE_DIGEST],
+  });
+  const catalog: ReferenceScenarioList = {
+    schema: "reference-scenario-list/v1",
+    collection_id: "tears-of-steel-linear-exr-240-v1",
+    items: [
+      {
+        scenario_id: scenarioId,
+        scenario_sha256: REFERENCE_DIGEST,
+        title: "A successful render resolved the wrong look resource",
+        symptom: "Frames completed, but a worker resolved a different LUT.",
+        incident_class: "resource-resolution-drift/v1",
+        recovery_kind: "reconcile-resource",
+        scope: {
+          artifact_count: 240,
+          affected_artifact_count: 72,
+          protected_artifact_count: 168,
+        },
+        visuals: [visual("expected"), visual("observed"), visual("recovered"), visual("diff")],
+      },
+    ],
+    provenance: {
+      attribution: "Tears of Steel © Blender Foundation | mango.blender.org",
+      license: { spdx: "CC-BY-3.0", url: "https://creativecommons.org/licenses/by/3.0/" },
+    },
+    authority: {
+      schema: "reference-authority-boundary/v1",
+      catalog_facts: "sealed-reference-contracts",
+      incident_facts: "deterministic-validators",
+      model_role: "advisory",
+      evidence_access: "grafana-mcp-read-only",
+      action_approval: "human-only",
+      action_execution_target: "colortrace-simulator",
+    },
+    catalog_sha256: REFERENCE_DIGEST,
+  };
+  const pending = () => new Promise<never>(() => undefined);
+  return {
+    listScenarios: vi.fn(async () => catalog),
+    getScenario: vi.fn(pending),
+    benchmarkSuite: vi.fn(pending),
+    runScenario: vi.fn(pending),
+    decideRecovery: vi.fn(pending),
+    loadVisual: vi.fn(async (descriptor, scenarioSha256) => ({
+      kind: descriptor.kind,
+      content_sha256: descriptor.content_sha256,
+      scenario_sha256: scenarioSha256,
+      representation: descriptor.representation,
+      pixel_evidence: true as const,
+      width: 960 as const,
+      height: 506 as const,
+      served_artifact_id: descriptor.served_artifact_id,
+      source_relation: descriptor.source_relation,
+      src: `blob:reference-${descriptor.kind}`,
+    })),
+    releaseVisual: vi.fn(),
+  };
+}
+
 async function decodeRenderedImages(): Promise<void> {
   await act(async () => {
     for (const image of document.querySelectorAll("img")) fireEvent.load(image);
@@ -90,6 +177,73 @@ afterEach(() => {
 });
 
 describe("shot-safe color recovery", () => {
+  it("presents verified open-film pixels first and collapses compatibility by default", async () => {
+    const referenceAdapter = referenceAdapterFixture();
+    render(
+      <ShotSafeColorRecoveryApp
+        adapter={adapterFixture()}
+        referenceAdapter={referenceAdapter}
+        storage={memoryStorage()}
+      />,
+    );
+
+    const firstFold = document.querySelector('[data-first-fold="comparison-and-action"]');
+    if (!(firstFold instanceof HTMLElement)) throw new Error("missing first fold");
+    const primaryExpected = await within(firstFold).findByAltText(
+      /Expected state open-film pixel preview/iu,
+    );
+    const primaryObserved = within(firstFold).getByAltText(
+      /Observed failure open-film pixel preview/iu,
+    );
+    const primaryProof = screen.getByRole("heading", {
+      name: "Three ways a successful render can still be wrong",
+    });
+    const secondaryWorkflow = screen.getByRole("heading", {
+      name: "Canonical approval and recovery loop",
+      hidden: true,
+    });
+    const compatibilityDisclosure = screen.getByText(
+      "Optional compatibility fixture — approval and recovery loop",
+    );
+    const compatibilityDetails = compatibilityDisclosure.closest("details");
+    if (compatibilityDetails === null) throw new Error("missing compatibility disclosure");
+
+    expect(document.querySelectorAll("h1")).toHaveLength(1);
+    const primaryAction = screen.getByRole("link", { name: "Explore the open-film proof" });
+    const compatibilityAction = screen.getByRole("button", {
+      name: "Investigate the color fault",
+      hidden: true,
+    });
+    const syntheticExpected = await screen.findByAltText(
+      "Expected cinematic soundstage portrait with a cool teal color grade",
+    );
+    expect(screen.getByText("Primary proof · open-film reference suite")).toBeVisible();
+    expect(compatibilityDisclosure).toBeVisible();
+    expect(compatibilityDetails).not.toHaveAttribute("open");
+    expect(secondaryWorkflow).not.toBeVisible();
+    expect(screen.getByText("Secondary · synthetic compatibility preview")).not.toBeVisible();
+    expect(compatibilityAction).not.toBeVisible();
+    expect(firstFold).toContainElement(primaryExpected);
+    expect(firstFold).toContainElement(primaryObserved);
+    expect(firstFold).not.toContainElement(syntheticExpected);
+    expect(firstFold).not.toContainElement(compatibilityAction);
+    expect(primaryAction).toHaveAttribute("href", "#reference-suite-title");
+    expect(primaryAction).toHaveClass("shot-button--primary");
+    expect(compatibilityAction).toHaveClass("shot-button--secondary");
+    expect(
+      primaryAction.compareDocumentPosition(compatibilityAction) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(
+      primaryProof.compareDocumentPosition(secondaryWorkflow) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    fireEvent.click(compatibilityDisclosure);
+    expect(compatibilityDetails).toHaveAttribute("open");
+    expect(secondaryWorkflow).toBeVisible();
+    expect(screen.getByText("Secondary compatibility workflow")).toBeVisible();
+    expect(compatibilityAction).toBeVisible();
+    expect(referenceAdapter.loadVisual).toHaveBeenCalledTimes(2);
+  });
+
   it("shows the verified cinematic preview before any run mutation", async () => {
     const adapter = adapterFixture();
     render(<ShotSafeColorRecoveryApp adapter={adapter} storage={memoryStorage()} />);

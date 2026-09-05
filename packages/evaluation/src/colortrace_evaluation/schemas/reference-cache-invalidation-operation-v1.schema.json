@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-cache-invalidation-operation-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "scenario_id",
+    "artifact_id",
+    "cache_key",
+    "invalidated_entry_sha256",
+    "derivative_generation_before",
+    "derivative_generation_after",
+    "stale_parent_output_sha256",
+    "stale_derivative_output_sha256",
+    "stale_canonical_pixel_sha256",
+    "expected_parent_output_sha256",
+    "expected_canonical_pixel_sha256",
+    "lookup_before_invalidation",
+    "lookup_after_invalidation",
+    "operation_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "reference-cache-invalidation-operation/v1"},
+    "scenario_id": {"$ref": "#/$defs/id"},
+    "artifact_id": {"$ref": "#/$defs/id"},
+    "cache_key": {"$ref": "#/$defs/id"},
+    "invalidated_entry_sha256": {"$ref": "#/$defs/digest"},
+    "derivative_generation_before": {"type": "integer", "minimum": 1},
+    "derivative_generation_after": {"type": "integer", "minimum": 1},
+    "stale_parent_output_sha256": {"$ref": "#/$defs/digest"},
+    "stale_derivative_output_sha256": {"$ref": "#/$defs/digest"},
+    "stale_canonical_pixel_sha256": {"$ref": "#/$defs/digest"},
+    "expected_parent_output_sha256": {"$ref": "#/$defs/digest"},
+    "expected_canonical_pixel_sha256": {"$ref": "#/$defs/digest"},
+    "lookup_before_invalidation": {"const": "stale-hit"},
+    "lookup_after_invalidation": {"const": "miss"},
+    "operation_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

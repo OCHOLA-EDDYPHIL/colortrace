@@ -1,0 +1,37 @@
+{
+  "schema": "open-film-reference-set/v1",
+  "collection_id": "tears-of-steel-linear-exr-240-v1",
+  "title": "Tears of Steel linear EXR reference set",
+  "attribution": "Tears of Steel VFX plates, Blender Foundation Mango Open Movie",
+  "license": {
+    "spdx": "CC-BY-3.0",
+    "url": "https://creativecommons.org/licenses/by/3.0/"
+  },
+  "source_notice_url": "https://media.xiph.org/tearsofsteel/linear-exr/README.txt",
+  "source_notice_sha256": "sha256:0c8a3646e33635297ee720d995d7701603916ce35240a384ae45e1ef9be3ce50",
+  "selection_policy": "first-120-frames-per-sequence/v1",
+  "sequences": [
+    {
+      "sequence_id": "03_2a",
+      "base_url": "https://media.xiph.org/tearsofsteel/linear-exr/03_2a/",
+      "first_frame": 0,
+      "last_frame": 119,
+      "frame_count": 120,
+      "total_bytes": 6374297640,
+      "records_path": "tears-of-steel/03_2a.frames.tsv",
+      "record_set_sha256": "sha256:e4ec3a1039117792ea7c377b40bb7bf57d0e5d98dcecd60c1d12ab9c31953e8d",
+      "record_set_algorithm": "sha256-of-utf8-filename-tab-bytes-tab-file-sha256-lines/v1"
+    },
+    {
+      "sequence_id": "04_5f",
+      "base_url": "https://media.xiph.org/tearsofsteel/linear-exr/04_5f/",
+      "first_frame": 0,
+      "last_frame": 119,
+      "frame_count": 120,
+      "total_bytes": 6374297640,
+      "records_path": "tears-of-steel/04_5f.frames.tsv",
+      "record_set_sha256": "sha256:69efbe8917be81cc48dca15217c3b01a88f23a8ee4323abad03397327012c374",
+      "record_set_algorithm": "sha256-of-utf8-filename-tab-bytes-tab-file-sha256-lines/v1"
+    }
+  ]
+}

@@ -11,6 +11,13 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from colortrace_grafana_mcp import ADAPTIVE_QUERY_KEYS, EvidenceBatch
+from colortrace_validator import (
+    AssessmentStatus,
+    assess_expected_state,
+    assess_incident_classes,
+    assess_operational_evidence,
+    reconcile_diagnosis,
+)
 from jsonschema import (  # type: ignore[import-untyped]
     Draft202012Validator,
     FormatChecker,
@@ -30,6 +37,8 @@ RESPONSE_PACKET_VERSION = "response-packet/v1"
 INVOCATION_VERSION = "model-tool-invocation/v1"
 ADAPTIVE_RESPONSE_PACKET_VERSION = "response-packet/v2"
 ADAPTIVE_INVOCATION_VERSION = "model-tool-invocation/v2"
+REFERENCE_RESPONSE_PACKET_VERSION = "response-packet/v3"
+REFERENCE_POLICY_VERSION = "reference-investigation/v1"
 QUERY_KEYS = (
     "alert.rule",
     "log.correlated-events",
@@ -174,10 +183,13 @@ def _schema_documents() -> Mapping[str, Mapping[str, Any]]:
         "model-advisory-v1.schema.json",
         "model-selection-v1.schema.json",
         "model-selection-v2.schema.json",
+        "model-selection-v3.schema.json",
         "model-tool-invocation-v1.schema.json",
         "model-tool-invocation-v2.schema.json",
+        "reference-evidence-v3.schema.json",
         "response-packet-v1.schema.json",
         "response-packet-v2.schema.json",
+        "response-packet-v3.schema.json",
     )
     documents: dict[str, Mapping[str, Any]] = {}
     for name in names:
@@ -525,6 +537,100 @@ class AdaptiveModelSelection:
         ]
 
 
+REFERENCE_INCIDENT_CLASSES = (
+    "resource-resolution-drift/v1",
+    "configuration-rollout-drift/v1",
+    "stale-derivative-cache/v1",
+)
+REFERENCE_POLICY_DOCUMENT: Mapping[str, Any] = MappingProxyType(
+    {
+        "schema": REFERENCE_POLICY_VERSION,
+        "baseline_query_key": "alert.rule",
+        "maximum_post_baseline_calls": 3,
+        "maximum_model_calls": 4,
+        "maximum_output_tokens": 768,
+        "evidence_timeout_seconds": 20,
+        "model_timeout_seconds": 75,
+        "required_signal_classes": 2,
+        "query_keys": ADAPTIVE_QUERY_KEYS,
+        "incident_classes": REFERENCE_INCIDENT_CLASSES,
+        "authority": {
+            "model": "query-selection-only",
+            "grafana": "structured-runtime-evidence",
+            "validators": "facts-classification-and-scope",
+            "human": "sole-action-approval",
+            "action_target": "simulator-only",
+        },
+    }
+)
+REFERENCE_POLICY_SHA256 = prefixed_sha256(canonical_json_bytes(REFERENCE_POLICY_DOCUMENT))
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceModelSelection:
+    hypotheses: tuple[Mapping[str, Any], ...]
+    query_keys: tuple[str, ...]
+    stop_reason: str
+    output_sha256: str
+
+    @classmethod
+    def from_bytes(
+        cls,
+        raw: bytes,
+        *,
+        allowed_evidence_ids: frozenset[str],
+    ) -> ReferenceModelSelection:
+        value = strict_json_bytes(raw)
+        if not isinstance(value, dict):
+            raise ContractError("model-output-invalid")
+        try:
+            validate_contract("model-selection-v3.schema.json", value)
+        except ContractError as error:
+            raise ContractError("model-output-invalid") from error
+        raw_hypotheses = cast(Sequence[Mapping[str, Any]], value["hypotheses"])
+        ordinals = [item["ordinal"] for item in raw_hypotheses]
+        if ordinals != list(range(1, len(raw_hypotheses) + 1)):
+            raise ContractError("model-output-invalid")
+        if len({item["incident_class"] for item in raw_hypotheses}) != len(raw_hypotheses):
+            raise ContractError("model-output-invalid")
+        for item in raw_hypotheses:
+            citations = set(cast(Sequence[str], item["evidence_ids"]))
+            if not citations.issubset(allowed_evidence_ids):
+                raise ContractError("model-citation-invalid")
+        return cls(
+            hypotheses=tuple(
+                MappingProxyType(
+                    {
+                        "ordinal": cast(int, item["ordinal"]),
+                        "incident_class": cast(str, item["incident_class"]),
+                        "evidence_ids": tuple(cast(Sequence[str], item["evidence_ids"])),
+                    }
+                )
+                for item in raw_hypotheses
+            ),
+            query_keys=tuple(cast(Sequence[str], value["query_keys"])),
+            stop_reason=cast(str, value["stop_reason"]),
+            output_sha256=prefixed_sha256(raw),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": "model-selection/v3",
+            "trust": "untrusted-model-output",
+            "hypotheses": [
+                {
+                    "ordinal": item["ordinal"],
+                    "incident_class": item["incident_class"],
+                    "evidence_ids": list(cast(Sequence[str], item["evidence_ids"])),
+                }
+                for item in self.hypotheses
+            ],
+            "query_keys": list(self.query_keys),
+            "stop_reason": self.stop_reason,
+            "output_sha256": self.output_sha256,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class ModelAdvisory:
     summary: str
@@ -577,6 +683,22 @@ def finalize_adaptive_response_packet(body: Mapping[str, Any]) -> dict[str, Any]
     return packet
 
 
+def finalize_reference_evidence(body: Mapping[str, Any]) -> dict[str, Any]:
+    evidence = finalize_derived_record(
+        body,
+        id_field="evidence_bundle_id",
+        id_prefix="reference-evidence",
+    )
+    validate_reference_evidence(evidence)
+    return evidence
+
+
+def finalize_reference_response_packet(body: Mapping[str, Any]) -> dict[str, Any]:
+    packet = finalize_derived_record(body, id_field="packet_id", id_prefix="response-packet")
+    validate_reference_response_packet(packet)
+    return packet
+
+
 def _validate_packet_digest(value: Mapping[str, Any]) -> None:
     derivation_input = {
         key: child for key, child in value.items() if key not in {"packet_id", "derivation_sha256"}
@@ -586,6 +708,184 @@ def _validate_packet_digest(value: Mapping[str, Any]) -> None:
         f"response-packet:{expected.removeprefix('sha256:')}"
     ):
         raise ContractError("packet-digest")
+
+
+_REFERENCE_PROJECTION_KEYS = frozenset(
+    {
+        "schema",
+        "request_id",
+        "incident_id",
+        "query_keys",
+        "evidence_ids",
+        "observations",
+        "projection_sha256",
+    }
+)
+_REFERENCE_OBSERVATION_KEYS = frozenset(
+    {
+        "schema",
+        "request_id",
+        "incident_id",
+        "event_id",
+        "signal",
+        "fixture_id",
+        "run_id",
+        "job_id",
+        "worker_id",
+        "trace_id",
+        "artifact_id",
+        "config_sha256",
+        "resource_sha256",
+        "transform_id",
+        "observed_at",
+        "emitted_at",
+        "retrieved_at",
+        "attributes",
+        "provenance",
+        "fact_id",
+        "fact_sha256",
+    }
+)
+
+
+def _validate_reference_projection(
+    value: Any,
+    *,
+    request_id: Any,
+    incident_id: Any,
+) -> tuple[Mapping[str, Any], ...]:
+    code = "runtime-projection-binding"
+    if not isinstance(value, Mapping) or set(value) != _REFERENCE_PROJECTION_KEYS:
+        raise ContractError(code)
+    observations = value.get("observations")
+    query_keys = value.get("query_keys")
+    evidence_ids = value.get("evidence_ids")
+    if (
+        value.get("schema") != "runtime-evidence-projection/v1"
+        or value.get("request_id") != request_id
+        or value.get("incident_id") != incident_id
+        or not isinstance(observations, list)
+        or not isinstance(query_keys, list)
+        or not isinstance(evidence_ids, list)
+    ):
+        raise ContractError(code)
+    parsed: list[Mapping[str, Any]] = []
+    observed_queries: list[str] = []
+    observed_evidence_ids: list[str] = []
+    for item in observations:
+        if not isinstance(item, Mapping) or set(item) != _REFERENCE_OBSERVATION_KEYS:
+            raise ContractError(code)
+        fact_body = {
+            key: child for key, child in item.items() if key not in {"fact_id", "fact_sha256"}
+        }
+        fact_sha256 = prefixed_sha256(canonical_json_bytes(fact_body))
+        provenance = item.get("provenance")
+        if (
+            item.get("request_id") != request_id
+            or item.get("incident_id") != incident_id
+            or item.get("fact_sha256") != fact_sha256
+            or item.get("fact_id") != f"runtime-fact:{fact_sha256.removeprefix('sha256:')}"
+            or not isinstance(provenance, Mapping)
+            or not isinstance(provenance.get("query_key"), str)
+            or not isinstance(provenance.get("evidence_id"), str)
+        ):
+            raise ContractError(code)
+        selected_query = cast(str, provenance["query_key"])
+        selected_evidence = cast(str, provenance["evidence_id"])
+        if selected_query not in observed_queries:
+            observed_queries.append(selected_query)
+        if selected_evidence not in observed_evidence_ids:
+            observed_evidence_ids.append(selected_evidence)
+        parsed.append(cast(Mapping[str, Any], item))
+    projection_body = {key: child for key, child in value.items() if key != "projection_sha256"}
+    if (
+        value.get("projection_sha256") != prefixed_sha256(canonical_json_bytes(projection_body))
+        or query_keys != observed_queries
+        or evidence_ids != observed_evidence_ids
+    ):
+        raise ContractError(code)
+    return tuple(parsed)
+
+
+def _validate_reference_assessment_chain(
+    *,
+    expected: Mapping[str, Any],
+    operational: Mapping[str, Any],
+    class_assessments: Sequence[Mapping[str, Any]],
+    reconciliation: Mapping[str, Any],
+    projection: Any,
+    request_id: Any,
+    incident_id: Any,
+) -> None:
+    code = "assessment-chain-binding"
+    try:
+        expected_input = {
+            "schema": "reference-expected-state/v1",
+            "expected_state_id": expected["expected_state_id"],
+            "expected_state_sha256": expected["expected_state_sha256"],
+            "scenario_id": expected["scenario_id"],
+            "fixture_id": expected["fixture_id"],
+            "run_id": expected["run_id"],
+            "evidence_window": expected["evidence_window"],
+            "approved": expected["approved"],
+            "scope": expected["scope"],
+        }
+        derived_expected = assess_expected_state(expected_input)
+        if (
+            derived_expected.status is not AssessmentStatus.SUPPORTED
+            or derived_expected.to_dict() != _plain_json(expected)
+        ):
+            raise ContractError(code)
+        observations = _validate_reference_projection(
+            projection,
+            request_id=request_id,
+            incident_id=incident_id,
+        )
+        derived_operational = assess_operational_evidence(derived_expected, observations)
+        derived_classes = assess_incident_classes(derived_expected, derived_operational)
+        derived_reconciliation = reconcile_diagnosis(
+            derived_expected,
+            derived_operational,
+            derived_classes,
+        )
+        if (
+            derived_operational.to_dict() != _plain_json(operational)
+            or [item.to_dict() for item in derived_classes] != _plain_json(class_assessments)
+            or derived_reconciliation.to_dict() != _plain_json(reconciliation)
+        ):
+            raise ContractError(code)
+    except ContractError:
+        raise
+    except (KeyError, TypeError, ValueError) as error:
+        raise ContractError(code) from error
+
+
+def validate_reference_evidence(value: Mapping[str, Any]) -> None:
+    validate_contract("reference-evidence-v3.schema.json", value)
+    body = {
+        key: child
+        for key, child in value.items()
+        if key not in {"evidence_bundle_id", "derivation_sha256"}
+    }
+    derivation = prefixed_sha256(canonical_json_bytes(body))
+    if (
+        value["derivation_sha256"] != derivation
+        or value["evidence_bundle_id"] != f"reference-evidence:{derivation.removeprefix('sha256:')}"
+    ):
+        raise ContractError("reference-evidence-digest")
+    projection = cast(Mapping[str, Any], value["runtime_projection"])
+    if (
+        projection.get("schema") != "runtime-evidence-projection/v1"
+        or projection.get("request_id") != value["request_id"]
+        or projection.get("incident_id") != value["incident_id"]
+        or not set(cast(Sequence[str], projection.get("query_keys", ()))).issubset(
+            set(cast(Sequence[str], value["query_keys"]))
+        )
+        or not set(cast(Sequence[str], projection.get("evidence_ids", ()))).issubset(
+            set(cast(Sequence[str], value["evidence_ids"]))
+        )
+    ):
+        raise ContractError("reference-evidence-binding")
 
 
 def _validate_adaptive_invocations(
@@ -655,6 +955,9 @@ def _validate_adaptive_invocations(
 
 
 def validate_response_packet(value: Mapping[str, Any]) -> None:
+    if value.get("schema") == REFERENCE_RESPONSE_PACKET_VERSION:
+        validate_reference_response_packet(value)
+        return
     if value.get("schema") == ADAPTIVE_RESPONSE_PACKET_VERSION:
         validate_adaptive_response_packet(value)
         return
@@ -916,3 +1219,206 @@ def validate_adaptive_response_packet(value: Mapping[str, Any]) -> None:
         "finalized_at": value["finalized_at"],
     }
     finalize_response_packet(legacy_body)
+
+
+def validate_reference_response_packet(value: Mapping[str, Any]) -> None:
+    validate_contract("response-packet-v3.schema.json", value)
+    _validate_packet_digest(value)
+    if value["policy_binding"] != {
+        "version": REFERENCE_POLICY_VERSION,
+        "sha256": REFERENCE_POLICY_SHA256,
+    }:
+        raise ContractError("packet-policy-binding")
+    if value["authority_policy"] != [
+        "gemini-query-selection-only",
+        "grafana-read-only-evidence",
+        "deterministic-validators-authoritative",
+        "human-approval-required-for-action",
+    ]:
+        raise ContractError("packet-authority-policy")
+
+    expected = cast(Mapping[str, Any], value["expected_state_assessment"])
+    operational = cast(Mapping[str, Any], value["operational_evidence_assessment"])
+    class_assessments = cast(Sequence[Mapping[str, Any]], value["incident_class_assessments"])
+    reconciliation = cast(Mapping[str, Any], value["diagnosis_reconciliation"])
+    action_intent = value["action_intent"]
+    evidence_ids = set(cast(Sequence[str], value["evidence_ids"]))
+    reference_evidence = cast(Mapping[str, Any], value["reference_evidence"])
+    validate_reference_evidence(reference_evidence)
+    if (
+        reference_evidence.get("incident_id") != value["incident_id"]
+        or reference_evidence.get("scenario_id") != value["scenario_id"]
+        or reference_evidence.get("fixture_id") != value["fixture_id"]
+        or reference_evidence.get("run_id") != value["run_id"]
+        or reference_evidence.get("expected_state_sha256") != expected.get("expected_state_sha256")
+        or reference_evidence.get("evidence_ids") != value["evidence_ids"]
+        or reference_evidence.get("runtime_projection") != value["runtime_evidence_projection"]
+    ):
+        raise ContractError("reference-evidence-binding")
+    _validate_reference_assessment_chain(
+        expected=expected,
+        operational=operational,
+        class_assessments=class_assessments,
+        reconciliation=reconciliation,
+        projection=value["runtime_evidence_projection"],
+        request_id=reference_evidence.get("request_id"),
+        incident_id=value["incident_id"],
+    )
+    if (
+        expected.get("schema") != "expected-state-assessment/v1"
+        or expected.get("scenario_id") != value["scenario_id"]
+        or expected.get("fixture_id") != value["fixture_id"]
+        or expected.get("run_id") != value["run_id"]
+        or operational.get("schema") != "operational-evidence-assessment/v1"
+        or operational.get("expected_state_assessment_id") != expected.get("assessment_id")
+        or reconciliation.get("schema") != "diagnosis-reconciliation/v1"
+        or reconciliation.get("expected_state_assessment_id") != expected.get("assessment_id")
+        or reconciliation.get("operational_evidence_assessment_id")
+        != operational.get("assessment_id")
+        or [item.get("incident_class") for item in class_assessments]
+        != list(REFERENCE_INCIDENT_CLASSES)
+        or reconciliation.get("class_assessment_ids")
+        != [item.get("assessment_id") for item in class_assessments]
+    ):
+        raise ContractError("assessment-binding")
+
+    projection = value["runtime_evidence_projection"]
+    if projection is not None:
+        projection_mapping = cast(Mapping[str, Any], projection)
+        if (
+            projection_mapping.get("schema") != "runtime-evidence-projection/v1"
+            or projection_mapping.get("incident_id") != value["incident_id"]
+            or not set(cast(Sequence[str], projection_mapping.get("evidence_ids", ()))).issubset(
+                evidence_ids
+            )
+        ):
+            raise ContractError("evidence-binding")
+
+    trace = cast(Sequence[Mapping[str, Any]], value["selection_trace"])
+    if [entry["sequence"] for entry in trace] != list(range(len(trace))):
+        raise ContractError("selection-trace-sequence")
+    if trace[0]["selected_by"] != "policy" or trace[0]["query_key"] != "alert.rule":
+        raise ContractError("selection-trace-baseline")
+    if any(entry["selected_by"] != "model" for entry in trace[1:]):
+        raise ContractError("selection-trace-authority")
+    traced_queries = [cast(str, entry["query_key"]) for entry in trace]
+    if (
+        len(set(traced_queries)) != len(traced_queries)
+        or reference_evidence.get("query_keys") != traced_queries
+        or trace[-1].get("operational_assessment_id") != operational.get("assessment_id")
+        or trace[-1].get("reconciliation_id") != reconciliation.get("reconciliation_id")
+    ):
+        raise ContractError("selection-trace-query")
+    for entry in trace:
+        evidence_id = entry.get("evidence_id")
+        if evidence_id is not None and evidence_id not in evidence_ids:
+            raise ContractError("selection-trace-evidence")
+
+    selection = value["model_selection"]
+    invocation = value["model_invocation"]
+    if isinstance(invocation, Mapping):
+        invocation_status = invocation.get("status")
+        invocation_input_tokens = invocation.get("input_tokens")
+        invocation_output_tokens = invocation.get("output_tokens")
+        invocation_output_sha256 = invocation.get("output_sha256")
+        invocation_model_calls = cast(int, invocation.get("model_calls"))
+        invocation_unobserved_model_calls = cast(
+            int,
+            invocation.get("unobserved_model_calls"),
+        )
+        usage_is_unknown = invocation_input_tokens is None and invocation_output_tokens is None
+        usage_is_observed = isinstance(invocation_input_tokens, int) and isinstance(
+            invocation_output_tokens, int
+        )
+        if (
+            not (usage_is_unknown or usage_is_observed)
+            or invocation_unobserved_model_calls > invocation_model_calls
+            or (invocation_unobserved_model_calls > 0 and not usage_is_unknown)
+            or (invocation_status == "failed" and invocation_output_sha256 is not None)
+            or (
+                invocation_status in {"accepted", "invalid"}
+                and (
+                    invocation_output_sha256 is None
+                    or not usage_is_observed
+                    or invocation_unobserved_model_calls != 0
+                )
+            )
+        ):
+            raise ContractError("model-invocation-binding")
+    if (
+        selection is None
+        and isinstance(invocation, Mapping)
+        and invocation.get("status") == ("accepted")
+    ):
+        raise ContractError("model-selection-binding")
+    if selection is not None:
+        selection_mapping = cast(Mapping[str, Any], selection)
+        hypotheses = cast(Sequence[Mapping[str, Any]], selection_mapping.get("hypotheses", ()))
+        selection_contract = {
+            key: child
+            for key, child in selection_mapping.items()
+            if key not in {"trust", "output_sha256"}
+        }
+        validate_contract("model-selection-v3.schema.json", selection_contract)
+        if (
+            invocation is None
+            or cast(Mapping[str, Any], invocation).get("status") != "accepted"
+            or selection_mapping.get("schema") != "model-selection/v3"
+            or selection_mapping.get("trust") != "untrusted-model-output"
+            or selection_mapping.get("query_keys") != traced_queries
+            or selection_mapping.get("output_sha256")
+            != cast(Mapping[str, Any], invocation).get("output_sha256")
+            or [item.get("ordinal") for item in hypotheses] != list(range(1, len(hypotheses) + 1))
+            or any(
+                not set(cast(Sequence[str], item.get("evidence_ids", ()))).issubset(evidence_ids)
+                for item in hypotheses
+            )
+        ):
+            raise ContractError("model-selection-binding")
+
+    spans = cast(Mapping[str, Any], value["agent_trace"])["spans"]
+    if [span["sequence"] for span in spans] != list(range(len(spans))):
+        raise ContractError("agent-trace-sequence")
+    for span in spans:
+        unobserved_model_calls = cast(int, span.get("unobserved_model_calls"))
+        if (
+            (span.get("stage") != "gemini" and unobserved_model_calls != 0)
+            or unobserved_model_calls > cast(int, span.get("attempts"))
+            or (
+                unobserved_model_calls > 0
+                and (span.get("input_tokens") is not None or span.get("output_tokens") is not None)
+            )
+        ):
+            raise ContractError("agent-trace-usage")
+    if isinstance(invocation, Mapping):
+        model_spans = [span for span in spans if span.get("stage") == "gemini"]
+        if len(model_spans) != 1:
+            raise ContractError("agent-trace-model-binding")
+        model_span = model_spans[0]
+        if (
+            model_span.get("input_tokens") != invocation.get("input_tokens")
+            or model_span.get("output_tokens") != invocation.get("output_tokens")
+            or model_span.get("attempts") != invocation.get("model_calls")
+            or model_span.get("unobserved_model_calls") != invocation.get("unobserved_model_calls")
+        ):
+            raise ContractError("agent-trace-model-binding")
+
+    resolved = value["status"] == "resolved"
+    if resolved:
+        if (
+            reconciliation.get("status") != "supported"
+            or not isinstance(action_intent, Mapping)
+            or action_intent != reconciliation.get("action_intent")
+            or action_intent.get("target") != "simulator"
+            or action_intent.get("requires_human_approval") is not True
+            or action_intent.get("authorizes_execution") is not False
+            or value["no_action_reason"] is not None
+            or selection is None
+            or not isinstance(invocation, Mapping)
+            or invocation.get("status") != "accepted"
+            or trace[-1]["disposition"] != "resolved"
+            or cast(Mapping[str, Any], selection).get("stop_reason") != "sufficient-evidence"
+        ):
+            raise ContractError("packet-state")
+    elif action_intent is not None or value["no_action_reason"] is None:
+        raise ContractError("packet-state")

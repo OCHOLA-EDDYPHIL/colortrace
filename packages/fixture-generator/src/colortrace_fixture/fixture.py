@@ -27,6 +27,22 @@ from typing import Any, cast
 import PyOpenColorIO as ocio  # type: ignore[import-untyped]
 from jsonschema import Draft202012Validator, ValidationError  # type: ignore[import-untyped]
 
+if __package__:
+    from .reference_media import (
+        REFERENCE_MEDIA_MANIFEST,
+        fetch_reference_media,
+        load_reference_media_manifest,
+        verify_reference_media,
+    )
+else:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from colortrace_fixture.reference_media import (  # noqa: E402
+        REFERENCE_MEDIA_MANIFEST,
+        fetch_reference_media,
+        load_reference_media_manifest,
+        verify_reference_media,
+    )
+
 WIDTH = 512
 HEIGHT = 288
 CHANNELS = 3
@@ -2809,6 +2825,12 @@ def parse_args() -> argparse.Namespace:
     evaluate.add_argument("--oracle", type=Path, required=True)
     index = sub.add_parser("reindex")
     index.add_argument("--root", type=Path, required=True)
+    reference_fetch = sub.add_parser("reference-fetch")
+    reference_fetch.add_argument("--cache", type=Path, required=True)
+    reference_fetch.add_argument("--manifest", type=Path, default=REFERENCE_MEDIA_MANIFEST)
+    reference_verify = sub.add_parser("reference-verify")
+    reference_verify.add_argument("--cache", type=Path, required=True)
+    reference_verify.add_argument("--manifest", type=Path, default=REFERENCE_MEDIA_MANIFEST)
     return parser.parse_args()
 
 
@@ -2856,6 +2878,12 @@ def main() -> int:
         evaluate_scenario(args.scenario.resolve(), args.oracle.resolve(), report)
     elif args.command == "reindex":
         reindex(args.root.resolve())
+    elif args.command == "reference-fetch":
+        manifest = load_reference_media_manifest(args.manifest)
+        print(json.dumps(fetch_reference_media(args.cache, manifest).to_dict(), sort_keys=True))
+    elif args.command == "reference-verify":
+        manifest = load_reference_media_manifest(args.manifest)
+        print(json.dumps(verify_reference_media(args.cache, manifest).to_dict(), sort_keys=True))
     return 0
 
 

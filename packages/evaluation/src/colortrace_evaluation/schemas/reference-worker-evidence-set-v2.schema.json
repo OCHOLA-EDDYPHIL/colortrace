@@ -1,0 +1,344 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-worker-evidence-set-v2.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source",
+    "reference_manifest_sha256",
+    "media_verification_sha256",
+    "execution_provenance_sha256",
+    "execution_provenance",
+    "variant_digests",
+    "observations",
+    "cache_invalidation_operation_sha256",
+    "evidence_set_id"
+  ],
+  "properties": {
+    "schema": {"const": "reference-worker-evidence-set/v2"},
+    "source": {"enum": ["controlled-receipt-set", "recorded-worker-receipts"]},
+    "reference_manifest_sha256": {"$ref": "#/$defs/digest"},
+    "media_verification_sha256": {"$ref": "#/$defs/digest"},
+    "execution_provenance_sha256": {"$ref": "#/$defs/digest"},
+    "execution_provenance": {"$ref": "#/$defs/provenance"},
+    "variant_digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approved", "shadowed", "stale-rollout"],
+      "properties": {
+        "approved": {"$ref": "#/$defs/variant"},
+        "shadowed": {"$ref": "#/$defs/variant"},
+        "stale-rollout": {"$ref": "#/$defs/variant"}
+      }
+    },
+    "observations": {
+      "type": "array",
+      "minItems": 720,
+      "maxItems": 720,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scenario_id",
+          "artifact_id",
+          "affected",
+          "baseline_receipt_sha256",
+          "baseline_receipt",
+          "observed_receipt_sha256",
+          "observed_receipt",
+          "selective_receipt_sha256",
+          "selective_receipt",
+          "preserved_before_output_sha256",
+          "preserved_after_output_sha256",
+          "preserved_before_canonical_pixel_sha256",
+          "preserved_after_canonical_pixel_sha256",
+          "verification_bytes_read",
+          "operation_compute_units",
+          "operation_bytes_read",
+          "operation_bytes_written",
+          "operation_cpu_nanoseconds",
+          "operation_wall_nanoseconds",
+          "cache_entry_before",
+          "cache_entry_after",
+          "cache_observed_receipt",
+          "cache_invalidation_operation",
+          "cache_lookup_after_invalidation"
+        ],
+        "properties": {
+          "scenario_id": {"$ref": "#/$defs/id"},
+          "artifact_id": {"$ref": "#/$defs/id"},
+          "affected": {"type": "boolean"},
+          "baseline_receipt_sha256": {"$ref": "#/$defs/digest"},
+          "baseline_receipt": {"$ref": "#/$defs/receipt"},
+          "observed_receipt_sha256": {"$ref": "#/$defs/nullableDigest"},
+          "observed_receipt": {
+            "oneOf": [{"type": "null"}, {"$ref": "#/$defs/receipt"}]
+          },
+          "selective_receipt_sha256": {"$ref": "#/$defs/nullableDigest"},
+          "selective_receipt": {
+            "oneOf": [{"type": "null"}, {"$ref": "#/$defs/receipt"}]
+          },
+          "preserved_before_output_sha256": {"$ref": "#/$defs/nullableDigest"},
+          "preserved_after_output_sha256": {"$ref": "#/$defs/nullableDigest"},
+          "preserved_before_canonical_pixel_sha256": {
+            "$ref": "#/$defs/nullableDigest"
+          },
+          "preserved_after_canonical_pixel_sha256": {
+            "$ref": "#/$defs/nullableDigest"
+          },
+          "verification_bytes_read": {"type": "integer", "minimum": 0},
+          "operation_compute_units": {"type": "integer", "minimum": 0},
+          "operation_bytes_read": {"type": "integer", "minimum": 0},
+          "operation_bytes_written": {"type": "integer", "minimum": 0},
+          "operation_cpu_nanoseconds": {"type": "integer", "minimum": 0},
+          "operation_wall_nanoseconds": {"type": "integer", "minimum": 0},
+          "cache_entry_before": {
+            "oneOf": [{"type": "null"}, {"$ref": "#/$defs/cacheEntry"}]
+          },
+          "cache_entry_after": {
+            "oneOf": [{"type": "null"}, {"$ref": "#/$defs/cacheEntry"}]
+          },
+          "cache_observed_receipt": {
+            "oneOf": [{"type": "null"}, {"$ref": "#/$defs/receipt"}]
+          },
+          "cache_invalidation_operation": {
+            "oneOf": [{"type": "null"}, {"$ref": "#/$defs/invalidation"}]
+          },
+          "cache_lookup_after_invalidation": {
+            "oneOf": [{"type": "null"}, {"const": "miss"}]
+          }
+        }
+      }
+    },
+    "cache_invalidation_operation_sha256": {
+      "type": "array",
+      "minItems": 72,
+      "maxItems": 72,
+      "items": {"$ref": "#/$defs/digest"}
+    },
+    "evidence_set_id": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "gitObject": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "executionIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "source_revision", "source_tree", "container_image_digest"],
+      "properties": {
+        "mode": {
+          "enum": [
+            "host-python-module", "container", "google-cloud-batch",
+            "injected-worker-callable"
+          ]
+        },
+        "source_revision": {"$ref": "#/$defs/gitObject"},
+        "source_tree": {"$ref": "#/$defs/gitObject"},
+        "container_image_digest": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {"enum": ["container", "google-cloud-batch"]}
+            },
+            "required": ["mode"]
+          },
+          "then": {"properties": {"container_image_digest": {"$ref": "#/$defs/digest"}}},
+          "else": {"properties": {"container_image_digest": {"type": "null"}}}
+        }
+      ]
+    },
+    "nullableDigest": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]
+    },
+    "variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["config_sha256", "resource_sha256", "config_generation"],
+      "properties": {
+        "config_sha256": {"$ref": "#/$defs/digest"},
+        "resource_sha256": {"$ref": "#/$defs/digest"},
+        "config_generation": {"type": "integer", "minimum": 1}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "evidence_source", "reference_manifest_sha256", "suite_binding",
+        "worker_binding", "execution_mode", "container_image_digest", "source_revision",
+        "source_tree", "execution_identity_sha256",
+        "runtime", "dependency_lock_sha256", "implementation_files",
+        "implementation_sha256", "provenance_sha256"
+      ],
+      "properties": {
+        "schema": {"const": "reference-worker-benchmark-provenance/v2"},
+        "evidence_source": {"enum": ["controlled-receipt-set", "recorded-worker-receipts"]},
+        "reference_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "suite_binding": {"enum": ["sealed-reference-suite", "injected-suite"]},
+        "worker_binding": {
+          "enum": ["colortrace-simulator-reference-worker/v2", "injected-worker"]
+        },
+        "execution_mode": {
+          "enum": [
+            "host-python-module", "container", "google-cloud-batch",
+            "injected-worker-callable"
+          ]
+        },
+        "container_image_digest": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]
+        },
+        "source_revision": {"$ref": "#/$defs/gitObject"},
+        "source_tree": {"$ref": "#/$defs/gitObject"},
+        "execution_identity_sha256": {"$ref": "#/$defs/digest"},
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "python_implementation", "python_version", "platform_system", "platform_machine"
+          ],
+          "properties": {
+            "python_implementation": {"type": "string", "minLength": 1, "maxLength": 64},
+            "python_version": {"type": "string", "minLength": 1, "maxLength": 64},
+            "platform_system": {"type": "string", "minLength": 1, "maxLength": 64},
+            "platform_machine": {"type": "string", "minLength": 1, "maxLength": 64}
+          }
+        },
+        "dependency_lock_sha256": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]
+        },
+        "implementation_files": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reference-assets", "reference-campaign", "reference-media",
+            "reference-scenarios", "reference-worker-benchmark"
+          ],
+          "properties": {
+            "reference-assets": {"$ref": "#/$defs/digest"},
+            "reference-campaign": {"$ref": "#/$defs/digest"},
+            "reference-media": {"$ref": "#/$defs/digest"},
+            "reference-scenarios": {"$ref": "#/$defs/digest"},
+            "reference-worker-benchmark": {"$ref": "#/$defs/digest"},
+            "reference-worker": {"$ref": "#/$defs/digest"}
+          }
+        },
+        "implementation_sha256": {"$ref": "#/$defs/digest"},
+        "provenance_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "job_sha256", "execution_identity", "execution_identity_sha256",
+        "job_id", "scenario_id", "incident_class", "trace_id", "worker_id",
+        "artifact_id", "source_sha256", "config_sha256", "resource_sha256",
+        "input_color_space", "output_color_space",
+        "effective_generation", "cache_key", "output_relative_path", "output_sha256",
+        "canonical_pixel_sha256", "width", "height", "channels", "pixel_work",
+        "bytes_read", "bytes_written", "cpu_nanoseconds", "wall_nanoseconds",
+        "dependencies", "receipt_sha256"
+      ],
+      "properties": {
+        "schema": {"const": "reference-render-receipt/v2"},
+        "job_sha256": {"$ref": "#/$defs/digest"},
+        "execution_identity": {"$ref": "#/$defs/executionIdentity"},
+        "execution_identity_sha256": {"$ref": "#/$defs/digest"},
+        "job_id": {"$ref": "#/$defs/id"},
+        "scenario_id": {"$ref": "#/$defs/id"},
+        "incident_class": {"$ref": "#/$defs/id"},
+        "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "worker_id": {"$ref": "#/$defs/id"},
+        "artifact_id": {"$ref": "#/$defs/id"},
+        "source_sha256": {"$ref": "#/$defs/digest"},
+        "config_sha256": {"$ref": "#/$defs/digest"},
+        "resource_sha256": {"$ref": "#/$defs/digest"},
+        "input_color_space": {"$ref": "#/$defs/id"},
+        "output_color_space": {"$ref": "#/$defs/id"},
+        "effective_generation": {"type": "integer", "minimum": 1},
+        "cache_key": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]},
+        "output_relative_path": {"type": "string", "minLength": 1, "maxLength": 512},
+        "output_sha256": {"$ref": "#/$defs/digest"},
+        "canonical_pixel_sha256": {"$ref": "#/$defs/digest"},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "channels": {"enum": [3, 4]},
+        "pixel_work": {"type": "integer", "minimum": 1},
+        "bytes_read": {"type": "integer", "minimum": 1},
+        "bytes_written": {"type": "integer", "minimum": 1},
+        "cpu_nanoseconds": {"type": "integer", "minimum": 0},
+        "wall_nanoseconds": {"type": "integer", "minimum": 0},
+        "dependencies": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["openimageio", "opencolorio"],
+          "properties": {
+            "openimageio": {"const": "3.1.17.0"},
+            "opencolorio": {"const": "2.5.2"}
+          }
+        },
+        "receipt_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "cacheEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "scenario_id", "artifact_id", "cache_key", "state",
+        "derivative_generation", "parent_output_sha256", "derivative_output_sha256",
+        "canonical_pixel_sha256", "byte_length", "blob_relative_path",
+        "source_receipt_sha256", "entry_sha256"
+      ],
+      "properties": {
+        "schema": {"const": "reference-derivative-cache-entry/v1"},
+        "scenario_id": {"$ref": "#/$defs/id"},
+        "artifact_id": {"$ref": "#/$defs/id"},
+        "cache_key": {"$ref": "#/$defs/id"},
+        "state": {"enum": ["current", "stale"]},
+        "derivative_generation": {"type": "integer", "minimum": 1},
+        "parent_output_sha256": {"$ref": "#/$defs/digest"},
+        "derivative_output_sha256": {"$ref": "#/$defs/digest"},
+        "canonical_pixel_sha256": {"$ref": "#/$defs/digest"},
+        "byte_length": {"type": "integer", "minimum": 1},
+        "blob_relative_path": {"type": "string", "minLength": 1, "maxLength": 512},
+        "source_receipt_sha256": {"$ref": "#/$defs/digest"},
+        "entry_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "invalidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "scenario_id", "artifact_id", "cache_key",
+        "invalidated_entry_sha256", "derivative_generation_before",
+        "derivative_generation_after", "stale_parent_output_sha256",
+        "stale_derivative_output_sha256", "stale_canonical_pixel_sha256",
+        "expected_parent_output_sha256", "expected_canonical_pixel_sha256",
+        "lookup_before_invalidation", "lookup_after_invalidation", "operation_sha256"
+      ],
+      "properties": {
+        "schema": {"const": "reference-cache-invalidation-operation/v1"},
+        "scenario_id": {"$ref": "#/$defs/id"},
+        "artifact_id": {"$ref": "#/$defs/id"},
+        "cache_key": {"$ref": "#/$defs/id"},
+        "invalidated_entry_sha256": {"$ref": "#/$defs/digest"},
+        "derivative_generation_before": {"type": "integer", "minimum": 1},
+        "derivative_generation_after": {"type": "integer", "minimum": 1},
+        "stale_parent_output_sha256": {"$ref": "#/$defs/digest"},
+        "stale_derivative_output_sha256": {"$ref": "#/$defs/digest"},
+        "stale_canonical_pixel_sha256": {"$ref": "#/$defs/digest"},
+        "expected_parent_output_sha256": {"$ref": "#/$defs/digest"},
+        "expected_canonical_pixel_sha256": {"$ref": "#/$defs/digest"},
+        "lookup_before_invalidation": {"const": "stale-hit"},
+        "lookup_after_invalidation": {"const": "miss"},
+        "operation_sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

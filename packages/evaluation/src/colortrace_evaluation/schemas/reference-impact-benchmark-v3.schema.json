@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-impact-benchmark-v3.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "reference_collection_id", "reference_manifest_sha256",
+    "campaign_report_sha256", "campaign_summary", "evidence", "thresholds", "metrics",
+    "timing", "scenario_results", "checks", "passed",
+    "report_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "reference-impact-benchmark/v3"},
+    "reference_collection_id": {"$ref": "#/$defs/id"},
+    "reference_manifest_sha256": {"$ref": "#/$defs/digest"},
+    "campaign_report_sha256": {"$ref": "#/$defs/digest"},
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "source", "evidence_set_id", "recorded_worker_evidence", "observation_count",
+        "execution_identity"
+      ],
+      "properties": {
+        "source": {"enum": ["controlled-receipt-set", "recorded-worker-receipts"]},
+        "evidence_set_id": {"$ref": "#/$defs/digest"},
+        "recorded_worker_evidence": {"type": "boolean"},
+        "observation_count": {"type": "integer", "minimum": 1},
+        "execution_identity": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["mode", "source_revision", "source_tree", "container_image_digest", "identity_sha256"],
+              "properties": {
+                "mode": {"enum": ["host-python-module", "container", "google-cloud-batch"]},
+                "source_revision": {"$ref": "#/$defs/git_object"},
+                "source_tree": {"$ref": "#/$defs/git_object"},
+                "container_image_digest": {
+                  "oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]
+                },
+                "identity_sha256": {"$ref": "#/$defs/digest"}
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {"mode": {"enum": ["container", "google-cloud-batch"]}},
+                    "required": ["mode"]
+                  },
+                  "then": {"properties": {"container_image_digest": {"$ref": "#/$defs/digest"}}},
+                  "else": {"properties": {"container_image_digest": {"type": "null"}}}
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"source": {"const": "recorded-worker-receipts"}},
+            "required": ["source"]
+          },
+          "then": {
+            "properties": {
+              "recorded_worker_evidence": {"const": true},
+              "execution_identity": {"type": "object"}
+            }
+          },
+          "else": {
+            "properties": {
+              "recorded_worker_evidence": {"const": false},
+              "execution_identity": {"type": "null"}
+            }
+          }
+        }
+      ]
+    },
+    "campaign_summary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["case_counts", "metrics"],
+      "properties": {
+        "case_counts": {
+          "type": "object", "additionalProperties": false,
+          "required": ["total", "resolvable", "fail_closed", "resolvable_by_class"],
+          "properties": {
+            "total": {"const": 99},
+            "resolvable": {"const": 60},
+            "fail_closed": {"const": 39},
+            "resolvable_by_class": {
+              "type": "object", "additionalProperties": false,
+              "required": [
+                "configuration-rollout-drift/v1", "resource-resolution-drift/v1",
+                "stale-derivative-cache/v1"
+              ],
+              "properties": {
+                "configuration-rollout-drift/v1": {"const": 20},
+                "resource-resolution-drift/v1": {"const": 20},
+                "stale-derivative-cache/v1": {"const": 20}
+              }
+            }
+          }
+        },
+        "metrics": {
+          "type": "object", "additionalProperties": false,
+          "required": [
+            "correct_resolvable_classifications", "classification_accuracy_basis_points",
+            "negative_cases_failed_closed", "false_action_intents",
+            "false_authorized_actions", "display_text_mutations_resolved",
+            "display_text_mutation_count"
+          ],
+          "properties": {
+            "correct_resolvable_classifications": {"type": "integer", "minimum": 0, "maximum": 60},
+            "classification_accuracy_basis_points": {"type": "integer", "minimum": 0, "maximum": 10000},
+            "negative_cases_failed_closed": {"type": "integer", "minimum": 0, "maximum": 39},
+            "false_action_intents": {"type": "integer", "minimum": 0},
+            "false_authorized_actions": {"type": "integer", "minimum": 0},
+            "display_text_mutations_resolved": {"type": "integer", "minimum": 0},
+            "display_text_mutation_count": {"const": 3}
+          }
+        }
+      }
+    },
+    "thresholds": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "minimum_classification_accuracy_basis_points",
+        "minimum_median_compute_avoided_basis_points",
+        "minimum_median_application_bytes_avoided_basis_points",
+        "maximum_false_authorized_actions"
+      ],
+      "properties": {
+        "minimum_classification_accuracy_basis_points": {"const": 9500},
+        "minimum_median_compute_avoided_basis_points": {"const": 4000},
+        "minimum_median_application_bytes_avoided_basis_points": {"const": 4000},
+        "maximum_false_authorized_actions": {"const": 0}
+      }
+    },
+    "metrics": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "classification_accuracy_basis_points", "false_authorized_actions",
+        "median_compute_avoided_basis_points",
+        "median_application_bytes_avoided_basis_points"
+      ],
+      "properties": {
+        "classification_accuracy_basis_points": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "false_authorized_actions": {"type": "integer", "minimum": 0},
+        "median_compute_avoided_basis_points": {"type": "integer", "maximum": 10000},
+        "median_application_bytes_avoided_basis_points": {"type": "integer", "maximum": 10000}
+      }
+    },
+    "timing": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "informational_only", "excluded_from_acceptance", "baseline_cpu_nanoseconds",
+        "baseline_wall_nanoseconds", "selective_cpu_nanoseconds",
+        "selective_wall_nanoseconds"
+      ],
+      "properties": {
+        "informational_only": {"const": true},
+        "excluded_from_acceptance": {"const": true},
+        "baseline_cpu_nanoseconds": {"type": "integer", "minimum": 0},
+        "baseline_wall_nanoseconds": {"type": "integer", "minimum": 0},
+        "selective_cpu_nanoseconds": {"type": "integer", "minimum": 0},
+        "selective_wall_nanoseconds": {"type": "integer", "minimum": 0}
+      }
+    },
+    "scenario_results": {
+      "type": "array", "minItems": 3, "maxItems": 3,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": [
+          "scenario_id", "incident_class", "artifact_count", "affected_artifact_count",
+          "protected_artifact_count", "baseline", "selective",
+          "compute_avoided_basis_points", "application_bytes_avoided_basis_points",
+          "output_equivalence", "protected_output_integrity"
+        ],
+        "properties": {
+          "scenario_id": {"$ref": "#/$defs/id"},
+          "incident_class": {"$ref": "#/$defs/id"},
+          "artifact_count": {"type": "integer", "minimum": 1},
+          "affected_artifact_count": {"type": "integer", "minimum": 1},
+          "protected_artifact_count": {"type": "integer", "minimum": 1},
+          "baseline": {"$ref": "#/$defs/work"},
+          "selective": {"$ref": "#/$defs/work"},
+          "compute_avoided_basis_points": {"type": "integer", "maximum": 10000},
+          "application_bytes_avoided_basis_points": {"type": "integer", "maximum": 10000},
+          "output_equivalence": {"type": "boolean"},
+          "protected_output_integrity": {"type": "boolean"}
+        }
+      }
+    },
+    "checks": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "balanced_resolvable_classes", "classification_at_least_95_percent",
+        "all_negative_cases_fail_closed", "display_text_cannot_change_authority",
+        "zero_false_action_intents", "zero_false_authorized_actions",
+        "output_equivalence", "protected_output_integrity",
+        "median_compute_avoided_at_least_40_percent",
+        "median_application_bytes_avoided_at_least_40_percent"
+      ],
+      "properties": {
+        "balanced_resolvable_classes": {"type": "boolean"},
+        "classification_at_least_95_percent": {"type": "boolean"},
+        "all_negative_cases_fail_closed": {"type": "boolean"},
+        "display_text_cannot_change_authority": {"type": "boolean"},
+        "zero_false_action_intents": {"type": "boolean"},
+        "zero_false_authorized_actions": {"type": "boolean"},
+        "output_equivalence": {"type": "boolean"},
+        "protected_output_integrity": {"type": "boolean"},
+        "median_compute_avoided_at_least_40_percent": {"type": "boolean"},
+        "median_application_bytes_avoided_at_least_40_percent": {"type": "boolean"}
+      }
+    },
+    "passed": {"type": "boolean"},
+    "report_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "git_object": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "work": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pixel_work", "application_bytes"],
+      "properties": {
+        "pixel_work": {"type": "integer", "minimum": 0},
+        "application_bytes": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

@@ -74,6 +74,10 @@ _WHEEL_SCHEMA_ROOTS: dict[str, tuple[str, str]] = {
         "packages/evaluation/src/colortrace_evaluation/schemas",
         "colortrace_evaluation/schemas",
     ),
+    "colortrace-fixture": (
+        "packages/fixture-generator/src/colortrace_fixture/schemas",
+        "colortrace_fixture/schemas",
+    ),
     "colortrace-grafana-mcp": (
         "packages/grafana-mcp/src/colortrace_grafana_mcp/schemas",
         "colortrace_grafana_mcp/schemas",
@@ -81,6 +85,14 @@ _WHEEL_SCHEMA_ROOTS: dict[str, tuple[str, str]] = {
     "colortrace-investigation": (
         "packages/investigation/src/colortrace_investigation/schemas",
         "colortrace_investigation/schemas",
+    ),
+    "colortrace-simulator": (
+        "packages/simulator/src/colortrace_simulator/schemas",
+        "colortrace_simulator/schemas",
+    ),
+    "colortrace-telemetry": (
+        "packages/telemetry/src/colortrace_telemetry/schemas",
+        "colortrace_telemetry/schemas",
     ),
     "colortrace-vertical-slice": (
         "packages/vertical-slice/src/colortrace_vertical_slice/schemas",

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-render-job-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "job_id", "scenario_id", "incident_class", "trace_id", "worker_id",
+    "artifact_id", "source", "color", "runtime", "output"
+  ],
+  "properties": {
+    "schema": {"const": "reference-render-job/v1"},
+    "job_id": {"$ref": "#/$defs/id"},
+    "scenario_id": {"enum": [
+      "tos-resource-resolution-drift-v1",
+      "tos-config-rollout-drift-v1",
+      "tos-stale-derivative-cache-v1"
+    ]},
+    "incident_class": {"enum": [
+      "resource-resolution-drift/v1",
+      "configuration-rollout-drift/v1",
+      "stale-derivative-cache/v1"
+    ]},
+    "trace_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "worker_id": {"$ref": "#/$defs/id"},
+    "artifact_id": {"$ref": "#/$defs/id"},
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relative_path", "sha256", "byte_length"],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/path"},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "byte_length": {"type": "integer", "minimum": 1}
+      }
+    },
+    "color": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "config_relative_path", "config_sha256", "resource_relative_path",
+        "resource_sha256", "input_color_space", "output_color_space"
+      ],
+      "properties": {
+        "config_relative_path": {"$ref": "#/$defs/path"},
+        "config_sha256": {"$ref": "#/$defs/digest"},
+        "resource_relative_path": {"$ref": "#/$defs/path"},
+        "resource_sha256": {"$ref": "#/$defs/digest"},
+        "input_color_space": {"$ref": "#/$defs/id"},
+        "output_color_space": {"$ref": "#/$defs/id"}
+      }
+    },
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["effective_generation", "cache_key"],
+      "properties": {
+        "effective_generation": {"type": "integer", "minimum": 1},
+        "cache_key": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]}
+      }
+    },
+    "output": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relative_path"],
+      "properties": {"relative_path": {"$ref": "#/$defs/path"}}
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "path": {
+      "type": "string", "minLength": 1, "maxLength": 512,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*//)[A-Za-z0-9._/-]+$"
+    }
+  }
+}

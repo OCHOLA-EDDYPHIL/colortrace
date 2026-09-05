@@ -1585,6 +1585,13 @@
     {
       "ecosystem": "pypi",
       "license": "Apache-2.0",
+      "name": "google-api-core",
+      "source": "https://pypi.org/simple",
+      "version": "2.34.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
       "name": "google-auth",
       "source": "https://pypi.org/simple",
       "version": "2.56.3"
@@ -1592,9 +1599,44 @@
     {
       "ecosystem": "pypi",
       "license": "Apache-2.0",
+      "name": "google-cloud-batch",
+      "source": "https://pypi.org/simple",
+      "version": "0.22.3"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "google-cloud-core",
+      "source": "https://pypi.org/simple",
+      "version": "2.7.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "google-cloud-storage",
+      "source": "https://pypi.org/simple",
+      "version": "3.13.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "google-crc32c",
+      "source": "https://pypi.org/simple",
+      "version": "1.8.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
       "name": "google-genai",
       "source": "https://pypi.org/simple",
       "version": "2.17.0"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "google-resumable-media",
+      "source": "https://pypi.org/simple",
+      "version": "2.10.2"
     },
     {
       "ecosystem": "pypi",
@@ -1609,6 +1651,20 @@
       "name": "graphviz",
       "source": "https://pypi.org/simple",
       "version": "0.21"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "grpcio",
+      "source": "https://pypi.org/simple",
+      "version": "1.83.1"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "grpcio-status",
+      "source": "https://pypi.org/simple",
+      "version": "1.83.1"
     },
     {
       "ecosystem": "pypi",
@@ -1710,10 +1766,24 @@
     },
     {
       "ecosystem": "pypi",
+      "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+      "name": "numpy",
+      "source": "https://pypi.org/simple",
+      "version": "2.5.2"
+    },
+    {
+      "ecosystem": "pypi",
       "license": "BSD-3-Clause",
       "name": "opencolorio",
       "source": "https://pypi.org/simple",
       "version": "2.5.2"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "openimageio",
+      "source": "https://pypi.org/simple",
+      "version": "3.1.17.0"
     },
     {
       "ecosystem": "pypi",
@@ -1784,6 +1854,13 @@
       "name": "propcache",
       "source": "https://pypi.org/simple",
       "version": "0.5.2"
+    },
+    {
+      "ecosystem": "pypi",
+      "license": "Apache-2.0",
+      "name": "proto-plus",
+      "source": "https://pypi.org/simple",
+      "version": "1.28.4"
     },
     {
       "ecosystem": "pypi",

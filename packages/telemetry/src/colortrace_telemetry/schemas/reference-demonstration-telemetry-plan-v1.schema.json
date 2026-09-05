@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-demonstration-telemetry-plan-v1.schema.json",
+  "title": "Generated reference-pipeline telemetry plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "data_origin",
+    "scenario_id",
+    "incident_class",
+    "incident_id",
+    "fixture_id",
+    "run_id",
+    "events"
+  ],
+  "properties": {
+    "schema": {"const": "reference-demonstration-telemetry-plan/v1"},
+    "data_origin": {"const": "generated-demonstration-telemetry"},
+    "scenario_id": {
+      "enum": [
+        "tos-resource-resolution-drift-v1",
+        "tos-config-rollout-drift-v1",
+        "tos-stale-derivative-cache-v1"
+      ]
+    },
+    "incident_class": {
+      "enum": [
+        "resource-resolution-drift/v1",
+        "configuration-rollout-drift/v1",
+        "stale-derivative-cache/v1"
+      ]
+    },
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "fixture_id": {"$ref": "#/$defs/identifier"},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "events": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {"$ref": "reference-demonstration-telemetry-event-v1.schema.json"}
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    }
+  }
+}

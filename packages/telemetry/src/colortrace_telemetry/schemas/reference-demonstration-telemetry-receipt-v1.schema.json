@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://colortrace.dev/schemas/reference-demonstration-telemetry-receipt-v1.schema.json",
+  "title": "Generated reference-pipeline telemetry emission receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "data_origin",
+    "plan_sha256",
+    "scenario_id",
+    "incident_id",
+    "fixture_id",
+    "run_id",
+    "signals",
+    "scope_roles",
+    "events",
+    "receipt_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "reference-demonstration-telemetry-receipt/v1"},
+    "data_origin": {"const": "generated-demonstration-telemetry"},
+    "plan_sha256": {"$ref": "#/$defs/digest"},
+    "scenario_id": {
+      "enum": [
+        "tos-resource-resolution-drift-v1",
+        "tos-config-rollout-drift-v1",
+        "tos-stale-derivative-cache-v1"
+      ]
+    },
+    "incident_id": {"$ref": "#/$defs/identifier"},
+    "fixture_id": {"$ref": "#/$defs/identifier"},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "signals": {
+      "type": "array",
+      "prefixItems": [
+        {"const": "metric"},
+        {"const": "log"},
+        {"const": "trace"}
+      ],
+      "items": false,
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "scope_roles": {
+      "type": "array",
+      "prefixItems": [{"const": "affected"}, {"const": "protected"}],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "events": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {"$ref": "reference-demonstration-telemetry-event-v1.schema.json"}
+    },
+    "receipt_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

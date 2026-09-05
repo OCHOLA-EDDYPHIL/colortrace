@@ -1,0 +1,59 @@
+timeout: 3600s
+
+options:
+  machineType: E2_HIGHCPU_8
+  diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: source-identity
+    name: gcr.io/cloud-builders/git@sha256:e22d5e335eb04484c86f5255006c5331d26c1372cb609cb0d8d13b564d4addea
+    dir: /workspace
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        source_commit="${COMMIT_SHA}"
+        case "$$source_commit" in (*[!0-9a-f]*|'') exit 1;; esac
+        test "$${#source_commit}" -eq 40
+        git init --bare --quiet /tmp/colortrace-source.git
+        GIT_INDEX_FILE=/tmp/colortrace-source.index git \
+          --git-dir=/tmp/colortrace-source.git \
+          --work-tree=/workspace \
+          add --all --force -- . ':(exclude).git' ':(exclude).git/**'
+        source_tree="$$(GIT_INDEX_FILE=/tmp/colortrace-source.index git \
+          --git-dir=/tmp/colortrace-source.git write-tree)"
+        case "$$source_tree" in (*[!0-9a-f]*|'') exit 1;; esac
+        test "$${#source_tree}" -eq 40
+        if test -e /workspace/.git; then
+          test "$$(git -C /workspace rev-parse --verify HEAD^{commit})" = "$$source_commit"
+          test "$$(git -C /workspace rev-parse --verify HEAD^{tree})" = "$$source_tree"
+          test -z "$$(git -C /workspace status --porcelain --untracked-files=all)"
+        fi
+        printf '%s\n' "$$source_commit" > /workspace/.colortrace-source-commit
+        printf '%s\n' "$$source_tree" > /workspace/.colortrace-source-tree
+
+  - id: reference-worker
+    name: gcr.io/cloud-builders/docker@sha256:2e8d40d8e48dc14fab4213d5e532d74f63fd403d9e8d7f6463096a75820286c3
+    dir: /workspace
+    entrypoint: bash
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - -ceu
+      - |
+        source_commit="$$(cat /workspace/.colortrace-source-commit)"
+        source_tree="$$(cat /workspace/.colortrace-source-tree)"
+        exec docker build \
+          --pull \
+          --platform=linux/amd64 \
+          --target=reference-worker \
+          --build-arg="SOURCE_COMMIT=$$source_commit" \
+          --build-arg="SOURCE_TREE=$$source_tree" \
+          --build-arg="SOURCE_DATE_EPOCH=${_SOURCE_DATE_EPOCH}" \
+          --tag="${_REGISTRY}/reference-worker:$$source_commit" \
+          --file=containers/Dockerfile.runtime \
+          .
+
+images:
+  - ${_REGISTRY}/reference-worker:${COMMIT_SHA}

@@ -229,3 +229,78 @@ RUN test "$(/usr/local/bin/mcp-grafana --version)" = 1.1.0 \
         --go-license /usr/share/licenses/go/LICENSE
 LABEL org.colortrace.runtime-profile="private-full"
 USER colortrace
+
+FROM python@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2 AS reference-worker-build
+COPY --from=uv /uv /uvx /usr/local/bin/
+WORKDIR /source
+COPY pyproject.toml uv.lock LICENSE ./
+COPY packages/api/pyproject.toml packages/api/pyproject.toml
+COPY packages/evaluation/pyproject.toml packages/evaluation/pyproject.toml
+COPY packages/fixture-generator/pyproject.toml packages/fixture-generator/pyproject.toml
+COPY packages/grafana-mcp/pyproject.toml packages/grafana-mcp/pyproject.toml
+COPY packages/investigation/pyproject.toml packages/investigation/pyproject.toml
+COPY packages/recovery/pyproject.toml packages/recovery/pyproject.toml
+COPY packages/repo-tools/pyproject.toml packages/repo-tools/pyproject.toml
+COPY packages/response-plans/pyproject.toml packages/response-plans/pyproject.toml
+COPY packages/simulator/pyproject.toml packages/simulator/pyproject.toml
+COPY packages/telemetry/pyproject.toml packages/telemetry/pyproject.toml
+COPY packages/validators/pyproject.toml packages/validators/pyproject.toml
+COPY packages/vertical-slice/pyproject.toml packages/vertical-slice/pyproject.toml
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    UV_COMPILE_BYTECODE=0 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/colortrace
+RUN --mount=type=cache,id=colortrace-reference-worker-uv,target=/root/.cache/uv,sharing=locked \
+    uv sync --frozen --no-dev --no-editable --no-install-workspace \
+        --package colortrace-simulator --extra reference-batch
+COPY packages/fixture-generator/ packages/fixture-generator/
+COPY packages/response-plans/ packages/response-plans/
+COPY packages/simulator/ packages/simulator/
+COPY packages/validators/ packages/validators/
+RUN --mount=type=cache,id=colortrace-reference-worker-uv,target=/root/.cache/uv,sharing=locked \
+    uv sync --frozen --no-dev --no-editable \
+        --package colortrace-simulator --extra reference-batch \
+    && /opt/colortrace/bin/python -c \
+        "import OpenImageIO, PyOpenColorIO, google.cloud.storage, colortrace_simulator.reference_batch_worker" \
+    && /opt/colortrace/bin/colortrace-reference-batch-worker --help >/dev/null \
+    && /opt/colortrace/bin/colortrace-reference-worker --help >/dev/null \
+    && test -z "$(find /opt/colortrace -type f -name '*.py[co]' -print -quit)"
+
+FROM python@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2 AS reference-worker
+ARG SOURCE_COMMIT
+ARG SOURCE_TREE
+ARG SOURCE_DATE_EPOCH
+ENV HOME=/work \
+    PATH=/opt/colortrace/bin:/usr/local/bin:/usr/bin:/bin \
+    COLORTRACE_REFERENCE_EXECUTION_MODE=google-cloud-batch \
+    COLORTRACE_SOURCE_REVISION=${SOURCE_COMMIT} \
+    COLORTRACE_SOURCE_TREE=${SOURCE_TREE} \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+RUN case "$SOURCE_COMMIT" in (*[!0-9a-f]*|'') exit 1;; esac \
+    && test "${#SOURCE_COMMIT}" = 40 \
+    && case "$SOURCE_TREE" in (*[!0-9a-f]*|'') exit 1;; esac \
+    && test "${#SOURCE_TREE}" = 40 \
+    && case "$SOURCE_DATE_EPOCH" in (*[!0-9]*|'') exit 1;; esac \
+    && install -d -o 65532 -g 65532 -m 0700 \
+        /work /work/source /work/config /work/output /work/jobs \
+    && install -d -o 0 -g 0 -m 0555 /usr/share/licenses/colortrace
+COPY --from=reference-worker-build /opt/colortrace /opt/colortrace
+COPY LICENSE /usr/share/licenses/colortrace/LICENSE
+RUN /opt/colortrace/bin/python -c \
+        "import OpenImageIO, PyOpenColorIO, google.cloud.storage, colortrace_simulator.reference_batch_worker" \
+    && test "$(/opt/colortrace/bin/python -c 'import OpenImageIO; print(OpenImageIO.VERSION_STRING)')" = 3.1.17.0 \
+    && test "$(/opt/colortrace/bin/python -c 'import PyOpenColorIO; print(PyOpenColorIO.__version__)')" = 2.5.2 \
+    && /opt/colortrace/bin/colortrace-reference-batch-worker --help >/dev/null \
+    && /opt/colortrace/bin/colortrace-reference-worker --help >/dev/null \
+    && chown -R 65532:65532 /work \
+    && chmod 0700 /work /work/source /work/config /work/output /work/jobs \
+    && chmod 0444 /usr/share/licenses/colortrace/LICENSE
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      org.colortrace.source-tree="${SOURCE_TREE}" \
+      org.colortrace.runtime-profile="reference-worker"
+WORKDIR /work
+USER 65532:65532
+ENTRYPOINT ["/opt/colortrace/bin/colortrace-reference-batch-worker"]
+
+FROM runtime AS default
