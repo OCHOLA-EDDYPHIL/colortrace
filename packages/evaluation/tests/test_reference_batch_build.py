@@ -53,6 +53,7 @@ def test_reference_worker_image_contains_the_batch_entrypoint_and_storage_client
     assert "import OpenImageIO, PyOpenColorIO, google.cloud.storage" in build
     assert "colortrace-reference-batch-worker --help" in build
     assert 'ENTRYPOINT ["/opt/colortrace/bin/colortrace-reference-batch-worker"]' in image
+    assert "USER 65532:65532" in image
     assert "ENV HOME=/work" in image
     assert "COLORTRACE_REFERENCE_EXECUTION_MODE=google-cloud-batch" in image
     assert "COLORTRACE_SOURCE_REVISION=${SOURCE_COMMIT}" in image

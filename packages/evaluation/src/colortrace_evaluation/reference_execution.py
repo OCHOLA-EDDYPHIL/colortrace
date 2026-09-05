@@ -762,7 +762,6 @@ class GoogleBatchPlanner:
                 {
                     "taskCount": "1",
                     "parallelism": "1",
-                    "runAsNonRoot": True,
                     "taskSpec": {
                         "runnables": [
                             {

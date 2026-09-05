@@ -402,6 +402,9 @@ def test_batch_plan_embeds_canonical_task_and_private_network() -> None:
     assert task.resource_object.generation == 14
     assert container["imageUri"] == WORKER_IMAGE
     assert container["entrypoint"] == "colortrace-reference-batch-worker"
+    # Batch must launch its Docker runnable as root on the host. The worker
+    # image supplies its own non-root USER, so the workload remains unprivileged.
+    assert "runAsNonRoot" not in request["taskGroups"][0]
     assert "volumes" not in container
     assert "blockExternalNetwork" not in container
     interface = request["allocationPolicy"]["network"]["networkInterfaces"][0]
