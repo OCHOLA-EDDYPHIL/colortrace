@@ -5,6 +5,8 @@ import hashlib
 import hmac
 import json
 import re
+import struct
+import threading
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -46,6 +48,11 @@ from colortrace_telemetry import (
 )
 from colortrace_validator import ActionIntent, IncidentClass
 
+from .reference_live_render import (
+    ReferenceLiveRenderer,
+    ReferenceLiveRenderError,
+    ReferenceLiveRenderResult,
+)
 from .reference_results import (
     REFERENCE_RESULT_PATH,
     ReferenceResultError,
@@ -57,14 +64,14 @@ from .reference_visuals import (
     load_reference_preview_catalog,
 )
 
-REFERENCE_SCENARIO_LIST_SCHEMA = "reference-scenario-list/v1"
-REFERENCE_SCENARIO_DETAIL_SCHEMA = "reference-scenario-detail/v1"
+REFERENCE_SCENARIO_LIST_SCHEMA = "reference-scenario-list/v2"
+REFERENCE_SCENARIO_DETAIL_SCHEMA = "reference-scenario-detail/v2"
 REFERENCE_BENCHMARK_SUITE_SCHEMA = "reference-benchmark-suite/v1"
 REFERENCE_AUTHORITY_SCHEMA = "reference-authority-boundary/v1"
 REFERENCE_PROVENANCE_SCHEMA = "reference-scenario-provenance/v1"
 REFERENCE_SCENARIO_RUN_REQUEST_SCHEMA = "reference-scenario-run-request/v1"
 REFERENCE_RECOVERY_DECISION_REQUEST_SCHEMA = "reference-recovery-decision-request/v1"
-REFERENCE_RECOVERY_DECISION_SCHEMA = "reference-recovery-decision/v1"
+REFERENCE_RECOVERY_DECISION_SCHEMA = "reference-recovery-decision/v2"
 REFERENCE_APPROVAL_PHRASE = REFERENCE_PUBLIC_APPROVAL_PHRASE
 REFERENCE_DENIAL_PHRASE = REFERENCE_PUBLIC_DENIAL_PHRASE
 REFERENCE_RUN_MAX_IN_FLIGHT = 4
@@ -75,8 +82,35 @@ _PACKET_ID = re.compile(r"^response-packet:[0-9a-f]{64}$")
 _ACTION_INTENT_ID = re.compile(r"^action-intent:[0-9a-f]{64}$")
 _RECONCILIATION_ID = re.compile(r"^diagnosis-reconciliation:[0-9a-f]{64}$")
 
-_VISUAL_KINDS = ("expected", "observed", "recovered", "diff")
+_VISUAL_KINDS = ("expected", "observed", "diff")
 _REFERENCE_RUN_REPLAY_CACHE_SIZE = 256
+_REFERENCE_LIVE_RENDER_TIMEOUT_SECONDS = 15.0
+_LIVE_RENDER_KEYS = frozenset(
+    {
+        "schema",
+        "scenario_id",
+        "request_id",
+        "action_intent_id",
+        "action_intent_sha256",
+        "approval_id",
+        "approval_sha256",
+        "execution_target",
+        "source_artifact_id",
+        "source_sha256",
+        "job_sha256",
+        "worker_receipt_sha256",
+        "output_sha256",
+        "canonical_pixel_sha256",
+        "expected_canonical_pixel_sha256",
+        "output_equivalent",
+        "visual_content_sha256",
+        "visual_width",
+        "visual_height",
+        "dependencies",
+        "wall_nanoseconds",
+        "live_render_sha256",
+    }
+)
 
 
 class ReferenceDemoError(RuntimeError):
@@ -93,6 +127,16 @@ class ReferenceVisual:
     scenario_sha256: str
     representation: str
     pixel_evidence: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceLiveVisual:
+    content: bytes
+    sha256: str
+    scenario_id: str
+    request_id: str
+    decision_sha256: str
+    worker_receipt_sha256: str
 
 
 class ReferenceDemoApi(Protocol):
@@ -127,6 +171,8 @@ class ReferenceScenarioRunApi(Protocol):
         request_id: str,
         request: Mapping[str, Any],
     ) -> dict[str, Any]: ...
+
+    def live_visual(self, scenario_id: str, request_id: str) -> ReferenceLiveVisual: ...
 
 
 class ReferenceScenarioTelemetryPort(Protocol):
@@ -294,6 +340,7 @@ class _ReferenceRecoveryContext:
     recovery: ReferenceRecoveryService
     decisions: dict[str, _CachedReferenceDecision] = field(default_factory=dict)
     terminal_request_sha256: str | None = None
+    live_visual: ReferenceLiveVisual | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,6 +398,69 @@ def _canonical_json(value: Any) -> bytes:
 
 def _digest(value: Any) -> str:
     return f"sha256:{hashlib.sha256(_canonical_json(value)).hexdigest()}"
+
+
+def _validate_live_render_result(
+    result: ReferenceLiveRenderResult,
+    *,
+    scenario_id: str,
+    request_id: str,
+    action_intent: Mapping[str, Any],
+    approval: Mapping[str, Any],
+) -> None:
+    if not isinstance(result, ReferenceLiveRenderResult):
+        raise ReferenceLiveRenderError("reference-live-render-result-invalid")
+    document = result.document
+    content_sha256 = f"sha256:{hashlib.sha256(result.png).hexdigest()}"
+    body = {key: value for key, value in document.items() if key != "live_render_sha256"}
+    digest_fields = (
+        "action_intent_sha256",
+        "approval_sha256",
+        "source_sha256",
+        "job_sha256",
+        "worker_receipt_sha256",
+        "output_sha256",
+        "canonical_pixel_sha256",
+        "expected_canonical_pixel_sha256",
+        "visual_content_sha256",
+        "live_render_sha256",
+    )
+    dependencies = document.get("dependencies")
+    if (
+        set(document) != _LIVE_RENDER_KEYS
+        or document.get("schema") != "reference-live-render/v1"
+        or document.get("scenario_id") != scenario_id
+        or document.get("request_id") != request_id
+        or document.get("action_intent_id") != action_intent.get("action_intent_id")
+        or document.get("action_intent_sha256") != action_intent.get("derivation_sha256")
+        or document.get("approval_id") != approval.get("approval_id")
+        or document.get("approval_sha256") != approval.get("approval_sha256")
+        or document.get("execution_target") != "single-host-simulator-worker"
+        or any(
+            not isinstance(document.get(field), str)
+            or _DIGEST.fullmatch(cast(str, document[field])) is None
+            for field in digest_fields
+        )
+        or document.get("canonical_pixel_sha256") != document.get("expected_canonical_pixel_sha256")
+        or document.get("output_equivalent") is not True
+        or document.get("visual_content_sha256") != content_sha256
+        or document.get("visual_width") != 960
+        or document.get("visual_height") != 506
+        or not isinstance(dependencies, Mapping)
+        or set(dependencies) != {"openimageio", "opencolorio"}
+        or dependencies.get("openimageio") not in {"3.0.6.1", "3.1.17.0"}
+        or dependencies.get("opencolorio") != "2.5.2"
+        or isinstance(document.get("wall_nanoseconds"), bool)
+        or not isinstance(document.get("wall_nanoseconds"), int)
+        or cast(int, document["wall_nanoseconds"]) < 0
+        or document.get("live_render_sha256") != _digest(body)
+        or not 1 <= len(result.png) <= 5 * 1024 * 1024
+        or not result.png.startswith(b"\x89PNG\r\n\x1a\n")
+        or len(result.png) < 24
+        or result.png[12:16] != b"IHDR"
+        or struct.unpack(">II", result.png[16:24]) != (960, 506)
+    ):
+        raise ReferenceLiveRenderError("reference-live-render-result-invalid")
 
 
 _EXPECTED_TO_JOB_FIELD = {
@@ -606,6 +716,7 @@ def _reference_recovery_decision(
     before: ReferenceRecoveryState,
     after: ReferenceRecoveryState,
     receipt: Mapping[str, Any] | None,
+    live_render: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     packet = context.packet
     approver = _mapping(approval.get("approver"), "reference-run-recovery-state-invalid")
@@ -713,6 +824,7 @@ def _reference_recovery_decision(
         ),
         "receipt": None if receipt is None else dict(receipt),
         "verification": verification,
+        "live_render": None if live_render is None else dict(live_render),
         "scope": {
             "kind": "representative-simulator-state",
             "affected_job_count": 1,
@@ -892,6 +1004,8 @@ class ReferenceDemoCatalog:
 
     def scenario_visual(self, scenario_id: str, kind: str) -> ReferenceVisual:
         scenario = self._scenario(scenario_id)
+        if kind not in _VISUAL_KINDS:
+            raise ReferenceDemoError("reference-visual-not-found")
         try:
             asset = self._previews.visual(scenario_id, kind)
         except ReferencePreviewError:
@@ -1208,6 +1322,8 @@ class ReferenceScenarioRunService:
         approval_boundary: ReferenceHumanApprovalBoundary | None = None,
         maximum_in_flight: int = REFERENCE_RUN_MAX_IN_FLIGHT,
         run_deadline_seconds: float = REFERENCE_RUN_DEADLINE_SECONDS,
+        renderer: ReferenceLiveRenderer | None = None,
+        live_render_timeout_seconds: float = _REFERENCE_LIVE_RENDER_TIMEOUT_SECONDS,
     ) -> None:
         selected = scenarios or reference_scenarios()
         self._scenarios = dict(selected)
@@ -1221,6 +1337,9 @@ class ReferenceScenarioRunService:
         self._telemetry_settle_seconds = telemetry_settle_seconds
         self._maximum_in_flight = maximum_in_flight
         self._run_deadline_seconds = run_deadline_seconds
+        self._renderer = renderer
+        self._live_render_timeout_seconds = live_render_timeout_seconds
+        self._live_render_lock = threading.Lock()
         self._alert_binding = {
             **dict(evidence_binding),
             "alert_rule_uid": alert_rule_uid,
@@ -1238,6 +1357,8 @@ class ReferenceScenarioRunService:
             or not 1 <= maximum_in_flight <= 32
             or isinstance(run_deadline_seconds, bool)
             or not 0 < run_deadline_seconds <= 300
+            or isinstance(live_render_timeout_seconds, bool)
+            or not 0 < live_render_timeout_seconds <= 60
             or frozenset(self._scenarios)
             != frozenset(
                 {
@@ -1383,6 +1504,7 @@ class ReferenceScenarioRunService:
             if context.terminal_request_sha256 is not None:
                 raise ReferenceDemoError("reference-recovery-decision-conflict")
             before = context.recovery.snapshot(scenario_id)
+            live_result: ReferenceLiveRenderResult | None = None
             try:
                 approval = self._approval_boundary.issue_public_demo_gesture(
                     context.action_intent,
@@ -1391,13 +1513,34 @@ class ReferenceScenarioRunService:
                     approval_nonce=parsed.approval_nonce,
                     approval_phrase=parsed.approval_phrase,
                 )
-                receipt = (
-                    context.recovery.execute(context.action_intent, approval)
-                    if parsed.decision == "approved"
-                    else None
-                )
+                if parsed.decision == "approved":
+                    if self._renderer is None:
+                        raise ReferenceLiveRenderError("reference-live-render-unavailable")
+                    try:
+                        live_result = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self._render_live_once,
+                                scenario_id=scenario_id,
+                                request_id=request_id,
+                                action_intent=context.action_intent.to_dict(),
+                                approval=approval.to_dict(),
+                            ),
+                            timeout=self._live_render_timeout_seconds,
+                        )
+                        _validate_live_render_result(
+                            live_result,
+                            scenario_id=scenario_id,
+                            request_id=request_id,
+                            action_intent=context.action_intent.to_dict(),
+                            approval=approval.to_dict(),
+                        )
+                    except TimeoutError as error:
+                        raise ReferenceLiveRenderError("reference-live-render-timeout") from error
+                    receipt = context.recovery.execute(context.action_intent, approval)
+                else:
+                    receipt = None
                 after = context.recovery.snapshot(scenario_id)
-            except ReferenceRecoveryError as error:
+            except (ReferenceLiveRenderError, ReferenceRecoveryError) as error:
                 context.decisions[parsed.approval_nonce] = _CachedReferenceDecision(
                     request_sha256=request_sha256,
                     error_code=error.code,
@@ -1410,6 +1553,7 @@ class ReferenceScenarioRunService:
                 before=before,
                 after=after,
                 receipt=receipt,
+                live_render=None if live_result is None else live_result.document,
             )
             encoded = _canonical_json(response)
             context.decisions[parsed.approval_nonce] = _CachedReferenceDecision(
@@ -1417,7 +1561,42 @@ class ReferenceScenarioRunService:
                 response=encoded,
             )
             context.terminal_request_sha256 = request_sha256
+            if live_result is not None:
+                context.live_visual = ReferenceLiveVisual(
+                    content=live_result.png,
+                    sha256=cast(str, live_result.document["visual_content_sha256"]),
+                    scenario_id=scenario_id,
+                    request_id=request_id,
+                    decision_sha256=cast(str, response["decision_sha256"]),
+                    worker_receipt_sha256=cast(str, live_result.document["worker_receipt_sha256"]),
+                )
             return cast(dict[str, Any], json.loads(encoded))
+
+    def _render_live_once(
+        self,
+        *,
+        scenario_id: str,
+        request_id: str,
+        action_intent: Mapping[str, Any],
+        approval: Mapping[str, Any],
+    ) -> ReferenceLiveRenderResult:
+        if self._renderer is None or not self._live_render_lock.acquire(blocking=False):
+            raise ReferenceLiveRenderError("reference-live-render-unavailable")
+        try:
+            return self._renderer.render(
+                scenario_id=scenario_id,
+                request_id=request_id,
+                action_intent=action_intent,
+                approval=approval,
+            )
+        finally:
+            self._live_render_lock.release()
+
+    def live_visual(self, scenario_id: str, request_id: str) -> ReferenceLiveVisual:
+        context = self._replay_cache.get((scenario_id, request_id))
+        if context is None or context.recovery is None or context.recovery.live_visual is None:
+            raise ReferenceDemoError("reference-live-visual-not-found")
+        return context.recovery.live_visual
 
     async def _run_uncached(
         self,

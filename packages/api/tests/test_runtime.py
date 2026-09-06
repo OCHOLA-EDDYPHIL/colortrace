@@ -94,10 +94,12 @@ def environment(database_path: Path) -> dict[str, str]:
 def canonical_demo_environment(tmp_path: Path) -> dict[str, str]:
     values = environment(tmp_path / "incidents.sqlite3")
     fixture = tmp_path / "fixture"
+    reference_source = tmp_path / "reference-source"
     manifest = fixture / "runtime" / "manifests" / "fixture-runtime-manifest.json"
     receipt = fixture / "reports" / "generation-receipt.json"
     manifest.parent.mkdir(parents=True)
     receipt.parent.mkdir(parents=True)
+    reference_source.mkdir()
     manifest.write_bytes(b'{"schema":"fixture-runtime-manifest/v1"}\n')
     digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
     receipt.write_text(
@@ -137,6 +139,7 @@ def canonical_demo_environment(tmp_path: Path) -> dict[str, str]:
             "COLORTRACE_DEMO_MODE": "canonical",
             "COLORTRACE_DEMO_DATABASE_PATH": str(tmp_path / "demo.sqlite3"),
             "COLORTRACE_DEMO_VISUAL_ROOT": str(tmp_path / "demo-visuals"),
+            "COLORTRACE_REFERENCE_SOURCE_ROOT": str(reference_source),
             "COLORTRACE_DEMO_CONFIG_PATH": str(
                 REPOSITORY_ROOT / "config" / "demo" / "local-demo.json"
             ),
@@ -343,6 +346,7 @@ def test_canonical_demo_environment_binds_deployment_inputs(tmp_path: Path) -> N
     assert config.demo is not None
     assert config.demo.database_path == tmp_path / "demo.sqlite3"
     assert config.demo.visual_root == tmp_path / "demo-visuals"
+    assert config.demo.reference_source_root == tmp_path / "reference-source"
     assert config.demo.source_commit == "a" * 40
     assert config.demo.source_tree == "b" * 40
     assert config.demo.fixture_bundle_sha256 == values["COLORTRACE_FIXTURE_BUNDLE_SHA256"]

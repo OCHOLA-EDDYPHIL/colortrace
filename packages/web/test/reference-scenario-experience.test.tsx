@@ -107,7 +107,7 @@ function summary(scenarioId: ReferenceScenarioId): ReferenceScenarioSummary {
       affected_artifact_count: 72,
       protected_artifact_count: 168,
     },
-    visuals: (["expected", "observed", "recovered", "diff"] as const).map((kind) => {
+    visuals: (["expected", "observed", "diff"] as const).map((kind) => {
       const isDifference = kind === "diff";
       const isStaleObserved = scenarioId === "tos-stale-derivative-cache-v1" && kind === "observed";
       const isStaleSource =
@@ -146,7 +146,7 @@ function summary(scenarioId: ReferenceScenarioId): ReferenceScenarioSummary {
 
 function scenarioList(): ReferenceScenarioList {
   return {
-    schema: "reference-scenario-list/v1",
+    schema: "reference-scenario-list/v2",
     collection_id: "tears-of-steel-linear-exr-240-v1",
     items: REFERENCE_SCENARIO_IDS.map(summary),
     provenance: PROVENANCE,
@@ -157,7 +157,7 @@ function scenarioList(): ReferenceScenarioList {
 
 function scenarioDetail(scenarioId: ReferenceScenarioId): ReferenceScenarioDetail {
   return {
-    schema: "reference-scenario-detail/v1",
+    schema: "reference-scenario-detail/v2",
     summary: summary(scenarioId),
     evidence_requirements: {
       minimum_complementary_signal_classes: 2,
@@ -1017,8 +1017,35 @@ function rawRecoveryDecision(
           receipt_sha256: DIGEST,
         }
       : null;
+  const liveRender =
+    decision === "approved"
+      ? {
+          schema: "reference-live-render/v1",
+          scenario_id: packet.scenario_id,
+          request_id: packet.request_id,
+          action_intent_id: intent.action_intent_id,
+          action_intent_sha256: intent.derivation_sha256,
+          approval_id: approval.approval_id,
+          approval_sha256: approval.approval_sha256,
+          execution_target: "single-host-simulator-worker",
+          source_artifact_id: "frame:03_2a:00000",
+          source_sha256: DIGEST,
+          job_sha256: DIGEST,
+          worker_receipt_sha256: DIGEST,
+          output_sha256: DIGEST,
+          canonical_pixel_sha256: DIGEST,
+          expected_canonical_pixel_sha256: DIGEST,
+          output_equivalent: true,
+          visual_content_sha256: DIGEST,
+          visual_width: 960,
+          visual_height: 506,
+          dependencies: { openimageio: "3.0.6.1", opencolorio: "2.5.2" },
+          wall_nanoseconds: 1,
+          live_render_sha256: DIGEST,
+        }
+      : null;
   return {
-    schema: "reference-recovery-decision/v1",
+    schema: "reference-recovery-decision/v2",
     scenario_id: packet.scenario_id,
     request_id: packet.request_id,
     run_id: packet.run_id,
@@ -1032,6 +1059,7 @@ function rawRecoveryDecision(
     protected_state_unchanged: true,
     receipt,
     verification,
+    live_render: liveRender,
     scope: {
       kind: "representative-simulator-state",
       affected_job_count: 1,
@@ -1090,6 +1118,18 @@ function adapterFixture(overrides: Partial<ReferenceDemoAdapter> = {}): Referenc
         src: `blob:${descriptor.kind}`,
       }),
     ),
+    loadLiveRecoveredVisual: vi.fn(async (decision) => ({
+      kind: "recovered" as const,
+      content_sha256: decision.live_render?.visual_content_sha256 ?? DIGEST,
+      request_id: decision.request_id,
+      decision_sha256: decision.decision_sha256,
+      worker_receipt_sha256: decision.live_render?.worker_receipt_sha256 ?? DIGEST,
+      representation: "fresh-open-film-preview-png/v1" as const,
+      pixel_evidence: true as const,
+      width: 960 as const,
+      height: 506 as const,
+      src: "blob:live-recovered",
+    })),
     releaseVisual: vi.fn(),
     ...overrides,
   };
@@ -1118,7 +1158,7 @@ describe("reference scenario experience", () => {
     expect(await screen.findByAltText(/Expected state open-film pixel preview/iu)).toBeVisible();
     expect(screen.getByText(/absolute display-pixel difference is amplified 8×/iu)).toBeVisible();
     const supportingEvidence = screen.getByRole("region", {
-      name: "Inspect difference or recovered output",
+      name: "Inspect the amplified difference",
     });
     const liveInvestigation = screen.getByRole("region", {
       name: "Query the evidence, then reconcile it",
@@ -1132,11 +1172,11 @@ describe("reference scenario experience", () => {
     const expectedProvenance = expectedProvenanceSummary.closest("details");
     if (expectedProvenance === null) throw new Error("missing expected provenance");
     expect(within(expectedProvenance).getByText("frame:03_2a:00000")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Recovered" }));
-    expect(await screen.findByAltText(/Recovered output open-film pixel preview/iu)).toBeVisible();
     expect(
-      screen.getByText(/worker-produced pixel evidence bound to its source receipt/iu),
-    ).toBeVisible();
+      screen.queryByAltText(/Recovered output open-film pixel preview/iu),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/Recovery appears only after approval/iu)).toBeVisible();
+    fireEvent.click(screen.getByText(/Historical benchmark evidence/iu));
     expect(screen.getByText("No measured result")).toBeVisible();
     const requirements = screen.getByRole("region", { name: "Benchmark requirements" });
     expect(requirements).toHaveTextContent(/Required\s*equivalent recovered outputs/u);
@@ -1161,7 +1201,7 @@ describe("reference scenario experience", () => {
       }),
     ).toBeVisible();
     expect(screen.getByText("Effective config digest + generation")).toBeVisible();
-    await waitFor(() => expect(adapter.releaseVisual).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(adapter.releaseVisual).toHaveBeenCalledTimes(3));
     fireEvent.click(screen.getByText("Inspect the bounded query and evidence contract"));
     expect(screen.getByText("runtime.config_generation")).toBeVisible();
 
@@ -1189,6 +1229,7 @@ describe("reference scenario experience", () => {
     });
     render(<ReferenceScenarioExperience adapter={adapter} />);
 
+    fireEvent.click(await screen.findByText(/Historical benchmark evidence/iu));
     expect(
       await screen.findByRole("heading", { name: "Benchmark definition unavailable" }),
     ).toBeVisible();
@@ -1211,6 +1252,7 @@ describe("reference scenario experience", () => {
         />,
       );
 
+      fireEvent.click(await screen.findByText(/Historical benchmark evidence/iu));
       expect(await screen.findByRole("heading", { name: heading })).toBeVisible();
       expect(
         screen.getByText(badge, { selector: ".reference-benchmark__heading > span" }),
@@ -1271,6 +1313,7 @@ describe("reference scenario experience", () => {
       />,
     );
 
+    fireEvent.click(await screen.findByText(/Historical benchmark evidence/iu));
     expect(await screen.findByRole("heading", { name: "Product gates passed" })).toBeVisible();
     expect(
       screen.getByText("Impact target not met", {
@@ -1315,6 +1358,7 @@ describe("reference scenario experience", () => {
     expect(screen.getByText("vertex-ai · gemini-3.5-flash")).toBeVisible();
     expect(screen.getByText("1 affected + 1 protected")).toBeVisible();
     expect(screen.getByText("not a 72-frame execution")).toBeVisible();
+    fireEvent.click(screen.getByText("Inspect technical evidence"));
     expect(screen.getByText(/does not execute the full 72-frame catalog scenario/iu)).toBeVisible();
     const correlationTable = screen.getByRole("table", {
       name: /Affected and protected Grafana evidence/iu,
@@ -1371,6 +1415,7 @@ describe("reference scenario experience", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Run live investigation" }));
 
+    fireEvent.click(await screen.findByText("Inspect technical evidence"));
     expect(
       await screen.findByText(
         "2 model calls · partial usage observed; exact token totals unavailable (1 call unobserved)",
@@ -1428,12 +1473,15 @@ describe("reference scenario experience", () => {
     expect(screen.getByText(`reference-recovery:${"a".repeat(64)}`)).toBeVisible();
     expect(screen.getByText("Fresh simulator state verified")).toBeVisible();
     expect(screen.getByText(/intent-expected fields matched/iu)).toBeVisible();
-    expect(screen.getByText(/does not establish a rerender, pixel output/iu)).toBeVisible();
+    expect(
+      screen.getByAltText(/Fresh recovered open-film output produced after this approval/iu),
+    ).toBeVisible();
+    expect(screen.getByText(/canonical pixels match the expected output/iu)).toBeVisible();
     expect(screen.getByText(/Representative scope only: 1 affected exemplar/iu)).toBeVisible();
     expect(screen.getByText(/Identity was not verified/iu)).toBeVisible();
     expect(screen.getByText(/Production untouched: no production access was used/iu)).toBeVisible();
     expect(
-      screen.getByText(/human demo gesture recorded.*fresh simulator state verified/iu),
+      screen.getByText(/human demo gesture recorded.*fresh worker pixels verified/iu),
     ).toBeVisible();
     expect(
       screen.queryByText(/human approval still required.*human demo gesture recorded/iu),
@@ -1575,6 +1623,34 @@ describe("reference scenario experience", () => {
       ).not.toBeInTheDocument();
     });
     expect(screen.getByRole("button", { name: "Run live investigation" })).toBeEnabled();
+  });
+
+  it("preserves completed live evidence and compares a second failure class", async () => {
+    render(
+      <ReferenceScenarioExperience
+        adapter={adapterFixture({
+          runScenario: vi.fn(async (scenarioId) => parsedResponsePacket(scenarioId)),
+        })}
+      />,
+    );
+
+    await screen.findByRole("heading", {
+      name: "A successful render resolved the wrong look resource",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run live investigation" }));
+    await screen.findByRole("heading", { name: "Investigation resolved" });
+    fireEvent.click(screen.getByRole("button", { name: "Compare Configuration rollout" }));
+    await screen.findByRole("heading", { name: "A stale color configuration remained active" });
+    fireEvent.click(screen.getByRole("button", { name: "Run live investigation" }));
+
+    const comparison = await screen.findByRole("region", {
+      name: "Different faults, one guarded workflow",
+    });
+    expect(within(comparison).getByText("Resource resolution")).toBeVisible();
+    expect(within(comparison).getByText("Configuration rollout")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: /Resource resolution.*72 affected/iu }));
+    expect(await screen.findByRole("heading", { name: "Investigation resolved" })).toBeVisible();
   });
 });
 

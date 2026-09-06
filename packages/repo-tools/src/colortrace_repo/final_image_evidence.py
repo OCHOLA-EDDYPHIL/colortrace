@@ -21,6 +21,7 @@ _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _IMAGE_REFERENCE = re.compile(r"[^@\s]+@sha256:[0-9a-f]{64}")
 _SCANNER_SPDX_ALIASES = {
     "X-11": "X11",
+    "XFree-86-1.1": "XFree86-1.1",
     "bzip-2-1.0.6": "bzip2-1.0.6",
 }
 _SPDX_TOKEN_ALIASES = {"Public-Domain": "LicenseRef-Public-Domain"}
@@ -771,6 +772,30 @@ def _scanner_spdx_matches(values: set[str], bundle: tuple[Any, ...]) -> bool:
     return scanner_identifiers == _spdx_conjunction_identifiers(bundle)
 
 
+def _flattened_license_identifiers(values: set[str]) -> frozenset[str] | None:
+    identifiers: set[str] = set()
+    for value in sorted(values):
+        normalized = re.sub(
+            r"\bPublic\s+Domain\b",
+            "Public-Domain",
+            value,
+            flags=re.IGNORECASE,
+        )
+        tokens = re.findall(r"\(|\)|[^\s()]+", normalized)
+        if any(token.upper() == "WITH" for token in tokens):
+            return None
+        for token in tokens:
+            if token in {"(", ")"} or token.upper() in {"AND", "OR"}:
+                continue
+            alias = _SCANNER_SPDX_ALIASES.get(token, token)
+            alias = _SPDX_TOKEN_ALIASES.get(alias, alias)
+            identifiers.add(alias.casefold())
+    if {"public", "domain"} <= identifiers:
+        identifiers.difference_update({"public", "domain"})
+        identifiers.add("licenseref-public-domain")
+    return frozenset(identifiers) if identifiers else None
+
+
 def _license_difference_status(
     scanner: set[str],
     component: dict[str, Any],
@@ -781,6 +806,26 @@ def _license_difference_status(
         bundle_ast = _spdx_ast(license_expression)
         if bundle_ast is not None and _scanner_spdx_matches(scanner, bundle_ast):
             return "normalized-same-identifiers"
+        # Trivy's Alpine analyzer emits one license item per identifier and
+        # discards AND/OR operators (and sometimes splits legacy names such as
+        # "Public Domain"). Accept that lossy representation only when the APK
+        # declaration is backed by the checksummed installed-package database
+        # and the complete identifier sets still agree.
+        has_verified_apk_declaration = (
+            component.get("kind") == "apk"
+            and component.get("license_evidence_status") == "declared-in-installed-database"
+            and bool(_source_records(component.get("license_source")))
+            and isinstance(bundle_record.get("verified_file_count"), int)
+            and bundle_record["verified_file_count"] > 0
+        )
+        scanner_identifiers = _flattened_license_identifiers(scanner)
+        bundle_identifiers = _flattened_license_identifiers({license_expression})
+        if (
+            has_verified_apk_declaration
+            and scanner_identifiers is not None
+            and scanner_identifiers == bundle_identifiers
+        ):
+            return "scanner-flattened-apk-declaration"
         return "unexplained"
     legacy_license = component.get("legacy_license")
     has_verified_legacy_evidence = (

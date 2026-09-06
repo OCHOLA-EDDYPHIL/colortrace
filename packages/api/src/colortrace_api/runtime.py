@@ -72,6 +72,7 @@ from .reference_demo import (
     ReferenceDemoCatalog,
     ReferenceScenarioRunService,
 )
+from .reference_live_render import LocalReferenceLiveRenderer, ReferenceLiveRenderError
 from .response_plans import ResponsePlanCoordinator
 from .simulator_actions import SimulatorActionCoordinator
 from .simulator_runtime import LocalSimulatorRuntime
@@ -98,6 +99,8 @@ DEMO_MODE_ENV = "COLORTRACE_DEMO_MODE"
 DEMO_DATABASE_PATH_ENV = "COLORTRACE_DEMO_DATABASE_PATH"
 DEMO_VISUAL_ROOT_ENV = "COLORTRACE_DEMO_VISUAL_ROOT"
 DEMO_CONFIG_PATH_ENV = "COLORTRACE_DEMO_CONFIG_PATH"
+REFERENCE_SOURCE_ROOT_ENV = "COLORTRACE_REFERENCE_SOURCE_ROOT"
+DEFAULT_REFERENCE_SOURCE_ROOT = "/opt/colortrace-reference/source"
 SOURCE_COMMIT_ENV = "COLORTRACE_SOURCE_COMMIT"
 SOURCE_TREE_ENV = "COLORTRACE_SOURCE_TREE"
 RUNTIME_IMAGE_ENV = "COLORTRACE_RUNTIME_IMAGE"
@@ -125,6 +128,7 @@ _DEMO_ENVIRONMENTS = (
     DEMO_DATABASE_PATH_ENV,
     DEMO_VISUAL_ROOT_ENV,
     DEMO_CONFIG_PATH_ENV,
+    REFERENCE_SOURCE_ROOT_ENV,
     SOURCE_COMMIT_ENV,
     SOURCE_TREE_ENV,
     RUNTIME_IMAGE_ENV,
@@ -207,6 +211,7 @@ class CanonicalDemoRuntimeConfig:
     database_path: Path
     visual_root: Path
     config_path: Path
+    reference_source_root: Path
     source_commit: str
     source_tree: str
     runtime_image: str
@@ -583,6 +588,10 @@ def _demo_environment(
         database_path=_database_path(_required(environment, DEMO_DATABASE_PATH_ENV)),
         visual_root=_directory_path(_required(environment, DEMO_VISUAL_ROOT_ENV), must_exist=False),
         config_path=config_path,
+        reference_source_root=_directory_path(
+            environment.get(REFERENCE_SOURCE_ROOT_ENV, DEFAULT_REFERENCE_SOURCE_ROOT),
+            must_exist=True,
+        ),
         source_commit=commit,
         source_tree=tree,
         runtime_image=image,
@@ -792,6 +801,7 @@ def _validate_demo_runtime_config(
         raise ApiRuntimeConfigurationError("demo-build-binding-invalid")
     _database_path(config.database_path)
     _directory_path(config.visual_root, must_exist=False)
+    _directory_path(config.reference_source_root, must_exist=True)
     _origin(config.public_url, schemes=frozenset({"https"}), code="demo-public-url-invalid")
     _origin(config.grafana_url, schemes=frozenset({"https"}), code="demo-grafana-url-invalid")
     _origin(
@@ -866,6 +876,19 @@ def _compose_canonical_demo(
         evidence = EvidenceAdapter(runtime=runtime, catalog=catalog, clock=clock)
         inventory = asyncio.run(evidence.verify_inventory()).to_dict()
         model = AdkVertexGateway(project_id=config.vertex_project_id)
+        try:
+            live_render_root = _prepare_private_directory(
+                config.visual_root.parent / "reference-live"
+            )
+            live_renderer = LocalReferenceLiveRenderer(
+                source_root=config.reference_source_root,
+                work_root=live_render_root,
+                source_revision=config.source_commit,
+                source_tree=config.source_tree,
+                runtime_image=config.runtime_image,
+            )
+        except ReferenceLiveRenderError as error:
+            raise ApiRuntimeConfigurationError(error.code) from error
         reference_runs = ReferenceScenarioRunService(
             workflow=ReferenceInvestigationWorkflow(
                 model=model,
@@ -883,6 +906,7 @@ def _compose_canonical_demo(
                 audience="colortrace-simulator",
                 clock=clock,
             ),
+            renderer=live_renderer,
         )
         incidents = VerticalSliceApi(incident_store, policy=policy, clock=clock)
         investigation = VerticalSliceWorker(

@@ -133,6 +133,7 @@ const VISUALS: Record<VisualKind, ReturnType<typeof fixtureVisual>> = {
 const VISUAL_DIGESTS = Object.fromEntries(
   VISUAL_KINDS.map((kind) => [kind, VISUALS[kind].sha256]),
 ) as Record<VisualKind, string>;
+const REFERENCE_VISUAL_KINDS = ["expected", "observed", "diff"] as const;
 
 function isVisualKind(value: string | undefined): value is VisualKind {
   return VISUAL_KINDS.some((kind) => kind === value);
@@ -144,7 +145,7 @@ function isReferenceScenarioId(value: string): value is ReferenceScenarioId {
 
 function referenceScenarioList(): ReferenceScenarioList {
   return {
-    schema: "reference-scenario-list/v1",
+    schema: "reference-scenario-list/v2",
     collection_id: "tears-of-steel-linear-exr-240-v1",
     items: REFERENCE_SCENARIO_IDS.map((scenarioId) => {
       const metadata = REFERENCE_SCENARIOS[scenarioId];
@@ -161,7 +162,7 @@ function referenceScenarioList(): ReferenceScenarioList {
           affected_artifact_count: 72,
           protected_artifact_count: 168,
         },
-        visuals: VISUAL_KINDS.map((kind) => {
+        visuals: REFERENCE_VISUAL_KINDS.map((kind) => {
           const visual = preview.visuals[kind];
           return {
             kind,

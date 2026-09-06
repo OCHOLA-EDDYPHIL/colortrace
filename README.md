@@ -21,8 +21,8 @@ decision, and verifies the result before it records a receipt.
 | --- | --- | --- |
 | Detect | Correlates render telemetry, configuration, and asset lineage. | The expected image, observed fault, pixel difference, and affected scope. |
 | Explain | Uses Gemini 3.5 Flash through Vertex AI and Google ADK to select one bounded, read-only Grafana MCP query at a time after a required alert baseline. Deterministic validators decide when the evidence is sufficient and establish the facts. | A concise diagnosis, the selected evidence path, and the proposed repair. |
-| Approve | Builds an exact action plan and requires a human to approve or reject it. | Five typed commands, the four affected outputs, and the three assets that stay protected. |
-| Verify | Applies one simulator-only recovery, checks fresh output and telemetry, and requires human confirmation before closure. | The recovered image, protected-output checks, and an immutable receipt. |
+| Approve | Builds an exact action plan and requires a human to approve or reject it. | The affected exemplar, protected control, exact command, and explicit approval boundary. |
+| Verify | Applies the representative simulator recovery, runs a fresh in-host OpenImageIO/OpenColorIO render, and verifies its canonical pixels before returning the result. | A new recovered preview bound to the request, approval, render job, worker receipt, and decision. |
 
 Gemini helps navigate the investigation. It cannot declare facts, expand the recovery scope,
 authorize an action, execute a command, or close a run. Those boundaries belong to deterministic
@@ -68,6 +68,24 @@ The product separates useful AI assistance from action authority:
 Missing, stale, inconsistent, or unavailable proof stops the workflow without an action. A lost
 response can be retried safely because mutation requests retain their original identity.
 
+## Hosted open-film proof
+
+The canonical browser experience includes three distinct Tears of Steel failure classes: resource
+resolution drift, configuration rollout drift, and a stale derivative cache. Each investigation
+uses generated telemetry, read-only Grafana MCP queries, and deterministic reconciliation. After
+one result, the interface invites the operator to run a second class and compares the two live
+diagnoses side by side.
+
+Recovered pixels are not exposed as a catalog asset. They become available only after the operator
+approves a supported action. The existing Compute Engine runtime then processes a pinned source EXR
+with the approved color configuration, checks the full-resolution canonical pixel digest, creates a
+fresh preview, and binds it to the request, approval, render job, worker receipt, and decision. A
+render, digest, timeout, or binding failure stops the simulator mutation and withholds the result.
+
+The live flow is deliberately representative: one affected exemplar and one protected control. The
+recorded 99-case, 720-artifact benchmark is historical evidence and is presented separately from a
+live run. Neither is described as production media evidence.
+
 ## Try the local demonstration
 
 Install Docker and GNU Make, then run:
@@ -98,9 +116,10 @@ Run `make check` before a change is ready for review.
 
 ## Run the complete browser experience
 
-The gated single-host profile runs the web application, workflow runtime, Grafana MCP, and
-telemetry services on one Compute Engine VM. Caddy is the only public network entry point. The
-runtime and observability services remain on private container or host-loopback paths.
+The gated single-host profile runs the web application, workflow runtime, in-host render worker,
+Grafana MCP, and telemetry services on one Compute Engine VM. Caddy Basic Auth and TLS form the only
+public network entry point. The runtime and observability services remain on private container or
+host-loopback paths.
 
 Use the [single-host runbook](docs/operations/single-host.md) to build the images, create the host,
 open the browser workflow, stop or resume the VM, and contain an unhealthy deployment.

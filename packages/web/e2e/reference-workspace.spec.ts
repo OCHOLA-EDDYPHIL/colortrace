@@ -37,7 +37,7 @@ const RECORDED_BENCHMARK_PATH = fileURLToPath(
     import.meta.url,
   ),
 );
-const VISUAL_KINDS = ["expected", "observed", "recovered", "diff"] as const;
+const VISUAL_KINDS = ["expected", "observed", "diff"] as const;
 
 type PreviewManifest = {
   readonly scenarios: Readonly<
@@ -179,7 +179,7 @@ function summary(scenarioId: ReferenceScenarioId): ReferenceScenarioSummary {
 
 function scenarioList(): ReferenceScenarioList {
   return {
-    schema: "reference-scenario-list/v1",
+    schema: "reference-scenario-list/v2",
     collection_id: "tears-of-steel-linear-exr-240-v1",
     items: REFERENCE_SCENARIO_IDS.map(summary),
     provenance: PROVENANCE,
@@ -191,7 +191,7 @@ function scenarioList(): ReferenceScenarioList {
 function scenarioDetail(scenarioId: ReferenceScenarioId): ReferenceScenarioDetail {
   const metadata = SCENARIOS[scenarioId];
   return {
-    schema: "reference-scenario-detail/v1",
+    schema: "reference-scenario-detail/v2",
     summary: summary(scenarioId),
     evidence_requirements: {
       minimum_complementary_signal_classes: 2,
@@ -688,8 +688,34 @@ function rawRecoveryDecision(requestId: string): Readonly<Record<string, unknown
     receipt_id: `reference-recovery:${"a".repeat(64)}`,
     receipt_sha256: DIGEST,
   };
+  const recoveredVisual =
+    previewManifest.scenarios["tos-resource-resolution-drift-v1"].visuals.recovered;
+  const liveRender = {
+    schema: "reference-live-render/v1",
+    scenario_id: "tos-resource-resolution-drift-v1",
+    request_id: requestId,
+    action_intent_id: actionIntentId,
+    action_intent_sha256: `sha256:${"e".repeat(64)}`,
+    approval_id: approval.approval_id,
+    approval_sha256: approval.approval_sha256,
+    execution_target: "single-host-simulator-worker",
+    source_artifact_id: "frame:03_2a:00000",
+    source_sha256: DIGEST,
+    job_sha256: DIGEST,
+    worker_receipt_sha256: DIGEST,
+    output_sha256: DIGEST,
+    canonical_pixel_sha256: DIGEST,
+    expected_canonical_pixel_sha256: DIGEST,
+    output_equivalent: true,
+    visual_content_sha256: recoveredVisual.sha256,
+    visual_width: 960,
+    visual_height: 506,
+    dependencies: { openimageio: "3.0.6.1", opencolorio: "2.5.2" },
+    wall_nanoseconds: 1,
+    live_render_sha256: DIGEST,
+  };
   return {
-    schema: "reference-recovery-decision/v1",
+    schema: "reference-recovery-decision/v2",
     scenario_id: "tos-resource-resolution-drift-v1",
     request_id: requestId,
     run_id: RUN_ID,
@@ -703,6 +729,7 @@ function rawRecoveryDecision(requestId: string): Readonly<Record<string, unknown
     protected_state_unchanged: true,
     receipt,
     verification,
+    live_render: liveRender,
     scope: {
       kind: "representative-simulator-state",
       affected_job_count: 1,
@@ -802,6 +829,27 @@ async function installReferenceV3Flow(page: Page, requests: unknown[]) {
       return;
     }
     if (
+      request.method() === "GET" &&
+      url.pathname ===
+        `/v1/demo/scenarios/tos-resource-resolution-drift-v1/runs/${REQUEST_ID}/visuals/recovered`
+    ) {
+      const descriptor =
+        previewManifest.scenarios["tos-resource-resolution-drift-v1"].visuals.recovered;
+      await route.fulfill({
+        body: await readFile(path.join(PREVIEW_ROOT, descriptor.filename)),
+        contentType: "image/png",
+        headers: {
+          "X-ColorTrace-Decision-SHA256": DIGEST,
+          "X-ColorTrace-Pixel-Evidence": "true",
+          "X-ColorTrace-Representation": "fresh-open-film-preview-png/v1",
+          "X-ColorTrace-Request-ID": REQUEST_ID,
+          "X-ColorTrace-Worker-Receipt-SHA256": DIGEST,
+          "X-Content-SHA256": descriptor.sha256,
+        },
+      });
+      return;
+    }
+    if (
       request.method() === "POST" &&
       url.pathname ===
         `/v1/demo/scenarios/tos-resource-resolution-drift-v1/runs/${REQUEST_ID}/decision`
@@ -878,6 +926,7 @@ test("loads verified reference pixels and switches evidence contracts without mu
       name: "Gemini may select → Grafana can return → validators decide → human may authorize",
     }),
   ).toBeVisible();
+  await workspace.getByText(/Historical benchmark evidence/iu).click();
   await expect(
     workspace.getByRole("heading", { name: "Sealed benchmark; results not reported" }),
   ).toBeVisible();
@@ -906,6 +955,7 @@ test("renders the recorded reference impact v3 benchmark without comparison clai
 
   await page.goto("/");
 
+  await page.getByText(/Historical benchmark evidence/iu).click();
   const benchmark = page.getByRole("region", { name: "Product gates passed" });
   await expect(benchmark).toBeVisible();
   await expect(benchmark.locator('[data-result-state="passed"]')).toHaveText(
@@ -972,6 +1022,7 @@ test("completes the reference v3 Detect, Explain, Approve, Verify path", async (
         /Grafana MCP supplied 4 bound structured facts.*Gemini only selected read-only queries/iu,
       ),
   ).toBeVisible();
+  await workspace.getByText("Inspect technical evidence").click();
   await expect(workspace.getByText("Gemini selected queries")).toBeVisible();
   await expect(workspace.getByRole("heading", { name: "Correlated Grafana facts" })).toBeVisible();
   await expect(workspace.getByRole("heading", { name: "reconcile-resource" })).toBeVisible();
@@ -988,9 +1039,12 @@ test("completes the reference v3 Detect, Explain, Approve, Verify path", async (
     workspace.getByText("Fresh simulator state verified", { exact: true }),
   ).toBeVisible();
   await expect(
+    workspace.getByAltText(/Fresh recovered open-film output produced after this approval/iu),
+  ).toHaveJSProperty("naturalWidth", 960);
+  await expect(
     workspace
       .locator(".reference-live__authority")
-      .filter({ hasText: /human demo gesture recorded.*fresh simulator state verified/iu }),
+      .filter({ hasText: /human demo gesture recorded.*fresh worker pixels verified/iu }),
   ).toBeVisible();
   await expect(
     workspace.getByText(/Production untouched: no production access was used/iu),
