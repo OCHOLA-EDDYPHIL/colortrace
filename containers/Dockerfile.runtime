@@ -4,6 +4,14 @@ ARG SOURCE_DATE_EPOCH
 
 FROM ghcr.io/astral-sh/uv@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc AS uv
 
+FROM scratch AS reference-media
+ADD --checksum=sha256:17a375fa78df25f00dcdd16d8a47ad67715caccc2384f9b982bb22e29644c084 \
+    https://media.xiph.org/tearsofsteel/linear-exr/03_2a/03_2a_00000.exr \
+    /03_2a_00000.exr
+ADD --checksum=sha256:22a1121882537b2adc6bd61f80053bc620a5b95535b810496f2158d632b3999f \
+    https://media.xiph.org/tearsofsteel/linear-exr/03_2a/03_2a_00003.exr \
+    /03_2a_00003.exr
+
 FROM golang@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS mcp-grafana
 ARG SOURCE_DATE_EPOCH
 ENV CGO_ENABLED=0 \
@@ -144,6 +152,7 @@ ARG SOURCE_TREE
 ARG SOURCE_DATE_EPOCH
 ENV PYTHONDONTWRITEBYTECODE=1
 RUN apk add --no-cache libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 libstdc++=14.2.0-r6 \
+        libuuid=2.41.6-r1 py3-numpy=2.2.4-r1 py3-openimageio=3.0.6.1-r0 \
     && case "$SOURCE_COMMIT" in (*[!0-9a-f]*|'') exit 1;; esac \
     && test "${#SOURCE_COMMIT}" = 40 \
     && case "$SOURCE_TREE" in (*[!0-9a-f]*|'') exit 1;; esac \
@@ -162,6 +171,10 @@ RUN apk add --no-cache libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 libstdc++=14.2.0-r6 
     && chmod 0444 /opt/colortrace-config/build-binding.json
 COPY --from=build /source/.venv /opt/colortrace
 COPY --from=build /opt/colortrace-fixture /opt/colortrace/fixture
+COPY --from=reference-media --chown=0:0 --chmod=0444 \
+    /03_2a_00000.exr \
+    /03_2a_00003.exr \
+    /opt/colortrace-reference/source/03_2a/
 COPY packages/fixture-generator/fixtures/canonical-digests.json \
     /opt/colortrace-config/fixture-canonical-digests.json
 COPY config/demo/local-demo.json /opt/colortrace-config/demo/local-demo.json
@@ -175,6 +188,8 @@ COPY uv.lock /opt/colortrace-config/uv.lock
 COPY deploy/runtime-entrypoint.py /usr/local/libexec/colortrace-entrypoint.py
 COPY packages/repo-tools/src/colortrace_repo/image_licenses.py /usr/local/libexec/colortrace-image-licenses.py
 COPY LICENSE /usr/share/licenses/colortrace/LICENSE
+COPY packages/fixture-generator/THIRD_PARTY_NOTICES \
+    /usr/share/licenses/colortrace/THIRD_PARTY_NOTICES
 RUN chmod 0555 /usr/local/libexec/colortrace-entrypoint.py \
     /usr/local/libexec/colortrace-image-licenses.py \
     && chmod 0444 \
@@ -188,11 +203,16 @@ RUN chmod 0555 /usr/local/libexec/colortrace-entrypoint.py \
         /opt/colortrace-config/uv.lock \
     && find /opt/colortrace/fixture -type d -exec chmod 0555 {} + \
     && find /opt/colortrace/fixture -type f -exec chmod 0444 {} + \
-    && /opt/colortrace/bin/python -c "import colortrace_api, colortrace_grafana_mcp, colortrace_simulator"
+    && find /opt/colortrace-reference -type d -exec chmod 0555 {} + \
+    && find /opt/colortrace-reference -type f -exec chmod 0444 {} + \
+    && chmod 0444 /usr/share/licenses/colortrace/THIRD_PARTY_NOTICES \
+    && PYTHONPATH=/usr/lib/python3.12/site-packages /opt/colortrace/bin/python -c \
+        "import colortrace_api, colortrace_grafana_mcp, colortrace_simulator, OpenImageIO; assert OpenImageIO.VERSION_STRING == '3.0.6.1'"
 LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
       org.colortrace.source-tree="${SOURCE_TREE}"
 ENV HOME=/tmp/colortrace \
     PATH=/opt/colortrace/bin:/usr/local/bin:/usr/bin:/bin \
+    PYTHONPATH=/usr/lib/python3.12/site-packages \
     PYTHONUNBUFFERED=1
 USER colortrace
 EXPOSE 8080

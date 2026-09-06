@@ -2196,6 +2196,14 @@ h4 {
   text-transform: uppercase;
 }
 
+.reference-supporting-view__heading .reference-supporting-view__gate {
+  border: 1px solid rgb(255 210 122 / 36%);
+  border-radius: 999px;
+  padding: 0.35rem 0.55rem;
+  color: var(--shot-amber);
+  text-align: right;
+}
+
 .reference-view-switcher {
   display: flex;
   gap: 0.35rem;
@@ -2283,6 +2291,56 @@ h4 {
 .reference-live__heading > button:disabled {
   cursor: wait;
   opacity: 0.62;
+}
+
+.reference-live__progress {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reference-live__progress li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.08rem 0.5rem;
+  border-top: 2px solid var(--shot-border);
+  padding: 0.5rem 0.15rem 0;
+  color: var(--shot-muted);
+}
+
+.reference-live__progress li > span {
+  grid-row: 1 / 3;
+  color: inherit;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.64rem;
+  font-weight: 850;
+}
+
+.reference-live__progress li > strong {
+  color: var(--shot-text);
+  font-size: 0.75rem;
+}
+
+.reference-live__progress li > small {
+  font-size: 0.62rem;
+}
+
+.reference-live__progress li[data-state="active"] {
+  border-color: var(--shot-amber);
+  color: var(--shot-amber);
+}
+
+.reference-live__progress li[data-state="complete"] {
+  border-color: var(--shot-lime);
+  color: var(--shot-lime);
+}
+
+.reference-live__progress li[data-state="skipped"] {
+  border-color: rgb(255 210 122 / 45%);
+  color: var(--shot-amber);
 }
 
 .reference-live__notice {
@@ -2390,6 +2448,28 @@ h4 {
   border-radius: 0.75rem;
   padding: 0.8rem;
   background: rgb(17 23 34 / 78%);
+}
+
+.reference-live__technical {
+  border: 1px solid var(--shot-border);
+  border-radius: 0.75rem;
+  background: rgb(7 11 17 / 42%);
+}
+
+.reference-live__technical > summary {
+  padding: 0.75rem 0.8rem;
+  color: var(--shot-cyan);
+  font-size: 0.72rem;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.reference-live__technical[open] > summary {
+  border-bottom: 1px solid var(--shot-border);
+}
+
+.reference-live__technical > :not(summary) {
+  margin: 0.75rem;
 }
 
 .reference-live__correlation {
@@ -2737,6 +2817,47 @@ h4 {
   gap: 0.7rem;
 }
 
+.reference-recovery__live-visual {
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid rgb(169 240 197 / 48%);
+  border-radius: 0.75rem;
+  background: #080d14;
+}
+
+.reference-recovery__live-visual figcaption {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.7rem 0.8rem;
+  border-bottom: 1px solid var(--shot-border);
+}
+
+.reference-recovery__live-visual figcaption strong {
+  color: var(--shot-lime);
+  font-size: 0.78rem;
+}
+
+.reference-recovery__live-visual figcaption span,
+.reference-recovery__live-visual p {
+  color: var(--shot-muted);
+  font-size: 0.65rem;
+}
+
+.reference-recovery__live-visual img {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #080d14;
+  object-fit: contain;
+}
+
+.reference-recovery__live-visual p {
+  margin: 0;
+  padding: 0.6rem 0.8rem;
+  overflow-wrap: anywhere;
+}
+
 .reference-recovery__result-heading > strong {
   border: 1px solid rgb(169 240 197 / 45%);
   border-radius: 999px;
@@ -2934,6 +3055,123 @@ h4 {
   border: 1px solid var(--shot-border);
   border-radius: 0.85rem;
   background: rgb(17 23 34 / 86%);
+}
+
+.reference-benchmark-disclosure {
+  overflow: hidden;
+  border: 1px solid var(--shot-border);
+  border-radius: 0.85rem;
+  background: rgb(17 23 34 / 62%);
+}
+
+.reference-benchmark-disclosure > summary {
+  padding: 0.85rem 0.95rem;
+  color: var(--shot-muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.reference-benchmark-disclosure[open] > summary {
+  border-bottom: 1px solid var(--shot-border);
+}
+
+.reference-benchmark-disclosure > .reference-benchmark {
+  border: 0;
+  border-radius: 0;
+}
+
+.reference-next-investigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid rgb(169 240 197 / 40%);
+  border-radius: 0.85rem;
+  padding: 0.8rem 0.95rem;
+  background: linear-gradient(110deg, rgb(169 240 197 / 9%), rgb(118 225 255 / 4%));
+}
+
+.reference-next-investigation > div {
+  display: grid;
+  gap: 0.16rem;
+}
+
+.reference-next-investigation span {
+  color: var(--shot-muted);
+  font-size: 0.65rem;
+  text-transform: uppercase;
+}
+
+.reference-next-investigation strong {
+  font-size: 0.86rem;
+}
+
+.reference-next-investigation button {
+  border: 1px solid rgb(169 240 197 / 54%);
+  border-radius: 999px;
+  padding: 0.55rem 0.8rem;
+  background: rgb(169 240 197 / 10%);
+  color: var(--shot-lime);
+  font-size: 0.72rem;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.reference-comparison {
+  display: grid;
+  gap: 0.75rem;
+  border: 1px solid rgb(118 225 255 / 36%);
+  border-radius: 0.9rem;
+  padding: 0.9rem;
+  background: rgb(10 16 25 / 90%);
+}
+
+.reference-comparison h3,
+.reference-comparison p {
+  margin: 0;
+}
+
+.reference-comparison > div:first-child > p:last-child {
+  margin-top: 0.3rem;
+  color: var(--shot-muted);
+  font-size: 0.72rem;
+}
+
+.reference-comparison__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.reference-comparison__grid article {
+  display: grid;
+  gap: 0.45rem;
+  border-left: 2px solid var(--shot-cyan);
+  padding: 0.6rem 0.75rem;
+  background: rgb(118 225 255 / 4%);
+}
+
+.reference-comparison__grid article > span,
+.reference-comparison__grid dt {
+  color: var(--shot-muted);
+  font-size: 0.64rem;
+}
+
+.reference-comparison__grid dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+  margin: 0;
+}
+
+.reference-comparison__grid dl > div {
+  min-width: 0;
+}
+
+.reference-comparison__grid dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.7rem;
 }
 
 .reference-proof__authority {
@@ -3234,6 +3472,11 @@ h4 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .reference-comparison__grid,
+  .reference-comparison__grid dl {
+    grid-template-columns: 1fr;
+  }
+
   .reference-recovery__state-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3280,6 +3523,10 @@ h4 {
   .reference-recovery__choices,
   .reference-recovery__state-grid {
     grid-template-columns: 1fr;
+  }
+
+  .reference-live__progress {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .reference-benchmark--recorded .reference-benchmark__metrics,
@@ -3444,6 +3691,11 @@ h4 {
 
   .reference-recovery__heading .reference-recovery__boundary-note {
     text-align: left;
+  }
+
+  .reference-next-investigation,
+  .reference-recovery__live-visual figcaption {
+    display: grid;
   }
 
   .reference-scenario-panel__state {

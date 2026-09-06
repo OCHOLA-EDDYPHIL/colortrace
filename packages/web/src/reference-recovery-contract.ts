@@ -122,8 +122,36 @@ export type ReferenceRecoveryReceipt = {
   readonly receipt_sha256: string;
 };
 
+export type ReferenceLiveRender = {
+  readonly schema: "reference-live-render/v1";
+  readonly scenario_id: ReferenceResponsePacket["scenario_id"];
+  readonly request_id: string;
+  readonly action_intent_id: string;
+  readonly action_intent_sha256: string;
+  readonly approval_id: string;
+  readonly approval_sha256: string;
+  readonly execution_target: "single-host-simulator-worker";
+  readonly source_artifact_id: string;
+  readonly source_sha256: string;
+  readonly job_sha256: string;
+  readonly worker_receipt_sha256: string;
+  readonly output_sha256: string;
+  readonly canonical_pixel_sha256: string;
+  readonly expected_canonical_pixel_sha256: string;
+  readonly output_equivalent: true;
+  readonly visual_content_sha256: string;
+  readonly visual_width: 960;
+  readonly visual_height: 506;
+  readonly dependencies: {
+    readonly openimageio: "3.0.6.1" | "3.1.17.0";
+    readonly opencolorio: "2.5.2";
+  };
+  readonly wall_nanoseconds: number;
+  readonly live_render_sha256: string;
+};
+
 export type ReferenceRecoveryDecision = {
-  readonly schema: "reference-recovery-decision/v1";
+  readonly schema: "reference-recovery-decision/v2";
   readonly scenario_id: ReferenceResponsePacket["scenario_id"];
   readonly request_id: string;
   readonly run_id: string;
@@ -137,6 +165,7 @@ export type ReferenceRecoveryDecision = {
   readonly protected_state_unchanged: true;
   readonly receipt: ReferenceRecoveryReceipt | null;
   readonly verification: ReferenceRecoveryVerification | null;
+  readonly live_render: ReferenceLiveRender | null;
   readonly scope: {
     readonly kind: "representative-simulator-state";
     readonly affected_job_count: 1;
@@ -182,9 +211,34 @@ const DECISION_KEYS = new Set([
   "protected_state_unchanged",
   "receipt",
   "verification",
+  "live_render",
   "scope",
   "execution_boundary",
   "decision_sha256",
+]);
+const LIVE_RENDER_KEYS = new Set([
+  "schema",
+  "scenario_id",
+  "request_id",
+  "action_intent_id",
+  "action_intent_sha256",
+  "approval_id",
+  "approval_sha256",
+  "execution_target",
+  "source_artifact_id",
+  "source_sha256",
+  "job_sha256",
+  "worker_receipt_sha256",
+  "output_sha256",
+  "canonical_pixel_sha256",
+  "expected_canonical_pixel_sha256",
+  "output_equivalent",
+  "visual_content_sha256",
+  "visual_width",
+  "visual_height",
+  "dependencies",
+  "wall_nanoseconds",
+  "live_render_sha256",
 ]);
 const APPROVAL_KEYS = new Set([
   "schema",
@@ -698,6 +752,71 @@ async function parseReceipt(
   };
 }
 
+async function parseLiveRender(
+  value: unknown,
+  packet: ReferenceResponsePacket,
+  approval: ReferenceHumanApproval,
+  sha256: ReferencePacketSha256,
+): Promise<ReferenceLiveRender> {
+  const source = record(value);
+  exactKeys(source, LIVE_RENDER_KEYS);
+  const intent = packet.action_intent;
+  const dependencies = record(source.dependencies);
+  exactKeys(dependencies, new Set(["openimageio", "opencolorio"]));
+  const openimageio = stringValue(dependencies.openimageio, /^3\.(?:0\.6\.1|1\.17\.0)$/u);
+  if (
+    intent === null ||
+    source.schema !== "reference-live-render/v1" ||
+    source.scenario_id !== packet.scenario_id ||
+    source.request_id !== packet.request_id ||
+    source.action_intent_id !== intent.action_intent_id ||
+    source.action_intent_sha256 !== intent.derivation_sha256 ||
+    source.approval_id !== approval.approval_id ||
+    source.approval_sha256 !== approval.approval_sha256 ||
+    source.execution_target !== "single-host-simulator-worker" ||
+    source.output_equivalent !== true ||
+    source.canonical_pixel_sha256 !== source.expected_canonical_pixel_sha256 ||
+    source.visual_width !== 960 ||
+    source.visual_height !== 506 ||
+    dependencies.opencolorio !== "2.5.2"
+  ) {
+    throw invalidRecovery();
+  }
+  const liveRenderSha256 = await verifyDerived(
+    source,
+    "live_render_sha256",
+    new Set(["live_render_sha256"]),
+    sha256,
+  );
+  return {
+    schema: "reference-live-render/v1",
+    scenario_id: packet.scenario_id,
+    request_id: packet.request_id,
+    action_intent_id: stringValue(source.action_intent_id, ACTION_INTENT_ID),
+    action_intent_sha256: stringValue(source.action_intent_sha256, DIGEST),
+    approval_id: stringValue(source.approval_id, APPROVAL_ID),
+    approval_sha256: stringValue(source.approval_sha256, DIGEST),
+    execution_target: "single-host-simulator-worker",
+    source_artifact_id: stringValue(source.source_artifact_id),
+    source_sha256: stringValue(source.source_sha256, DIGEST),
+    job_sha256: stringValue(source.job_sha256, DIGEST),
+    worker_receipt_sha256: stringValue(source.worker_receipt_sha256, DIGEST),
+    output_sha256: stringValue(source.output_sha256, DIGEST),
+    canonical_pixel_sha256: stringValue(source.canonical_pixel_sha256, DIGEST),
+    expected_canonical_pixel_sha256: stringValue(source.expected_canonical_pixel_sha256, DIGEST),
+    output_equivalent: true,
+    visual_content_sha256: stringValue(source.visual_content_sha256, DIGEST),
+    visual_width: 960,
+    visual_height: 506,
+    dependencies: {
+      openimageio: openimageio as "3.0.6.1" | "3.1.17.0",
+      opencolorio: "2.5.2",
+    },
+    wall_nanoseconds: integerValue(source.wall_nanoseconds),
+    live_render_sha256: liveRenderSha256,
+  };
+}
+
 export async function parseReferenceRecoveryDecision(
   value: unknown,
   packet: ReferenceResponsePacket,
@@ -715,7 +834,7 @@ export async function parseReferenceRecoveryDecision(
   const source = record(value);
   exactKeys(source, DECISION_KEYS);
   if (
-    source.schema !== "reference-recovery-decision/v1" ||
+    source.schema !== "reference-recovery-decision/v2" ||
     source.scenario_id !== packet.scenario_id ||
     source.request_id !== packet.request_id ||
     source.run_id !== packet.run_id ||
@@ -791,21 +910,25 @@ export async function parseReferenceRecoveryDecision(
   }
   let receipt: ReferenceRecoveryReceipt | null = null;
   let verification: ReferenceRecoveryVerification | null = null;
+  let liveRender: ReferenceLiveRender | null = null;
   if (expectedDecision === "approved") {
     if (
       after.generation !== before.generation + 1 ||
       after.state_sha256 === before.state_sha256 ||
       source.receipt === null ||
-      source.verification === null
+      source.verification === null ||
+      source.live_render === null
     ) {
       throw invalidRecovery();
     }
     receipt = await parseReceipt(source.receipt, packet, approval, before, after, sha256);
     if (!sameDocument(source.verification, receipt.verification)) throw invalidRecovery();
     verification = receipt.verification;
+    liveRender = await parseLiveRender(source.live_render, packet, approval, sha256);
   } else if (
     source.receipt !== null ||
     source.verification !== null ||
+    source.live_render !== null ||
     !sameDocument(before, after)
   ) {
     throw invalidRecovery();
@@ -817,7 +940,7 @@ export async function parseReferenceRecoveryDecision(
     sha256,
   );
   return {
-    schema: "reference-recovery-decision/v1",
+    schema: "reference-recovery-decision/v2",
     scenario_id: packet.scenario_id,
     request_id: packet.request_id,
     run_id: packet.run_id,
@@ -831,6 +954,7 @@ export async function parseReferenceRecoveryDecision(
     protected_state_unchanged: true,
     receipt,
     verification,
+    live_render: liveRender,
     scope: {
       kind: "representative-simulator-state",
       affected_job_count: 1,

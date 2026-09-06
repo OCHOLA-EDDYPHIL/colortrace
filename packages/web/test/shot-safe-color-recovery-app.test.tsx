@@ -98,7 +98,7 @@ function referenceAdapterFixture(): ReferenceDemoAdapter {
     source_canonical_pixel_sha256: [REFERENCE_DIGEST],
   });
   const catalog: ReferenceScenarioList = {
-    schema: "reference-scenario-list/v1",
+    schema: "reference-scenario-list/v2",
     collection_id: "tears-of-steel-linear-exr-240-v1",
     items: [
       {
@@ -113,7 +113,7 @@ function referenceAdapterFixture(): ReferenceDemoAdapter {
           affected_artifact_count: 72,
           protected_artifact_count: 168,
         },
-        visuals: [visual("expected"), visual("observed"), visual("recovered"), visual("diff")],
+        visuals: [visual("expected"), visual("observed"), visual("diff")],
       },
     ],
     provenance: {
@@ -150,6 +150,9 @@ function referenceAdapterFixture(): ReferenceDemoAdapter {
       source_relation: descriptor.source_relation,
       src: `blob:reference-${descriptor.kind}`,
     })),
+    loadLiveRecoveredVisual: vi.fn(async () => {
+      throw new Error("not used");
+    }),
     releaseVisual: vi.fn(),
   };
 }

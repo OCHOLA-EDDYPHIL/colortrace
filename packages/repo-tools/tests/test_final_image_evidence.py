@@ -626,6 +626,51 @@ class FinalImageEvidenceTest(unittest.TestCase):
                 "unexplained",
             )
 
+            apk_bundle = copy.deepcopy(bundle)
+            apk_component = next(
+                value for value in apk_bundle["components"] if value["name"] == "busybox"
+            )
+            apk_component["license_expression"] = "FTL OR GPL-2.0-or-later"
+            apk_raw = copy.deepcopy(raw)
+            scanner_busybox = next(
+                value for value in apk_raw["components"] if value["name"] == "busybox"
+            )
+            scanner_busybox["licenses"] = [
+                {"license": {"id": "FTL"}},
+                {"license": {"id": "GPL-2.0-or-later"}},
+            ]
+            _, apk_coverage, apk_findings = _reconcile(apk_raw, apk_bundle, bundle_record, profile)
+            self.assertEqual(apk_findings, [])
+            self.assertEqual(apk_coverage["status"], "pass")
+            self.assertEqual(
+                apk_coverage["conflicts"][0]["status"],
+                "scanner-flattened-apk-declaration",
+            )
+
+            scanner_busybox["licenses"].append({"license": {"id": "MIT"}})
+            _, apk_mismatch_coverage, apk_mismatch_findings = _reconcile(
+                apk_raw, apk_bundle, bundle_record, profile
+            )
+            self.assertIn(
+                "image.coverage.conflict",
+                {value.code for value in apk_mismatch_findings},
+            )
+            self.assertEqual(apk_mismatch_coverage["status"], "fail")
+
+            apk_component["license_expression"] = "GPL-2.0-only WITH Classpath-exception-2.0"
+            scanner_busybox["licenses"] = [
+                {"license": {"id": "GPL-2.0-only"}},
+                {"license": {"id": "Classpath-exception-2.0"}},
+            ]
+            _, apk_exception_coverage, apk_exception_findings = _reconcile(
+                apk_raw, apk_bundle, bundle_record, profile
+            )
+            self.assertIn(
+                "image.coverage.conflict",
+                {value.code for value in apk_exception_findings},
+            )
+            self.assertEqual(apk_exception_coverage["status"], "fail")
+
             for scanner_alias, bundle_identifier in (
                 ("X-11", "X11"),
                 ("bzip-2-1.0.6", "bzip2-1.0.6"),

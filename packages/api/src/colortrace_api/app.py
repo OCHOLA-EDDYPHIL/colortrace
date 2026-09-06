@@ -190,6 +190,7 @@ def _status_for_reference_demo_error(code: str) -> int:
     if code in {
         "reference-run-not-found",
         "reference-scenario-not-found",
+        "reference-live-visual-not-found",
         "reference-visual-not-found",
     }:
         return 404
@@ -211,6 +212,16 @@ def _status_for_reference_demo_error(code: str) -> int:
         "reference-preview-unavailable",
         "reference-run-telemetry-unavailable",
         "reference-run-unavailable",
+        "reference-live-render-binding-invalid",
+        "reference-live-render-configuration-invalid",
+        "reference-live-render-dependency-unavailable",
+        "reference-live-render-failed",
+        "reference-live-render-output-invalid",
+        "reference-live-render-preview-invalid",
+        "reference-live-render-receipt-invalid",
+        "reference-live-render-result-invalid",
+        "reference-live-render-timeout",
+        "reference-live-render-unavailable",
     }:
         return 503
     if code in {
@@ -615,6 +626,23 @@ def create_app(
         response.headers["X-ColorTrace-Execution-Target"] = "colortrace-simulator"
         response.headers["X-ColorTrace-Production-State-Changed"] = "false"
         return decision
+
+    @app.get("/v1/demo/scenarios/{scenario_id}/runs/{request_id}/visuals/recovered")
+    def get_reference_demo_recovered_visual(scenario_id: str, request_id: str) -> Response:
+        visual = reference_run_api().live_visual(scenario_id, request_id)
+        return Response(
+            content=visual.content,
+            media_type="image/png",
+            headers={
+                "X-Content-SHA256": visual.sha256,
+                "X-ColorTrace-Request-ID": visual.request_id,
+                "X-ColorTrace-Decision-SHA256": visual.decision_sha256,
+                "X-ColorTrace-Worker-Receipt-SHA256": visual.worker_receipt_sha256,
+                "X-ColorTrace-Representation": "fresh-open-film-preview-png/v1",
+                "X-ColorTrace-Pixel-Evidence": "true",
+                "Cache-Control": "private, no-store",
+            },
+        )
 
     @app.get("/v1/demo/scenarios/{scenario_id}/visuals/{kind}")
     def get_reference_demo_visual(scenario_id: str, kind: str) -> Response:

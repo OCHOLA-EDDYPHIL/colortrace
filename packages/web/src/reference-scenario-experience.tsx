@@ -12,6 +12,7 @@ import {
   type ReferenceScenarioSummary,
   type ReferenceVisualDescriptor,
   type ReferenceVisualKind,
+  type VerifiedLiveReferenceVisual,
   type VerifiedReferenceVisual,
 } from "./reference-demo-api.ts";
 import type {
@@ -303,9 +304,7 @@ function SupportingPixelEvidence({
   readonly scenarioTitle: string;
   readonly summary: ReferenceScenarioSummary;
 }) {
-  const [selectedKind, setSelectedKind] = useState<"diff" | "recovered">("diff");
-  const descriptor = visual(summary, selectedKind);
-  const label = selectedKind === "diff" ? "Difference ×8" : "Recovered output";
+  const descriptor = visual(summary, "diff");
 
   return (
     <section
@@ -315,38 +314,23 @@ function SupportingPixelEvidence({
       <div className="reference-supporting-view__heading">
         <div>
           <span>Supporting pixel evidence</span>
-          <h4 id="reference-supporting-view-title">Inspect difference or recovered output</h4>
+          <h4 id="reference-supporting-view-title">Inspect the amplified difference</h4>
         </div>
-        <fieldset className="reference-view-switcher">
-          <legend className="sr-only">Supporting pixel view</legend>
-          <button
-            aria-pressed={selectedKind === "diff"}
-            onClick={() => setSelectedKind("diff")}
-            type="button"
-          >
-            Difference ×8
-          </button>
-          <button
-            aria-pressed={selectedKind === "recovered"}
-            onClick={() => setSelectedKind("recovered")}
-            type="button"
-          >
-            Recovered
-          </button>
-        </fieldset>
+        <span className="reference-supporting-view__gate">
+          Recovery appears only after approval
+        </span>
       </div>
       <div className="reference-supporting-view__content">
         <OpenFilmVisual
           adapter={adapter}
           descriptor={descriptor}
-          label={label}
+          label="Difference ×8"
           scenarioSha256={scenarioSha256}
           scenarioTitle={scenarioTitle}
         />
         <p>
-          {selectedKind === "diff"
-            ? "The absolute display-pixel difference is amplified 8× so small changes remain visible. Its displayed intensity is not a direct measurement of error magnitude."
-            : "The recovered output is worker-produced pixel evidence bound to its source receipt; this catalog view does not claim a recovery was authorized."}
+          The absolute display-pixel difference is amplified 8× so small changes remain visible. Its
+          displayed intensity is not a direct measurement of error magnitude.
         </p>
       </div>
     </section>
@@ -518,10 +502,20 @@ function ActionIntentView({ intent }: { readonly intent: ReferenceActionIntent }
 type RecoveryDecisionState =
   | { readonly phase: "idle" }
   | { readonly choice: ReferenceRecoveryChoice; readonly phase: "pending" }
-  | { readonly decision: ReferenceRecoveryDecision; readonly phase: "complete" }
+  | {
+      readonly decision: ReferenceRecoveryDecision;
+      readonly liveVisual: VerifiedLiveReferenceVisual | null;
+      readonly phase: "complete";
+    }
   | { readonly phase: "failed" };
 
-function RecoveryDecisionResult({ decision }: { readonly decision: ReferenceRecoveryDecision }) {
+function RecoveryDecisionResult({
+  decision,
+  liveVisual,
+}: {
+  readonly decision: ReferenceRecoveryDecision;
+  readonly liveVisual: VerifiedLiveReferenceVisual | null;
+}) {
   const applied = decision.outcome === "applied";
   const receipt = decision.receipt;
   const verification = decision.verification;
@@ -544,6 +538,25 @@ function RecoveryDecisionResult({ decision }: { readonly decision: ReferenceReco
         Human demo gesture recorded with an explicit phrase and unique nonce. Identity was not
         verified; assurance is <code>unverified-public-demo-gesture</code>.
       </p>
+
+      {liveVisual === null ? null : (
+        <figure className="reference-recovery__live-visual" data-pixel-evidence="true">
+          <figcaption>
+            <strong>Fresh recovered output</strong>
+            <span>Rendered after approval · PNG and receipt bindings verified</span>
+          </figcaption>
+          <img
+            alt="Fresh recovered open-film output produced after this approval"
+            height={liveVisual.height}
+            src={liveVisual.src}
+            width={liveVisual.width}
+          />
+          <p>
+            Request <code>{liveVisual.request_id}</code> · worker receipt{" "}
+            <code>{liveVisual.worker_receipt_sha256}</code>
+          </p>
+        </figure>
+      )}
 
       <dl className="reference-recovery__state-grid">
         <div>
@@ -592,9 +605,9 @@ function RecoveryDecisionResult({ decision }: { readonly decision: ReferenceReco
           </p>
           <code>{verification.verification_sha256}</code>
           <p>
-            This is deterministic simulator-state verification. It does not establish a rerender,
-            pixel output, a new Grafana observation, worker execution, full-population behavior, or
-            production evidence.
+            The approved exemplar was rendered by the in-host worker and its canonical pixels match
+            the expected output. This does not establish full-population behavior or production
+            evidence.
           </p>
         </div>
       )}
@@ -627,18 +640,21 @@ function recoveryAuthoritySummary(
     return `${investigation} → decision response unavailable or invalid; no outcome shown.`;
   }
   return state.decision.outcome === "applied"
-    ? `${investigation} → human demo gesture recorded → representative simulator action applied → fresh simulator state verified.`
+    ? `${investigation} → human demo gesture recorded → representative simulator action applied → fresh worker pixels verified.`
     : `${investigation} → human denial recorded → simulator unchanged.`;
 }
 
 function ReferenceRecoveryDecisionControl({
   adapter,
+  onStateChange,
   packet,
+  state,
 }: {
   readonly adapter: ReferenceDemoAdapter;
+  readonly onStateChange: (state: RecoveryDecisionState) => void;
   readonly packet: ReferenceResponsePacket;
+  readonly state: RecoveryDecisionState;
 }) {
-  const [state, setState] = useState<RecoveryDecisionState>({ phase: "idle" });
   const activeDecision = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -649,14 +665,22 @@ function ReferenceRecoveryDecisionControl({
     activeDecision.current?.abort();
     const controller = new AbortController();
     activeDecision.current = controller;
-    setState({ choice, phase: "pending" });
+    onStateChange({ choice, phase: "pending" });
     void adapter
       .decideRecovery(packet, choice, controller.signal)
-      .then((decision) => {
-        if (!controller.signal.aborted) setState({ decision, phase: "complete" });
+      .then(async (decision) => {
+        const liveVisual =
+          decision.decision === "approved"
+            ? await adapter.loadLiveRecoveredVisual(decision, controller.signal)
+            : null;
+        if (!controller.signal.aborted) {
+          onStateChange({ decision, liveVisual, phase: "complete" });
+        } else if (liveVisual !== null) {
+          adapter.releaseVisual(liveVisual);
+        }
       })
       .catch(() => {
-        if (!controller.signal.aborted) setState({ phase: "failed" });
+        if (!controller.signal.aborted) onStateChange({ phase: "failed" });
       });
   };
 
@@ -673,7 +697,7 @@ function ReferenceRecoveryDecisionControl({
       </div>
 
       {state.phase === "complete" ? (
-        <RecoveryDecisionResult decision={state.decision} />
+        <RecoveryDecisionResult decision={state.decision} liveVisual={state.liveVisual} />
       ) : (
         <>
           <p className="reference-recovery__limitations">
@@ -728,10 +752,14 @@ function ReferenceRecoveryDecisionControl({
 
 function LiveInvestigationResult({
   adapter,
+  decisionState,
+  onDecisionStateChange,
   packet,
   summary,
 }: {
   readonly adapter: ReferenceDemoAdapter;
+  readonly decisionState: RecoveryDecisionState;
+  readonly onDecisionStateChange: (state: RecoveryDecisionState) => void;
   readonly packet: ReferenceResponsePacket;
   readonly summary: ReferenceScenarioSummary;
 }) {
@@ -812,100 +840,106 @@ function LiveInvestigationResult({
         </section>
       </div>
 
-      <section aria-labelledby="reference-selection-trace-title" className="reference-live__trace">
-        <div className="reference-live__subheading">
-          <div>
-            <span>Adaptive path</span>
-            <h5 id="reference-selection-trace-title">Selection trace</h5>
+      <details className="reference-live__technical">
+        <summary>Inspect technical evidence</summary>
+        <section
+          aria-labelledby="reference-selection-trace-title"
+          className="reference-live__trace"
+        >
+          <div className="reference-live__subheading">
+            <div>
+              <span>Adaptive path</span>
+              <h5 id="reference-selection-trace-title">Selection trace</h5>
+            </div>
+            <small className="reference-live__subheading-note">
+              {packet.reference_evidence.source} · read only
+            </small>
           </div>
-          <small className="reference-live__subheading-note">
-            {packet.reference_evidence.source} · read only
-          </small>
-        </div>
-        <ol>
-          {packet.selection_trace.map((entry) => (
-            <li key={`${entry.sequence}-${entry.query_key}`}>
-              <span>{String(entry.sequence + 1).padStart(2, "0")}</span>
-              <div>
-                <strong>{entry.query_key}</strong>
-                <small>{selectionAuthority(entry)}</small>
-              </div>
-              <div>
-                <strong>{entry.disposition}</strong>
-                <small>{entry.reason_codes.join(" · ") || "No reason code"}</small>
-              </div>
-              <code>{entry.evidence_id ?? "No evidence returned"}</code>
-            </li>
-          ))}
-        </ol>
-      </section>
+          <ol>
+            {packet.selection_trace.map((entry) => (
+              <li key={`${entry.sequence}-${entry.query_key}`}>
+                <span>{String(entry.sequence + 1).padStart(2, "0")}</span>
+                <div>
+                  <strong>{entry.query_key}</strong>
+                  <small>{selectionAuthority(entry)}</small>
+                </div>
+                <div>
+                  <strong>{entry.disposition}</strong>
+                  <small>{entry.reason_codes.join(" · ") || "No reason code"}</small>
+                </div>
+                <code>{entry.evidence_id ?? "No evidence returned"}</code>
+              </li>
+            ))}
+          </ol>
+        </section>
 
-      <CorrelatedEvidenceTable packet={packet} />
+        <CorrelatedEvidenceTable packet={packet} />
 
-      <div className="reference-live__inspection-grid">
-        <details open>
-          <summary>Grafana evidence IDs</summary>
-          {packet.evidence_ids.length === 0 ? (
-            <p>No evidence IDs were returned.</p>
-          ) : (
+        <div className="reference-live__inspection-grid">
+          <details>
+            <summary>Grafana evidence IDs</summary>
+            {packet.evidence_ids.length === 0 ? (
+              <p>No evidence IDs were returned.</p>
+            ) : (
+              <ul>
+                {packet.evidence_ids.map((evidenceId) => (
+                  <li key={evidenceId}>
+                    <code>{evidenceId}</code>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </details>
+          <details>
+            <summary>Returned deterministic scope</summary>
+            <strong>Affected</strong>
             <ul>
-              {packet.evidence_ids.map((evidenceId) => (
-                <li key={evidenceId}>
-                  <code>{evidenceId}</code>
+              {reconciliation.scope.affected_job_ids.map((jobId) => (
+                <li key={jobId}>
+                  <code>{jobId}</code>
                 </li>
               ))}
             </ul>
-          )}
-        </details>
-        <details>
-          <summary>Returned deterministic scope</summary>
-          <strong>Affected</strong>
-          <ul>
-            {reconciliation.scope.affected_job_ids.map((jobId) => (
-              <li key={jobId}>
-                <code>{jobId}</code>
-              </li>
-            ))}
-          </ul>
-          <strong>Protected</strong>
-          <ul>
-            {reconciliation.scope.safe_job_ids.map((jobId) => (
-              <li key={jobId}>
-                <code>{jobId}</code>
-              </li>
-            ))}
-          </ul>
-        </details>
-      </div>
-
-      <p className="reference-live__representative">
-        This live investigation exercises one affected exemplar and one protected control. It does
-        not execute the full {summary.scope.affected_artifact_count}-frame catalog scenario.
-      </p>
-
-      <section aria-labelledby="reference-agent-trace-title" className="reference-live__spans">
-        <div className="reference-live__subheading">
-          <div>
-            <span>Internal agent trace</span>
-            <h5 id="reference-agent-trace-title">Model and tool spans</h5>
-          </div>
-          <small className="reference-live__subheading-note">
-            {invocation === null ? "No model invocation" : modelUsageSummary(invocation)}
-          </small>
+            <strong>Protected</strong>
+            <ul>
+              {reconciliation.scope.safe_job_ids.map((jobId) => (
+                <li key={jobId}>
+                  <code>{jobId}</code>
+                </li>
+              ))}
+            </ul>
+          </details>
         </div>
-        <ol>
-          {packet.agent_trace.spans.map((span) => (
-            <li key={span.sequence}>
-              <strong>{span.stage}</strong>
-              <span>{span.query_key ?? "model"}</span>
-              <span>{span.status}</span>
-              <span>{span.duration_ms} ms</span>
-              <span>{attemptSummary(span)}</span>
-              <code>{span.error_code ?? "no error"}</code>
-            </li>
-          ))}
-        </ol>
-      </section>
+
+        <p className="reference-live__representative">
+          This live investigation exercises one affected exemplar and one protected control. It does
+          not execute the full {summary.scope.affected_artifact_count}-frame catalog scenario.
+        </p>
+
+        <section aria-labelledby="reference-agent-trace-title" className="reference-live__spans">
+          <div className="reference-live__subheading">
+            <div>
+              <span>Internal agent trace</span>
+              <h5 id="reference-agent-trace-title">Model and tool spans</h5>
+            </div>
+            <small className="reference-live__subheading-note">
+              {invocation === null ? "No model invocation" : modelUsageSummary(invocation)}
+            </small>
+          </div>
+          <ol>
+            {packet.agent_trace.spans.map((span) => (
+              <li key={span.sequence}>
+                <strong>{span.stage}</strong>
+                <span>{span.query_key ?? "model"}</span>
+                <span>{span.status}</span>
+                <span>{span.duration_ms} ms</span>
+                <span>{attemptSummary(span)}</span>
+                <code>{span.error_code ?? "no error"}</code>
+              </li>
+            ))}
+          </ol>
+        </section>
+      </details>
 
       {packet.action_intent === null ? (
         <section className="reference-live__no-action">
@@ -918,8 +952,9 @@ function LiveInvestigationResult({
           <ActionIntentView intent={packet.action_intent} />
           <ReferenceRecoveryDecisionControl
             adapter={adapter}
-            key={packet.packet_id}
+            onStateChange={onDecisionStateChange}
             packet={packet}
+            state={decisionState}
           />
         </>
       )}
@@ -960,35 +995,128 @@ function liveAuthoritySummary(packet: ReferenceResponsePacket): string {
   return `${modelState} → ${grafanaState} → ${validatorState} → ${approvalState}.`;
 }
 
+function InvestigationProgress({
+  decision,
+  investigation,
+}: {
+  readonly decision: RecoveryDecisionState;
+  readonly investigation: LiveInvestigationState;
+}) {
+  const investigationComplete = investigation.phase === "complete";
+  const decisionComplete = decision.phase === "complete";
+  const verified =
+    decisionComplete && decision.decision.decision === "approved" && decision.liveVisual !== null;
+  const denied = decisionComplete && decision.decision.decision === "denied";
+  return (
+    <ol aria-label="Investigation progress" className="reference-live__progress">
+      <li data-state={investigationComplete ? "complete" : "active"}>
+        <span>01</span>
+        <strong>Detect</strong>
+        <small>{investigationComplete ? "Evidence bound" : "Ready"}</small>
+      </li>
+      <li data-state={investigationComplete ? "complete" : "pending"}>
+        <span>02</span>
+        <strong>Explain</strong>
+        <small>{investigationComplete ? "Cause reconciled" : "Pending"}</small>
+      </li>
+      <li data-state={decisionComplete ? "complete" : investigationComplete ? "active" : "pending"}>
+        <span>03</span>
+        <strong>Approve</strong>
+        <small>{denied ? "Denied" : decisionComplete ? "Recorded" : "Human gate"}</small>
+      </li>
+      <li data-state={verified ? "complete" : denied ? "skipped" : "pending"}>
+        <span>04</span>
+        <strong>Verify</strong>
+        <small>{verified ? "Pixels matched" : denied ? "No action" : "Pending"}</small>
+      </li>
+    </ol>
+  );
+}
+
 function ReferenceLiveInvestigation({
   adapter,
+  onPacket,
   summary,
 }: {
   readonly adapter: ReferenceDemoAdapter;
+  readonly onPacket: (packet: ReferenceResponsePacket) => void;
   readonly summary: ReferenceScenarioSummary;
 }) {
-  const [state, setState] = useState<LiveInvestigationState>({ phase: "idle" });
-  const activeRequest = useRef<AbortController | null>(null);
+  const [states, setStates] = useState<
+    Partial<Record<ReferenceScenarioId, LiveInvestigationState>>
+  >({});
+  const [decisionStates, setDecisionStates] = useState<
+    Partial<Record<ReferenceScenarioId, RecoveryDecisionState>>
+  >({});
+  const decisionStatesRef = useRef(decisionStates);
+  const activeRequest = useRef<{
+    readonly controller: AbortController;
+    readonly scenarioId: ReferenceScenarioId;
+  } | null>(null);
+  const state = states[summary.scenario_id] ?? { phase: "idle" };
+  const decisionState = decisionStates[summary.scenario_id] ?? { phase: "idle" };
+
+  const setDecisionState = (next: RecoveryDecisionState) => {
+    setDecisionStates((current) => {
+      const previous = current[summary.scenario_id];
+      if (previous?.phase === "complete" && previous.liveVisual !== null && previous !== next) {
+        adapter.releaseVisual(previous.liveVisual);
+      }
+      const updated = { ...current, [summary.scenario_id]: next };
+      decisionStatesRef.current = updated;
+      return updated;
+    });
+  };
 
   useEffect(
     () => () => {
-      activeRequest.current?.abort();
+      activeRequest.current?.controller.abort();
+      for (const retained of Object.values(decisionStatesRef.current)) {
+        if (retained?.phase === "complete" && retained.liveVisual !== null) {
+          adapter.releaseVisual(retained.liveVisual);
+        }
+      }
     },
-    [],
+    [adapter],
   );
 
+  useEffect(() => {
+    const scenarioId = summary.scenario_id;
+    return () => {
+      const active = activeRequest.current;
+      if (active?.scenarioId === scenarioId) {
+        active.controller.abort();
+        activeRequest.current = null;
+        setStates((current) => ({ ...current, [scenarioId]: { phase: "idle" } }));
+      }
+    };
+  }, [summary.scenario_id]);
+
   const run = () => {
-    activeRequest.current?.abort();
+    const prior = activeRequest.current;
+    if (prior !== null) {
+      prior.controller.abort();
+      setStates((current) => ({ ...current, [prior.scenarioId]: { phase: "idle" } }));
+    }
     const controller = new AbortController();
-    activeRequest.current = controller;
-    setState({ phase: "running" });
+    const scenarioId = summary.scenario_id;
+    activeRequest.current = { controller, scenarioId };
+    setDecisionState({ phase: "idle" });
+    setStates((current) => ({ ...current, [scenarioId]: { phase: "running" } }));
     void adapter
-      .runScenario(summary.scenario_id, controller.signal)
+      .runScenario(scenarioId, controller.signal)
       .then((packet) => {
-        if (!controller.signal.aborted) setState({ packet, phase: "complete" });
+        if (!controller.signal.aborted) {
+          activeRequest.current = null;
+          setStates((current) => ({ ...current, [scenarioId]: { packet, phase: "complete" } }));
+          onPacket(packet);
+        }
       })
       .catch(() => {
-        if (!controller.signal.aborted) setState({ phase: "failed" });
+        if (!controller.signal.aborted) {
+          activeRequest.current = null;
+          setStates((current) => ({ ...current, [scenarioId]: { phase: "failed" } }));
+        }
       });
   };
 
@@ -1012,6 +1140,8 @@ function ReferenceLiveInvestigation({
         </button>
       </div>
 
+      <InvestigationProgress decision={decisionState} investigation={state} />
+
       {state.phase === "idle" ? (
         <p className="reference-live__notice">
           No live query has run for this selection. Starting one does not approve or execute a
@@ -1026,7 +1156,13 @@ function ReferenceLiveInvestigation({
           Live investigation unavailable or invalid. No result or action is being shown.
         </p>
       ) : (
-        <LiveInvestigationResult adapter={adapter} packet={state.packet} summary={summary} />
+        <LiveInvestigationResult
+          adapter={adapter}
+          decisionState={decisionState}
+          onDecisionStateChange={setDecisionState}
+          packet={state.packet}
+          summary={summary}
+        />
       )}
     </section>
   );
@@ -1381,12 +1517,14 @@ function ReferenceScenarioPanel({
   benchmark,
   benchmarkError,
   detail,
+  onPacket,
   summary,
 }: {
   readonly adapter: ReferenceDemoAdapter;
   readonly benchmark: ReferenceBenchmarkSuite | null;
   readonly benchmarkError: string | null;
   readonly detail: ReferenceScenarioDetail;
+  readonly onPacket: (packet: ReferenceResponsePacket) => void;
   readonly summary: ReferenceScenarioSummary;
 }) {
   const incident = INCIDENT_PRESENTATION[summary.incident_class];
@@ -1439,11 +1577,7 @@ function ReferenceScenarioPanel({
         summary={summary}
       />
 
-      <ReferenceLiveInvestigation
-        adapter={adapter}
-        key={`live-${summary.scenario_id}`}
-        summary={summary}
-      />
+      <ReferenceLiveInvestigation adapter={adapter} onPacket={onPacket} summary={summary} />
 
       <div className="reference-explanation-grid">
         <section>
@@ -1461,14 +1595,71 @@ function ReferenceScenarioPanel({
       </div>
 
       <ScenarioScope summary={summary} />
-      <AuthorityAndEvidence detail={detail} />
-      <BenchmarkState
-        benchmark={benchmark}
-        error={benchmarkError}
-        selectedScenarioId={summary.scenario_id}
-        selectedScenarioSha256={summary.scenario_sha256}
-      />
+      <AuthorityAndEvidence detail={detail} key={`authority-${summary.scenario_id}`} />
+      <details className="reference-benchmark-disclosure">
+        <summary>Historical benchmark evidence · separate from this live run</summary>
+        <BenchmarkState
+          benchmark={benchmark}
+          error={benchmarkError}
+          selectedScenarioId={summary.scenario_id}
+          selectedScenarioSha256={summary.scenario_sha256}
+        />
+      </details>
     </article>
+  );
+}
+
+function InvestigationComparison({
+  packets,
+  summaries,
+}: {
+  readonly packets: readonly ReferenceResponsePacket[];
+  readonly summaries: readonly ReferenceScenarioSummary[];
+}) {
+  if (packets.length < 2) return null;
+  return (
+    <section aria-labelledby="reference-comparison-title" className="reference-comparison">
+      <div>
+        <p className="shot-eyebrow">Live comparison</p>
+        <h3 id="reference-comparison-title">Different faults, one guarded workflow</h3>
+        <p>
+          Both results came from live, request-bound investigations—not the historical benchmark.
+        </p>
+      </div>
+      <div className="reference-comparison__grid">
+        {packets.slice(0, 2).map((packet) => {
+          const summary = summaries.find((item) => item.scenario_id === packet.scenario_id);
+          const incident = packet.diagnosis_reconciliation.incident_class;
+          return (
+            <article key={packet.scenario_id}>
+              <span>{summary === undefined ? packet.scenario_id : summary.title}</span>
+              <strong>
+                {incident === null
+                  ? "No supported cause"
+                  : INCIDENT_PRESENTATION[incident].shortLabel}
+              </strong>
+              <dl>
+                <div>
+                  <dt>Evidence</dt>
+                  <dd>{packet.evidence_ids.length} bound facts</dd>
+                </div>
+                <div>
+                  <dt>Scope</dt>
+                  <dd>
+                    {packet.diagnosis_reconciliation.scope.affected_job_ids.length} affected ·{" "}
+                    {packet.diagnosis_reconciliation.scope.safe_job_ids.length} protected
+                  </dd>
+                </div>
+                <div>
+                  <dt>Outcome</dt>
+                  <dd>{packet.status}</dd>
+                </div>
+              </dl>
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -1476,10 +1667,15 @@ export function ReferenceScenarioExperience({ adapter }: ReferenceScenarioExperi
   const [catalog, setCatalog] = useState<ReferenceScenarioList | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<ReferenceScenarioId>(REFERENCE_SCENARIO_IDS[0]);
-  const [detail, setDetail] = useState<ReferenceScenarioDetail | null>(null);
+  const [details, setDetails] = useState<
+    Partial<Record<ReferenceScenarioId, ReferenceScenarioDetail>>
+  >({});
   const [detailError, setDetailError] = useState<string | null>(null);
   const [benchmark, setBenchmark] = useState<ReferenceBenchmarkSuite | null>(null);
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
+  const [investigations, setInvestigations] = useState<
+    Partial<Record<ReferenceScenarioId, ReferenceResponsePacket>>
+  >({});
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1497,16 +1693,21 @@ export function ReferenceScenarioExperience({ adapter }: ReferenceScenarioExperi
 
   useEffect(() => {
     const controller = new AbortController();
-    setDetail(null);
-    setDetailError(null);
-    void adapter
-      .getScenario(selectedId, controller.signal)
-      .then((next) => setDetail(next))
+    void Promise.all(
+      REFERENCE_SCENARIO_IDS.map(
+        async (scenarioId) =>
+          [scenarioId, await adapter.getScenario(scenarioId, controller.signal)] as const,
+      ),
+    )
+      .then((entries) => {
+        setDetails(Object.fromEntries(entries));
+        setDetailError(null);
+      })
       .catch(() => {
         if (!controller.signal.aborted) setDetailError(loadErrorMessage());
       });
     return () => controller.abort();
-  }, [adapter, selectedId]);
+  }, [adapter]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1531,7 +1732,11 @@ export function ReferenceScenarioExperience({ adapter }: ReferenceScenarioExperi
     ).filter((item): item is ReferenceScenarioSummary => item !== undefined);
   }, [catalog]);
   const selectedSummary = orderedItems.find((item) => item.scenario_id === selectedId) ?? null;
-  const selectedDetail = detail?.summary.scenario_id === selectedId ? detail : null;
+  const selectedDetail = details[selectedId] ?? null;
+  const investigatedPackets = REFERENCE_SCENARIO_IDS.map(
+    (scenarioId) => investigations[scenarioId],
+  ).filter((packet): packet is ReferenceResponsePacket => packet !== undefined);
+  const nextScenario = orderedItems.find((item) => investigations[item.scenario_id] === undefined);
 
   return (
     <section aria-labelledby="reference-suite-title" className="reference-suite">
@@ -1583,6 +1788,20 @@ export function ReferenceScenarioExperience({ adapter }: ReferenceScenarioExperi
             ))}
           </nav>
 
+          {investigatedPackets.length === 0 || nextScenario === undefined ? null : (
+            <aside className="reference-next-investigation">
+              <div>
+                <span>One live diagnosis is now evidence</span>
+                <strong>Test a different failure class next.</strong>
+              </div>
+              <button onClick={() => setSelectedId(nextScenario.scenario_id)} type="button">
+                Compare {INCIDENT_PRESENTATION[nextScenario.incident_class].shortLabel}
+              </button>
+            </aside>
+          )}
+
+          <InvestigationComparison packets={investigatedPackets} summaries={orderedItems} />
+
           {detailError === null ? null : (
             <p className="shot-alert" role="alert">
               {detailError}
@@ -1604,6 +1823,12 @@ export function ReferenceScenarioExperience({ adapter }: ReferenceScenarioExperi
               benchmark={benchmark}
               benchmarkError={benchmarkError}
               detail={selectedDetail}
+              onPacket={(packet) =>
+                setInvestigations((current) => ({
+                  ...current,
+                  [packet.scenario_id]: packet,
+                }))
+              }
               summary={selectedSummary}
             />
           )}

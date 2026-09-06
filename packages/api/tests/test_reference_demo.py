@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import threading
 from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -20,6 +21,7 @@ from colortrace_api import (
     create_app,
 )
 from colortrace_api import reference_demo as reference_demo_module
+from colortrace_api.reference_live_render import ReferenceLiveRenderError, ReferenceLiveRenderResult
 from colortrace_grafana_mcp import EvidenceBatch, NormalizedRuntimeObservation
 from colortrace_investigation import ModelCall, ModelOutput, ReferenceInvestigationWorkflow
 from colortrace_simulator import ReferenceHumanApprovalBoundary
@@ -48,6 +50,75 @@ class IncidentService:
 
     def workspace(self, incident_id: str) -> dict[str, Any]:
         return {"schema": "incident-workspace-source/v1", "incident_id": incident_id}
+
+
+class SuccessfulLiveRenderer:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def render(
+        self,
+        *,
+        scenario_id: str,
+        request_id: str,
+        action_intent: Mapping[str, Any],
+        approval: Mapping[str, Any],
+    ) -> ReferenceLiveRenderResult:
+        self.calls += 1
+        content = ReferenceDemoCatalog().scenario_visual(scenario_id, "expected").content
+        digest = f"sha256:{'a' * 64}"
+        body = {
+            "schema": "reference-live-render/v1",
+            "scenario_id": scenario_id,
+            "request_id": request_id,
+            "action_intent_id": action_intent["action_intent_id"],
+            "action_intent_sha256": action_intent["derivation_sha256"],
+            "approval_id": approval["approval_id"],
+            "approval_sha256": approval["approval_sha256"],
+            "execution_target": "single-host-simulator-worker",
+            "source_artifact_id": "frame:03_2a:00000",
+            "source_sha256": digest,
+            "job_sha256": digest,
+            "worker_receipt_sha256": digest,
+            "output_sha256": digest,
+            "canonical_pixel_sha256": digest,
+            "expected_canonical_pixel_sha256": digest,
+            "output_equivalent": True,
+            "visual_content_sha256": f"sha256:{hashlib.sha256(content).hexdigest()}",
+            "visual_width": 960,
+            "visual_height": 506,
+            "dependencies": {"openimageio": "3.1.17.0", "opencolorio": "2.5.2"},
+            "wall_nanoseconds": 1,
+        }
+        return ReferenceLiveRenderResult(
+            document={**body, "live_render_sha256": _digest_without(body, "unused")},
+            png=content,
+        )
+
+
+class FailOnceLiveRenderer:
+    def __init__(self) -> None:
+        self.calls = 0
+        self._successful = SuccessfulLiveRenderer()
+
+    def render(self, **values: Any) -> ReferenceLiveRenderResult:
+        self.calls += 1
+        if self.calls == 1:
+            raise ReferenceLiveRenderError("reference-live-render-failed")
+        return self._successful.render(**values)
+
+
+class BlockingLiveRenderer:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def render(self, **values: Any) -> ReferenceLiveRenderResult:
+        self.calls += 1
+        self.started.set()
+        self.release.wait(timeout=2)
+        return SuccessfulLiveRenderer().render(**values)
 
 
 class NeverModel:
@@ -490,6 +561,8 @@ def _resolved_client(
     *,
     approval_boundary: ReferenceHumanApprovalBoundary | None = None,
     workflow: Any = None,
+    renderer: Any = None,
+    render_timeout: float = 15.0,
 ) -> TestClient:
     monkeypatch.setattr(
         reference_demo_module,
@@ -507,6 +580,8 @@ def _resolved_client(
         alert_rule_uid="ct-reference-demo-divergence-v1",
         clock=lambda: datetime(2026, 9, 4, 12, 5, tzinfo=UTC),
         approval_boundary=approval_boundary,
+        renderer=renderer or SuccessfulLiveRenderer(),
+        live_render_timeout_seconds=render_timeout,
     )
     return TestClient(create_app(IncidentService(), reference_runs=runs))
 
@@ -530,7 +605,7 @@ def test_reference_catalog_lists_three_stable_scenarios_without_cache_paths() ->
     second = catalog.list_scenarios()
 
     assert first == second
-    assert first["schema"] == "reference-scenario-list/v1"
+    assert first["schema"] == "reference-scenario-list/v2"
     assert [item["scenario_id"] for item in first["items"]] == [
         "tos-config-rollout-drift-v1",
         "tos-resource-resolution-drift-v1",
@@ -538,6 +613,10 @@ def test_reference_catalog_lists_three_stable_scenarios_without_cache_paths() ->
     ]
     assert {item["scope"]["affected_artifact_count"] for item in first["items"]} == {72}
     assert {item["scope"]["protected_artifact_count"] for item in first["items"]} == {168}
+    assert all(
+        {visual["kind"] for visual in item["visuals"]} == {"expected", "observed", "diff"}
+        for item in first["items"]
+    )
     assert first["catalog_sha256"] == _digest_without(first, "catalog_sha256")
     assert first["authority"] == {
         "schema": "reference-authority-boundary/v1",
@@ -588,7 +667,7 @@ def test_reference_scenario_detail_exposes_evidence_and_recovery_authority(
 ) -> None:
     detail = ReferenceDemoCatalog().get_scenario(scenario_id)
 
-    assert detail["schema"] == "reference-scenario-detail/v1"
+    assert detail["schema"] == "reference-scenario-detail/v2"
     assert detail["scenario"]["scenario_id"] == scenario_id
     assert detail["scenario"]["scope"]["affected_artifact_ids"]
     assert detail["scenario"]["scope"]["protected_artifact_ids"]
@@ -637,6 +716,8 @@ def test_reference_catalog_rejects_unknown_scenarios_and_visuals() -> None:
         catalog.get_scenario("unknown")
     with pytest.raises(ReferenceDemoError, match="reference-visual-not-found"):
         catalog.scenario_visual("tos-resource-resolution-drift-v1", "unknown")
+    with pytest.raises(ReferenceDemoError, match="reference-visual-not-found"):
+        catalog.scenario_visual("tos-resource-resolution-drift-v1", "recovered")
 
 
 def test_reference_benchmark_suite_reports_source_bound_recorded_results() -> None:
@@ -740,6 +821,7 @@ def test_reference_run_emits_bound_telemetry_and_invokes_v3_workflow(
         },
         alert_rule_uid="ct-reference-demo-divergence-v1",
         clock=lambda: datetime(2026, 9, 4, 12, 5, tzinfo=UTC),
+        renderer=SuccessfulLiveRenderer(),
     )
     client = TestClient(
         create_app(
@@ -909,7 +991,8 @@ def test_reference_recovery_approval_is_exact_simulator_only_and_idempotent(
     monkeypatch: pytest.MonkeyPatch,
     scenario_id: str,
 ) -> None:
-    client = _resolved_client(monkeypatch)
+    renderer = SuccessfulLiveRenderer()
+    client = _resolved_client(monkeypatch, renderer=renderer)
     run_request = _reference_run_request(scenario_id)
     packet_response = client.post(
         f"/v1/demo/scenarios/{scenario_id}/runs",
@@ -921,11 +1004,17 @@ def test_reference_recovery_approval_is_exact_simulator_only_and_idempotent(
     decision_request = _decision_request(packet, request_id=run_request["request_id"])
     path = f"/v1/demo/scenarios/{scenario_id}/runs/{run_request['request_id']}/decision"
 
+    before_approval = client.get(
+        f"/v1/demo/scenarios/{scenario_id}/runs/{run_request['request_id']}/visuals/recovered"
+    )
+    assert before_approval.status_code == 404
+    assert before_approval.json() == {"code": "reference-live-visual-not-found"}
+
     response = client.post(path, json=decision_request)
 
     assert response.status_code == 200
     decision = response.json()
-    assert decision["schema"] == "reference-recovery-decision/v1"
+    assert decision["schema"] == "reference-recovery-decision/v2"
     assert decision["outcome"] == "applied"
     assert decision["approval"]["decision"] == "approved"
     assert decision["approval"]["approver"]["kind"] == "human"
@@ -991,6 +1080,9 @@ def test_reference_recovery_approval_is_exact_simulator_only_and_idempotent(
     assert verification["verification_sha256"] == _digest_without(
         verification, "verification_sha256"
     )
+    assert decision["live_render"]["schema"] == "reference-live-render/v1"
+    assert decision["live_render"]["output_equivalent"] is True
+    assert decision["live_render"]["request_id"] == run_request["request_id"]
     assert decision["scope"] == {
         "kind": "representative-simulator-state",
         "affected_job_count": 1,
@@ -1011,10 +1103,21 @@ def test_reference_recovery_approval_is_exact_simulator_only_and_idempotent(
     assert response.headers["x-colortrace-execution-target"] == "colortrace-simulator"
     assert response.headers["x-colortrace-production-state-changed"] == "false"
     assert decision["decision_sha256"] == _digest_without(decision, "decision_sha256")
+    recovered = client.get(
+        f"/v1/demo/scenarios/{scenario_id}/runs/{run_request['request_id']}/visuals/recovered"
+    )
+    assert recovered.status_code == 200
+    assert recovered.headers["x-content-sha256"] == decision["live_render"]["visual_content_sha256"]
+    assert recovered.headers["x-colortrace-decision-sha256"] == decision["decision_sha256"]
+    assert (
+        recovered.headers["x-colortrace-worker-receipt-sha256"]
+        == decision["live_render"]["worker_receipt_sha256"]
+    )
 
     replay = client.post(path, json=decision_request)
     assert replay.status_code == 200
     assert replay.json() == decision
+    assert renderer.calls == 1
 
     conflict = dict(decision_request)
     conflict["approval_nonce"] = "reference-approval-conflict"
@@ -1022,6 +1125,76 @@ def test_reference_recovery_approval_is_exact_simulator_only_and_idempotent(
     assert rejected.status_code == 409
     assert rejected.json() == {"code": "reference-recovery-decision-conflict"}
     assert client.post(path, json=decision_request).json() == decision
+
+
+def test_reference_recovery_render_failure_is_cached_and_does_not_mutate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario_id = "tos-resource-resolution-drift-v1"
+    renderer = FailOnceLiveRenderer()
+    client = _resolved_client(monkeypatch, renderer=renderer)
+    run_request = _reference_run_request(scenario_id)
+    packet = client.post(
+        f"/v1/demo/scenarios/{scenario_id}/runs",
+        json=run_request,
+    ).json()
+    path = f"/v1/demo/scenarios/{scenario_id}/runs/{run_request['request_id']}/decision"
+    failed_request = _decision_request(packet, request_id=run_request["request_id"])
+
+    first = client.post(path, json=failed_request)
+    replay = client.post(path, json=failed_request)
+
+    assert first.status_code == replay.status_code == 503
+    assert first.json() == replay.json() == {"code": "reference-live-render-failed"}
+    assert renderer.calls == 1
+    assert client.get(f"{path.rsplit('/decision', 1)[0]}/visuals/recovered").status_code == 404
+
+    retry_request = _decision_request(
+        packet,
+        request_id=run_request["request_id"],
+        nonce="reference-approval-render-retry",
+    )
+    recovered = client.post(path, json=retry_request)
+
+    assert recovered.status_code == 200
+    assert recovered.json()["before"]["generation"] == 1
+    assert recovered.json()["after"]["generation"] == 2
+    assert renderer.calls == 2
+
+
+def test_reference_recovery_timeout_does_not_overlap_render_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario_id = "tos-config-rollout-drift-v1"
+    renderer = BlockingLiveRenderer()
+    try:
+        with _resolved_client(monkeypatch, renderer=renderer, render_timeout=0.05) as client:
+            run_request = _reference_run_request(scenario_id)
+            packet = client.post(
+                f"/v1/demo/scenarios/{scenario_id}/runs",
+                json=run_request,
+            ).json()
+            path = f"/v1/demo/scenarios/{scenario_id}/runs/{run_request['request_id']}/decision"
+            first_request = _decision_request(packet, request_id=run_request["request_id"])
+
+            first = client.post(path, json=first_request)
+            second = client.post(
+                path,
+                json=_decision_request(
+                    packet,
+                    request_id=run_request["request_id"],
+                    nonce="reference-approval-while-render-busy",
+                ),
+            )
+
+            assert renderer.started.is_set()
+            assert first.status_code == 503
+            assert first.json() == {"code": "reference-live-render-timeout"}
+            assert second.status_code == 503
+            assert second.json() == {"code": "reference-live-render-unavailable"}
+            assert renderer.calls == 1
+    finally:
+        renderer.release.set()
 
 
 @pytest.mark.parametrize(
@@ -1069,6 +1242,7 @@ def test_reference_recovery_accepts_real_workflow_evidence_for_every_scenario(
         },
         alert_rule_uid="ct-reference-demo-divergence-v1",
         clock=lambda: datetime(2026, 9, 4, 12, 5, tzinfo=UTC),
+        renderer=SuccessfulLiveRenderer(),
     )
     client = TestClient(create_app(IncidentService(), reference_runs=runs))
     run_request = _reference_run_request(scenario_id)
@@ -1145,6 +1319,7 @@ def test_reference_recovery_denial_is_terminal_and_never_mutates(
     assert decision["protected_state_unchanged"] is True
     assert decision["receipt"] is None
     assert decision["verification"] is None
+    assert decision["live_render"] is None
     assert decision["execution_boundary"]["simulator_state_changed"] is False
     assert client.post(path, json=decision_request).json() == decision
 

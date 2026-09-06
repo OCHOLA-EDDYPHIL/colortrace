@@ -37,9 +37,9 @@ digraph ColorTraceProductFlow {
   investigate [label="Investigate\nGemini guidance + read-only\nGrafana queries"];
   proof [label="Establish proof\nDeterministic facts, cause,\nand affected scope", fillcolor="#E8F1FA"];
   decision [label="Human decision\nApprove or reject\nthe exact plan", shape=diamond, style="filled", fillcolor="#FFF8DB", color="#7A5C00"];
-  recover [label="Approved: recover\nApply one bounded\nsimulator action", fillcolor="#EAF7EE", color="#246B3F"];
-  verify [label="Verify\nCorrected affected outputs +\nunchanged protected outputs", fillcolor="#EAF7EE", color="#246B3F"];
-  receipt [label="Record\nImmutable recovery receipt", fillcolor="#E8F1FA", color="#24557A"];
+  recover [label="Approved: recover\nApply representative state +\nrender a pinned source EXR", fillcolor="#EAF7EE", color="#246B3F"];
+  verify [label="Verify\nCanonical pixels match +\nprotected control unchanged", fillcolor="#EAF7EE", color="#246B3F"];
+  receipt [label="Return proof\nRequest + approval + job +\nworker receipt + decision", fillcolor="#E8F1FA", color="#24557A"];
   no_action [label="Rejected or withheld\nNo action; state remains unchanged", fillcolor="#F2F4F7", color="#52606D"];
 
   { rank=same; mismatch; investigate; proof; }

@@ -86,7 +86,7 @@ export type ReferenceProvenance = {
 };
 
 export type ReferenceScenarioList = {
-  readonly schema: "reference-scenario-list/v1";
+  readonly schema: "reference-scenario-list/v2";
   readonly collection_id: string;
   readonly items: readonly ReferenceScenarioSummary[];
   readonly provenance: ReferenceProvenance;
@@ -95,7 +95,7 @@ export type ReferenceScenarioList = {
 };
 
 export type ReferenceScenarioDetail = {
-  readonly schema: "reference-scenario-detail/v1";
+  readonly schema: "reference-scenario-detail/v2";
   readonly summary: ReferenceScenarioSummary;
   readonly evidence_requirements: {
     readonly minimum_complementary_signal_classes: number;
@@ -265,7 +265,11 @@ export type ReferenceDemoAdapter = {
     expectedScenarioSha256: string,
     signal?: AbortSignal,
   ) => Promise<VerifiedReferenceVisual>;
-  readonly releaseVisual: (visual: VerifiedReferenceVisual) => void;
+  readonly loadLiveRecoveredVisual: (
+    decision: ReferenceRecoveryDecision,
+    signal?: AbortSignal,
+  ) => Promise<VerifiedLiveReferenceVisual>;
+  readonly releaseVisual: (visual: VerifiedReferenceVisual | VerifiedLiveReferenceVisual) => void;
 };
 
 export type ReferenceDemoAdapterOptions = {
@@ -291,6 +295,19 @@ export type VerifiedReferenceVisual = {
   readonly src: string;
 };
 
+export type VerifiedLiveReferenceVisual = {
+  readonly kind: "recovered";
+  readonly content_sha256: string;
+  readonly request_id: string;
+  readonly decision_sha256: string;
+  readonly worker_receipt_sha256: string;
+  readonly representation: "fresh-open-film-preview-png/v1";
+  readonly pixel_evidence: true;
+  readonly width: 960;
+  readonly height: 506;
+  readonly src: string;
+};
+
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const GIT_OBJECT = /^[0-9a-f]{40}$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
@@ -305,7 +322,7 @@ const RECOVERY_KINDS = new Set<ReferenceRecoveryKind>([
   "pin-rollout",
   "invalidate-cache",
 ]);
-const VISUAL_KINDS = new Set<ReferenceVisualKind>(["expected", "observed", "recovered", "diff"]);
+const VISUAL_KINDS = new Set<ReferenceVisualKind>(["expected", "observed", "diff"]);
 const VISUAL_SOURCE_RELATIONS = new Set<ReferenceVisualSourceRelation>([
   "current",
   "stale-parent",
@@ -468,7 +485,7 @@ const IMPACT_CHECK_KEYS = new Set([
   "median_compute_avoided_at_least_40_percent",
   "median_application_bytes_avoided_at_least_40_percent",
 ]);
-const MAX_VISUAL_BYTES = 2 * 1024 * 1024;
+const MAX_VISUAL_BYTES = 5 * 1024 * 1024;
 
 export class ReferenceDemoApiError extends Error {
   readonly code: string;
@@ -696,7 +713,10 @@ function parseScenarioSummary(value: unknown): ReferenceScenarioSummary {
   const scenarioSha256 = stringField(value, "scenario_sha256");
   if (!DIGEST.test(scenarioSha256)) throw invalidResponse();
   const visuals = arrayField(value, "visuals").map((visual) => parseVisual(visual, scenarioId));
-  if (visuals.length !== VISUAL_KINDS.size || new Set(visuals.map(({ kind }) => kind)).size !== 4) {
+  if (
+    visuals.length !== VISUAL_KINDS.size ||
+    new Set(visuals.map(({ kind }) => kind)).size !== VISUAL_KINDS.size
+  ) {
     throw invalidResponse();
   }
   return {
@@ -712,7 +732,7 @@ function parseScenarioSummary(value: unknown): ReferenceScenarioSummary {
 }
 
 function parseScenarioList(value: unknown): ReferenceScenarioList {
-  if (!isRecord(value) || value.schema !== "reference-scenario-list/v1") {
+  if (!isRecord(value) || value.schema !== "reference-scenario-list/v2") {
     throw invalidResponse();
   }
   const catalogSha256 = stringField(value, "catalog_sha256");
@@ -728,7 +748,7 @@ function parseScenarioList(value: unknown): ReferenceScenarioList {
     throw invalidResponse();
   }
   return {
-    schema: "reference-scenario-list/v1",
+    schema: "reference-scenario-list/v2",
     collection_id: stringField(value, "collection_id"),
     items,
     provenance: parseProvenance(value.provenance),
@@ -741,7 +761,7 @@ function parseScenarioDetail(
   value: unknown,
   expectedScenarioId: ReferenceScenarioId,
 ): ReferenceScenarioDetail {
-  if (!isRecord(value) || value.schema !== "reference-scenario-detail/v1") {
+  if (!isRecord(value) || value.schema !== "reference-scenario-detail/v2") {
     throw invalidResponse();
   }
   const summary = parseScenarioSummary(value.summary);
@@ -775,7 +795,7 @@ function parseScenarioDetail(
   const detailSha256 = stringField(value, "detail_sha256");
   if (!DIGEST.test(detailSha256)) throw invalidResponse();
   return {
-    schema: "reference-scenario-detail/v1",
+    schema: "reference-scenario-detail/v2",
     summary,
     evidence_requirements: {
       minimum_complementary_signal_classes: minimumSignalClasses,
@@ -1457,6 +1477,78 @@ export function createReferenceDemoAdapter({
     };
   }
 
+  async function verifiedLiveRecoveredVisual(
+    decision: ReferenceRecoveryDecision,
+    signal?: AbortSignal,
+  ): Promise<VerifiedLiveReferenceVisual> {
+    const liveRender = decision.live_render;
+    if (decision.decision !== "approved" || liveRender === null) throw invalidResponse();
+    let response: Response;
+    try {
+      response = await fetchImplementation(
+        endpoint(
+          `/v1/demo/scenarios/${encodeURIComponent(decision.scenario_id)}/runs/${encodeURIComponent(decision.request_id)}/visuals/recovered`,
+        ),
+        {
+          credentials: "same-origin",
+          headers: { Accept: "image/png" },
+          method: "GET",
+          redirect: "error",
+          ...(signal === undefined ? {} : { signal }),
+        },
+      );
+    } catch (error) {
+      throw new ReferenceDemoApiError(null, "reference-network-failure", { cause: error });
+    }
+    if (!response.ok) {
+      throw new ReferenceDemoApiError(response.status, "reference-live-visual-unavailable");
+    }
+    const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
+    const declaredSha256 = response.headers.get("x-content-sha256");
+    if (
+      contentType !== "image/png" ||
+      declaredSha256 !== liveRender.visual_content_sha256 ||
+      response.headers.get("x-colortrace-request-id") !== decision.request_id ||
+      response.headers.get("x-colortrace-decision-sha256") !== decision.decision_sha256 ||
+      response.headers.get("x-colortrace-worker-receipt-sha256") !==
+        liveRender.worker_receipt_sha256 ||
+      response.headers.get("x-colortrace-representation") !== "fresh-open-film-preview-png/v1" ||
+      response.headers.get("x-colortrace-pixel-evidence") !== "true"
+    ) {
+      await response.body?.cancel();
+      throw new ReferenceDemoApiError(response.status, "reference-live-visual-response-invalid");
+    }
+    const content = await response.arrayBuffer();
+    const bytes = new Uint8Array(content);
+    const signature = bytes.slice(0, 8);
+    const view = new DataView(content);
+    if (
+      content.byteLength < 24 ||
+      content.byteLength > MAX_VISUAL_BYTES ||
+      ![137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => signature[index] === byte) ||
+      view.getUint32(16) !== liveRender.visual_width ||
+      view.getUint32(20) !== liveRender.visual_height
+    ) {
+      throw new ReferenceDemoApiError(response.status, "reference-live-visual-response-invalid");
+    }
+    const actualSha256 = await sha256(content);
+    if (actualSha256 !== declaredSha256) {
+      throw new ReferenceDemoApiError(response.status, "reference-live-visual-digest-conflict");
+    }
+    return {
+      kind: "recovered",
+      content_sha256: actualSha256,
+      request_id: decision.request_id,
+      decision_sha256: decision.decision_sha256,
+      worker_receipt_sha256: liveRender.worker_receipt_sha256,
+      representation: "fresh-open-film-preview-png/v1",
+      pixel_evidence: true,
+      width: 960,
+      height: 506,
+      src: createObjectUrl(new Blob([content], { type: "image/png" })),
+    };
+  }
+
   async function runScenario(
     scenarioId: ReferenceScenarioId,
     signal?: AbortSignal,
@@ -1592,6 +1684,7 @@ export function createReferenceDemoAdapter({
     runScenario,
     decideRecovery,
     loadVisual: verifiedVisual,
+    loadLiveRecoveredVisual: verifiedLiveRecoveredVisual,
     releaseVisual: (visual) => revokeObjectUrl(visual.src),
   };
 }

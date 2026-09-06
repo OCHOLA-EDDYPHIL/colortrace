@@ -25,6 +25,7 @@ REFERENCE_RECEIPT_SCHEMA = (
     Path(__file__).parent / "schemas" / "reference-render-receipt-v2.schema.json"
 )
 OPENIMAGEIO_VERSION = "3.1.17.0"
+SUPPORTED_OPENIMAGEIO_VERSIONS = frozenset({"3.0.6.1", OPENIMAGEIO_VERSION})
 OPENCOLORIO_VERSION = "2.5.2"
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -347,7 +348,7 @@ class ReferenceRenderJob:
 def _dependency_versions() -> dict[str, str]:
     oiio_version = oiio.VERSION_STRING
     ocio_version = cast(str, ocio.__version__)
-    if oiio_version != OPENIMAGEIO_VERSION:
+    if oiio_version not in SUPPORTED_OPENIMAGEIO_VERSIONS:
         raise ReferenceWorkerError("reference-openimageio-version-mismatch")
     if ocio_version != OPENCOLORIO_VERSION:
         raise ReferenceWorkerError("reference-opencolorio-version-mismatch")
